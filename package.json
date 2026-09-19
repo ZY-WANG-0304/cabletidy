@@ -1,0 +1,16 @@
+{
+  "name": "cabletidy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local multi-target coding CLI gateway and provider manager.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "test": "node --test",
+    "config:check": "node src/cli.mjs config check"
+  },
+  "dependencies": {
+    "toml-eslint-parser": "^1.0.3"
+  }
+}

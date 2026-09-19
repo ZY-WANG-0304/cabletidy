@@ -1,0 +1,250 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { normalizeConfig } from "../src/config.mjs";
+import { publicCodexCatalog, planCodexCatalog, validateCodexChanges, catalogEntryForProfile } from "../src/codex-catalog.mjs";
+import { prepareCodexArtifacts, applyCodexArtifacts, publicArtifacts } from "../src/codex-native-provider.mjs";
+import { readCodexConfig } from "../src/codex-config-file.mjs";
+import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+
+async function fixture(t) {
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-catalog-test-"));
+  t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
+  return {
+    config: normalizeConfig(codexConfigFixture()),
+    options: { codexHome, bindingId: "codex", paths: { backups: path.join(codexHome, "backups") }, loadCatalog: async () => catalogFixture() },
+    root: path.join(codexHome, "config.toml"),
+  };
+}
+
+function enableOverrides(config, window = 128000) {
+  config.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
+  config.models.model.contextWindow = window;
+  config.models.model.capabilities = ["streaming", "tools", "reasoning", "parallel_tool_calls"];
+}
+
+function restoreOfficial(config) {
+  config.models.model.codex = { metadataMode: "official" };
+  config.models.model.capabilities = codexConfigFixture().models.model.capabilities;
+}
+
+test("public official catalog omits prompts and rejects third-party entries as selectable models", () => {
+  const snapshot = catalogFixture();
+  snapshot.catalog.models.push({ slug: "third-party", supported_in_api: true });
+  const result = publicCodexCatalog(snapshot);
+  assert.deepEqual(result.models.map((model) => model.id), ["gpt-5.5", "gpt-5.6-sol"]);
+  assert.doesNotMatch(JSON.stringify(result), /instructions|Official base/);
+});
+
+test("official mode keeps one config file without forced effort or a generated catalog", async (t) => {
+  const { config, options } = await fixture(t);
+  config.models.model.contextWindow = 1000000;
+  const artifacts = await prepareCodexArtifacts(config, options);
+  assert.deepEqual(artifacts.files.map((file) => file.path), ["config.toml"]);
+  const settings = readCodexConfig(artifacts.files[0].contents);
+  assert.equal(settings.model, "gpt-5.5");
+  assert.equal(settings.model_catalog_json, undefined);
+  assert.equal(settings.model_reasoning_effort, undefined);
+  assert.equal(settings.model_context_window, undefined);
+  assert.equal(settings.model_providers.cabletidy_relay.env_key, undefined);
+  assert.equal(publicArtifacts(artifacts).catalogPlan, undefined);
+});
+
+test("legacy context and compact values are preserved but require explicit metadata opt-in", async (t) => {
+  const { config, options } = await fixture(t);
+  delete config.models.model.codex;
+  config.models.model.contextWindow = 1000000;
+  config.models.model.compact = { strategy: "auto", tokenLimit: 850000 };
+  const artifacts = await prepareCodexArtifacts(config, options);
+  assert.equal(artifacts.files.length, 1);
+  assert.ok(artifacts.warnings.some((warning) => warning.includes("未同步")));
+  assert.equal(config.models.model.compact.tokenLimit, 850000);
+});
+
+test("overrides preserve all official instructions, tools and reasoning options", async (t) => {
+  const { config, options } = await fixture(t);
+  enableOverrides(config);
+  const artifacts = await prepareCodexArtifacts(config, options);
+  const catalog = JSON.parse(artifacts.files[1].contents);
+  const expected = catalogFixture().catalog;
+  expected.models[0].context_window = 128000;
+  expected.models[0].max_context_window = 128000;
+  expected.models[0].input_modalities = ["text"];
+  assert.deepEqual(catalog, expected);
+  assert.equal(catalog.models[0].slug, "gpt-5.5");
+  assert.match(readCodexConfig(artifacts.files[0].contents).model_catalog_json, /model-catalogs/);
+  assert.equal(artifacts.catalogSummary.sourceVersion, "codex-cli test");
+  assert.equal(config.models.model.reasoning, undefined);
+});
+
+test("unknown models, excessive windows and unsupported input types fail explicitly", () => {
+  const config = normalizeConfig(codexConfigFixture());
+  const plan = () => planCodexCatalog(config, config.virtualProviders.codex, catalogFixture());
+  config.models.model.clientModelId = "non-gpt";
+  assert.throws(plan, /未匹配/);
+  config.models.model.clientModelId = "gpt-999";
+  assert.throws(plan, /未匹配/);
+  config.models.model.clientModelId = "gpt-5.5";
+  enableOverrides(config, 1000001);
+  assert.throws(plan, /context window/);
+  config.models.model.contextWindow = 128000;
+  config.models.model.codex.inputModalities = ["text", "audio"];
+  assert.throws(plan, /输入类型/);
+  const snapshot = catalogFixture();
+  snapshot.catalog.models[0].base_instructions = "";
+  snapshot.catalog.models[0].model_messages = null;
+  assert.throws(() => catalogEntryForProfile(snapshot, "model", config.models.model), /缺少指令/);
+});
+
+test("upstream vision restrictions are reflected in the catalog without changing instructions", () => {
+  const config = normalizeConfig(codexConfigFixture());
+  config.models.model.upstreams.relay.capabilityOverrides = ["-vision"];
+  const plan = planCodexCatalog(config, config.virtualProviders.codex, catalogFixture());
+  assert.deepEqual(plan.catalog.models[0].input_modalities, ["text"]);
+  assert.equal(plan.catalog.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
+  assert.ok(plan.warnings.some((warning) => /vision/.test(warning)));
+});
+
+test("official hidden models remain selectable and source catalogs are not mutated", () => {
+  const snapshot = catalogFixture();
+  snapshot.catalog.models[0].visibility = "hide";
+  const before = structuredClone(snapshot);
+  const config = normalizeConfig(codexConfigFixture());
+  enableOverrides(config);
+  assert.ok(publicCodexCatalog(snapshot).models.some((model) => model.id === "gpt-5.5" && model.hidden));
+  planCodexCatalog(config, config.virtualProviders.codex, snapshot);
+  assert.deepEqual(snapshot, before);
+});
+
+test("only changed Codex models require validation; saved legacy models are not rewritten", async () => {
+  const previous = normalizeConfig(codexConfigFixture());
+  previous.models.model.clientModelId = "legacy-alias";
+  const candidate = structuredClone(previous);
+  let calls = 0;
+  const load = async () => { calls++; return catalogFixture(); };
+  candidate.upstreams.relay.name = "New display name";
+  assert.deepEqual(await validateCodexChanges(candidate, previous, load), []);
+  assert.equal(calls, 0);
+  candidate.models.model.upstreams.relay.upstreamModelId = "changed-name";
+  assert.match((await validateCodexChanges(candidate, previous, load))[0].message, /未匹配/);
+  assert.equal(candidate.models.model.clientModelId, "legacy-alias");
+});
+
+test("apply preserves other providers and multiline instructions, and is idempotent", async (t) => {
+  const { config, options, root } = await fixture(t);
+  const original = [
+    '# User configuration',
+    'model = "old" # current model',
+    'model_provider = "other"',
+    'developer_instructions = """',
+    'model = "this is not a config assignment"',
+    '[model_providers.cabletidy_relay]',
+    '# >>> CABLETIDY MANAGED PROVIDER cabletidy_relay -->',
+    '"""',
+    'model_instructions_file = "/user/custom.md"',
+    'model_reasoning_effort = "high"',
+    '',
+    '[model_providers."other"]',
+    'name = "Keep me"',
+    'base_url = "https://other.test/v1" # untouched',
+    '',
+    '[model_providers."cabletidy_relay"]',
+    'env_key = "OLD_KEY"',
+    '[model_providers.cabletidy_relay.auth]',
+    'command = "/old/helper"',
+    '',
+    '[mcp_servers.test]',
+    'command = "/user/tool"',
+  ].join('\n');
+  await fs.writeFile(root, original);
+  const artifacts = await prepareCodexArtifacts(config, options);
+  assert.ok(artifacts.warnings.some((item) => item.includes("model_instructions_file")));
+  await applyCodexArtifacts(artifacts, options);
+  const first = await fs.readFile(root, "utf8");
+  const current = readCodexConfig(first);
+  const before = readCodexConfig(original);
+  assert.equal(current.developer_instructions, before.developer_instructions);
+  assert.equal(current.model_instructions_file, before.model_instructions_file);
+  assert.equal(current.model_reasoning_effort, "high");
+  assert.deepEqual(current.model_providers.other, before.model_providers.other);
+  assert.deepEqual(current.mcp_servers, before.mcp_servers);
+  assert.equal(current.model_providers.cabletidy_relay.auth, undefined);
+  assert.equal(current.model_providers.cabletidy_relay.env_key, undefined);
+  assert.ok(
+    first.indexOf("[model_providers.cabletidy_relay]") <
+      first.indexOf('[model_providers."other"]'),
+  );
+  assert.ok(first.includes('base_url = "https://other.test/v1" # untouched'));
+  await applyCodexArtifacts(artifacts, options);
+  assert.equal(await fs.readFile(root, "utf8"), first);
+});
+
+test("catalog apply keeps foreign entries and restores the original catalog and window", async (t) => {
+  const { config, options, root } = await fixture(t);
+  const previous = catalogFixture().catalog;
+  previous.models[0].base_instructions = "User custom base";
+  previous.models.push({ slug: "foreign-model", base_instructions: "foreign prompt" });
+  const foreignFile = path.join(options.codexHome, "user-models.json");
+  await fs.writeFile(foreignFile, JSON.stringify(previous));
+  await fs.writeFile(root, 'model_catalog_json = "user-models.json"\nmodel_context_window = 64000\nmodel_auto_compact_token_limit = 50000\n');
+  enableOverrides(config);
+  let artifacts = await prepareCodexArtifacts(config, options);
+  await applyCodexArtifacts(artifacts, options);
+  let settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model_context_window, undefined);
+  assert.equal(settings.model_auto_compact_token_limit, 50000);
+  const managed = JSON.parse(await fs.readFile(settings.model_catalog_json, "utf8"));
+  assert.equal(managed.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
+  assert.deepEqual(managed.models.at(-1), previous.models.at(-1));
+  assert.deepEqual(JSON.parse(await fs.readFile(foreignFile, "utf8")), previous);
+  const firstPath = settings.model_catalog_json;
+  config.models.model.contextWindow = 100000;
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.notEqual(settings.model_catalog_json, firstPath);
+  assert.equal(JSON.parse(await fs.readFile(firstPath, "utf8")).models[0].context_window, 128000);
+  restoreOfficial(config);
+  artifacts = await prepareCodexArtifacts(config, options);
+  await applyCodexArtifacts(artifacts, options);
+  settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model_catalog_json, "user-models.json");
+  assert.equal(settings.model_context_window, 64000);
+});
+
+test("switching to a suite without overrides restores absent root settings", async (t) => {
+  const { config, options, root } = await fixture(t);
+  enableOverrides(config);
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  restoreOfficial(config);
+  config.bindings.codex.name = "other";
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  const settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model_catalog_json, undefined);
+  assert.equal(settings.model_context_window, undefined);
+  assert.ok(settings.model_providers.cabletidy_relay);
+  assert.ok(settings.model_providers.cabletidy_other);
+});
+
+test("bad TOML or an unreadable existing catalog never overwrites config", async (t) => {
+  const { config, options, root } = await fixture(t);
+  enableOverrides(config);
+  for (const original of ['bad = [', 'model_catalog_json = "missing.json"\n']) {
+    await fs.writeFile(root, original);
+    await assert.rejects(prepareCodexArtifacts(config, options));
+    assert.equal(await fs.readFile(root, "utf8"), original);
+  }
+});
+
+test("external catalog edits are not undone when returning to official mode", async (t) => {
+  const { config, options, root } = await fixture(t);
+  enableOverrides(config);
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  await fs.writeFile(root, 'model_catalog_json = "external.json"\nmodel_context_window = 12345\n');
+  restoreOfficial(config);
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  const settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model_catalog_json, "external.json");
+  assert.equal(settings.model_context_window, 12345);
+});
