@@ -488,9 +488,7 @@ h3 {
 }
 
 .suite-model-client-input:focus,
-.suite-binding-row input:focus,
-.suite-route-row input:focus,
-.suite-route-row select:focus {
+.suite-binding-row input:focus {
   border-color: var(--accent);
   outline: 0;
   box-shadow: 0 0 0 3px rgba(37, 184, 120, 0.14);
@@ -518,9 +516,7 @@ h3 {
   background: var(--panel);
 }
 
-.suite-binding-row input,
-.suite-route-row input,
-.suite-route-row select {
+.suite-binding-row input {
   width: 100%;
   min-height: 35px;
   padding: 0 9px;
@@ -571,18 +567,6 @@ h3 {
   font-size: 12px;
 }
 
-.suite-route-list {
-  display: grid;
-  gap: 8px;
-}
-
-.suite-route-row {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 92px auto;
-  gap: 8px;
-  align-items: center;
-}
-
 .suite-facts {
   display: grid;
   gap: 12px;
@@ -614,12 +598,6 @@ h3 {
   color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
-}
-
-.content-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
-  gap: 16px;
 }
 
 .panel {
@@ -869,14 +847,12 @@ button.list-row:hover,
   padding-left: 20px;
 }
 
-.mapping-list,
-.backend-list {
+.mapping-list {
   display: grid;
   gap: 10px;
 }
 
-.mapping-row,
-.backend-row {
+.mapping-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 8px;
@@ -886,13 +862,7 @@ button.list-row:hover,
   background: #fff;
 }
 
-.backend-row {
-  grid-template-columns: 1fr 1fr 90px auto;
-}
-
-.mapping-row input,
-.backend-row input,
-.backend-row select {
+.mapping-row input {
   width: 100%;
   min-height: 36px;
   padding: 0 9px;
@@ -983,22 +953,6 @@ button.list-row:hover,
   vertical-align: middle;
 }
 
-.error-list {
-  display: grid;
-  gap: 7px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.error-list li {
-  padding: 9px 11px;
-  border-left: 3px solid var(--danger);
-  color: #7d3939;
-  background: #fff0f0;
-  font-size: 12px;
-}
-
 .toast-region {
   position: fixed;
   z-index: 10;
@@ -1046,7 +1000,6 @@ button.list-row:hover,
     padding-right: 20px;
     padding-left: 20px;
   }
-  .content-grid,
   .form-layout,
   .suite-layout {
     grid-template-columns: 1fr;
@@ -1177,9 +1130,7 @@ button.list-row:hover,
   }
 
   .mapping-row,
-  .backend-row,
-  .suite-binding-row,
-  .suite-route-row {
+  .suite-binding-row {
     grid-template-columns: 1fr;
   }
 

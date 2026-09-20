@@ -39,41 +39,19 @@ CableTidy 管理模型能力、上下文窗口和相关策略；Codex 仍需通�
 
 ## 2. Codex Native Provider Integration
 
-CableTidy 直接实现 Codex 原生 provider 接入方式。外部教程或客户端 profile
-文件不是运行时依赖，也不进入 CableTidy 配置图。
+CableTidy 直接实现 Codex 原生 provider 接入方式。用户填写上游连接信息，选择
+本机官方目录中的模型并设置上游模型名；CableTidy 据此生成本地接入配置。
+不提供教程解析或导入，不根据教程中的模型字符串推断官方模型身份。
 
-### 2.1 Profile 语义
+### 2.1 Model Profile 与客户端配置
 
-上游接入中可能出现：
+Model Profile 是 CableTidy 自己维护的模型身份、能力和元数据，
+Upstream Model Binding 记录它在具体上游使用的模型名。
+Codex 的 reasoning effort 由请求选择；旧 compact 数据保留但不生效。
 
-```text
-xxxgpt561 -> GPT-5.6 Sol
-xxxgpt562 -> GPT-5.6 Terra
-xxxgpt563 -> GPT-5.6 Luna
-xxxgpt55  -> GPT-5.5
-xxxgpt54  -> GPT-5.4
-```
-
-是上游教程为了适配 Codex 的不同实际使用场景而采用的 profile 配置手段。它们不是 CableTidy 的内部核心对象，CableTidy 不需要继续生成同名 profile 文件。
-
-CableTidy 只吸收真正有运行时意义的语义：
-
-- Model Profile。
-- Upstream Model Binding。
-- client model ID / alias。
-- `upstream_model_id`。
-- capabilities。
-- context window。
-- reasoning 能力；effort 由 CLI 请求选择。
-- compact 策略。
-
-因此，教程中的 profile ID 和 profile 文件只作为解析过程中的临时语法，
-不会出现在迁移结果、CableTidy 配置或 Codex Target Adapter 生成物中。
-
-例如，可选 migration preview 可以根据教程中的 `XXX-GPT-5.6-Sol`
-推导 CableTidy 自己的 `clientModelId = "gpt-5.6-sol"`，并把它保存为
-对应 Upstream Model Binding 的 `upstreamModelId`。解析时会丢弃教程的
-外部 profile ID，不把它作为迁移结果或运行时字段。
+客户端接入通过 `config.toml` 的根级模型选择和 provider 条目完成，
+显式元数据覆盖按需生成模型目录。不生成额外的 profile/TUI 文件，
+也不接受自定义文件清单作为旧格式 artifact 写入。
 
 ## 3. 总体架构
 
@@ -176,8 +154,8 @@ Upstream = endpoint + wire protocol + secret reference + runtime policy
 
 - Codex 的 user-level `config.toml` 使用 `model_provider` 和 `[model_providers.<id>]`。
 - provider 使用 `base_url`、`env_key` 和 Responses wire protocol。
-- 上游教程可能额外使用 profile 文件来组织模型、context window 和 compact 参数。
-- CableTidy Web 向导将这些语义录入 CableTidy 自己的配置。
+- CableTidy 管理台录入上游连接和模型映射，模型元数据默认沿用本机官方目录。
+- 客户端配置通过 TOML 语法树更新，保留其他 provider 和用户设置，不写入额外的 profile 文件。
 
 运行时配置来自 Web/CLI 的 CableTidy 配置图。
 
@@ -198,7 +176,7 @@ Model Profile 是 CableTidy 对客户端暴露的稳定逻辑模型。它不是 
 }
 ```
 
-这些字段都由 CableTidy 管理。capabilities 参与请求能力检查；context window 仅在显式选择覆盖模式后同步，compact 仍是未生效的历史元数据。上例窗口和阈值来自参考教程，不是新模型的通用默认值。新模型不自动填充这些数值。
+这些字段都由 CableTidy 管理。capabilities 参与请求能力检查；context window 仅在显式选择覆盖模式后同步，compact 仍是未生效的历史元数据。上例窗口和阈值仅用于展示旧数据结构，不是新模型的通用默认值。新模型不自动填充这些数值。
 
 ### 4.5 Upstream Model Binding
 
@@ -325,7 +303,7 @@ Upstream
 Route -> Virtual Provider -> Codex Binding
 ```
 
-模型 profile 是教程 profile 语义的 CableTidy 化表达，不再使用 `xxxgpt561` 作为内部路由对象，也不需要保留 `xxxgpt56.config.toml` 这类客户端文件分组。
+Model Profile 和上游模型映射由 CableTidy 配置图维护，不依赖客户端 profile 名称或文件分组。
 
 ### 5.2 Codex 最终看到什么
 
@@ -354,7 +332,7 @@ CableTidy client model ID；`POST /v1/responses` 同时承载普通请求和
 `stream = true` 的 Responses SSE 请求。`/models` 与 `/responses` 可以
 作为兼容别名，但不能替代带 `/v1` 的标准路径。
 
-默认仅维护 `config.toml` 中的根级选择和 provider 条目。元数据存在覆盖时额外生成模型目录，它是 CableTidy 自动维护的客户端适配产物，不是用户需要编辑的 profile 文件。MVP 不生成 `xxxgpt561`、`xxxgpt562`、`xxxgpt563`、`xxxgpt55`、`xxxgpt54` 或其他 profile 文件。
+默认仅维护 `config.toml` 中的根级选择和 provider 条目。元数据存在覆盖时额外生成模型目录，它是 CableTidy 自动维护的客户端适配产物，不是用户需要编辑的 profile 文件。不生成额外的 profile/TUI 文件。
 
 Codex 不需要知道：
 
@@ -590,7 +568,7 @@ browser draft
   -> runtime snapshot swap
 ```
 
-用户可以跳过向导进入详细页面，为同一个 Model Profile 增加第二个 upstream 或为同一个 Virtual Provider 增加其他 Target Binding。
+套装详情页编辑上游连接和模型映射，内部 Route 与 Target Binding 由套装流程维护，不提供独立的路由或绑定编辑页面。
 
 ## 8. Control API
 
@@ -609,7 +587,6 @@ POST /api/v1/config/preview-codex-config
 
 POST /api/v1/tests/upstream
 POST /api/v1/tests/model-resolve
-POST /api/v1/codex-native-provider/inspect
 GET  /api/v1/integrations
 ```
 
@@ -659,8 +636,8 @@ src/model-resolver.mjs
 
 src/codex-native-provider.mjs
   Codex Native Provider Integration
-  optional tutorial inspection/migration preview
   local config.toml artifact renderer
+  model catalog staging and application
 
 src/target-artifacts.mjs
   Codex / Claude Code / generic target artifacts
@@ -669,7 +646,7 @@ src/server.mjs
   Web control API + local Virtual Provider listeners
 
 src/cli.mjs
-  status / config check / inspect / artifact / run
+  status / config check / artifact / run
 
 web/index.html + web/app.js + web/styles.css
   local configuration console and first-run wizard
@@ -697,7 +674,7 @@ MVP 至少覆盖：
 2. 同一个 upstream 可以被多个 Virtual Provider / Target Binding 复用。
 3. 当前 MVP 一个 Virtual Provider 只连接一个 upstream；未来扩展时，一个 Model Profile 可以映射到多个 upstream 的不同 `upstream_model_id`。
 4. 客户端模型名在请求和响应中保持稳定。
-5. Codex artifact 只生成 `config.toml`，不生成 profile 文件。
+5. Codex artifact 默认只生成 `config.toml`；元数据覆盖时按需生成模型目录，不生成额外的 profile/TUI 文件。
 6. Codex `base_url` 指向本地 Virtual Provider，不包含真实上游 URL。
 7. Codex artifact 不包含上游 API Key 或本地 `env_key`；无认证请求仍使用独立的上游 API Key 转发。
 8. unknown model、缺少 binding、能力不足和协议不兼容会在本地失败。

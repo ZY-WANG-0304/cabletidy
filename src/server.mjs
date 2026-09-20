@@ -11,7 +11,6 @@ import {
   applySecretPayload,
   backupFile,
   computeConfigDiff,
-  ensureGeneratedSecrets,
   getPaths,
   loadConfig,
   loadSecrets,
@@ -66,7 +65,6 @@ export async function createApplication(options = {}) {
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
   let config = await loadConfig(paths);
   let secrets = await loadSecrets(paths);
-  secrets = ensureGeneratedSecrets(config, secrets);
   const startupValidation = validateConfig(config);
   if (!startupValidation.ok) {
     const details = startupValidation.errors
@@ -145,7 +143,6 @@ class ProxyManager {
   constructor(state) {
     this.state = state;
     this.entries = new Map();
-    this.servers = new Map();
     this.operation = Promise.resolve();
   }
 
@@ -211,9 +208,6 @@ class ProxyManager {
     // Publish the staged set before closing listeners that are no longer
     // needed. If staging failed, the old set above was never touched.
     this.entries = nextEntries;
-    this.servers = new Map(
-      [...nextEntries.entries()].map(([id, entry]) => [id, entry.server]),
-    );
     for (const entry of nextEntries.values()) {
       entry.handlerState.runtime = entry.runtime;
     }
@@ -261,7 +255,6 @@ class ProxyManager {
   async closeNow() {
     const servers = [...this.entries.values()].map((entry) => entry.server);
     this.entries.clear();
-    this.servers.clear();
     await Promise.all(servers.map((server) => closeServer(server)));
   }
 
@@ -511,10 +504,7 @@ async function commitConfig(state, body, response) {
 
   const candidate = normalizeConfig(stripPresentationFields(body.config || {}));
   candidate.revision = state.config.revision + 1;
-  const candidateSecrets = ensureGeneratedSecrets(
-    candidate,
-    applySecretPayload(candidate, state.secrets, body),
-  );
+  const candidateSecrets = applySecretPayload(candidate, state.secrets, body);
   const validation = validateConfig(candidate);
   if (validation.ok) validation.errors.push(...await validateCodexChanges(candidate, state.config, state.loadCodexCatalog));
   validation.ok = validation.errors.length === 0;
@@ -700,10 +690,7 @@ async function testUpstream(state, body, response) {
 async function previewTargetArtifacts(state, body, response) {
   try {
     const config = normalizeConfig(body.config || state.config);
-    const secrets = ensureGeneratedSecrets(
-      config,
-      applySecretPayload(config, state.secrets, body),
-    );
+    const secrets = applySecretPayload(config, state.secrets, body);
     const artifacts = await prepareTargetArtifacts(config, {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
@@ -1367,40 +1354,6 @@ function formatWebUrl(host, port) {
 function closeServer(server) {
   if (!server.listening) return Promise.resolve();
   return new Promise((resolve) => server.close(() => resolve()));
-}
-
-function nextVirtualProviderPort(config, extraUsedPorts = []) {
-  const used = new Set(
-    Object.values(config.virtualProviders || {}).map((item) => Number(item.listenPort)),
-  );
-  used.add(Number(config.web?.port));
-  for (const port of Array.isArray(extraUsedPorts) ? extraUsedPorts : []) {
-    used.add(Number(port));
-  }
-  const [rangeStart, rangeEnd] = parsePortRange(config.daemon?.proxyPortRange);
-  let port = rangeStart;
-  while (port <= rangeEnd && used.has(port)) port += 1;
-  if (port > rangeEnd) {
-    throw new Error(`没有可用的 Virtual Provider 端口（范围 ${rangeStart}-${rangeEnd}）`);
-  }
-  return port;
-}
-
-function parsePortRange(value) {
-  const match = String(value || "").match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
-  if (!match) return [43101, 43199];
-  const start = Number(match[1]);
-  const end = Number(match[2]);
-  if (
-    !Number.isInteger(start) ||
-    !Number.isInteger(end) ||
-    start < 1 ||
-    end > 65535 ||
-    start > end
-  ) {
-    return [43101, 43199];
-  }
-  return [start, end];
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

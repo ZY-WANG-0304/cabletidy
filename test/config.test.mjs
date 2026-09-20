@@ -4,8 +4,6 @@ import assert from "node:assert/strict";
 import {
   applySecretPayload,
   computeConfigDiff,
-  ensureGeneratedSecrets,
-  localEnvKeyForProvider,
   normalizeConfig,
   publicConfig,
 } from "../src/config.mjs";
@@ -32,17 +30,6 @@ test("computes an effective config diff without counting revision metadata", () 
   assert.equal(after.web.sessionTtlSeconds, undefined);
   assert.equal(diff.added.some((item) => item.path === "upstreams.backup"), true);
   assert.deepEqual(diff.affected, ["upstreams"]);
-});
-
-test("normalizes CableTidy generated Codex provider env keys", () => {
-  assert.equal(
-    localEnvKeyForProvider("cabletidy_xxx"),
-    "CABLETIDY_CODEX_XXX_KEY",
-  );
-  assert.equal(
-    localEnvKeyForProvider("codex-main"),
-    "CABLETIDY_CODEX_CODEX_MAIN_KEY",
-  );
 });
 
 test("migrates prototype Codex fields into CableTidy fields and drops profile metadata", () => {
@@ -229,7 +216,6 @@ test("legacy local auth is discarded without changing upstream secrets or genera
     "secret://upstreams/relay": "upstream-key",
     "secret://virtual-providers/codex": "legacy-local-key",
   };
-  assert.deepEqual(ensureGeneratedSecrets(config, secrets), secrets);
   assert.equal(config.virtualProviders.fresh.localAuth, undefined);
   const updated = applySecretPayload(config, secrets, {
     localSecrets: { fresh: "ignored", codex: "ignored" },

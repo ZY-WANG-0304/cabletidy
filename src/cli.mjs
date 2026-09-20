@@ -2,14 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
 
 import {
-  ensureGeneratedSecrets,
   getPaths,
   loadConfig,
   loadSecrets,
-  publicConfig,
   readRuntimeInfo,
 } from "./config.mjs";
 import { prepareCodexArtifacts, publicArtifacts } from "./codex-native-provider.mjs";
@@ -92,14 +89,14 @@ async function main() {
 
   if (command === "codex" && args[0] === "artifacts") {
     const config = await loadConfig(paths);
-    const secrets = ensureGeneratedSecrets(config, await loadSecrets(paths));
+    const secrets = await loadSecrets(paths);
     print(publicArtifacts(await prepareCodexArtifacts(config, { bindingId: args[1] }, secrets)));
     return;
   }
 
   if (command === "target" && args[0] === "env") {
     const config = await loadConfig(paths);
-    const secrets = ensureGeneratedSecrets(config, await loadSecrets(paths));
+    const secrets = await loadSecrets(paths);
     const artifacts = await prepareTargetArtifacts(config, { bindingId: args[1] }, secrets);
     if (args.includes("--json")) {
       print({
@@ -116,7 +113,7 @@ async function main() {
 
   if (command === "target" && args[0] === "artifacts") {
     const config = await loadConfig(paths);
-    const secrets = ensureGeneratedSecrets(config, await loadSecrets(paths));
+    const secrets = await loadSecrets(paths);
     print(publicTargetArtifacts(await prepareTargetArtifacts(config, { bindingId: args[1] }, secrets)));
     return;
   }
@@ -158,7 +155,7 @@ async function runTarget(args, paths) {
   await assertDaemonAlive(runtime);
 
   const config = await loadConfig(paths);
-  const secrets = ensureGeneratedSecrets(config, await loadSecrets(paths));
+  const secrets = await loadSecrets(paths);
   const bindingEntry = Object.entries(config.bindings || {}).find(
     ([id, item]) => bindingId
       ? id === bindingId || item.id === bindingId

@@ -82,7 +82,6 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
       const responses = {
         "/api/v1/config": { config: clone(persisted) },
         "/api/v1/runtime": { virtualProviders: [], health: {} },
-        "/api/v1/catalog": {},
         "/api/v1/events": { events: [] },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),

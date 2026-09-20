@@ -7,10 +7,6 @@ export class ModelResolveError extends Error {
   }
 }
 
-export function getModelProfile(config, modelId) {
-  return config.models?.[modelId] || null;
-}
-
 export function findModelProfile(config, clientModelId, allowedModels) {
   if (!clientModelId) return null;
   const allowed = allowedModels?.length ? new Set(allowedModels) : null;

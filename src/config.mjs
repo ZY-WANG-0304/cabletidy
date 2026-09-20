@@ -234,25 +234,8 @@ export async function backupFile(file, backupsDirectory, label) {
   }
 }
 
-export function randomSecret() {
-  return crypto.randomBytes(32).toString("base64url");
-}
-
 export function secretRefForUpstream(id) {
   return `secret://upstreams/${id}`;
-}
-
-export function secretRefForVirtualProvider(id) {
-  return `secret://virtual-providers/${id}`;
-}
-
-export function localEnvKeyForProvider(providerId) {
-  const safe = String(providerId || "provider")
-    .replace(/^cabletidy[_-]+/i, "")
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .toUpperCase();
-  return `CABLETIDY_CODEX_${safe || "PROVIDER"}_KEY`;
 }
 
 export function resolveSecret(reference, secrets = {}) {
@@ -272,12 +255,6 @@ export function resolveUpstreamSecret(upstream, secrets = {}) {
     (typeof envKey === "string" && process.env[envKey]) ||
     resolveSecret(upstream?.secretRef, secrets)
   );
-}
-
-export function ensureGeneratedSecrets(config, secrets = {}) {
-  // Virtual Providers are loopback-only and intentionally unauthenticated.
-  // Keep the secrets object for upstream credentials and older callers.
-  return { ...secrets };
 }
 
 export function applySecretPayload(config, secrets, payload = {}) {
