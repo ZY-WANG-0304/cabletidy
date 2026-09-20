@@ -6,10 +6,28 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mockCodexEnvironment } from "./helpers/codex-fixture.mjs";
+import { mockCodexEnvironment, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const cli = path.join(process.cwd(), "src", "cli.mjs");
+
+test("codex artifacts rejects conflicting names instead of emitting another binding", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-cli-name-conflict-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const env = await mockCodexEnvironment(home);
+  await writeStore(home, namedCodexConfigFixture({ a: "b", b: "a", c: "a" }), {});
+  const stored = await fs.readFile(path.join(home, "config.json"), "utf8");
+  for (const args of [["b"], []]) {
+    await assert.rejects(execFileAsync(process.execPath, [cli, "codex", "artifacts", ...args], { env }), error => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /配置名称规范化后重复: a/);
+      assert.equal(error.stdout, "");
+      return true;
+    });
+  }
+  assert.equal(await fs.readFile(path.join(home, "config.json"), "utf8"), stored);
+  await assert.rejects(fs.access(env.CODEX_HOME), { code: "ENOENT" });
+});
 
 test("run injects Claude Code environment without changing the parent environment", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-cli-claude-"));
@@ -37,7 +55,7 @@ test("run injects Claude Code environment without changing the parent environmen
       { env: { ...process.env, CABLETIDY_HOME: home } },
     );
     assert.deepEqual(result.stdout.trim().split("\n"), [
-      "http://127.0.0.1:43102",
+      "http://127.0.0.1:43100/claude",
       "cabletidy-local",
       "sonnet",
     ]);

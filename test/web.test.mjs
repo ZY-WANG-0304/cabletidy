@@ -7,8 +7,10 @@ import { normalizeConfig } from "../src/config.mjs";
 import { publicCodexCatalog } from "../src/codex-catalog.mjs";
 import { validateConfig } from "../src/validation.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
 
-const source = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
+const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
+  .replace(/^import .* from "\.\/config-identity\.js";\n/, "");
 
 function formNode(id, fields = {}, rows = []) {
   const form = {
@@ -51,6 +53,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     append(item) { messages.push(item.textContent); },
   });
   const context = vm.createContext({
+    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl,
     window: {
       ...node(),
       confirm(message) { confirmations.push(message); return options.confirmLeave ?? true; },
@@ -160,6 +163,14 @@ test("creation commits immediately and clears transient secrets", async () => {
   const config = app.persisted();
   const binding = Object.values(config.bindings)[0];
   assert.equal(binding.name, "Development");
+  assert.equal(binding.id, "development");
+  assert.equal(binding.virtualProvider, "cabletidy_development");
+  assert.equal(config.virtualProviders.cabletidy_development.id, binding.virtualProvider);
+  assert.equal(app.read("state.selected.suite"), binding.id);
+  assert.equal(app.read("state.selected.virtualProvider"), binding.virtualProvider);
+  assert.match(app.read("renderSuiteDetail()"), /cabletidy_development/);
+  assert.match(app.read("renderSuiteDetail()"), /http:\/\/127\.0\.0\.1:43100\/development\/v1/);
+  assert.equal(config.virtualProviders.cabletidy_development.listenPort, undefined);
   assert.equal(Object.values(config.models)[0].clientModelId, "gpt-5.5");
   assert.equal(Object.values(Object.values(config.models)[0].upstreams)[0].upstreamModelId, "vendor-gpt");
   const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
@@ -168,6 +179,56 @@ test("creation commits immediately and clears transient secrets", async () => {
   assert.equal(app.read("Object.keys(state.pendingSecrets.upstreamSecrets).length"), 0);
   assert.equal(app.requests.some(({ url }) => url.endsWith("/config/validate")), false);
   assert.doesNotMatch(app.read("renderDiagnostics()"), /配置校验|校验草稿/);
+});
+
+test("creating a duplicate normalized name preserves the existing configuration", async () => {
+  const app = await controller(normalizeConfig({}));
+  await app.submit(creationForm());
+  const first = app.persisted();
+  const form = creationForm();
+  form.fields.suiteName = "development";
+  await app.submit(form);
+  assert.match(form.feedback.innerHTML, /ID 已存在/);
+  assert.deepEqual(app.persisted(), first);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+});
+
+test("separate configurations each keep their own upstream and model mappings", async () => {
+  const app = await controller(normalizeConfig({}));
+  await app.submit(creationForm());
+  const second = creationForm();
+  second.fields.suiteName = "Production";
+  await app.submit(second);
+  const config = app.persisted();
+  assert.equal(Object.keys(config.bindings).length, 2);
+  const upstreamIds = new Set();
+  for (const binding of Object.values(config.bindings)) {
+    const provider = config.virtualProviders[binding.virtualProvider];
+    const route = config.routes[provider.route];
+    assert.equal(route.backends.length, 1);
+    const upstreamId = route.backends[0].upstream;
+    upstreamIds.add(upstreamId);
+    for (const modelId of provider.allowedModels) {
+      assert.deepEqual(Object.keys(config.models[modelId].upstreams), [upstreamId]);
+    }
+  }
+  assert.equal(upstreamIds.size, 2);
+  assert.equal(validateConfig(config).ok, true);
+});
+
+test("advanced model editor exposes one upstream and saves only its model mapping", async () => {
+  const app = await controller();
+  const models = app.read("renderModels()");
+  assert.equal((models.match(/name="upstreamId"/g) || []).length, 1);
+  await app.submit(formNode("model-form", {
+    id: "model", clientModelId: "gpt-5.5", aliases: "gpt-5.5",
+    upstreamId: "relay", upstreamModelId: "changed-model", capabilityOverrides: "-vision",
+    capabilities: "streaming, tools, reasoning",
+  }));
+  const model = app.persisted().models.model;
+  assert.deepEqual(Object.keys(model.upstreams), ["relay"]);
+  assert.equal(model.upstreams.relay.upstreamModelId, "changed-model");
+  assert.deepEqual(model.upstreams.relay.capabilityOverrides, ["-vision"]);
 });
 
 test("a rejected creation stays on the form and can be retried without duplicate records", async () => {
@@ -578,7 +639,7 @@ test("the catalog action is labelled refresh model list", async () => {
 
 function addFixtureModel(config, id = "second", clientModelId = "gpt-5.6-sol") {
   config.models[id] = { ...clone(config.models.model), id, clientModelId, aliases: [clientModelId] };
-  config.virtualProviders.codex.allowedModels.push(id);
+  config.virtualProviders.cabletidy_relay.allowedModels.push(id);
   config.routes.route.backends[0].models.push(id);
 }
 
@@ -592,7 +653,7 @@ function mountSuiteEditor(app) {
     form.rows = [];
     const attribute = form.getAttribute;
     form.getAttribute = (name) => name === "data-suite-context"
-      ? JSON.stringify(["codex", "codex", config.bindings.codex.virtualProvider, "route", config.routes.route.backends[0].upstream]) : attribute(name);
+      ? JSON.stringify(["relay", "codex", config.bindings.relay.virtualProvider, "route", config.routes.route.backends[0].upstream]) : attribute(name);
     form.replaceWith = (replacement) => { current = replacement; };
     const list = {
       querySelector: () => null,
@@ -607,7 +668,7 @@ function mountSuiteEditor(app) {
     form.querySelectorAll = (selector) => selector === "[data-suite-model]" ? [...form.rows]
       : selector === "input, select, textarea" ? form.rows.flatMap(row => row.inputs)
       : selector === "[data-official-model]" ? form.rows.flatMap(row => row.inputs.filter(input => "officialModel" in input.dataset)) : [];
-    for (const id of config.virtualProviders.codex.allowedModels) {
+    for (const id of config.virtualProviders.cabletidy_relay.allowedModels) {
       const model = config.models[id];
       const metadata = metadataRow(model.codex?.metadataMode);
       const { row, select, context, vision } = metadata;
@@ -652,7 +713,7 @@ test("conflict refresh merges another window's added model before retrying a loc
   const saved = app.persisted();
   assert.deepEqual(Object.keys(saved.models), ["model", "second"]);
   assert.deepEqual(saved.routes.route.backends[0].models, ["model", "second"]);
-  assert.deepEqual(saved.virtualProviders.codex.allowedModels, ["model", "second"]);
+  assert.deepEqual(saved.virtualProviders.cabletidy_relay.allowedModels, ["model", "second"]);
   assert.equal(saved.models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
   assert.equal(validateConfig(saved).ok, true);
   assert.equal(app.edited(editor.form()), false);
@@ -711,7 +772,7 @@ test("local model removal and remote model addition are merged independently", a
   assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["second", "replacement"]);
   await app.submit(editor.form());
   assert.deepEqual(Object.keys(app.persisted().models), ["second", "replacement"]);
-  assert.deepEqual(app.persisted().virtualProviders.codex.allowedModels, ["second", "replacement"]);
+  assert.deepEqual(app.persisted().virtualProviders.cabletidy_relay.allowedModels, ["second", "replacement"]);
 });
 
 for (const localDeletes of [true, false]) {
@@ -726,7 +787,7 @@ for (const localDeletes of [true, false]) {
       if (localDeletes) config.models.second.upstreams.relay.upstreamModelId = "REMOTE-MAPPING";
       else {
         delete config.models.second;
-        config.virtualProviders.codex.allowedModels = ["model"];
+        config.virtualProviders.cabletidy_relay.allowedModels = ["model"];
         config.routes.route.backends[0].models = ["model"];
       }
     });
@@ -788,7 +849,7 @@ test("an unchanged model removed remotely is not resurrected by a local edit to 
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => {
     delete config.models.second;
-    config.virtualProviders.codex.allowedModels = ["model"];
+    config.virtualProviders.cabletidy_relay.allowedModels = ["model"];
     config.routes.route.backends[0].models = ["model"];
   });
   await app.action("refresh");

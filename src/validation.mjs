@@ -1,5 +1,6 @@
 import { normalizeConfig } from "./config.mjs";
 import { findModelProfile } from "./model-resolver.mjs";
+import { configurationId, providerIdForConfiguration } from "../web/config-identity.js";
 
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const ENV_PATTERN = /^[A-Z_][A-Z0-9_]*$/;
@@ -46,13 +47,6 @@ function canonicalHost(value) {
   if (host === "0.0.0.0" || host === "::" || host === "[::]") return "*";
   if (host === "127.0.0.1") return "loopback";
   return host;
-}
-
-function listenersConflict(leftHost, leftPort, rightHost, rightPort) {
-  if (leftPort !== rightPort) return false;
-  const left = canonicalHost(leftHost);
-  const right = canonicalHost(rightHost);
-  return left === right || left === "*" || right === "*";
 }
 
 export function validateConfig(input) {
@@ -171,10 +165,13 @@ export function validateConfig(input) {
         continue;
       }
     }
-    if (model.upstreams !== undefined && !isRecord(model.upstreams)) {
-      add(errors, `models.${id}.upstreams`, "upstreams 必须是 object");
+    if (!isRecord(model.upstreams)) {
+      add(errors, `models.${id}.upstreams`, "必须提供唯一的 upstream 模型映射");
     }
     if (isRecord(model.upstreams)) {
+      if (Object.keys(model.upstreams).length !== 1) {
+        add(errors, `models.${id}.upstreams`, "每个 Model Profile 必须且只能映射一个 upstream");
+      }
       for (const [upstreamId, binding] of Object.entries(model.upstreams)) {
         if (!config.upstreams[upstreamId]) {
           add(errors, `models.${id}.upstreams.${upstreamId}`, "引用的 upstream 不存在");
@@ -207,8 +204,11 @@ export function validateConfig(input) {
       add(errors, `routes.${id}.strategy`, `不支持的 route strategy: ${route.strategy}`);
     }
     if (!Array.isArray(route.backends) || route.backends.length === 0) {
-      add(errors, `routes.${id}.backends`, "至少需要一个 backend");
+      add(errors, `routes.${id}.backends`, "每份配置必须且只能连接一个 upstream（一个 backend）");
       continue;
+    }
+    if (route.backends.length !== 1) {
+      add(errors, `routes.${id}.backends`, "每份配置必须且只能连接一个 upstream（一个 backend）");
     }
     for (const [index, rawBackend] of route.backends.entries()) {
       const backend = isRecord(rawBackend) ? rawBackend : {};
@@ -241,41 +241,15 @@ export function validateConfig(input) {
     }
   }
 
-  const listenOwners = [];
   for (const [id, rawProvider] of Object.entries(config.virtualProviders)) {
     const provider = isRecord(rawProvider) ? rawProvider : {};
     if (!isRecord(rawProvider)) add(errors, `virtualProviders.${id}`, "Virtual Provider 必须是 object");
     if (!hasId(id)) add(errors, `virtualProviders.${id}`, "Virtual Provider ID 包含非法字符");
-    if (!provider.listenHost) add(errors, `virtualProviders.${id}.listenHost`, "listenHost 不能为空");
-    if (!isInteger(provider.listenPort) || provider.listenPort < 1 || provider.listenPort > 65535) {
-      add(errors, `virtualProviders.${id}.listenPort`, "listenPort 必须是合法端口");
+    if (!id.startsWith("cabletidy_")) {
+      add(errors, `virtualProviders.${id}.id`, "Virtual Provider ID 应为 cabletidy_<配置ID>，请检查名称或 ID 冲突");
     }
-    for (const existing of listenOwners) {
-      if (
-        existing.id !== id &&
-        listenersConflict(
-          provider.listenHost,
-          provider.listenPort,
-          existing.listenHost,
-          existing.listenPort,
-        )
-      ) {
-        add(errors, `virtualProviders.${id}.listenPort`, `端口已被 ${existing.id} 使用`);
-        break;
-      }
-    }
-    listenOwners.push({
-      id,
-      listenHost: provider.listenHost,
-      listenPort: provider.listenPort,
-    });
-    if (listenersConflict(
-      provider.listenHost,
-      provider.listenPort,
-      config.web.listenHost,
-      config.web.port,
-    )) {
-      add(errors, `virtualProviders.${id}.listenPort`, "不能与 Web 管理台使用相同地址和端口");
+    if (id === providerIdForConfiguration("api")) {
+      add(errors, `virtualProviders.${id}.id`, "配置 ID api 是管理接口保留路径，请使用其他配置名称");
     }
     if (!PROTOCOLS.has(provider.ingressProtocol)) {
       add(errors, `virtualProviders.${id}.ingressProtocol`, "未注册的 ingress protocol");
@@ -298,6 +272,10 @@ export function validateConfig(input) {
         if (!config.models[modelId]) add(errors, `virtualProviders.${id}.allowedModels`, `模型不存在: ${modelId}`);
         const model = config.models[modelId];
         if (model) {
+          const backend = config.routes[provider.route]?.backends?.[0];
+          if (backend && (!backend.models?.includes(modelId) || !model.upstreams?.[backend.upstream])) {
+            add(errors, `virtualProviders.${id}.allowedModels`, `模型 ${modelId} 必须映射到当前配置的 upstream ${backend.upstream}`);
+          }
           for (const alias of new Set([modelId, model.clientModelId, ...(Array.isArray(model.aliases) ? model.aliases : [])].filter(Boolean))) {
             const owner = aliasOwners.get(alias);
             if (owner && owner !== modelId) add(errors, `virtualProviders.${id}.allowedModels`, `模型名或 alias "${alias}" 在当前 Virtual Provider 内重复`);
@@ -317,19 +295,30 @@ export function validateConfig(input) {
         add(errors, `virtualProviders.${id}.defaultModel`, "defaultModel 必须属于 allowedModels");
       }
     }
-    if (!isLoopback(provider.listenHost)) {
-      add(
-        errors,
-        `virtualProviders.${id}.listenHost`,
-        "Virtual Provider 必须监听本机回环地址",
-      );
-    }
   }
 
+  const configurationNames = new Map();
+  const providerOwners = new Map();
   for (const [id, rawBinding] of Object.entries(config.bindings)) {
     const binding = isRecord(rawBinding) ? rawBinding : {};
     if (!isRecord(rawBinding)) add(errors, `bindings.${id}`, "Binding 必须是 object");
     if (!hasId(id)) add(errors, `bindings.${id}`, "Binding ID 包含非法字符");
+    const nameId = configurationId(binding.name, id);
+    if (nameId === "api") add(errors, `bindings.${id}.name`, "配置 ID api 是管理接口保留路径，请使用其他配置名称");
+    if (configurationNames.has(nameId)) {
+      add(errors, `bindings.${id}.name`, `配置名称规范化后与 ${configurationNames.get(nameId)} 重复: ${nameId}`);
+    }
+    configurationNames.set(nameId, id);
+    if (id !== nameId) add(errors, `bindings.${id}.id`, `配置 ID 应为 ${nameId}，请检查名称或 ID 冲突`);
+    if (binding.virtualProvider) {
+      if (providerOwners.has(binding.virtualProvider)) {
+        add(errors, `bindings.${id}.virtualProvider`, `Virtual Provider 已被配置 ${providerOwners.get(binding.virtualProvider)} 使用；配置与 Virtual Provider 必须一对一`);
+      }
+      providerOwners.set(binding.virtualProvider, id);
+      if (binding.virtualProvider !== providerIdForConfiguration(id)) {
+        add(errors, `bindings.${id}.virtualProvider`, `Virtual Provider ID 应为 ${providerIdForConfiguration(id)}`);
+      }
+    }
     if (!TARGETS.has(binding.target)) {
       add(errors, `bindings.${id}.target`, `不支持的 target: ${binding.target || "(empty)"}`);
     }

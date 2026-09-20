@@ -64,7 +64,7 @@ test("Claude Code uses a public client placeholder instead of a local secret", (
     { bindingId: "claude-main" },
     { "secret://virtual-providers/claude-main": "local-secret-value" },
   );
-  assert.equal(artifacts.environment.vars.ANTHROPIC_BASE_URL, "http://127.0.0.1:43102");
+  assert.equal(artifacts.environment.vars.ANTHROPIC_BASE_URL, "http://127.0.0.1:43100/claude-main");
   assert.equal(artifacts.environment.vars.ANTHROPIC_MODEL, "sonnet");
   assert.doesNotMatch(JSON.stringify(artifacts), /local-secret-value/);
 
@@ -81,7 +81,7 @@ test("generic CLI environments need only a local URL and model", () => {
     "secret://virtual-providers/claude-main": "legacy-local-key",
   });
   assert.deepEqual(artifacts.environment.vars, {
-    CABLETIDY_BASE_URL: "http://127.0.0.1:43102",
+    CABLETIDY_BASE_URL: "http://127.0.0.1:43100/claude-main",
     CABLETIDY_MODEL: "sonnet",
   });
   assert.doesNotMatch(JSON.stringify(artifacts), /API_KEY|legacy-local-key/);

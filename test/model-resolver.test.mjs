@@ -35,7 +35,6 @@ function sampleConfig() {
         capabilities: ["streaming", "tools", "reasoning"],
         upstreams: {
           primary: { upstreamModelId: "vendor-sol" },
-          backup: { upstreamModelId: "vendor-sol-backup" },
         },
       },
     },
@@ -45,7 +44,6 @@ function sampleConfig() {
         strategy: "priority",
         backends: [
           { upstream: "primary", priority: 10, models: ["codex-sol"], enabled: true },
-          { upstream: "backup", priority: 20, models: ["codex-sol"], enabled: true },
         ],
       },
     },
@@ -63,9 +61,9 @@ function sampleConfig() {
   });
 }
 
-test("resolves a client alias to the first compatible upstream model", () => {
+test("resolves a client alias to the configuration upstream model", () => {
   const config = sampleConfig();
-  const result = resolveRequest(config, config.virtualProviders.codex, {
+  const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, {
     model: "codex-default",
     stream: true,
     tools: [{}],
@@ -87,10 +85,10 @@ test("lists every allowed CableTidy model for the Virtual Provider", () => {
     capabilities: ["streaming", "tools", "reasoning"],
     upstreams: { primary: { upstreamModelId: "vendor-terra" } },
   };
-  config.virtualProviders.codex.allowedModels = ["codex-sol", "codex-terra"];
+  config.virtualProviders.cabletidy_codex.allowedModels = ["codex-sol", "codex-terra"];
 
   assert.deepEqual(
-    listClientModels(config, config.virtualProviders.codex).map((model) => model.id),
+    listClientModels(config, config.virtualProviders.cabletidy_codex).map((model) => model.id),
     ["sol", "gpt-5.6-terra"],
   );
 });
@@ -98,25 +96,40 @@ test("lists every allowed CableTidy model for the Virtual Provider", () => {
 test("resolves a profile clientModelId even when aliases are omitted", () => {
   const config = sampleConfig();
   config.models["codex-sol"].aliases = [];
-  const result = resolveRequest(config, config.virtualProviders.codex, {
+  const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, {
     model: "sol",
   });
   assert.equal(result.model.profileId, "codex-sol");
   assert.equal(result.upstreamModelId, "vendor-sol");
 });
 
-test("skips a backend without a model binding", () => {
+test("rejects missing model mappings without selecting another upstream", () => {
   const config = sampleConfig();
   delete config.models["codex-sol"].upstreams.primary;
-  const result = resolveRequest(config, config.virtualProviders.codex, { model: "sol" });
-  assert.equal(result.upstream.id, "backup");
-  assert.equal(result.upstreamModelId, "vendor-sol-backup");
+  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
+    (error) => error.code === "no_compatible_upstream" && error.details.rejected[0].reason === "model_binding_missing");
+});
+
+test("rejects multiple route backends even when the second is disabled", () => {
+  const config = sampleConfig();
+  config.routes["codex-route"].backends.push({ upstream: "backup", models: ["codex-sol"], enabled: false });
+  assert.equal(validateConfig(config).ok, false);
+  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
+    (error) => error.code === "invalid_route");
+});
+
+test("rejects multiple upstream mappings on one model", () => {
+  const config = sampleConfig();
+  config.models["codex-sol"].upstreams.backup = { upstreamModelId: "other-model" };
+  assert.ok(validateConfig(config).errors.some((error) => error.path === "models.codex-sol.upstreams"));
+  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
+    (error) => error.code === "invalid_model_binding");
 });
 
 test("rejects unknown models", () => {
   const config = sampleConfig();
   assert.throws(
-    () => resolveRequest(config, config.virtualProviders.codex, { model: "not-real" }),
+    () => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "not-real" }),
     (error) => error instanceof ModelResolveError && error.code === "unknown_model",
   );
 });
@@ -154,13 +167,13 @@ test("identical official names resolve independently inside each Virtual Provide
   };
   config.routes.other = { backends: [{ upstream: "backup", models: ["other-model"] }] };
   config.virtualProviders.other = {
-    ...structuredClone(config.virtualProviders.codex), id: "other", listenPort: 43102,
+    ...structuredClone(config.virtualProviders.cabletidy_codex), id: "other", listenPort: 43102,
     route: "other", allowedModels: ["other-model"], defaultModel: "gpt-5.5",
   };
   assert.equal(validateConfig(config).ok, true);
-  assert.equal(resolveRequest(config, config.virtualProviders.codex, { model: "gpt-5.5" }).upstreamModelId, "vendor-sol");
+  assert.equal(resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "gpt-5.5" }).upstreamModelId, "vendor-sol");
   assert.equal(resolveRequest(config, config.virtualProviders.other, { model: "gpt-5.5" }).upstreamModelId, "different-vendor-name");
-  config.virtualProviders.codex.allowedModels.push("other-model");
+  config.virtualProviders.cabletidy_codex.allowedModels.push("other-model");
   assert.ok(validateConfig(config).errors.some((error) => /当前 Virtual Provider 内重复/.test(error.message)));
 });
 
@@ -170,7 +183,7 @@ test("vision detection includes protocol-native nested image inputs", () => {
     { input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,test" }] }] },
     { messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", data: "test" } }] }] },
   ]) {
-    assert.throws(() => resolveRequest(config, config.virtualProviders.codex, { model: "sol", ...body }),
+    assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol", ...body }),
       (error) => error.details.rejected.every((entry) => entry.missing.includes("vision")));
   }
 });

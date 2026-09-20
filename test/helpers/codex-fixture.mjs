@@ -39,7 +39,30 @@ export function codexConfigFixture() {
       upstreams: { relay: { upstreamModelId: "VENDOR-GPT" } },
     } },
     routes: { route: { id: "route", backends: [{ upstream: "relay", models: ["model"] }] } },
-    virtualProviders: { codex: { id: "codex", listenHost: "127.0.0.1", listenPort: 43101, ingressProtocol: "openai.responses", route: "route", allowedModels: ["model"], defaultModel: "model" } },
-    bindings: { codex: { id: "codex", name: "relay", target: "codex", virtualProvider: "codex", defaultModel: "model", codex: {} } },
+    virtualProviders: { cabletidy_relay: { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "route", allowedModels: ["model"], defaultModel: "model" } },
+    bindings: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "model", codex: {} } },
   };
+}
+
+export function namedCodexConfigFixture(names) {
+  const template = codexConfigFixture();
+  const config = { upstreams: {}, models: {}, routes: {}, virtualProviders: {}, bindings: {} };
+  for (const [id, name] of Object.entries(names)) {
+    config.upstreams[id] = {
+      ...template.upstreams.relay, id, name: `Upstream ${id}`, baseUrl: `https://${id}.example.invalid/v1`,
+    };
+    config.models[id] = {
+      ...structuredClone(template.models.model), id,
+      upstreams: { [id]: { upstreamModelId: `VENDOR-${id}` } },
+    };
+    config.routes[id] = { id, backends: [{ upstream: id, models: [id] }] };
+    config.virtualProviders[`cabletidy_${id}`] = {
+      ...template.virtualProviders.cabletidy_relay, id: `cabletidy_${id}`, route: id,
+      allowedModels: [id], defaultModel: id,
+    };
+    config.bindings[id] = {
+      ...template.bindings.relay, id, name, virtualProvider: `cabletidy_${id}`, defaultModel: id,
+    };
+  }
+  return config;
 }

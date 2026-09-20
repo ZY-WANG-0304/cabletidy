@@ -46,7 +46,7 @@ node src/cli.mjs web print-url
 CABLETIDY_HOME="$PWD/.cabletidy-dev" npm start
 ```
 
-Web 管理台默认监听 `127.0.0.1:43100`，Virtual Provider 默认使用 `43101` 开始的端口。
+Web 管理台与所有 Virtual Provider 共用 `127.0.0.1:43100`。每份配置通过 `/<配置ID>/v1/...` 接入，例如 `http://127.0.0.1:43100/codex-main/v1/responses`；管理接口仍使用 `/api/v1/...`。
 
 ## Web 配置管理
 
@@ -56,21 +56,21 @@ Web 管理台默认监听 `127.0.0.1:43100`，Virtual Provider 默认使用 `431
 - 上游地址和 API Key。
 - 一个或多个对应的 Codex 官方模型名与上游真实模型名。
 
-点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务、端口和路由自动分配，Codex provider ID 按配置名称生成。
+点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务入口和路由自动生成。配置 ID 按配置名称规范化生成，Virtual Provider ID 为 `cabletidy_<配置ID>`，并直接用作 Codex 的 `model_provider`；URL 路径使用不带此前缀的配置 ID。
 
-列表显示 CLI、模型数量、本地地址和状态。详情页的“保存上游”和“保存模型映射”分别直接保存对应修改；失败时保留输入并在当前表单显示错误。“诊断”页面提供模型解析测试和事件记录，解析使用已保存的配置。
+列表显示 CLI、模型数量、本地地址和本地服务状态。列表与详情页的状态根据 Virtual Provider 的运行情况显示“已启动”“已暂停”或“未启动”，不受上游连通性测试结果影响。详情页依次展示唯一上游的连接设置、通栏模型映射和客户端接入；模型映射每行对应一组客户端模型和上游模型 ID，底部接入区域集中展示本地地址、Virtual Provider ID 和服务启停、预览、应用操作。“保存上游”和“保存模型映射”分别直接保存对应修改；失败时保留输入并在当前表单显示错误。“诊断”页面提供模型解析测试和事件记录，解析使用已保存的配置。
 
 仅在存在实际未保存修改时，切换页面、返回列表或关闭页面会提示确认；改回原值后不再拦截。点击“刷新模型列表”同步更新沿用官方定义的元数据和最新限制，保留手动覆盖值与其他表单输入。
 
 “应用到 Codex”保持独立，只有主动点击时才修改 Codex 配置文件。测试连通性和配置预览使用已保存的配置。
 
-在 Codex 套装详情页中选择官方模型、填写上游名称。元数据默认“沿用官方定义”，
-选择“覆盖上游限制”后可设置 context window 和图片输入；不提供固定 reasoning effort 或未实现的 compact 控件。
+在 Codex 套装详情页中选择官方模型、填写上游模型 ID。模型能力与上下文默认折叠，元数据默认“沿用官方定义”；
+展开并选择“覆盖上游限制”后可设置 context window 和图片输入，已有覆盖值或待确认的旧策略会自动展开。不提供固定 reasoning effort 或未实现的 compact 控件。
 旧窗口和压缩配置会提示待确认，不会因升级自动同步到 Codex。不同套装可使用同一个官方模型名，映射在各自 Virtual Provider 内隔离。
 
 Daybreak Blue 和 Red 保留可选，位于模型列表末尾的“安全专项模型”分组，分别标记“需授权”和“需专项授权”。选中后显示简短用途提示，不自动禁用或更改已有映射；目录中的隐藏标记不等同于授权状态，实际可用性由上游支持和账户权限决定。
 
-当前 MVP 一个 Virtual Provider 只连接一个上游，固定使用 Responses 协议。
+每份配置只连接一个上游，配置内所有模型都映射到该上游；Codex 接入使用 Responses 协议。需要另一个上游时创建另一份配置，不支持在同一配置内添加备用上游或自动切换。多上游配置会被校验拒绝，上游失败直接返回错误。
 首次配置不再填充统一的百万上下文或 850K 压缩阈值，也不要求用户填写模型别名或内部 ID。
 
 创建或保存时，服务端执行配置校验、版本冲突检查和运行时更新。校验或更新失败不会覆盖已生效配置；版本冲突时刷新管理页会合并其他窗口新增的模型和不冲突的字段修改，保留本地编辑。同一字段冲突、修改与删除冲突或无法安全合并的结构变更会暂停该表单的保存，并保留当前输入；可先复制需要保留的内容，再点击“加载最新配置”确认放弃该表单的本地修改后重新编辑。上游 secret 保存在本地 `secrets.json`，Web GET 和预览不会回显明文。
@@ -85,12 +85,15 @@ model = "gpt-5.5"
 
 [model_providers.cabletidy_xxx]
 name = "CableTidy / local"
-base_url = "http://127.0.0.1:43101/v1"
+base_url = "http://127.0.0.1:43100/xxx/v1"
 wire_api = "responses"
 requires_openai_auth = false
 ```
 
-Codex provider ID 默认由配置套件名称生成：`cabletidy_<配置名称>`。
+配置与 Virtual Provider 一对一。例如名称 `My Relay` 对应配置 ID `my-relay`，Virtual Provider ID 和 Codex `model_provider` 都是 `cabletidy_my-relay`。
+配置名称会转换为小写，并将空格等字符转换为 `-`；无法生成有效标识时使用原配置 ID。规范化后重名的配置，以及占用管理接口保留路径 `api` 的配置，会被拒绝。
+旧配置加载时自动对齐内部 ID 和引用，保留模型映射和上游密钥，并移除 Virtual Provider 的独立 `listenHost` / `listenPort` 及 `daemon.proxyPortRange`。共用监听地址由 `web.listenHost` / `web.port` 决定，修改它需要重启 daemon。CLI 的 `--binding` 使用对齐后的配置 ID，`model resolve` 使用带 `cabletidy_` 前缀的 Virtual Provider ID。
+升级后重启 CableTidy，在详情页重新“应用到 Codex”，将旧的独立端口地址更新为配置路径。暂停一份配置只暂停对应入口；重命名配置会改变路径，需要再次应用客户端配置。
 上游连接的内部 ID 只用于 CableTidy 关联模型映射和路由，不参与 Codex provider 命名。
 CableTidy 不会在 daemon 启动时改写已有 Codex `config.toml`；只有用户主动应用配置时才会写入新的 provider。
 
@@ -131,7 +134,7 @@ Virtual Provider 只监听 `127.0.0.1`、`localhost` 或 `::1`，不生成或校
 Codex 配置不包含 `env_key`，也不需要设置认证环境变量。例如，可以直接请求：
 
 ```bash
-curl http://127.0.0.1:43101/v1/models
+curl http://127.0.0.1:43100/codex-main/v1/models
 ```
 
 升级后重启 CableTidy，再在套装详情页点击“应用 Codex 配置”，即可移除该 provider

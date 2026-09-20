@@ -98,8 +98,8 @@ Codex 的 reasoning effort 由请求选择；旧 compact 数据保留但不生�
 2. 校验请求大小和目标协议；本地 listener 无需 API Key
 3. Ingress Adapter 提取 client_model_id 和请求能力
 4. Model Resolver 得到 Model Profile
-5. Route 根据模型绑定、协议和能力筛选 backend
-6. 选择 upstream，并得到 upstream_model_id
+5. Route 定位当前配置唯一的 upstream，检查模型映射、协议和能力
+6. 得到该 upstream 对应的 upstream_model_id
 7. 执行同协议转发或显式协议对转换
 8. 注入上游认证，发送请求
 9. 将上游响应、SSE 事件、错误和模型名改写回客户端语义
@@ -180,7 +180,7 @@ Model Profile 是 CableTidy 对客户端暴露的稳定逻辑模型。它不是 
 
 ### 4.5 Upstream Model Binding
 
-一个 Model Profile 可以绑定多个 Upstream，一个 Upstream 也可以实现多个 Model Profile：
+每份配置只连接一个 Upstream，配置内的 Model Profile 都映射到这个 Upstream。一个 Upstream 可以提供多个模型；不同配置使用同名客户端模型时，分别保存各自的 Model Profile 和上游映射：
 
 ```json
 {
@@ -191,10 +191,6 @@ Model Profile 是 CableTidy 对客户端暴露的稳定逻辑模型。它不是 
         "relay-a": {
           "upstreamModelId": "vendor-sol-v1",
           "capabilityOverrides": []
-        },
-        "relay-b": {
-          "upstreamModelId": "coding-model-sol",
-          "capabilityOverrides": ["-vision"]
         }
       }
     }
@@ -202,34 +198,26 @@ Model Profile 是 CableTidy 对客户端暴露的稳定逻辑模型。它不是 
 }
 ```
 
-`upstream_model_id` 只在 CableTidy daemon 发给上游时使用。上游切换时，客户端仍然看到同一个 `clientModelId`。
+`upstream_model_id` 只在 CableTidy daemon 发给该配置的上游时使用。客户端请求和响应中的模型名保持为 `clientModelId`。
 
 ### 4.6 Route
 
-Route 是有顺序的 upstream backend 集合。MVP 首先支持 `priority`：
+Route 记录配置的唯一 upstream 及其可用模型。存储结构中的 `backends` 必须且只能有一个元素：
 
 ```json
 {
   "id": "codex-default",
-  "strategy": "priority",
   "backends": [
     {
       "upstream": "relay-a",
-      "priority": 10,
       "models": ["gpt56-sol", "gpt55"],
-      "enabled": true
-    },
-    {
-      "upstream": "relay-b",
-      "priority": 20,
-      "models": ["gpt56-sol"],
       "enabled": true
     }
   ]
 }
 ```
 
-backend 只声明某个 upstream 能实现哪些 Model Profile，模型的公共 alias 和能力由 Model Registry 统一维护。首字节之前的可重试失败可以切换 backend；流开始后不切换。
+backend 声明该配置的 upstream 能实现哪些 Model Profile，模型的公共 alias 和能力由 Model Registry 维护。配置不支持多上游、主备切换或故障转移；上游错误直接返回客户端，连接失败返回 502。旧配置中的 priority/weight 不影响单上游转发。
 
 ### 4.7 Virtual Provider
 
@@ -237,9 +225,7 @@ Virtual Provider 是 CableTidy 在本地暴露的一个面向客户端的服务�
 
 ```json
 {
-  "id": "codex-main",
-  "listenHost": "127.0.0.1",
-  "listenPort": 43101,
+  "id": "cabletidy_codex-main",
   "ingressProtocol": "openai.responses",
   "route": "codex-default",
   "allowedModels": ["gpt56-sol", "gpt55"],
@@ -247,14 +233,21 @@ Virtual Provider 是 CableTidy 在本地暴露的一个面向客户端的服务�
 }
 ```
 
-Virtual Provider 只允许监听本机回环地址，不生成或校验本地 API Key。
-旧配置中的 `localAuth` 在加载时忽略。不同 Virtual Provider 使用不同 listener 和目标协议：
+Virtual Provider 与管理台共用一个本机回环监听器，不生成或校验本地 API Key。
+监听地址由 `web.listenHost` / `web.port` 决定；旧配置中的 `localAuth`、独立
+`listenHost` / `listenPort` 和 `daemon.proxyPortRange` 在加载时移除。
+配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数：
 
 ```text
-127.0.0.1:43101  Codex      openai.responses
-127.0.0.1:43102  Claude     anthropic.messages
-127.0.0.1:43103  Other CLI  its native protocol
+127.0.0.1:43100/                       Web 管理台
+127.0.0.1:43100/api/v1/...             管理接口
+127.0.0.1:43100/codex-main/v1/...      Codex openai.responses
+127.0.0.1:43100/claude-main/v1/...     Claude anthropic.messages
 ```
+
+不使用额外的 `/providers` 前缀，路径中的配置 ID 也不带 `cabletidy_`。
+`api` 是保留配置 ID。未知或已删除的配置路径返回 404，暂停的配置返回 503；
+管理接口和其他配置继续可用。配置重命名后旧路径失效，需要重新应用客户端配置。
 
 ### 4.8 Target Binding
 
@@ -267,15 +260,16 @@ Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如�
   "integration": "codex-native-provider",
   "targetFormat": "codex.config.toml.v1",
   "mode": "config",
-  "virtualProvider": "codex-main",
+  "virtualProvider": "cabletidy_codex-main",
   "defaultModel": "gpt56-sol",
-  "codex": {
-    "providerId": "cabletidy_<configuration-name>"
-  }
+  "codex": {}
 }
 ```
 
-一个 Virtual Provider 可以被多个 Target Binding 使用，一个 Target 也可以有多个 Binding。
+配置（Target Binding）与 Virtual Provider 一对一，不允许多个 Binding 引用同一个 Virtual Provider。一个 Target 可以有多份配置，每份配置使用自己的 Virtual Provider。
+
+配置 ID 由配置名称规范化生成，例如 `My Relay` 对应 `my-relay`；Virtual Provider 的记录键、`id` 和 Binding 的 `virtualProvider` 均为 `cabletidy_my-relay`。Codex 的 `model_provider` 直接使用这个 Virtual Provider ID，不再另行生成。
+旧配置加载时同步迁移记录键和引用，保留模型映射及上游连接；规范化名称冲突时保留原记录并报告校验错误，不覆盖配置。名称修改会同步改变配置 ID、入口路径和 Virtual Provider ID。
 
 ## 5. Codex 接入语义
 
@@ -315,7 +309,7 @@ model = "gpt-5.6-sol"
 
 [model_providers.cabletidy_relay]
 name = "CableTidy / Relay A"
-base_url = "http://127.0.0.1:43101/v1"
+base_url = "http://127.0.0.1:43100/relay/v1"
 wire_api = "responses"
 requires_openai_auth = false
 ```
@@ -384,13 +378,16 @@ Model Profile
 Route
   backends[].upstream
   backends[].models
-  backends[].priority / enabled
+  backends[0].enabled
 
 Virtual Provider
   ingressProtocol
   route
   allowedModels / defaultModel
-  listenHost / listenPort
+
+Shared listener
+  web.listenHost / web.port
+  /<configuration ID>/v1/...
 ```
 
 下列字段不是透明转发每个请求的最低必需项，但可以保留在 CableTidy
@@ -412,12 +409,12 @@ Upstream:
 
 Route / Virtual Provider / Binding:
   name
-  binding 的 target、providerId、targetFormat、defaultModel
+  binding 的 target、virtualProvider、targetFormat、defaultModel
   这些用于管理台、Codex artifact 和目标 CLI 接入，不参与上游 model 映射。
 ```
 
-Codex `providerId` 默认由 binding 的配置名称生成，格式为
-`cabletidy_<configuration-name>`。Upstream 的内部 ID 只作为 CableTidy
+配置 ID 由 binding 的配置名称规范化生成，Virtual Provider ID 为
+`cabletidy_<configuration-id>`，Codex `providerId` 直接使用该值。Upstream 的内部 ID 只作为 CableTidy
 配置图中的关联键，用于模型绑定和 Route，不参与 Codex provider 命名；已有
 Codex 配置只有在用户主动执行应用操作时才会写入新的 provider。
 
@@ -426,8 +423,8 @@ contextWindow 可经模型目录同步，compact 尚未实现逐模型同步。r
 参与请求筛选，effort 由 CLI 请求选择。首次配置从官方定义初始化请求能力，不要求填写上下文数值；后续可显式限制窗口或图片输入。
 
 `requestMaxRetries`、`streamMaxRetries` 和 `streamIdleTimeoutMs` 目前也
-只是可保存的运行策略字段；当前数据面主要按 Route backend 做首字节前
-的切换，还没有把这三个字段完整实现为独立重试/空闲超时策略。因此首次
+只是可保存的运行策略字段；当前数据面向配置的唯一 upstream 发送一次请求，
+没有将这三个字段实现为独立重试/空闲超时策略。因此首次
 向导不要求用户填写它们，文档和 UI 也不应暗示它们已经改变了转发行为。
 
 同理，上游的 `env_key` 不是 Codex 必须继续看到的配置。若用户在 Web
@@ -464,7 +461,7 @@ client_model_id
 
 ### 6.2 能力判断
 
-CableTidy 根据请求需要的能力筛选 backend：
+CableTidy 检查配置的唯一 upstream 是否具备请求需要的能力：
 
 ```text
 stream       -> streaming
@@ -514,13 +511,14 @@ Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按�
 1. 配置套装：查看套装列表、创建套装、进入某套配置的详情页。
 2. 诊断：执行配置校验、模型解析测试、上游连通性测试和脱敏事件查看。
 
-套装详情页保留并展示模型映射配置。当前 MVP 一个 Virtual Provider 只连接
+套装详情页按上游连接、模型映射、客户端接入的顺序纵向排列。底部展示本地地址、
+Virtual Provider ID 以及服务启停、预览和应用操作。一个 Virtual Provider 只连接
 一个上游，内部 Route 由 CableTidy 自动创建，不向用户暴露主备或优先级配置。
-模型映射区域展示：
+上游连接单独编辑；通栏模型映射区域每行展示：
 
 - 对应的 Codex 官方模型名，客户端默认保持同名。
 - 当前上游对应的 `upstream_model_id`。
-- 官方元数据或显式覆盖的 context window / 图片输入；旧 compact 数据只提示未同步，不提供新的配置控件。
+- 可展开的模型能力与上下文设置：默认沿用官方定义；已有覆盖值或待确认的旧策略自动展开。旧 compact 数据只提示未同步，不提供新的配置控件。
 
 模型映射和 Route 仍然不是同一个领域概念：
 
@@ -528,9 +526,9 @@ Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按�
 - **内部 Route**回答“这个 Virtual Provider 使用哪个 upstream 连接”。
 
 CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Binding`
-和 `Route`。在只有一个上游时，Route 由向导自动创建，用户不需要单独配置。
-未来如果一个 Virtual Provider 需要连接多个上游，可以在不改变客户端配置的
-情况下扩展 Route；这不属于当前 MVP。
+和 `Route`。每个 Model Profile 只有一个上游映射，一份配置中的所有模型共用
+同一上游。Route 随配置自动创建，用户不需要单独配置；需要另一个上游时创建
+另一份配置，不扩展当前 Virtual Provider 的上游数量。
 
 套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
 底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
@@ -549,7 +547,7 @@ Step 2  CableTidy Model Profile
         能力和上下文默认沿用官方定义
 
 Step 3  本地 Codex 服务
-        Virtual Provider / local port
+        Virtual Provider / configuration path
 
 完成
         自动创建 Route 和 Codex Target Binding
@@ -564,11 +562,11 @@ browser draft
   -> effective diff + errors/warnings
   -> POST /api/v1/config/commit with baseRevision
   -> atomic store write
-  -> stage listeners
   -> runtime snapshot swap
 ```
 
-套装详情页编辑上游连接和模型映射，内部 Route 与 Target Binding 由套装流程维护，不提供独立的路由或绑定编辑页面。
+详情页用于编辑当前配置的唯一上游和模型映射。需要接入另一个 upstream 时创建另一份配置，使用独立的 Virtual Provider。
+内部 Route 与 Target Binding 由套装流程维护，不提供独立的路由或绑定编辑页面。
 
 ## 8. Control API
 
@@ -618,7 +616,7 @@ GET  /api/v1/integrations
 }
 ```
 
-配置提交使用 revision compare-and-swap。监听器采用 staging reload，新的 listener 全部成功后才替换 runtime snapshot，失败时继续使用旧配置。
+配置提交与服务启停串行执行，提交使用 revision compare-and-swap。配置和密钥保存成功后一次性替换运行时快照，失败时继续使用旧配置。请求在进入时捕获快照，已有流式请求不受后续重命名或暂停影响。共用监听地址或端口的修改需要重启 daemon。
 
 ## 10. 代码模块边界
 
@@ -629,7 +627,7 @@ src/config.mjs
   store / secret references / normalize / diff
 
 src/validation.mjs
-  schema-like validation / references / listener conflicts
+  schema-like validation / references / reserved configuration paths
 
 src/model-resolver.mjs
   alias / profile / upstream_model_id / capability routing
@@ -643,7 +641,7 @@ src/target-artifacts.mjs
   Codex / Claude Code / generic target artifacts
 
 src/server.mjs
-  Web control API + local Virtual Provider listeners
+  shared listener / Web control API / configuration path dispatch
 
 src/cli.mjs
   status / config check / artifact / run
@@ -656,13 +654,13 @@ Codex Native Provider Integration 的运行实现位于 `src/codex-native-provid
 
 ## 11. 安全与可靠性原则
 
-- Web 和数据面 listener 分离。
-- Virtual Provider 只允许 loopback listener，无需本地 API Key。
+- Web 和数据面共用一个 loopback listener，管理接口保留 `/api/v1/...`，配置入口使用 `/<配置ID>/v1/...`。
+- 管理接口和配置入口都校验本地 Host / Origin，无需本地 API Key。
 - 上游 secret 和本地 secret 分离保存、分离注入。
 - 日志只记录路由、模型和状态元数据，不记录 prompt、完整响应或 key。
 - 上游 URL 可以在管理台展示，但不得写入 Codex 生成的 local provider block。
 - Codex 生成配置只包含 CableTidy local endpoint 和 client model。
-- 当前 MVP 使用单上游内部 Route；未来增加多上游后再启用 retry/priority 切换。
+- 每份配置只连接一个 upstream，不支持主备或多上游切换。多 backend、同一 Model Profile 的多上游映射以及配置内模型与上游不一致都必须校验失败。
 - 所有配置提交需要服务端校验、diff、revision 检查和 atomic reload。
 - 生成 Codex 文件前备份原文件，managed block 重复应用必须幂等。
 
@@ -671,15 +669,15 @@ Codex Native Provider Integration 的运行实现位于 `src/codex-native-provid
 MVP 至少覆盖：
 
 1. Web 向导可以直接完成首次配置，不依赖外部教程或 profile 文件。
-2. 同一个 upstream 可以被多个 Virtual Provider / Target Binding 复用。
-3. 当前 MVP 一个 Virtual Provider 只连接一个 upstream；未来扩展时，一个 Model Profile 可以映射到多个 upstream 的不同 `upstream_model_id`。
+2. 每份配置与 Virtual Provider 一对一，并通过 Route 连接唯一的 upstream。
+3. 每个 Model Profile 只有一个上游映射；一份配置内所有模型均映射到该配置的 upstream。不同配置可使用相同客户端模型名。
 4. 客户端模型名在请求和响应中保持稳定。
 5. Codex artifact 默认只生成 `config.toml`；元数据覆盖时按需生成模型目录，不生成额外的 profile/TUI 文件。
 6. Codex `base_url` 指向本地 Virtual Provider，不包含真实上游 URL。
 7. Codex artifact 不包含上游 API Key 或本地 `env_key`；无认证请求仍使用独立的上游 API Key 转发。
 8. unknown model、缺少 binding、能力不足和协议不兼容会在本地失败。
-9. 当前 MVP 不配置主备；未来多上游 Route 再覆盖首字节前切换和备用模型映射。
-10. commit 失败或 listener staging 失败时旧 runtime 继续服务。
+9. 上游失败时直接返回错误，不向其他配置的 upstream 重试。即使额外 backend 被禁用，多上游配置也必须被拒绝。
+10. commit 失败时旧 runtime 继续服务；配置入口独立暂停、重命名或删除，不影响其他入口和已有流式请求。
 11. `cabletidy run` 不修改用户全局 Codex 配置。
 12. 外部教程和 profile 文件不是启动依赖，也不是运行时对象。
 

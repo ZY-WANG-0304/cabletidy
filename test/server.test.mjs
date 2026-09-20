@@ -20,7 +20,6 @@ async function freePort() {
 test("web control API and Codex Responses proxy form one working MVP slice", async () => {
   const upstreamPort = await freePort();
   const webPort = await freePort();
-  const proxyPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-server-"));
   const paths = getPaths(home);
   let receivedBody;
@@ -55,7 +54,6 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
   const config = {
     version: 1,
     revision: 1,
-    daemon: { proxyPortRange: `${proxyPort}-${proxyPort + 10}` },
     web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       primary: {
@@ -90,8 +88,6 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       codex: {
         id: "codex",
         name: "Codex",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
         ingressProtocol: "openai.responses",
         route: "primary",
         allowedModels: ["codex-sol"],
@@ -149,7 +145,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     });
     const runtime = await runtimeResponse.json();
     assert.equal(runtime.counts.models, 1);
-    assert.equal(runtime.virtualProviders[0].id, "codex");
+    assert.equal(runtime.virtualProviders[0].id, "cabletidy_codex");
 
     const artifactResponse = await fetch(
       `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
@@ -162,9 +158,11 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     const artifactPreview = await artifactResponse.json();
     assert.equal(artifactResponse.status, 200);
     assert.equal(artifactPreview.artifacts.target, "codex");
+    assert.equal(artifactPreview.artifacts.providerId, runtime.virtualProviders[0].id);
+    assert.equal(artifactPreview.artifacts.virtualProviderId, runtime.virtualProviders[0].id);
     assert.doesNotMatch(JSON.stringify(artifactPreview), /local-key/);
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/models`);
+    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/models`);
     assert.equal(modelsResponse.status, 200);
     assert.deepEqual((await modelsResponse.json()).data.map((model) => model.id), ["gpt-5.6-sol"]);
 
@@ -201,8 +199,20 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.ok(backups.some((file) => file.includes("config-2.json")));
     assert.ok(backups.some((file) => file.includes("secrets-2.json")));
 
+    const multipleUpstreams = structuredClone(committed.config);
+    multipleUpstreams.routes.primary.backends.push({
+      ...multipleUpstreams.routes.primary.backends[0], enabled: false,
+    });
+    const rejectedCommit = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseRevision: 2, config: multipleUpstreams }),
+    });
+    assert.equal(rejectedCommit.status, 422);
+    assert.ok((await rejectedCommit.json()).errors.some((error) => error.path === "routes.primary.backends"));
+    assert.equal(app.state.config.revision, 2);
+
     const pauseResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/codex/pause`,
+      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/cabletidy_codex/pause`,
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
     const paused = await pauseResponse.json();
@@ -211,7 +221,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(paused.runtime.virtualProviders[0].status, "paused");
 
     const startResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/codex/start`,
+      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/cabletidy_codex/start`,
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
     const started = await startResponse.json();
@@ -222,12 +232,12 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     const resolveResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/tests/model-resolve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ virtualProviderId: "codex", model: "sol", stream: true }),
+      body: JSON.stringify({ virtualProviderId: "cabletidy_codex", model: "sol", stream: true }),
     });
     const resolved = await resolveResponse.json();
     assert.equal(resolved.upstreamModelId, "vendor-sol");
 
-    const proxyResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    const proxyResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -240,7 +250,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(receivedAuthorization, "Bearer upstream-key");
     assert.equal(proxied.model, "sol");
 
-    const streamResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    const streamResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -253,7 +263,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       'data: {"model":"sol","output":[]}\n\ndata: [DONE]\n\n',
     );
     assert.equal(receivedAuthorization, "Bearer upstream-key");
-    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer ignored-client-key" },
       body: JSON.stringify({ model: "sol", input: "hello" }),
@@ -333,7 +343,6 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
 test("Web configuration graph can be committed without external reference files", async () => {
   const upstreamPort = await freePort();
   const webPort = await freePort();
-  const proxyPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-web-wizard-"));
   const paths = getPaths(home);
   let receivedBody;
@@ -414,8 +423,6 @@ test("Web configuration graph can be committed without external reference files"
         "codex-main": {
           id: "codex-main",
           name: "Codex main",
-          listenHost: "127.0.0.1",
-          listenPort: proxyPort,
           ingressProtocol: "openai.responses",
           route: "primary",
           allowedModels: ["gpt56-sol"],
@@ -450,7 +457,7 @@ test("Web configuration graph can be committed without external reference files"
     assert.equal(committed.revision, 1);
     assert.equal(committed.runtime.counts.models, 1);
     assert.equal(committed.config.bindings["codex-main"].targetFormat, "codex.config.toml.v1");
-    assert.equal(committed.config.virtualProviders["codex-main"].localAuth, undefined);
+    assert.equal(committed.config.virtualProviders["cabletidy_codex-main"].localAuth, undefined);
     assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
       "secret://upstreams/primary": "upstream-key",
     });
@@ -467,12 +474,12 @@ test("Web configuration graph can be committed without external reference files"
     assert.equal(artifactResponse.status, 200);
     assert.deepEqual(artifacts.artifacts.files.map((file) => file.path), ["config.toml"]);
     const configToml = artifacts.artifacts.files.find((file) => file.path === "config.toml").contents;
-    assert.ok(configToml.includes(`127.0.0.1:${proxyPort}/v1`));
+    assert.ok(configToml.includes(`127.0.0.1:${webPort}/codex-main/v1`));
     assert.equal(configToml.includes("upstream-key"), false);
     assert.equal(configToml.includes(`127.0.0.1:${upstreamPort}/v1`), false);
     assert.equal(configToml.includes("profiles."), false);
 
-    const proxyResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    const proxyResponse = await fetch(`http://127.0.0.1:${webPort}/codex-main/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -492,7 +499,6 @@ test("Web configuration graph can be committed without external reference files"
 test("Anthropic Messages Virtual Provider keeps native wire format and maps models", async () => {
   const upstreamPort = await freePort();
   const webPort = await freePort();
-  const proxyPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-anthropic-"));
   const paths = getPaths(home);
   let receivedBody;
@@ -562,8 +568,6 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       "claude-main": {
         id: "claude-main",
         name: "Claude Main",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
         ingressProtocol: "anthropic.messages",
         route: "claude-route",
         allowedModels: ["claude-sonnet"],
@@ -615,7 +619,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.equal(applyResponse.status, 501);
     assert.equal(applyBody.error.code, "target_apply_not_supported");
 
-    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    const response = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
       method: "POST",
       headers: {
         "anthropic-version": "2023-06-01",
@@ -634,7 +638,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.equal(receivedHeaders["anthropic-version"], "2023-06-01");
     assert.equal(body.model, "sonnet");
 
-    const streamResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    const streamResponse = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -651,7 +655,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.match(streamText, /"model":"sonnet"/g);
     assert.doesNotMatch(streamText, /vendor-sonnet/);
 
-    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": "ignored-client-key" },
       body: JSON.stringify({ model: "sonnet", messages: [] }),
@@ -665,12 +669,11 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
   }
 });
 
-test("priority route fails over before response bytes and remaps the backup model", async () => {
+test("upstream errors are returned without contacting another configured upstream", async () => {
   const primaryPort = await freePort();
   const backupPort = await freePort();
   const webPort = await freePort();
-  const proxyPort = await freePort();
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-failover-"));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-single-upstream-"));
   const paths = getPaths(home);
   const calls = [];
 
@@ -717,7 +720,6 @@ test("priority route fails over before response bytes and remaps the backup mode
         capabilities: ["streaming"],
         upstreams: {
           primary: { upstreamModelId: "vendor-primary" },
-          backup: { upstreamModelId: "vendor-backup" },
         },
       },
     },
@@ -727,15 +729,12 @@ test("priority route fails over before response bytes and remaps the backup mode
         strategy: "priority",
         backends: [
           { upstream: "primary", priority: 10, models: ["logical-coder"] },
-          { upstream: "backup", priority: 20, models: ["logical-coder"] },
         ],
       },
     },
     virtualProviders: {
       codex: {
         id: "codex",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
         ingressProtocol: "openai.responses",
         route: "priority-route",
         allowedModels: ["logical-coder"],
@@ -748,7 +747,7 @@ test("priority route fails over before response bytes and remaps the backup mode
   await saveSecrets({ "secret://virtual-providers/codex": "local-key" }, paths);
   const app = await createApplication({ paths });
   try {
-    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/responses`, {
+    const response = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
       method: "POST",
       headers: {
         authorization: "Bearer local-key",
@@ -756,12 +755,11 @@ test("priority route fails over before response bytes and remaps the backup mode
       },
       body: JSON.stringify({ model: "coder", input: "hello" }),
     });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 503);
     const body = await response.json();
-    assert.deepEqual(calls.map((item) => item.server), ["primary", "backup"]);
+    assert.deepEqual(calls.map((item) => item.server), ["primary"]);
     assert.equal(calls[0].body.model, "vendor-primary");
-    assert.equal(calls[1].body.model, "vendor-backup");
-    assert.equal(body.model, "coder");
+    assert.equal(body.error, "busy");
   } finally {
     await app.close();
     await Promise.all([
@@ -771,7 +769,7 @@ test("priority route fails over before response bytes and remaps the backup mode
   }
 });
 
-test("failed listener staging keeps the previous Virtual Provider runtime alive", async () => {
+test("changing the shared listener requires restart and preserves the running configuration", async () => {
   const webPort = await freePort();
   const proxyPort = await freePort();
   const blockedPort = await freePort();
@@ -830,16 +828,7 @@ test("failed listener staging keeps the previous Virtual Provider runtime alive"
   const app = await createApplication({ paths });
   try {
     const candidate = structuredClone(config);
-    candidate.virtualProviders.backup = {
-      id: "backup",
-      listenHost: "127.0.0.1",
-      listenPort: blockedPort,
-      ingressProtocol: "openai.responses",
-      route: "route",
-      allowedModels: ["model"],
-      defaultModel: "model",
-      localAuth: { secretRef: "secret://virtual-providers/backup" },
-    };
+    candidate.web.port = blockedPort;
 
     const commitResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
       method: "POST",
@@ -850,16 +839,16 @@ test("failed listener staging keeps the previous Virtual Provider runtime alive"
       }),
     });
     const commitBody = await commitResponse.json();
-    assert.equal(commitResponse.status, 500);
-    assert.equal(commitBody.error.code, "config_reload_failed");
+    assert.equal(commitResponse.status, 422);
+    assert.equal(commitBody.error.code, "web_listener_restart_required");
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${proxyPort}/v1/models`, {
+    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/primary/v1/models`, {
       headers: { authorization: "Bearer local-key" },
     });
     assert.equal(modelsResponse.status, 200);
     assert.equal((await modelsResponse.json()).data[0].id, "model");
     assert.equal(app.state.config.revision, 1);
-    assert.deepEqual(app.state.proxyManager.status().map((item) => item.id), ["primary"]);
+    assert.equal(app.state.webServer.listening, true);
   } finally {
     await app.close();
     await new Promise((resolve) => blocker.close(resolve));
@@ -868,7 +857,6 @@ test("failed listener staging keeps the previous Virtual Provider runtime alive"
 
 test("unsupported Virtual Provider ingress returns an explicit 501", async () => {
   const webPort = await freePort();
-  const proxyPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-unsupported-ingress-"));
   const paths = getPaths(home);
   const config = {
@@ -900,8 +888,6 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
     virtualProviders: {
       chat: {
         id: "chat",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
         ingressProtocol: "openai.chat_completions",
         route: "route",
         allowedModels: ["model"],
@@ -917,7 +903,7 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
 
   const app = await createApplication({ paths });
   try {
-    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+    const response = await fetch(`http://127.0.0.1:${webPort}/chat/v1/chat/completions`, {
       method: "POST",
       headers: {
         authorization: "Bearer local-key",
@@ -933,7 +919,7 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
   }
 });
 
-test("startup failure on the Web listener closes staged proxy listeners", async () => {
+test("startup failure on the shared listener does not create provider listeners", async () => {
   const webPort = await freePort();
   const proxyPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-startup-cleanup-"));

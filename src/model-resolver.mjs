@@ -122,70 +122,56 @@ function hasCapabilities(capabilities, required) {
   return [...required].every((item) => capabilities.has(item));
 }
 
-function transformAllowed(virtualProvider, upstream, backend) {
-  // MVP keeps the data plane same-protocol; explicit transform adapters come later.
-  return virtualProvider.ingressProtocol === upstream.protocol;
-}
-
-export function selectBackend(config, virtualProvider, modelResolution, request = {}, options = {}) {
+export function selectBackend(config, virtualProvider, modelResolution, request = {}) {
   const route = config.routes?.[virtualProvider.route];
   if (!route) {
     throw new ModelResolveError("route_not_found", `Route 不存在: ${virtualProvider.route}`);
   }
-
-  const required = requiredCapabilities(request);
-  const candidates = (route.backends || [])
-    .map((backend, index) => ({ backend, index }))
-    .filter(({ backend }) => backend.enabled !== false)
-    .filter(({ backend }) => !options.skipUpstreams?.has(backend.upstream))
-    .filter(({ backend }) => !backend.models?.length || backend.models.includes(modelResolution.profileId))
-    .sort((a, b) => {
-      const priorityA = Number.isFinite(a.backend.priority) ? a.backend.priority : 100;
-      const priorityB = Number.isFinite(b.backend.priority) ? b.backend.priority : 100;
-      return priorityA - priorityB || a.index - b.index;
-    });
-
-  const rejected = [];
-  for (const { backend, index } of candidates) {
-    const upstream = config.upstreams?.[backend.upstream];
-    if (!upstream || upstream.enabled === false) {
-      rejected.push({ index, reason: "upstream_disabled_or_missing" });
-      continue;
-    }
-    const modelBinding = modelResolution.profile.upstreams?.[backend.upstream];
-    if (!modelBinding?.upstreamModelId) {
-      rejected.push({ index, reason: "model_binding_missing" });
-      continue;
-    }
-    if (!transformAllowed(virtualProvider, upstream, backend)) {
-      rejected.push({ index, reason: "protocol_transform_missing" });
-      continue;
-    }
-    const capabilities = effectiveCapabilities(modelResolution.profile, modelBinding);
-    if (!hasCapabilities(capabilities, required)) {
-      rejected.push({
-        index,
-        reason: "capability_missing",
-        missing: [...required].filter((item) => !capabilities.has(item)),
-      });
-      continue;
-    }
-    return {
-      routeId: virtualProvider.route,
-      backend,
-      backendIndex: index,
-      upstream,
-      upstreamModelId: modelBinding.upstreamModelId,
-      capabilities: [...capabilities],
-      rejected,
-    };
+  if (!Array.isArray(route.backends) || route.backends.length !== 1) {
+    throw new ModelResolveError("invalid_route", "每份配置必须且只能连接一个 upstream");
   }
 
-  throw new ModelResolveError(
-    "no_compatible_upstream",
-    `没有可用于模型 ${modelResolution.clientModelId} 的 upstream`,
-    { profileId: modelResolution.profileId, rejected },
-  );
+  const backend = route.backends[0];
+  const upstream = config.upstreams?.[backend?.upstream];
+  const modelBindings = modelResolution.profile.upstreams || {};
+  if (Object.keys(modelBindings).length > 1) {
+    throw new ModelResolveError("invalid_model_binding", "每个 Model Profile 只能映射一个 upstream");
+  }
+  const modelBinding = modelBindings[backend?.upstream];
+  const required = requiredCapabilities(request);
+  const capabilities = effectiveCapabilities(modelResolution.profile, modelBinding);
+  let reason;
+  if (!backend || backend.enabled === false || !upstream || upstream.enabled === false) {
+    reason = "upstream_disabled_or_missing";
+  } else if (backend.models?.length && !backend.models.includes(modelResolution.profileId)) {
+    reason = "model_not_in_route";
+  } else if (!modelBinding?.upstreamModelId) {
+    reason = "model_binding_missing";
+  } else if (virtualProvider.ingressProtocol !== upstream.protocol) {
+    reason = "protocol_transform_missing";
+  } else if (!hasCapabilities(capabilities, required)) {
+    reason = "capability_missing";
+  }
+  if (reason) {
+    throw new ModelResolveError(
+      "no_compatible_upstream",
+      `当前配置的 upstream 无法处理模型 ${modelResolution.clientModelId}`,
+      {
+        profileId: modelResolution.profileId,
+        rejected: [{ index: 0, reason, ...(reason === "capability_missing"
+          ? { missing: [...required].filter((item) => !capabilities.has(item)) } : {}) }],
+      },
+    );
+  }
+  return {
+    routeId: virtualProvider.route,
+    backend,
+    backendIndex: 0,
+    upstream,
+    upstreamModelId: modelBinding.upstreamModelId,
+    capabilities: [...capabilities],
+    rejected: [],
+  };
 }
 
 export function resolveRequest(config, virtualProvider, requestBody = {}) {

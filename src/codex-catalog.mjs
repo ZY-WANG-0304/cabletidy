@@ -119,6 +119,8 @@ export function planCodexCatalog(config, provider, snapshot) {
   const overrides = [];
   const warnings = [];
   const models = [];
+  const route = config.routes?.[provider.route];
+  if (route?.backends?.length !== 1) throw new Error("每份配置必须且只能连接一个 upstream");
   for (const id of provider.allowedModels || []) {
     const profile = config.models[id];
     if (!profile) throw new Error(`模型不存在: ${id}`);
@@ -132,6 +134,7 @@ export function planCodexCatalog(config, provider, snapshot) {
       throw new Error(`${entry.slug} 的 Codex MVP 上游必须使用 Responses 协议，暂不支持跨协议转换`);
     }
     const binding = profile.upstreams?.[backends[0].upstream];
+    if (Object.keys(profile.upstreams || {}).length !== 1) throw new Error(`${entry.slug} 必须且只能映射一个 upstream`);
     if (!binding?.upstreamModelId) throw new Error(`${entry.slug} 缺少上游模型映射`);
     if (profile.codex && !effectiveCapabilities(profile, binding).has("vision") && entry.input_modalities?.includes("image")) {
       entry.input_modalities = entry.input_modalities.filter((item) => item !== "image");
