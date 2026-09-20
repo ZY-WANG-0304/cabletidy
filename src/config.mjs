@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { normalizeConfigurationIdentities } from "../web/config-identity.js";
 
 const DEFAULT_HOME = process.env.CABLETIDY_HOME || path.join(os.homedir(), ".cabletidy");
 const SECRET_FIELD_NAMES = new Set([
@@ -34,9 +35,7 @@ export function defaultConfig() {
   return {
     version: 1,
     revision: 0,
-    daemon: {
-      proxyPortRange: "43101-43199",
-    },
+    daemon: {},
     web: {
       enabled: true,
       listenHost: "127.0.0.1",
@@ -76,14 +75,20 @@ export function normalizeConfig(input = {}) {
   // The Web console is a loopback-only local control surface; old session
   // lifetime settings are no longer part of the effective configuration.
   delete config.web.sessionTtlSeconds;
+  if (isRecord(config.daemon)) delete config.daemon.proxyPortRange;
   migratePrototypeCodexFields(config);
   for (const provider of Object.values(config.virtualProviders)) {
-    if (isRecord(provider)) delete provider.localAuth;
+    if (isRecord(provider)) {
+      delete provider.localAuth;
+      delete provider.listenHost;
+      delete provider.listenPort;
+    }
   }
   for (const binding of Object.values(config.bindings)) {
     if (isRecord(binding?.codex)) delete binding.codex.localEnvKey;
     if (isRecord(binding?.claude)) delete binding.claude.authEnv;
   }
+  normalizeConfigurationIdentities(config);
   return config;
 }
 

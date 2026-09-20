@@ -4,24 +4,30 @@ import {
   publicArtifacts as publicCodexArtifacts,
 } from "./codex-native-provider.mjs";
 import { clientModelIdForProfile, resolveModelProfile } from "./model-resolver.mjs";
+import { normalizeConfig } from "./config.mjs";
+import { configurationId, providerIdForConfiguration, configurationBaseUrl } from "../web/config-identity.js";
 
 export async function prepareTargetArtifacts(config, options = {}, secrets = {}) {
-  const binding = findBinding(config, options.bindingId);
+  const requested = findBinding(config, options.bindingId);
+  config = normalizeConfig(config);
+  const binding = requested && findBinding(config, configurationId(requested.name, requested.id));
   if (!binding) throw new Error("找不到 Target binding");
   if (binding.target === "codex") {
-    return prepareCodexArtifacts(config, { ...options, bindingId: binding.configId || binding.id }, secrets);
+    return prepareCodexArtifacts(config, { ...options, bindingId: binding.id }, secrets);
   }
-  return buildTargetArtifacts(config, options, secrets);
+  return buildTargetArtifacts(config, { ...options, bindingId: binding.id }, secrets);
 }
 
 export function buildTargetArtifacts(config, options = {}, secrets = {}) {
-  const binding = findBinding(config, options.bindingId);
+  const requested = findBinding(config, options.bindingId);
+  config = normalizeConfig(config);
+  const binding = requested && findBinding(config, configurationId(requested.name, requested.id));
   if (!binding) throw new Error("找不到 Target binding");
 
   if (binding.target === "codex") {
     return buildCodexArtifacts(
       config,
-      { bindingId: binding.configId || binding.id },
+      { bindingId: binding.id },
       secrets,
     );
   }
@@ -44,19 +50,19 @@ export function publicTargetArtifacts(artifacts) {
 }
 
 function findBinding(config, bindingId) {
-  if (bindingId && config.bindings?.[bindingId]) {
-    return {
-      ...config.bindings[bindingId],
-      id: config.bindings[bindingId].id || bindingId,
-      configId: bindingId,
-    };
+  const entry = bindingId && Object.hasOwn(config.bindings || {}, bindingId)
+    ? [bindingId, config.bindings[bindingId]]
+    : Object.entries(config.bindings || {}).find(
+      ([id, item]) => item?.enabled !== false && (!bindingId || id === bindingId || item?.id === bindingId),
+    );
+  if (!entry?.[1]) return null;
+  const [id, binding] = entry;
+  const nameId = configurationId(binding.name, id);
+  if (Object.entries(config.bindings).filter(([id, item]) =>
+    configurationId(item?.name, id) === nameId).length > 1) {
+    throw new Error(`配置名称规范化后重复: ${nameId}`);
   }
-  const entry = Object.entries(config.bindings || {}).find(
-    ([id, item]) => item.enabled !== false && (!bindingId || id === bindingId || item.id === bindingId),
-  );
-  return entry
-    ? { ...entry[1], id: entry[1].id || entry[0], configId: entry[0] }
-    : null;
+  return { ...binding, id };
 }
 
 function buildClaudeArtifacts(config, binding) {
@@ -69,7 +75,7 @@ function buildClaudeArtifacts(config, binding) {
     binding,
     virtualProvider,
   );
-  const baseUrl = `http://${virtualProvider.listenHost}:${virtualProvider.listenPort}`;
+  const baseUrl = configurationBaseUrl(config, binding.id);
   const vars = {
     ANTHROPIC_BASE_URL: baseUrl,
     // Satisfy Claude Code's client-side credential check; the local service
@@ -105,7 +111,7 @@ function buildGenericEnvArtifacts(config, binding) {
     binding,
     virtualProvider,
   );
-  const baseUrl = `http://${virtualProvider.listenHost}:${virtualProvider.listenPort}`;
+  const baseUrl = configurationBaseUrl(config, binding.id);
   const keyPrefix = binding.env?.prefix || "CABLETIDY";
   if (!/^[A-Z_][A-Z0-9_]*$/.test(keyPrefix)) {
     throw new Error(`generic env prefix 不合法: ${keyPrefix}`);
@@ -133,6 +139,10 @@ function getVirtualProvider(config, binding) {
   const virtualProvider = config.virtualProviders?.[binding.virtualProvider];
   if (!virtualProvider) {
     throw new Error("Binding 引用的 Virtual Provider 不存在");
+  }
+  if (virtualProvider.id !== providerIdForConfiguration(binding.id) ||
+      Object.values(config.bindings).filter((item) => item?.virtualProvider === virtualProvider.id).length !== 1) {
+    throw new Error("配置与 Virtual Provider 必须一对一，Virtual Provider ID 必须为 cabletidy_<配置ID>");
   }
   return virtualProvider;
 }

@@ -7,14 +7,8 @@ import path from "node:path";
 import {
   applyCodexArtifacts,
   buildCodexArtifacts,
-  codexProviderIdForBinding,
 } from "../src/codex-native-provider.mjs";
 import { normalizeConfig } from "../src/config.mjs";
-
-test("derives Codex provider ID from the configuration name", () => {
-  assert.equal(codexProviderIdForBinding({ id: "codex-main", name: "My Relay" }), "cabletidy_my-relay");
-  assert.equal(codexProviderIdForBinding({ id: "codex-main", name: "My Relay", codex: { providerId: "legacy_provider" } }), "cabletidy_my-relay");
-});
 
 function nativeConfig() {
   return normalizeConfig({
@@ -38,13 +32,38 @@ test("Codex renderer emits only a local config.toml provider block", async () =>
     { "secret://virtual-providers/relay-codex": "local-key" },
   );
   assert.deepEqual(artifacts.files.map((file) => file.path), ["config.toml"]);
-  assert.match(artifacts.files[0].contents, /base_url = "http:\/\/127\.0\.0\.1:43101\/v1"/);
+  assert.match(artifacts.files[0].contents, /base_url = "http:\/\/127\.0\.0\.1:43100\/relay-codex\/v1"/);
   assert.match(artifacts.files[0].contents, /model = "gpt-5\.5"/);
   assert.doesNotMatch(artifacts.files[0].contents, /model_context_window|model_auto_compact_token_limit|profiles\./);
   assert.doesNotMatch(artifacts.files[0].contents, /abc\.abcdef\.abc|XXX_API_KEY/);
   assert.doesNotMatch(artifacts.files[0].contents, /env_key|local-key/);
   assert.match(artifacts.files[0].contents, /requires_openai_auth = false/);
   assert.deepEqual(artifacts.environment.vars, {});
+  assert.equal(artifacts.providerId, config.bindings[artifacts.bindingId].virtualProvider);
+  assert.equal(artifacts.providerId, artifacts.virtualProviderId);
+});
+
+test("Codex rendering rejects a provider shared by two configurations", () => {
+  const config = nativeConfig();
+  config.bindings.other = { ...config.bindings["relay-codex"], id: "other", name: "Other" };
+  assert.throws(() => buildCodexArtifacts(config, { bindingId: "relay-codex" }), /一对一/);
+});
+
+test("Codex base URL uses the shared IPv6 listener and the normalized configuration path", () => {
+  const config = nativeConfig();
+  config.web = { listenHost: "::1", port: 43210 };
+  config.bindings["relay-codex"].name = "My Relay";
+  const artifacts = buildCodexArtifacts(config, { bindingId: "relay-codex" });
+  assert.match(artifacts.providerContents, /base_url = "http:\/\/\[::1\]:43210\/my-relay\/v1"/);
+  assert.equal(artifacts.providerId, "cabletidy_my-relay");
+});
+
+test("a conflicting name cannot render another configuration's provider", () => {
+  const config = nativeConfig();
+  config.bindings.other = { ...config.bindings["relay-codex"], id: "other", virtualProvider: "other" };
+  config.virtualProviders.other = { ...config.virtualProviders["cabletidy_relay-codex"], id: "other", listenPort: 43102 };
+  assert.throws(() => buildCodexArtifacts(config, { bindingId: "other" }), /配置名称规范化后重复/);
+  assert.throws(() => buildCodexArtifacts(config), /配置名称规范化后重复/);
 });
 
 test("applying native Codex artifacts writes only config.toml", async () => {

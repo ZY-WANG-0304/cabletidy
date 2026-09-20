@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 
 import {
   backupFile,
+  normalizeConfig,
   resolveUpstreamSecret,
 } from "./config.mjs";
+import { configurationId, providerIdForConfiguration, configurationBaseUrl } from "../web/config-identity.js";
 import { resolveModelProfile } from "./model-resolver.mjs";
 import { loadCodexCatalog, planCodexCatalog, validateCatalog } from "./codex-catalog.mjs";
 import { patchRootConfig, patchProviderConfig, readCodexConfig } from "./codex-config-file.mjs";
@@ -32,34 +34,14 @@ const ROOT_END = "# <<< CABLETIDY MANAGED PROVIDER";
 const ACTIVE_BEGIN = "# >>> CABLETIDY MANAGED ACTIVE PROVIDER";
 const ACTIVE_END = "# <<< CABLETIDY MANAGED ACTIVE PROVIDER";
 
-function safeId(value, fallback = "provider") {
-  const id = String(value || fallback)
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase();
-  return id || fallback;
-}
-
-export function codexProviderIdForBinding(binding) {
-  const fallback = safeId(binding?.id, "codex");
-  return `cabletidy_${safeId(binding?.name, fallback)}`;
-}
-
 function quote(value) {
   return JSON.stringify(String(value ?? ""));
 }
 
 function providerForBinding(config, binding, virtualProvider) {
   const route = config.routes?.[virtualProvider?.route];
-  const backend = route?.backends?.find((item) => item.enabled !== false);
-  return config.upstreams?.[backend?.upstream] || Object.values(config.upstreams || {})[0];
-}
-
-function localBaseUrl(virtualProvider) {
-  const host = String(virtualProvider.listenHost || "127.0.0.1");
-  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  return `http://${formattedHost}:${virtualProvider.listenPort}/v1`;
+  if (route?.backends?.length !== 1) throw new Error("每份配置必须且只能连接一个 upstream");
+  return config.upstreams?.[route.backends[0]?.upstream];
 }
 
 function profilePolicy(profile) {
@@ -71,6 +53,9 @@ function profilePolicy(profile) {
 
 export function buildCodexArtifacts(config, options = {}, secrets = {}) {
   let bindingId = options.bindingId;
+  const requestedBinding = config.bindings?.[bindingId];
+  config = normalizeConfig(config);
+  if (requestedBinding) bindingId = configurationId(requestedBinding.name, bindingId);
   if (!bindingId || !config.bindings?.[bindingId]) {
     bindingId = Object.entries(config.bindings || {}).find(
       ([id, item]) =>
@@ -80,8 +65,17 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
   }
   const binding = bindingId ? config.bindings?.[bindingId] : null;
   if (!binding) throw new Error("找不到 Codex binding");
+  const nameId = configurationId(binding.name, bindingId);
+  if (Object.entries(config.bindings).filter(([id, item]) =>
+    configurationId(item?.name, id) === nameId).length > 1) {
+    throw new Error(`配置名称规范化后重复: ${nameId}`);
+  }
   const virtualProvider = config.virtualProviders?.[binding.virtualProvider];
   if (!virtualProvider) throw new Error("Binding 引用的 Virtual Provider 不存在");
+  if (virtualProvider.id !== providerIdForConfiguration(bindingId) ||
+      Object.values(config.bindings).filter((item) => item?.virtualProvider === virtualProvider.id).length !== 1) {
+    throw new Error("配置与 Virtual Provider 必须一对一，Virtual Provider ID 必须为 cabletidy_<配置ID>");
+  }
   if (binding.target !== "codex") {
     throw new Error(`binding ${bindingId} 不是 Codex target`);
   }
@@ -90,7 +84,7 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
 
   const upstream = providerForBinding(config, binding, virtualProvider);
   if (!upstream) throw new Error("找不到 binding 对应的 upstream");
-  const providerId = codexProviderIdForBinding(binding);
+  const providerId = virtualProvider.id;
   const clientModel =
     modelResolution.profile.clientModelId ||
     modelResolution.profile.aliases?.[0] ||
@@ -107,7 +101,7 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
     `${ROOT_BEGIN} ${providerId} -->`,
     `[model_providers.${providerId}]`,
     `name = ${quote(`CableTidy / ${upstream.name || upstream.id}`)}`,
-    `base_url = ${quote(localBaseUrl(virtualProvider))}`,
+    `base_url = ${quote(`${configurationBaseUrl(config, bindingId)}/v1`)}`,
     `wire_api = "responses"`,
     `requires_openai_auth = false`,
     `${ROOT_END} ${providerId} <--`,
@@ -141,6 +135,7 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
 
 export async function prepareCodexArtifacts(config, options = {}, secrets = {}) {
   const artifacts = buildCodexArtifacts(config, options, secrets);
+  config = normalizeConfig(config);
   const snapshot = await (options.loadCatalog || loadCodexCatalog)();
   const provider = config.virtualProviders[config.bindings[artifacts.bindingId].virtualProvider];
   artifacts.catalogPlan = planCodexCatalog(config, provider, snapshot);

@@ -39,7 +39,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal(catalog.body.models.length, 2);
   assert.doesNotMatch(JSON.stringify(catalog.body), /base_instructions/);
   const candidate = normalizeConfig({ ...codexConfigFixture(), web: initial.web });
-  candidate.virtualProviders.codex.enabled = false;
+  candidate.virtualProviders.cabletidy_relay.enabled = false;
   candidate.models.model.clientModelId = "unknown-model";
   let result = await call("/config/commit", { config: candidate, baseRevision: 0 });
   assert.equal(result.status, 422);
@@ -49,11 +49,11 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   candidate.models.model.contextWindow = 128000;
   result = await call("/config/commit", { config: candidate, baseRevision: 0 });
   assert.equal(result.status, 200);
-  const preview = await call("/config/preview-target-artifacts", { bindingId: "codex" });
+  const preview = await call("/config/preview-target-artifacts", { bindingId: "relay" });
   assert.equal(preview.status, 200);
   assert.equal(preview.body.artifacts.files.length, 2);
   assert.equal(preview.body.artifacts.catalogPlan, undefined);
-  const applied = await call("/targets/apply", { bindingId: "codex" });
+  const applied = await call("/targets/apply", { bindingId: "relay" });
   assert.equal(applied.status, 200);
   const root = await fs.readFile(path.join(client, "config.toml"), "utf8");
   assert.equal(root, preview.body.artifacts.files[0].contents);
@@ -63,7 +63,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal(generated.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
   unavailable = true;
   assert.equal((await call("/codex/models")).body.available, false);
-  assert.equal((await call("/targets/apply", { bindingId: "codex" })).status, 422);
+  assert.equal((await call("/targets/apply", { bindingId: "relay" })).status, 422);
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), root);
   assert.equal((await call("/runtime")).status, 200);
 });

@@ -37,7 +37,7 @@ test("run injects Claude Code environment without changing the parent environmen
       { env: { ...process.env, CABLETIDY_HOME: home } },
     );
     assert.deepEqual(result.stdout.trim().split("\n"), [
-      "http://127.0.0.1:43102",
+      "http://127.0.0.1:43100/claude",
       "cabletidy-local",
       "sonnet",
     ]);

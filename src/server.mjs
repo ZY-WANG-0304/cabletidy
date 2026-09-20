@@ -44,6 +44,7 @@ import {
   selectBackend,
 } from "./model-resolver.mjs";
 import { validateConfig } from "./validation.mjs";
+import { configurationBaseUrl, providerIdForConfiguration } from "../web/config-identity.js";
 import { loadCodexCatalog, publicCodexCatalog, validateCodexChanges } from "./codex-catalog.mjs";
 
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -81,19 +82,15 @@ export async function createApplication(options = {}) {
     health: new Map(),
     startedAt: new Date().toISOString(),
     webServer: null,
-    proxyManager: null,
+    configOperation: Promise.resolve(),
     loadCodexCatalog: options.loadCodexCatalog || loadCodexCatalog,
     codexHome: options.codexHome,
   };
 
-  const proxyManager = new ProxyManager(state);
-  state.proxyManager = proxyManager;
   let webServer = null;
   const host = config.web.listenHost || "127.0.0.1";
   const port = Number(config.web.port || 43100);
   try {
-    await proxyManager.reload(config, secrets);
-
     webServer = http.createServer((request, response) => {
       handleWebRequest(state, request, response).catch((error) => {
         if (!response.headersSent) {
@@ -109,7 +106,6 @@ export async function createApplication(options = {}) {
     await saveSecrets(secrets, paths);
     await persistRuntimeInfo(state, host, port);
   } catch (error) {
-    await proxyManager.close().catch(() => {});
     if (webServer) await closeServer(webServer).catch(() => {});
     throw error;
   }
@@ -124,7 +120,7 @@ export async function createApplication(options = {}) {
   state.updateConfig = updateConfig;
 
   const close = async () => {
-    await proxyManager.close();
+    await state.configOperation;
     await closeServer(webServer);
     const runtime = await readRuntimeInfo(paths);
     if (runtime?.pid === process.pid) {
@@ -139,147 +135,48 @@ export async function createApplication(options = {}) {
   };
 }
 
-class ProxyManager {
-  constructor(state) {
-    this.state = state;
-    this.entries = new Map();
-    this.operation = Promise.resolve();
-  }
-
-  async reload(config, secrets = this.state.secrets) {
-    const task = this.operation.then(() => this.reloadNow(config, secrets));
-    this.operation = task.catch(() => {});
-    return task;
-  }
-
-  async reloadNow(config, secrets) {
-    const entries = Object.entries(config.virtualProviders || {}).filter(
-      ([, provider]) => provider.enabled !== false,
-    );
-    const nextEntries = new Map();
-    const createdServers = [];
-    const claimedPrevious = new Set();
-    let failedId = "";
-    try {
-      for (const [id, provider] of entries) {
-        failedId = id;
-        const host = provider.listenHost || "127.0.0.1";
-        const port = Number(provider.listenPort);
-        const runtime = { config, secrets, id, provider };
-        const previous = findReusableEntry(this.entries, claimedPrevious, host, port);
-
-        // Keep an unchanged listener during staging. A TCP listener cannot be
-        // bound twice, but its request handler can switch atomically later.
-        if (previous && sameListener(previous, host, port)) {
-          claimedPrevious.add(previous);
-          nextEntries.set(id, {
-            ...previous,
-            id,
-            host,
-            port,
-            runtime,
-          });
-          continue;
-        }
-
-        const handlerState = { runtime };
-        const server = this.createServer(handlerState);
-        await listen(server, host, port);
-        createdServers.push(server);
-        nextEntries.set(id, {
-          id,
-          host,
-          port,
-          server,
-          handlerState,
-          runtime,
-        });
-      }
-    } catch (error) {
-      await Promise.all(createdServers.map((server) => closeServer(server)));
-      throw new Error(`Virtual Provider ${failedId} 监听失败: ${error.message}`);
-    }
-
-    const previousEntries = this.entries;
-    const retainedServers = new Set(
-      [...nextEntries.values()].map((entry) => entry.server),
-    );
-
-    // Publish the staged set before closing listeners that are no longer
-    // needed. If staging failed, the old set above was never touched.
-    this.entries = nextEntries;
-    for (const entry of nextEntries.values()) {
-      entry.handlerState.runtime = entry.runtime;
-    }
-
-    await Promise.all(
-      [...previousEntries.values()]
-        .filter((entry) => !retainedServers.has(entry.server))
-        .map((entry) => closeServer(entry.server)),
-    );
-  }
-
-  createServer(handlerState) {
-    return http.createServer((request, response) => {
-      const runtime = handlerState.runtime;
-      handleProxyRequest(
-        this.state,
-        runtime.config,
-        runtime.secrets,
-        runtime.id,
-        runtime.provider,
-        request,
-        response,
-      ).catch((error) => {
-        if (!response.headersSent) {
-          sendProtocolError(
-            response,
-            runtime.provider.ingressProtocol,
-            500,
-            "internal_error",
-            error.message,
-          );
-        } else {
-          response.destroy(error);
-        }
-      });
-    });
-  }
-
-  async close() {
-    const task = this.operation.then(() => this.closeNow());
-    this.operation = task.catch(() => {});
-    return task;
-  }
-
-  async closeNow() {
-    const servers = [...this.entries.values()].map((entry) => entry.server);
-    this.entries.clear();
-    await Promise.all(servers.map((server) => closeServer(server)));
-  }
-
-  status() {
-    return Object.entries(this.state.config.virtualProviders || {}).map(([id, provider]) => {
-      const entry = this.entries.get(id);
-      return {
-        id,
-        listen: `${provider.listenHost || "127.0.0.1"}:${provider.listenPort}`,
-        protocol: provider.ingressProtocol,
-        route: provider.route,
-        enabled: provider.enabled !== false,
-        status: provider.enabled === false ? "paused" : entry ? "listening" : "not_listening",
-      };
-    });
-  }
-}
-
 async function handleWebRequest(state, request, response) {
   const url = new URL(request.url, "http://127.0.0.1");
   if (url.pathname.startsWith("/api/")) {
     await handleApiRequest(state, request, response, url);
     return;
   }
-  await serveStatic(url.pathname, response);
+  const match = url.pathname.match(/^\/([a-z0-9][a-z0-9_-]{0,53})(\/.*)?$/);
+  if (!match) {
+    await serveStatic(url.pathname, response);
+    return;
+  }
+
+  // Capture one configuration snapshot for the entire request, including streams.
+  const { config, secrets } = state;
+  const id = providerIdForConfiguration(match[1]);
+  const provider = Object.hasOwn(config.virtualProviders, id) ? config.virtualProviders[id] : null;
+  const protocol = provider?.ingressProtocol || "openai.responses";
+  if (!isAllowedWebRequest(state, request)) {
+    sendProtocolError(response, protocol, 403, "origin_not_allowed", "只允许来自当前本地服务的请求");
+    return;
+  }
+  if (!provider) {
+    sendProtocolError(response, protocol, 404, "not_found", `配置入口不存在: ${match[1]}`);
+    return;
+  }
+  if (provider.enabled === false) {
+    sendProtocolError(response, protocol, 503, "provider_paused", "此配置的服务已暂停");
+    return;
+  }
+  url.pathname = match[2] || "/";
+  try {
+    await handleProxyRequest(state, config, secrets, id, provider, request, response, url);
+  } catch (error) {
+    if (!response.headersSent) sendProtocolError(response, protocol, 500, "internal_error", error.message);
+    else response.destroy(error);
+  }
+}
+
+function enqueueConfigUpdate(state, update) {
+  const task = state.configOperation.then(update);
+  state.configOperation = task.catch(() => {});
+  return task;
 }
 
 async function handleApiRequest(state, request, response, url) {
@@ -396,7 +293,7 @@ async function handleApiRequest(state, request, response, url) {
   }
 
   if (url.pathname === "/api/v1/config/commit" && method === "POST") {
-    await commitConfig(state, body, response);
+    await enqueueConfigUpdate(state, () => commitConfig(state, body, response));
     return;
   }
 
@@ -404,12 +301,12 @@ async function handleApiRequest(state, request, response, url) {
     /^\/api\/v1\/virtual-providers\/([^/]+)\/(start|pause)$/,
   );
   if (virtualProviderAction && method === "POST") {
-    await setVirtualProviderState(
+    await enqueueConfigUpdate(state, () => setVirtualProviderState(
       state,
       decodeURIComponent(virtualProviderAction[1]),
       virtualProviderAction[2] === "start",
       response,
-    );
+    ));
     return;
   }
 
@@ -540,7 +437,6 @@ async function commitConfig(state, body, response) {
   let secretsWritten = false;
 
   try {
-    await state.proxyManager.reload(candidate, candidateSecrets);
     await backupFile(state.paths.config, state.paths.backups, `config-${candidate.revision}.json`);
     await backupFile(state.paths.secrets, state.paths.backups, `secrets-${candidate.revision}.json`);
     await saveConfig(candidate, state.paths);
@@ -565,7 +461,6 @@ async function commitConfig(state, body, response) {
   } catch (error) {
     if (configWritten) await saveConfig(previousConfig, state.paths).catch(() => {});
     if (secretsWritten) await saveSecrets(previousSecrets, state.paths).catch(() => {});
-    await state.proxyManager.reload(previousConfig, previousSecrets).catch(() => {});
     state.updateConfig(previousConfig, previousSecrets);
     sendJson(response, 500, {
       error: { code: "config_reload_failed", message: error.message },
@@ -609,7 +504,6 @@ async function setVirtualProviderState(state, id, enabled, response) {
   }
 
   try {
-    await state.proxyManager.reload(candidate, state.secrets);
     await backupFile(state.paths.config, state.paths.backups, `config-${candidate.revision}.json`);
     await saveConfig(candidate, state.paths);
     state.updateConfig(candidate, state.secrets);
@@ -631,7 +525,6 @@ async function setVirtualProviderState(state, id, enabled, response) {
       runtime: runtimeStatus(state),
     });
   } catch (error) {
-    await state.proxyManager.reload(previousConfig, previousSecrets).catch(() => {});
     state.updateConfig(previousConfig, previousSecrets);
     sendJson(response, 500, {
       error: { code: "virtual_provider_state_failed", message: error.message },
@@ -769,7 +662,7 @@ async function applyTarget(state, body, response) {
   }
 }
 
-async function handleProxyRequest(state, config, secrets, virtualProviderId, provider, request, response) {
+async function handleProxyRequest(state, config, secrets, virtualProviderId, provider, request, response, url) {
   if (request.method === "OPTIONS") {
     response.writeHead(204);
     response.end();
@@ -789,7 +682,6 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
     return;
   }
 
-  const url = new URL(request.url, "http://127.0.0.1");
   if (
     protocol === "openai.responses" &&
     request.method === "GET" &&
@@ -840,94 +732,78 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
     return;
   }
 
-  const skipped = new Set();
-  const maxAttempts = Math.max(1, Number(config.routes?.[provider.route]?.backends?.length || 1));
   const upstreamAbort = new AbortController();
   const abortUpstream = () => upstreamAbort.abort();
   request.once("aborted", abortUpstream);
   response.once("close", () => {
     if (!response.writableFinished) upstreamAbort.abort();
   });
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    let selected;
-    try {
-      selected = selectBackend(
-        config,
-        provider,
-        resolution,
-        body,
-        { skipUpstreams: skipped },
-      );
-    } catch (error) {
-      sendProtocolError(response, protocol, 503, error.code || "upstream_unavailable", error.message);
-      return;
-    }
-    skipped.add(selected.upstream.id);
-    if (protocol !== selected.upstream.protocol) {
-      sendProtocolError(response, protocol, 501, "unsupported_transform", "MVP 暂不执行跨协议数据面转换");
-      return;
-    }
+  let selected;
+  try {
+    selected = selectBackend(
+      config,
+      provider,
+      resolution,
+      body,
+    );
+  } catch (error) {
+    sendProtocolError(response, protocol, 503, error.code || "upstream_unavailable", error.message);
+    return;
+  }
+  if (protocol !== selected.upstream.protocol) {
+    sendProtocolError(response, protocol, 501, "unsupported_transform", "MVP 暂不执行跨协议数据面转换");
+    return;
+  }
 
-    const outgoing = structuredClone(body);
-    // Model metadata is a client-side artifact. Preserve the instructions,
-    // tools and per-request reasoning effort constructed by Codex.
-    outgoing.model = selected.upstreamModelId;
-    const upstreamUrl = joinUpstreamUrl(selected.upstream.baseUrl, url.pathname, url.search);
-    const upstreamHeaders = {
-      "content-type": "application/json",
-      accept: request.headers.accept || "text/event-stream, application/json",
-    };
-    copyProtocolHeaders(request, upstreamHeaders, protocol);
-    const secret = resolveUpstreamSecret(selected.upstream, secrets);
-    applyUpstreamAuth(upstreamHeaders, selected.upstream, protocol, secret);
-    const started = Date.now();
-    try {
-      const upstreamResponse = await fetch(upstreamUrl, {
-        method: "POST",
-        headers: upstreamHeaders,
-        body: JSON.stringify(outgoing),
-        signal: upstreamAbort.signal,
-      });
-      const retryable = [408, 429, 500, 502, 503, 504].includes(upstreamResponse.status);
-      if (retryable && attempt + 1 < maxAttempts && !upstreamResponse.bodyUsed) {
-        await upstreamResponse.body?.cancel().catch(() => {});
-        recordHealth(state, selected.upstream.id, "retryable_response", upstreamResponse.status);
-        continue;
-      }
-      recordHealth(
-        state,
-        selected.upstream.id,
-        upstreamResponse.ok ? "success" : "failure",
-        upstreamResponse.status,
-      );
-      recordEvent(state, "proxy.request", {
-        virtualProviderId,
-        upstreamId: selected.upstream.id,
-        clientModelId: resolution.clientModelId,
-        upstreamModelId: selected.upstreamModelId,
-        status: upstreamResponse.status,
-        latencyMs: Date.now() - started,
-        attempt: attempt + 1,
-      });
-      await relayResponse(
-        response,
-        upstreamResponse,
-        resolution.clientModelId,
-        selected.upstreamModelId,
-      );
+  const outgoing = structuredClone(body);
+  // Model metadata is a client-side artifact. Preserve the instructions,
+  // tools and per-request reasoning effort constructed by Codex.
+  outgoing.model = selected.upstreamModelId;
+  const upstreamUrl = joinUpstreamUrl(selected.upstream.baseUrl, url.pathname, url.search);
+  const upstreamHeaders = {
+    "content-type": "application/json",
+    accept: request.headers.accept || "text/event-stream, application/json",
+  };
+  copyProtocolHeaders(request, upstreamHeaders, protocol);
+  const secret = resolveUpstreamSecret(selected.upstream, secrets);
+  applyUpstreamAuth(upstreamHeaders, selected.upstream, protocol, secret);
+  const started = Date.now();
+  try {
+    const upstreamResponse = await fetch(upstreamUrl, {
+      method: "POST",
+      headers: upstreamHeaders,
+      body: JSON.stringify(outgoing),
+      signal: upstreamAbort.signal,
+    });
+    recordHealth(
+      state,
+      selected.upstream.id,
+      upstreamResponse.ok ? "success" : "failure",
+      upstreamResponse.status,
+    );
+    recordEvent(state, "proxy.request", {
+      virtualProviderId,
+      upstreamId: selected.upstream.id,
+      clientModelId: resolution.clientModelId,
+      upstreamModelId: selected.upstreamModelId,
+      status: upstreamResponse.status,
+      latencyMs: Date.now() - started,
+    });
+    await relayResponse(
+      response,
+      upstreamResponse,
+      resolution.clientModelId,
+      selected.upstreamModelId,
+    );
+    return;
+  } catch (error) {
+    recordHealth(state, selected.upstream.id, "failure", null);
+    if (upstreamAbort.signal.aborted) return;
+    if (response.headersSent || response.writableEnded) {
+      if (!response.destroyed) response.destroy(error);
       return;
-    } catch (error) {
-      recordHealth(state, selected.upstream.id, "failure", null);
-      if (upstreamAbort.signal.aborted) return;
-      if (response.headersSent || response.writableEnded) {
-        if (!response.destroyed) response.destroy(error);
-        return;
-      }
-      if (attempt + 1 >= maxAttempts) {
-        sendProtocolError(response, protocol, 502, "upstream_unavailable", error.message);
-        return;
-      }
     }
+    sendProtocolError(response, protocol, 502, "upstream_unavailable", error.message);
   }
 }
 
@@ -1118,7 +994,20 @@ function runtimeStatus(state) {
       port: state.config.web.port,
       status: "listening",
     },
-    virtualProviders: state.proxyManager.status(),
+    virtualProviders: Object.entries(state.config.virtualProviders).map(([id, provider]) => {
+      const configurationId = id.slice("cabletidy_".length);
+      const baseUrl = configurationBaseUrl(state.config, configurationId);
+      return {
+        id,
+        configurationId,
+        listen: new URL(baseUrl).host,
+        baseUrl: `${baseUrl}/v1`,
+        protocol: provider.ingressProtocol,
+        route: provider.route,
+        enabled: provider.enabled !== false,
+        status: provider.enabled === false ? "paused" : state.webServer?.listening ? "listening" : "not_listening",
+      };
+    }),
     health,
     counts: {
       upstreams: Object.keys(state.config.upstreams || {}).length,
@@ -1320,27 +1209,6 @@ function listen(server, host, port) {
     server.once("listening", onListening);
     server.listen(port, host);
   });
-}
-
-function sameListener(entry, host, port) {
-  return (
-    normalizeListenerHost(entry.host) === normalizeListenerHost(host) &&
-    Number(entry.port) === Number(port)
-  );
-}
-
-function findReusableEntry(entries, claimed, host, port) {
-  return [...entries.values()].find(
-    (entry) => !claimed.has(entry) && sameListener(entry, host, port),
-  ) || null;
-}
-
-function normalizeListenerHost(host) {
-  const value = String(host || "127.0.0.1").trim().toLowerCase();
-  if (value === "localhost") return "127.0.0.1";
-  if (value === "[::1]") return "::1";
-  if (value === "[::]") return "::";
-  return value;
 }
 
 function formatWebUrl(host, port) {

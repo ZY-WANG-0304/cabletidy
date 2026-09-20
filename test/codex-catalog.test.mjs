@@ -14,7 +14,7 @@ async function fixture(t) {
   t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
   return {
     config: normalizeConfig(codexConfigFixture()),
-    options: { codexHome, bindingId: "codex", paths: { backups: path.join(codexHome, "backups") }, loadCatalog: async () => catalogFixture() },
+    options: { codexHome, bindingId: "relay", paths: { backups: path.join(codexHome, "backups") }, loadCatalog: async () => catalogFixture() },
     root: path.join(codexHome, "config.toml"),
   };
 }
@@ -81,7 +81,7 @@ test("overrides preserve all official instructions, tools and reasoning options"
 
 test("unknown models, excessive windows and unsupported input types fail explicitly", () => {
   const config = normalizeConfig(codexConfigFixture());
-  const plan = () => planCodexCatalog(config, config.virtualProviders.codex, catalogFixture());
+  const plan = () => planCodexCatalog(config, config.virtualProviders.cabletidy_relay, catalogFixture());
   config.models.model.clientModelId = "non-gpt";
   assert.throws(plan, /未匹配/);
   config.models.model.clientModelId = "gpt-999";
@@ -101,7 +101,7 @@ test("unknown models, excessive windows and unsupported input types fail explici
 test("upstream vision restrictions are reflected in the catalog without changing instructions", () => {
   const config = normalizeConfig(codexConfigFixture());
   config.models.model.upstreams.relay.capabilityOverrides = ["-vision"];
-  const plan = planCodexCatalog(config, config.virtualProviders.codex, catalogFixture());
+  const plan = planCodexCatalog(config, config.virtualProviders.cabletidy_relay, catalogFixture());
   assert.deepEqual(plan.catalog.models[0].input_modalities, ["text"]);
   assert.equal(plan.catalog.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
   assert.ok(plan.warnings.some((warning) => /vision/.test(warning)));
@@ -114,7 +114,7 @@ test("official hidden models remain selectable and source catalogs are not mutat
   const config = normalizeConfig(codexConfigFixture());
   enableOverrides(config);
   assert.ok(publicCodexCatalog(snapshot).models.some((model) => model.id === "gpt-5.5" && model.hidden));
-  planCodexCatalog(config, config.virtualProviders.codex, snapshot);
+  planCodexCatalog(config, config.virtualProviders.cabletidy_relay, snapshot);
   assert.deepEqual(snapshot, before);
 });
 
@@ -218,7 +218,7 @@ test("switching to a suite without overrides restores absent root settings", asy
   enableOverrides(config);
   await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
   restoreOfficial(config);
-  config.bindings.codex.name = "other";
+  config.bindings.relay.name = "other";
   await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
   const settings = readCodexConfig(await fs.readFile(root, "utf8"));
   assert.equal(settings.model_catalog_json, undefined);

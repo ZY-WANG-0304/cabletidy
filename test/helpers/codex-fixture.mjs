@@ -39,7 +39,7 @@ export function codexConfigFixture() {
       upstreams: { relay: { upstreamModelId: "VENDOR-GPT" } },
     } },
     routes: { route: { id: "route", backends: [{ upstream: "relay", models: ["model"] }] } },
-    virtualProviders: { codex: { id: "codex", listenHost: "127.0.0.1", listenPort: 43101, ingressProtocol: "openai.responses", route: "route", allowedModels: ["model"], defaultModel: "model" } },
-    bindings: { codex: { id: "codex", name: "relay", target: "codex", virtualProvider: "codex", defaultModel: "model", codex: {} } },
+    virtualProviders: { cabletidy_relay: { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "route", allowedModels: ["model"], defaultModel: "model" } },
+    bindings: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "model", codex: {} } },
   };
 }
