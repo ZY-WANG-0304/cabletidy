@@ -32,7 +32,7 @@ npm install
 npm start
 ```
 
-配置 Codex 接入时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止代理启动，但会阻止创建模型或应用 Codex 接入；管理台可在更新 Codex 后刷新目录。已在 Codex 0.154.0 验证目录加载和实际请求。
+配置 Codex 接入时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止代理启动，但会阻止创建模型或应用 Codex 接入；管理台可在更新 Codex 后刷新模型列表。已在 Codex 0.154.0 验证目录加载和实际请求。
 
 管理台默认只监听本机回环地址。直接打开以下地址，或运行：
 
@@ -48,31 +48,32 @@ CABLETIDY_HOME="$PWD/.cabletidy-dev" npm start
 
 Web 管理台默认监听 `127.0.0.1:43100`，Virtual Provider 默认使用 `43101` 开始的端口。
 
-## MVP Web 配置向导
+## Web 配置管理
 
-第一次打开管理台时，Overview 会显示“创建配置套装”入口；进入向导后，直接创建 CableTidy 配置图：
+管理台直接显示配置列表，首次使用与后续使用采用相同的操作流程，不设置介绍页或配置向导。点击“新建配置”填写：
 
-```text
-配置套装
-  = 一个 Upstream
-  + 一组 Model Profiles / Upstream Model Bindings
-  + 一个 CLI Target Binding
-```
-
-向导会引导填写或自动填写：
-
+- 配置名称（可选）。
 - 上游地址和 API Key。
 - 一个或多个对应的 Codex 官方模型名与上游真实模型名。
-- 本地 Virtual Provider、端口和 Codex provider ID（按配置名称自动生成）。
+
+点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务、端口和路由自动分配，Codex provider ID 按配置名称生成。
+
+列表显示 CLI、模型数量、本地地址和状态。详情页的“保存上游”和“保存模型映射”分别直接保存对应修改；失败时保留输入并在当前表单显示错误。“诊断”页面提供模型解析测试和事件记录，解析使用已保存的配置。
+
+仅在存在实际未保存修改时，切换页面、返回列表或关闭页面会提示确认；改回原值后不再拦截。点击“刷新模型列表”同步更新沿用官方定义的元数据和最新限制，保留手动覆盖值与其他表单输入。
+
+“应用到 Codex”保持独立，只有主动点击时才修改 Codex 配置文件。测试连通性和配置预览使用已保存的配置。
 
 在 Codex 套装详情页中选择官方模型、填写上游名称。元数据默认“沿用官方定义”，
 选择“覆盖上游限制”后可设置 context window 和图片输入；不提供固定 reasoning effort 或未实现的 compact 控件。
 旧窗口和压缩配置会提示待确认，不会因升级自动同步到 Codex。不同套装可使用同一个官方模型名，映射在各自 Virtual Provider 内隔离。
 
+Daybreak Blue 和 Red 保留可选，位于模型列表末尾的“安全专项模型”分组，分别标记“需授权”和“需专项授权”。选中后显示简短用途提示，不自动禁用或更改已有映射；目录中的隐藏标记不等同于授权状态，实际可用性由上游支持和账户权限决定。
+
 当前 MVP 一个 Virtual Provider 只连接一个上游，固定使用 Responses 协议。
 首次配置不再填充统一的百万上下文或 850K 压缩阈值，也不要求用户填写模型别名或内部 ID。
 
-草稿经过服务端校验、diff 确认后才会提交并 reload daemon。上游 secret 保存在本地 `secrets.json`，Web GET 和预览不会回显明文。
+创建或保存时，服务端执行配置校验、版本冲突检查和运行时更新。校验或更新失败不会覆盖已生效配置；版本冲突时可刷新管理页获取最新版本，保留当前表单输入后重试。上游 secret 保存在本地 `secrets.json`，Web GET 和预览不会回显明文。
 
 ## Codex 接入
 
@@ -124,7 +125,7 @@ node src/cli.mjs run --target codex --binding <binding-id> -- codex
 
 启用元数据覆盖后，“应用”还会写入 `model-catalogs/cabletidy-<hash>.json`，将根级 `model_catalog_json` 指向其绝对路径，并暂时移除会覆盖逐模型窗口的根级 `model_context_window`。原目录引用和窗口保存在 `.cabletidy-model-catalog.json`，所有模型恢复官方定义、再次应用时会恢复它们。原目录文件不被覆盖，其其他条目保留在生成目录中。
 
-Codex 的模型目录是当前配置级别的，不按 provider 隔离。手动切换其他 provider 不会自动撤销目录覆盖；应先恢复官方定义并应用，或使用隔离的 `cabletidy run`。已有 `model_instructions_file`、`developer_instructions`、reasoning effort、compact 阈值和其他用户设置保持不变，预览会提示影响模型行为的覆盖项。生成目录后重启 Codex；更新 Codex 版本后刷新目录并重新应用。
+Codex 的模型目录是当前配置级别的，不按 provider 隔离。手动切换其他 provider 不会自动撤销目录覆盖；应先恢复官方定义并应用，或使用隔离的 `cabletidy run`。已有 `model_instructions_file`、`developer_instructions`、reasoning effort、compact 阈值和其他用户设置保持不变，预览会提示影响模型行为的覆盖项。生成目录后重启 Codex；更新 Codex 版本后刷新模型列表并重新应用。
 
 Virtual Provider 只监听 `127.0.0.1`、`localhost` 或 `::1`，不生成或校验本地 API Key。
 Codex 配置不包含 `env_key`，也不需要设置认证环境变量。例如，可以直接请求：
