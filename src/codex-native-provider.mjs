@@ -52,6 +52,13 @@ function profilePolicy(profile) {
 }
 
 export function buildCodexArtifacts(config, options = {}, secrets = {}) {
+  // Collisions can block a chain of renames, so reject them before looking up a new ID.
+  const names = new Set();
+  for (const [id, binding] of Object.entries(config.bindings || {})) {
+    const nameId = configurationId(binding?.name, id);
+    if (names.has(nameId)) throw new Error(`配置名称规范化后重复: ${nameId}`);
+    names.add(nameId);
+  }
   let bindingId = options.bindingId;
   const requestedBinding = config.bindings?.[bindingId];
   config = normalizeConfig(config);
@@ -65,11 +72,6 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
   }
   const binding = bindingId ? config.bindings?.[bindingId] : null;
   if (!binding) throw new Error("找不到 Codex binding");
-  const nameId = configurationId(binding.name, bindingId);
-  if (Object.entries(config.bindings).filter(([id, item]) =>
-    configurationId(item?.name, id) === nameId).length > 1) {
-    throw new Error(`配置名称规范化后重复: ${nameId}`);
-  }
   const virtualProvider = config.virtualProviders?.[binding.virtualProvider];
   if (!virtualProvider) throw new Error("Binding 引用的 Virtual Provider 不存在");
   if (virtualProvider.id !== providerIdForConfiguration(bindingId) ||

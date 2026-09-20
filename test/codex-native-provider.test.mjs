@@ -7,8 +7,10 @@ import path from "node:path";
 import {
   applyCodexArtifacts,
   buildCodexArtifacts,
+  prepareCodexArtifacts,
 } from "../src/codex-native-provider.mjs";
 import { normalizeConfig } from "../src/config.mjs";
+import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 function nativeConfig() {
   return normalizeConfig({
@@ -64,6 +66,41 @@ test("a conflicting name cannot render another configuration's provider", () => 
   config.virtualProviders.other = { ...config.virtualProviders["cabletidy_relay-codex"], id: "other", listenPort: 43102 };
   assert.throws(() => buildCodexArtifacts(config, { bindingId: "other" }), /配置名称规范化后重复/);
   assert.throws(() => buildCodexArtifacts(config), /配置名称规范化后重复/);
+});
+
+for (const [scenario, names] of [
+  ["a blocked ID swap", { a: "b", b: "a", c: "a" }],
+  ["a blocked rename chain", { a: "b", b: "c", c: "d", d: "x", e: "x" }],
+]) {
+  test(`Codex artifact entry points reject ${scenario} before selecting another provider`, async () => {
+    const raw = namedCodexConfigFixture(names);
+    for (const config of [raw, normalizeConfig(raw)]) {
+      const original = structuredClone(config);
+      for (const bindingId of [undefined, ...Object.keys(names)]) {
+        assert.throws(() => buildCodexArtifacts(config, { bindingId }), /配置名称规范化后重复/);
+        await assert.rejects(prepareCodexArtifacts(config, {
+          bindingId,
+          loadCatalog: async () => assert.fail("Conflicting identities must fail before loading the catalog"),
+        }), /配置名称规范化后重复/);
+      }
+      assert.deepEqual(config, original);
+    }
+  });
+}
+
+test("Codex artifacts preserve the requested upstream across valid ID swaps", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-codex-id-swap-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const config = namedCodexConfigFixture({ a: "b", b: "a" });
+  for (const [requested, renamed] of [["a", "b"], ["b", "a"]]) {
+    const options = { bindingId: requested, codexHome: home, loadCatalog: async () => catalogFixture() };
+    for (const artifacts of [buildCodexArtifacts(config, options), await prepareCodexArtifacts(config, options)]) {
+      assert.equal(artifacts.bindingId, renamed);
+      assert.equal(artifacts.providerId, `cabletidy_${renamed}`);
+      assert.equal(artifacts.upstream.id, requested);
+      assert.match(artifacts.providerContents, new RegExp(`/${renamed}/v1`));
+    }
+  }
 });
 
 test("applying native Codex artifacts writes only config.toml", async () => {
