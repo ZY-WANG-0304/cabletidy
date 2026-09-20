@@ -4,6 +4,7 @@ const railStatus = document.querySelector("#rail-status");
 const revisionLabel = document.querySelector("#revision-label");
 const toastRegion = document.querySelector("#toast-region");
 const formBaselines = new WeakMap();
+const formConflicts = new WeakSet();
 const lockedControls = new WeakMap();
 let modelHintSequence = 0;
 
@@ -200,10 +201,23 @@ function render(preservedForms = []) {
   }
   for (const form of preservedForms) {
     const replacement = pageContent.querySelector(`#${CSS.escape(form.getAttribute("id"))}`);
-    if (!replacement) continue;
-    formBaselines.set(form, formBaselines.get(replacement));
-    replacement.replaceWith(form);
+    if (replacement) restoreFormChanges(form, replacement);
+    else {
+      formConflicts.add(form);
+      pageContent.append(form);
+      showFormError(form, new Error("配置项已在其他窗口删除。"));
+    }
   }
+}
+
+function fieldSnapshot(control) {
+  return [
+    control.name || "", control.type, { ...control.dataset },
+    control.closest("[data-suite-model]")?.dataset.modelId || "",
+    ["checkbox", "radio"].includes(control.type) ? control.checked
+      : control.multiple ? [...control.selectedOptions].map((option) => option.value)
+        : control.value,
+  ];
 }
 
 function formSnapshot(form) {
@@ -215,18 +229,97 @@ function formSnapshot(form) {
     }
     return !["submit", "button", "reset"].includes(control.type);
   });
-  return JSON.stringify(fields.map((control) => [
-    control.name || "", control.type, control.dataset,
-    control.closest("[data-suite-model]")?.dataset.modelId || "",
-    ["checkbox", "radio"].includes(control.type) ? control.checked
-      : control.multiple ? [...control.selectedOptions].map((option) => option.value)
-        : control.value,
-  ]));
+  return JSON.stringify(fields.map(fieldSnapshot));
+}
+
+function fieldKey(field) {
+  return JSON.stringify(field.slice(0, 4));
+}
+
+function mergeFormFields(base, local, remote) {
+  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const index = (fields) => new Map(fields.map((field) => [fieldKey(field), field]));
+  const [before, ours, theirs] = [base, local, remote].map(index);
+  // Repeated controls without stable row IDs cannot be merged safely.
+  if ([base, local, remote].some((fields, i) => fields.length !== [before, ours, theirs][i].size)) return null;
+  for (const field of base) {
+    const key = fieldKey(field);
+    if (field[0] === "id" && !same(field, theirs.get(key))) return null;
+    if (!("suiteModelClient" in field[2] || "codexMetadataMode" in field[2])) continue;
+    if (same(field, ours.get(key)) && same(field, theirs.get(key))) continue;
+    const row = (fields) => fields.filter((item) => item[3] === field[3]);
+    // A changed model or metadata mode changes the meaning of its other fields.
+    if (!same(row(base), row(local)) && !same(row(base), row(remote)) && !same(row(local), row(remote))) return null;
+  }
+  const merged = [];
+  for (const key of new Set([...before.keys(), ...ours.keys(), ...theirs.keys()])) {
+    const original = before.get(key);
+    const current = ours.get(key);
+    const latest = theirs.get(key);
+    if (same(current, original)) {
+      if (latest) merged.push(latest);
+    } else if (same(latest, original) || same(current, latest)) {
+      if (current) merged.push(current);
+    } else return null;
+  }
+  return merged;
+}
+
+function restoreFormChanges(form, replacement) {
+  const baseline = formBaselines.get(form);
+  const latest = formBaselines.get(replacement);
+  const current = formSnapshot(form);
+  const sameContext = form.getAttribute("data-suite-context") === replacement.getAttribute("data-suite-context");
+  if (sameContext && current === latest) return;
+  if (sameContext && baseline === latest) {
+    if (formConflicts.has(form)) form.querySelector("[data-form-feedback]")?.remove();
+    formConflicts.delete(form);
+    replacement.replaceWith(form);
+    return;
+  }
+  const suiteModels = form.getAttribute("id") === "suite-models-form";
+  const savedFields = (snapshot) => JSON.parse(snapshot).filter((field) => !suiteModels || field[3]);
+  const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
+  const sameStructure = baseline !== undefined && (suiteModels
+    || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
+  const merged = sameContext && sameStructure
+    ? mergeFormFields(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
+  const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
+    .map((control) => [fieldKey(fieldSnapshot(control)), control]));
+  if (!merged || merged.some((field) => !controls.has(fieldKey(field)))) {
+    // Keep the old baseline and input; never bless a stale form with a new revision.
+    formConflicts.add(form);
+    replacement.replaceWith(form);
+    showFormError(form, new Error("配置存在并发修改冲突。"));
+    return;
+  }
+  for (const field of merged) {
+    const control = controls.get(fieldKey(field));
+    if (["checkbox", "radio"].includes(control.type)) control.checked = field[4];
+    else if (control.multiple) {
+      for (const option of control.options) option.selected = field[4].includes(option.value);
+    } else control.value = field[4];
+  }
+  if (suiteModels) {
+    const retained = new Set(merged.map((field) => field[3]));
+    replacement.querySelectorAll("[data-suite-model]").forEach((row) => {
+      if (!retained.has(row.dataset.modelId)) row.remove();
+      else syncCodexMetadata(row);
+    });
+    const list = replacement.querySelector("#suite-model-list");
+    form.querySelectorAll("[data-suite-model]").forEach((row) => {
+      if (!row.dataset.modelId) {
+        list.querySelector(".empty")?.remove();
+        list.append(row);
+      }
+    });
+  }
+  replacement.querySelectorAll("[data-official-model]").forEach(updateOfficialModelHint);
 }
 
 function isFormEdited(form) {
   const baseline = formBaselines.get(form);
-  return baseline !== undefined && baseline !== formSnapshot(form);
+  return formConflicts.has(form) || baseline !== undefined && baseline !== formSnapshot(form);
 }
 
 function captureEditedForms(excludedForm) {
@@ -584,7 +677,7 @@ function renderSuiteDetail() {
           <button class="button button-primary" type="button" data-action="add-suite-model">添加模型</button>
         </div>
         <div class="panel-body">
-          <form id="suite-models-form">
+          <form id="suite-models-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.target, binding.virtualProvider, suite.route?.id, upstreamId]))}">
             <div id="suite-model-list" class="suite-model-list">
               ${
                 suite.models.length
@@ -1104,6 +1197,9 @@ async function handleAction(action, element) {
         status.querySelector("span").textContent = state.codexCatalog.available ? `${state.codexCatalog.version} / ${state.codexCatalog.models.length} 个官方模型` : state.codexCatalog.error.message;
       });
       toast(state.codexCatalog.available ? "模型列表已刷新。" : state.codexCatalog.error.message, !state.codexCatalog.available);
+    } else if (action === "reload-form") {
+      if (!window.confirm("放弃此表单的本地修改并加载最新配置？")) return;
+      render(captureEditedForms(element.closest("form")));
     } else if (action === "create-suite") {
       state.selected.suite = null;
       state.page = "suite-create";
@@ -1267,13 +1363,16 @@ function showFormError(form, error) {
   feedback.dataset.formFeedback = "";
   feedback.setAttribute("role", "alert");
   feedback.tabIndex = -1;
-  const message = error.status === 409
-    ? "配置已在其他窗口变更。点击页面顶部的“刷新”后重试，当前输入会保留。"
+  const conflict = formConflicts.has(form);
+  const message = conflict
+    ? "此表单与其他窗口的修改冲突，已暂停保存并保留当前输入。请先复制需要保留的内容，再加载最新配置后重新编辑。"
+    : error.status === 409
+    ? "配置已在其他窗口变更。点击页面顶部的“刷新”合并最新配置后重试；无法自动合并的修改会提示处理。"
     : error.message || "保存失败，请重试。";
   const errors = error.body?.errors || [];
   feedback.innerHTML = esc(message) + (errors.length
     ? "<ul>" + errors.map((item) => "<li>" + esc(item.path || "") + ": " + esc(item.message) + "</li>").join("") + "</ul>"
-    : "");
+    : "") + (conflict ? '<div class="form-actions"><button class="button" type="button" data-action="reload-form">加载最新配置</button></div>' : "");
   form.prepend(feedback);
   feedback.focus({ preventScroll: true });
   feedback.scrollIntoView({ block: "nearest" });
@@ -1282,6 +1381,10 @@ function showFormError(form, error) {
 async function handleFormSubmit(event, form) {
   event.preventDefault();
   if (state.busy) return;
+  if (formConflicts.has(form)) {
+    showFormError(form, new Error("请先处理并发修改冲突。"));
+    return;
+  }
   // Read FormData before disabling controls; disabled inputs are omitted.
   const data = new FormData(form);
   const unlock = lockControls();

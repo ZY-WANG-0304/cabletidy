@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { normalizeConfig } from "../src/config.mjs";
 import { publicCodexCatalog } from "../src/codex-catalog.mjs";
+import { validateConfig } from "../src/validation.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const source = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
@@ -66,6 +67,9 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
       const body = request.body ? JSON.parse(request.body) : null;
       requests.push({ url, body });
       if (url === "/api/v1/config/commit") {
+        if (body.baseRevision !== persisted.revision) return {
+          ok: false, status: 409, json: async () => ({ error: { message: "配置已在其他窗口变更" } }),
+        };
         const override = await options.onCommit?.(body);
         if (override) return { ok: false, status: override.status, json: async () => override.body };
         persisted = normalizeConfig(body.config);
@@ -101,6 +105,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     controls: (items) => { controls = items; },
     node: (selector) => nodes.get(selector),
     persisted: () => clone(persisted),
+    externalUpdate(update) { update(persisted); persisted.revision += 1; },
     read: (expression) => vm.runInContext(expression, context),
     track(form) {
       context.trackedForm = form;
@@ -116,7 +121,10 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     change(target) {
       for (const handler of nodes.get("#page-content").listeners.get("change") || []) handler({ target });
     },
-    action: (action) => vm.runInContext(`handleAction(${JSON.stringify(action)})`, context),
+    action(action, element) {
+      context.actionElement = element;
+      return vm.runInContext(`handleAction(${JSON.stringify(action)}, actionElement)`, context);
+    },
     async submit(form) {
       context.submittedForm = form;
       await vm.runInContext("handleFormSubmit({ preventDefault() {} }, submittedForm)", context);
@@ -504,7 +512,7 @@ test("reverting edits allows Codex apply without an unnecessary commit", async (
 
 function metadataRow(mode = "official") {
   const select = officialSelectNode("gpt-5.5");
-  Object.assign(select, { name: "", type: "select-one", dataset: { suiteModelClient: "" } });
+  Object.assign(select, { name: "", type: "select-one", dataset: { suiteModelClient: "", officialModel: "" } });
   const context = inputNode("", "272000", { dataset: { suiteModelContext: "" }, type: "number", disabled: mode === "official" });
   const vision = inputNode("", "on", { dataset: { codexVision: "" }, type: "checkbox", checked: true, disabled: mode === "official" });
   const metadataMode = inputNode("", mode, { dataset: { codexMetadataMode: "" }, type: "select-one" });
@@ -567,4 +575,240 @@ test("the catalog action is labelled refresh model list", async () => {
   const app = await controller();
   assert.match(app.read("codexCatalogStatus()"), /刷新模型列表/);
   assert.doesNotMatch(app.read("codexCatalogStatus()"), /刷新目录/);
+});
+
+function addFixtureModel(config, id = "second", clientModelId = "gpt-5.6-sol") {
+  config.models[id] = { ...clone(config.models.model), id, clientModelId, aliases: [clientModelId] };
+  config.virtualProviders.codex.allowedModels.push(id);
+  config.routes.route.backends[0].models.push(id);
+}
+
+// Model the form replacement lifecycle, not just the saved configuration object.
+function mountSuiteEditor(app) {
+  const page = app.node("#page-content");
+  let current;
+  const makeForm = () => {
+    const config = app.read("state.candidate");
+    const form = formNode("suite-models-form");
+    form.rows = [];
+    const attribute = form.getAttribute;
+    form.getAttribute = (name) => name === "data-suite-context"
+      ? JSON.stringify(["codex", "codex", config.bindings.codex.virtualProvider, "route", config.routes.route.backends[0].upstream]) : attribute(name);
+    form.replaceWith = (replacement) => { current = replacement; };
+    const list = {
+      querySelector: () => null,
+      append(row) {
+        row.remove();
+        row.remove = () => { form.rows = form.rows.filter(item => item !== row); };
+        form.rows.push(row);
+      },
+    };
+    form.querySelector = (selector) => selector === "#suite-model-list" ? list
+      : selector === "[data-form-feedback]" ? form.feedback : null;
+    form.querySelectorAll = (selector) => selector === "[data-suite-model]" ? [...form.rows]
+      : selector === "input, select, textarea" ? form.rows.flatMap(row => row.inputs)
+      : selector === "[data-official-model]" ? form.rows.flatMap(row => row.inputs.filter(input => "officialModel" in input.dataset)) : [];
+    for (const id of config.virtualProviders.codex.allowedModels) {
+      const model = config.models[id];
+      const metadata = metadataRow(model.codex?.metadataMode);
+      const { row, select, context, vision } = metadata;
+      row.dataset.modelId = id;
+      select.value = model.clientModelId;
+      context.value = String(model.contextWindow || 272000);
+      vision.checked = model.codex?.inputModalities?.includes("image") ?? true;
+      const mapping = inputNode("", model.upstreams.relay.upstreamModelId, {
+        dataset: { suiteModelUpstream: "relay" }, closest: () => row,
+      });
+      const query = row.querySelector;
+      row.querySelector = (selector) => selector === '[data-suite-model-upstream="relay"]' ? mapping : query(selector);
+      row.inputs = [...metadata.inputs, mapping];
+      row.mapping = mapping;
+      row.context = context;
+      row.remove = () => { form.rows = form.rows.filter(item => item !== row); };
+      form.rows.push(row);
+    }
+    return form;
+  };
+  app.read('state.page = "suite-detail"');
+  Object.defineProperty(page, "innerHTML", { configurable: true, set: () => { current = makeForm(); } });
+  page.querySelectorAll = (selector) => selector === "form" ? [current] : [];
+  page.querySelector = (selector) => selector === "#suite-models-form" ? current : null;
+  app.read("render()");
+  return { form: () => current, row: (id = "model") => current.rows.find(row => row.dataset.modelId === id) };
+}
+
+test("conflict refresh merges another window's added model before retrying a local mapping edit", async () => {
+  const app = await controller();
+  const editor = mountSuiteEditor(app);
+  editor.row().mapping.value = "LOCAL-MAPPING";
+  app.externalUpdate(config => addFixtureModel(config));
+  await app.submit(editor.form());
+  assert.match(editor.form().feedback.innerHTML, /其他窗口变更/);
+  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "VENDOR-GPT");
+  await app.action("refresh");
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model", "second"]);
+  assert.equal(editor.row().mapping.value, "LOCAL-MAPPING");
+  assert.equal(app.edited(editor.form()), true);
+  await app.submit(editor.form());
+  const saved = app.persisted();
+  assert.deepEqual(Object.keys(saved.models), ["model", "second"]);
+  assert.deepEqual(saved.routes.route.backends[0].models, ["model", "second"]);
+  assert.deepEqual(saved.virtualProviders.codex.allowedModels, ["model", "second"]);
+  assert.equal(saved.models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+  assert.equal(validateConfig(saved).ok, true);
+  assert.equal(app.edited(editor.form()), false);
+});
+
+test("refresh merges disjoint fields on the same model and does not keep stale server values", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  config.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
+  config.models.model.contextWindow = 64000;
+  const app = await controller(config);
+  const editor = mountSuiteEditor(app);
+  editor.row().mapping.value = "LOCAL-MAPPING";
+  app.externalUpdate(config => { config.models.model.contextWindow = 128000; });
+  await app.action("refresh");
+  assert.equal(editor.row().mapping.value, "LOCAL-MAPPING");
+  assert.equal(editor.row().context.value, "128000");
+  await app.submit(editor.form());
+  assert.equal(app.persisted().models.model.contextWindow, 128000);
+  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+});
+
+test("overlapping edits remain blocked across repeated refreshes until explicitly reloaded", async () => {
+  const app = await controller();
+  const editor = mountSuiteEditor(app);
+  const local = editor.form();
+  editor.row().mapping.value = "LOCAL-MAPPING";
+  app.externalUpdate(config => { config.models.model.upstreams.relay.upstreamModelId = "REMOTE-MAPPING"; });
+  await app.submit(local);
+  const commits = () => app.requests.filter(({ url }) => url.endsWith("/config/commit")).length;
+  const attempts = commits();
+  for (let i = 0; i < 2; i++) {
+    await app.action("refresh");
+    assert.equal(editor.form(), local);
+    assert.equal(editor.row().mapping.value, "LOCAL-MAPPING");
+    assert.match(local.feedback.innerHTML, /冲突.*暂停保存/);
+    assert.match(local.feedback.innerHTML, /加载最新配置/);
+    await app.submit(local);
+    assert.equal(commits(), attempts);
+  }
+  await app.action("apply-target");
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  await app.action("reload-form", { closest: () => local });
+  assert.match(app.confirmations.at(-1), /放弃此表单/);
+  assert.equal(editor.row().mapping.value, "REMOTE-MAPPING");
+  assert.equal(app.edited(editor.form()), false);
+});
+
+test("local model removal and remote model addition are merged independently", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  addFixtureModel(config);
+  const app = await controller(config);
+  const editor = mountSuiteEditor(app);
+  editor.row().remove();
+  app.externalUpdate(config => addFixtureModel(config, "replacement", "gpt-5.5"));
+  await app.action("refresh");
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["second", "replacement"]);
+  await app.submit(editor.form());
+  assert.deepEqual(Object.keys(app.persisted().models), ["second", "replacement"]);
+  assert.deepEqual(app.persisted().virtualProviders.codex.allowedModels, ["second", "replacement"]);
+});
+
+for (const localDeletes of [true, false]) {
+  test(`refresh blocks ${localDeletes ? "local removal versus remote edit" : "local edit versus remote removal"}`, async () => {
+    const config = normalizeConfig(codexConfigFixture());
+    addFixtureModel(config);
+    const app = await controller(config);
+    const editor = mountSuiteEditor(app);
+    if (localDeletes) editor.row("second").remove();
+    else editor.row("second").mapping.value = "LOCAL-MAPPING";
+    app.externalUpdate(config => {
+      if (localDeletes) config.models.second.upstreams.relay.upstreamModelId = "REMOTE-MAPPING";
+      else {
+        delete config.models.second;
+        config.virtualProviders.codex.allowedModels = ["model"];
+        config.routes.route.backends[0].models = ["model"];
+      }
+    });
+    await app.action("refresh");
+    assert.match(editor.form().feedback.innerHTML, /冲突/);
+    await app.submit(editor.form());
+    assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  });
+}
+
+test("pending new rows survive remote additions and the refreshed baseline tracks only local edits", async () => {
+  const app = await controller();
+  const editor = mountSuiteEditor(app);
+  const added = metadataRow().row;
+  added.dataset.modelId = "";
+  added.inputs = [inputNode("", "new-model", { dataset: { suiteModelClient: "" }, closest: () => added })];
+  added.remove = () => {};
+  editor.form().querySelector("#suite-model-list").append(added);
+  app.externalUpdate(config => addFixtureModel(config));
+  await app.action("refresh");
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model", "second", ""]);
+  assert.equal(app.edited(editor.form()), true);
+  added.remove();
+  assert.equal(app.edited(editor.form()), false);
+});
+
+test("a changed suite upstream cannot silently retarget local model edits", async () => {
+  const app = await controller();
+  const editor = mountSuiteEditor(app);
+  editor.row().mapping.value = "LOCAL-MAPPING";
+  app.externalUpdate(config => { config.routes.route.backends[0].upstream = "another-upstream"; });
+  await app.action("refresh");
+  assert.match(editor.form().feedback.innerHTML, /冲突/);
+  await app.submit(editor.form());
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+});
+
+for (const property of ["model", "metadata mode"]) {
+  test(`concurrent ${property} changes cannot reinterpret local mapping edits`, async () => {
+    const app = await controller();
+    const editor = mountSuiteEditor(app);
+    editor.row().mapping.value = "LOCAL-MAPPING";
+    app.externalUpdate(config => {
+      if (property === "model") config.models.model.clientModelId = "gpt-5.6-sol";
+      else config.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
+    });
+    await app.action("refresh");
+    assert.match(editor.form().feedback.innerHTML, /冲突/);
+    await app.submit(editor.form());
+    assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  });
+}
+
+test("an unchanged model removed remotely is not resurrected by a local edit to another row", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  addFixtureModel(config);
+  const app = await controller(config);
+  const editor = mountSuiteEditor(app);
+  editor.row().mapping.value = "LOCAL-MAPPING";
+  app.externalUpdate(config => {
+    delete config.models.second;
+    config.virtualProviders.codex.allowedModels = ["model"];
+    config.routes.route.backends[0].models = ["model"];
+  });
+  await app.action("refresh");
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model"]);
+  await app.submit(editor.form());
+  assert.deepEqual(Object.keys(app.persisted().models), ["model"]);
+  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+});
+
+test("merged local model selection keeps its matching security hint", async () => {
+  const app = await controller(undefined, { catalog: securityCatalogFixture() });
+  const editor = mountSuiteEditor(app);
+  const select = editor.row().querySelector("[data-suite-model-client]");
+  select.value = "gpt-daybreak-blue-latest";
+  app.change(select);
+  app.externalUpdate(config => addFixtureModel(config));
+  await app.action("refresh");
+  const merged = editor.row().querySelector("[data-suite-model-client]");
+  assert.equal(merged.value, "gpt-daybreak-blue-latest");
+  assert.match(merged.hint.textContent, /防御性安全工作/);
+  assert.equal(merged.hint.hidden, false);
 });
