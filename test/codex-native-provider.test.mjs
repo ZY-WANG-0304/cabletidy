@@ -87,3 +87,26 @@ test("applying native Codex artifacts writes only config.toml", async () => {
   await applyCodexArtifacts(artifacts, { codexHome: home, paths: { backups: path.join(home, "backups") } });
   assert.equal(await fs.readFile(path.join(home, "config.toml"), "utf8"), merged);
 });
+
+test("unsupported artifact file lists are rejected before changing client files", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-artifact-contract-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const root = path.join(home, "config.toml");
+  const original = 'model = "existing-model"\n';
+  await fs.writeFile(root, original);
+  const options = { codexHome: home, paths: { backups: path.join(home, "backups") } };
+
+  await assert.rejects(applyCodexArtifacts({
+    files: [
+      { path: "config.toml", contents: 'model = "replacement"\n' },
+      { path: "profiles.toml", contents: '[profiles.custom]\nmodel = "replacement"\n' },
+    ],
+  }, options), /Unsupported Codex artifacts/);
+  assert.equal(await fs.readFile(root, "utf8"), original);
+  assert.deepEqual(await fs.readdir(home), ["config.toml"]);
+
+  const artifacts = buildCodexArtifacts(nativeConfig(), { bindingId: "relay-codex" });
+  const report = await applyCodexArtifacts(artifacts, options);
+  assert.deepEqual(report.applied, [root]);
+  assert.deepEqual((await fs.readdir(home)).sort(), ["backups", "config.toml"]);
+});

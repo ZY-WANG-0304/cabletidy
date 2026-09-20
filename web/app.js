@@ -26,8 +26,6 @@ const PAGE_META = {
   "suite-detail": "配置详情",
   upstreams: "上游管理",
   models: "模型管理",
-  routes: "路由管理",
-  targets: "CLI 接入",
   diagnostics: "诊断",
 };
 
@@ -37,7 +35,6 @@ const state = {
   candidate: null,
   runtime: null,
   events: [],
-  catalog: null,
   codexCatalog: null,
   busy: false,
   pendingSecrets: {
@@ -46,12 +43,10 @@ const state = {
   selected: {
     upstream: null,
     model: null,
-    route: null,
     virtualProvider: null,
     binding: null,
     suite: null,
   },
-  routeEditor: null,
   artifactPreview: null,
   resolveResult: null,
 };
@@ -93,18 +88,6 @@ function safeProviderId(value, fallback = "codex") {
   return id || fallback;
 }
 
-function selectOptions(record, selected, emptyLabel = "选择") {
-  const options = [`<option value="">${esc(emptyLabel)}</option>`];
-  for (const [id, item] of entries(record)) {
-    options.push(
-      `<option value="${esc(id)}" ${id === selected ? "selected" : ""}>${esc(
-        item.name || item.displayName || id,
-      )} (${esc(id)})</option>`,
-    );
-  }
-  return options.join("");
-}
-
 function optionList(items, selected) {
   return items
     .map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(item)}</option>`)
@@ -132,22 +115,19 @@ async function api(path, options = {}) {
 
 async function bootstrap() {
   try {
-    const [configResult, runtime, catalog, events, codexCatalog] = await Promise.all([
+    const [configResult, runtime, events, codexCatalog] = await Promise.all([
       api("/config"),
       api("/runtime"),
-      api("/catalog"),
       api("/events"),
       api("/codex/models"),
     ]);
     state.config = configResult.config;
     state.candidate = clone(state.config);
     state.runtime = runtime;
-    state.catalog = catalog;
     state.codexCatalog = codexCatalog;
     state.events = events.events || [];
     state.selected.upstream = firstKey(state.candidate.upstreams);
     state.selected.model = firstKey(state.candidate.models);
-    state.selected.route = firstKey(state.candidate.routes);
     state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
     state.selected.binding = firstKey(state.candidate.bindings);
     state.selected.suite = firstKey(state.candidate.bindings);
@@ -191,8 +171,6 @@ function render(preservedForms = []) {
     "suite-detail": renderSuiteDetail,
     upstreams: renderUpstreams,
     models: renderModels,
-    routes: renderRoutes,
-    targets: renderTargets,
     diagnostics: renderDiagnostics,
   };
   pageContent.innerHTML = renderers[state.page]();
@@ -339,7 +317,6 @@ function confirmPageLeave() {
 function navigatePage(page) {
   if (state.busy || !state.config || page === state.page || !confirmPageLeave()) return;
   state.page = page;
-  state.routeEditor = null;
   render();
 }
 
@@ -440,7 +417,6 @@ function selectSuite(id) {
   if (!suite) return;
   state.selected.binding = suite.bindingId;
   state.selected.virtualProvider = suite.binding.virtualProvider;
-  state.selected.route = suite.virtualProvider.route;
   state.selected.upstream = suite.upstreamId;
   state.selected.model = suite.modelIds[0] || null;
 }
@@ -931,131 +907,6 @@ function renderModels() {
   `;
 }
 
-function routeBackendEditor(backend, index) {
-  return `
-    <div class="backend-row" data-backend-index="${index}">
-      <div class="field"><label>UPSTREAM</label><select data-backend-upstream>${selectOptions(state.candidate.upstreams, backend.upstream, "选择 upstream")}</select></div>
-      <div class="field"><label>MODEL PROFILES</label><input data-backend-models value="${esc((backend.models || []).join(", "))}" placeholder="codex-gpt56-sol" /></div>
-      <div class="field"><label>PRIORITY</label><input data-backend-priority type="number" value="${esc(backend.priority ?? 10)}" /></div>
-      <button class="mini-button" type="button" data-action="remove-backend" data-index="${index}">移除</button>
-    </div>
-  `;
-}
-
-function renderRoutes() {
-  const config = state.candidate;
-  const selectedId = state.selected.route;
-  const selected = selectedId ? config.routes[selectedId] : null;
-  if (state.routeEditor === null || state.routeEditor.routeId !== selectedId) {
-    state.routeEditor = { routeId: selectedId, items: clone(selected?.backends || []) };
-  }
-  const backendRows = state.routeEditor.items.map(routeBackendEditor).join("");
-  return `
-    <button class="text-button" data-action="back-overview">返回列表</button>
-    <div class="form-layout">
-      <div class="panel">
-        <div class="panel-header"><h2>路由列表</h2><button class="button" data-action="new-route">新增路由</button></div>
-        <div class="panel-body">
-          ${
-            Object.keys(config.routes).length
-              ? `<div class="list">${entries(config.routes).map(([id, item]) => routeRow(id, item, id === selectedId)).join("")}</div>`
-              : `<div class="empty">暂无路由</div>`
-          }
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header"><h2>${selected ? esc(selected.name || selectedId) : "新增路由"}</h2></div>
-        <div class="panel-body">
-          <form id="route-form">
-            <div class="form-grid">
-              ${field("Route ID", "id", selectedId || "", "例如 codex-default", false, "text", Boolean(selectedId))}
-              ${field("显示名称", "name", selected?.name || "", "Codex default")}
-              ${selectField("Strategy", "strategy", selected?.strategy || "priority", ["priority"])}
-            </div>
-            <div class="subsection">
-              <div class="subsection-header"><h3>Backends</h3><button class="mini-button" type="button" data-action="add-backend">添加 backend</button></div>
-              <div class="backend-list">${backendRows || `<div class="empty">至少添加一个 backend</div>`}</div>
-            </div>
-            <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button button-danger" type="button" data-action="delete-route" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
-          </form>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function renderTargets() {
-  const config = state.candidate;
-  const vpId = state.selected.virtualProvider;
-  const vp = vpId ? config.virtualProviders[vpId] : null;
-  const bindingId = state.selected.binding;
-  const binding = bindingId ? config.bindings[bindingId] : null;
-  const boundVpId = binding?.virtualProvider || vpId;
-  const boundVp = boundVpId ? config.virtualProviders[boundVpId] : null;
-  const bindingTarget = binding?.target || "codex";
-  const modelOptions = optionList(
-    Object.keys(config.models),
-    binding?.defaultModel || boundVp?.defaultModel,
-  );
-  return `
-    <button class="text-button" data-action="back-overview">返回列表</button>
-    <div class="content-grid">
-      <div class="panel">
-        <div class="panel-header"><h2>本地服务</h2><button class="button" data-action="new-vp">新增服务</button></div>
-        <div class="panel-body">
-          ${
-            Object.keys(config.virtualProviders).length
-              ? `<div class="list">${entries(config.virtualProviders).map(([id, item]) => virtualProviderRow(id, item, id === vpId)).join("")}</div>`
-              : `<div class="empty">暂无本地服务</div>`
-          }
-          <div class="subsection">
-            <form id="vp-form">
-              <div class="subsection-header"><h3>${vp ? "编辑 Virtual Provider" : "新建 Virtual Provider"}</h3><span class="field-hint">${vp ? esc(vpId) : "local endpoint"}</span></div>
-              <div class="form-grid">
-                ${field("Provider ID", "id", vpId || "", "例如 codex-main", false, "text", Boolean(vpId))}
-                ${field("显示名称", "name", vp?.name || "", "Codex main")}
-                ${field("Listen host", "listenHost", vp?.listenHost || "127.0.0.1", "127.0.0.1")}
-                ${field("Listen port", "listenPort", vp?.listenPort ?? 43101, "43101")}
-                ${selectField("Ingress protocol", "ingressProtocol", vp?.ingressProtocol || "openai.responses", ["openai.responses", "anthropic.messages"])}
-                ${selectField("Route", "route", vp?.route || "", Object.keys(config.routes))}
-                <div class="field full"><label>Allowed Model Profiles</label><input name="allowedModels" value="${esc((vp?.allowedModels || []).join(", "))}" placeholder="codex-gpt56-sol, codex-gpt55" /></div>
-                <div class="field full"><label>Default Model Profile</label><select name="defaultModel"><option value="">选择默认模型</option>${modelOptions}</select></div>
-              </div>
-              <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${vp ? `<button class="button" type="button" data-action="toggle-vp" data-id="${esc(vpId)}">${vp.enabled === false ? "启动 Virtual Provider" : "暂停 Virtual Provider"}</button><button class="button button-danger" type="button" data-action="delete-vp" data-id="${esc(vpId)}">删除</button>` : ""}</div>
-            </form>
-          </div>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header"><h2>CLI 绑定</h2><button class="button" data-action="new-binding">新增绑定</button></div>
-        <div class="panel-body">
-          ${
-            Object.keys(config.bindings).length
-              ? `<div class="list">${entries(config.bindings).map(([id, item]) => bindingRow(id, item, id === bindingId)).join("")}</div>`
-              : `<div class="empty">暂无绑定</div>`
-          }
-          <div class="subsection">
-            <form id="binding-form">
-              <div class="subsection-header"><h3>${binding ? "编辑 Binding" : "新建 Binding"}</h3><span class="field-hint">${binding ? esc(bindingId) : "native client config"}</span></div>
-              <div class="form-grid">
-                ${field("Binding ID", "id", bindingId || "", "例如 codex-main", false, "text", Boolean(bindingId))}
-                ${selectField("Target", "target", bindingTarget, ["codex", "claude-code", "generic-env"], "binding-target")}
-                ${selectField("Virtual Provider", "virtualProvider", boundVpId || "", Object.keys(config.virtualProviders))}
-                ${selectField("Mode", "mode", binding?.mode || "config", ["config", "run", "env"])}
-                ${selectField("Default Model", "defaultModel", binding?.defaultModel || vp?.defaultModel || "", Object.keys(config.models))}
-                ${bindingTarget === "claude-code" ? checkboxField("设置 ANTHROPIC_MODEL", "claudeSetModel", binding?.claude?.setModel !== false) : ""}
-                ${bindingTarget === "generic-env" ? field("Generic env prefix", "envPrefix", binding?.env?.prefix || "CABLETIDY", "CABLETIDY") : ""}
-              </div>
-              <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${binding ? `<button class="button" type="button" data-action="preview-artifacts">预览 Target 配置</button><button class="button" type="button" data-action="apply-target">${bindingTarget === "codex" ? "应用到 Codex" : "生成环境配置"}</button><button class="button button-danger" type="button" data-action="delete-binding" data-id="${esc(bindingId)}">删除</button>` : ""}</div>
-            </form>
-          </div>
-          ${state.artifactPreview ? artifactPanel(state.artifactPreview) : ""}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function renderDiagnostics() {
   const config = state.config;
   const resolveResult = state.resolveResult;
@@ -1103,26 +954,6 @@ function modelRow(id, item, active = false) {
   return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(item.clientModelId || item.aliases?.[0] || id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")} · ${esc(context)} · ${esc(compact)}</p></div><span class="status-badge">${Object.keys(item.upstreams || {}).length} bindings</span></button>`;
 }
 
-function routeRow(id, item, active = false) {
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-route" data-id="${esc(id)}"><div><h3>${esc(item.name || id)}</h3><p>${esc(item.strategy || "priority")} · ${(item.backends || []).length} backends</p></div><span class="status-badge">${(item.backends || []).filter((backend) => backend.enabled !== false).length} active</span></button>`;
-}
-
-function virtualProviderRow(id, item, active = false) {
-  const runtime = state.runtime?.virtualProviders?.find((entry) => entry.id === id);
-  const status = item.enabled === false ? "paused" : runtime?.status || "not listening";
-  const statusClass = status === "paused" || status === "not_listening" ? "warning" : "";
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-vp" data-id="${esc(id)}"><div><h3>${esc(item.name || id)}</h3><p>${esc(item.listenHost)}:${esc(item.listenPort)} · ${esc(item.ingressProtocol)}</p></div><span class="status-badge ${statusClass}">${esc(status)}</span></button>`;
-}
-
-function bindingRow(id, item, active = false) {
-  const integration = item.integration === "codex-native-provider"
-    ? "Codex Native Provider Integration"
-    : item.target === "codex"
-      ? "Codex local config"
-      : "native target";
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-binding" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(item.target)} · ${esc(integration)} · ${esc(item.virtualProvider || "no provider")}</p></div><span class="status-badge">${esc(item.mode || "config")}</span></button>`;
-}
-
 function eventRow(event) {
   return `<div class="list-row"><div><h3>${esc(event.type)}</h3><p>${esc(new Date(event.at).toLocaleString())} · ${esc(event.data?.upstreamId || event.data?.revision || "control")}</p></div><span class="table-meta">${esc(event.id)}</span></div>`;
 }
@@ -1131,8 +962,8 @@ function field(label, name, value, placeholder = "", full = false, type = "text"
   return `<label class="field ${full ? "full" : ""}"><span>${esc(label)}</span><input name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}" ${readonly ? "readonly" : ""} ${required ? "required" : ""} /></label>`;
 }
 
-function selectField(label, name, value, items, dataClass = "") {
-  return `<label class="field"><span>${esc(label)}</span><select name="${esc(name)}" aria-label="${esc(label)}" ${dataClass ? `data-${esc(dataClass)}="true"` : ""}>${optionList(items, value)}</select></label>`;
+function selectField(label, name, value, items) {
+  return `<label class="field"><span>${esc(label)}</span><select name="${esc(name)}" aria-label="${esc(label)}" >${optionList(items, value)}</select></label>`;
 }
 
 function checkboxField(label, name, checked) {
@@ -1175,11 +1006,9 @@ async function handleAction(action, element) {
   if (state.busy) return;
   if ([
     "create-suite", "open-suite", "back-overview", "select-upstream", "select-model",
-    "select-route", "select-vp", "select-binding", "new-upstream", "new-model",
-    "new-route", "new-vp", "new-binding", "focus-upstream", "open-advanced-models",
+    "new-upstream", "new-model", "focus-upstream", "open-advanced-models",
   ].includes(action)) {
     if (!confirmPageLeave()) return;
-    state.routeEditor = null;
   }
   const unlock = lockControls();
   try {
@@ -1219,19 +1048,6 @@ async function handleAction(action, element) {
       state.selected.model = element.dataset.id;
       state.page = "models";
       render();
-    } else if (action === "select-route") {
-      state.selected.route = element.dataset.id;
-      state.routeEditor = null;
-      state.page = "routes";
-      render();
-    } else if (action === "select-vp") {
-      state.selected.virtualProvider = element.dataset.id;
-      state.page = "targets";
-      render();
-    } else if (action === "select-binding") {
-      state.selected.binding = element.dataset.id;
-      state.page = "targets";
-      render();
     } else if (action === "new-upstream") {
       state.selected.upstream = null;
       state.page = "upstreams";
@@ -1239,19 +1055,6 @@ async function handleAction(action, element) {
     } else if (action === "new-model") {
       state.selected.model = null;
       state.page = "models";
-      render();
-    } else if (action === "new-route") {
-      state.selected.route = null;
-      state.routeEditor = { routeId: null, items: [] };
-      state.page = "routes";
-      render();
-    } else if (action === "new-vp") {
-      state.selected.virtualProvider = null;
-      state.page = "targets";
-      render();
-    } else if (action === "new-binding") {
-      state.selected.binding = null;
-      state.page = "targets";
       render();
     } else if (action === "add-suite-model") {
       const list = pageContent.querySelector("#suite-model-list");
@@ -1274,18 +1077,6 @@ async function handleAction(action, element) {
         throw new Error("至少保留一个客户端模型");
       }
       element.closest("[data-suite-model]")?.remove();
-    } else if (action === "add-backend") {
-      const list = pageContent.querySelector(".backend-list");
-      const index = list.querySelectorAll("[data-backend-index]").length;
-      const wrapper = document.createElement("div");
-      wrapper.innerHTML = routeBackendEditor({
-        upstream: firstKey(state.candidate.upstreams) || "",
-        priority: (index + 1) * 10,
-        models: [],
-        enabled: true,
-      }, index);
-      list.querySelector(".empty")?.remove();
-      list.appendChild(wrapper.firstElementChild);
     } else if (action === "add-create-model") {
       const list = pageContent.querySelector("#create-model-list");
       if (!list) return;
@@ -1293,19 +1084,13 @@ async function handleAction(action, element) {
       wrapper.innerHTML = createModelRow();
       const row = wrapper.firstElementChild;
       list.appendChild(row);
-    } else if (action === "remove-backend") {
-      element.closest("[data-backend-index]")?.remove();
-      pageContent.querySelectorAll("[data-backend-index]").forEach((row, index) => {
-        row.dataset.backendIndex = index;
-        row.querySelector('[data-action="remove-backend"]').dataset.index = index;
-      });
     } else if (action === "remove-create-model") {
       const rows = pageContent.querySelectorAll("[data-create-model]");
       if (rows.length <= 1) {
         throw new Error("至少保留一个模型映射");
       }
       element.closest("[data-create-model]")?.remove();
-    } else if (["delete-upstream", "delete-model", "delete-route", "delete-vp", "delete-binding"].includes(action)) {
+    } else if (["delete-upstream", "delete-model"].includes(action)) {
       if (!window.confirm("删除此配置项？删除后立即生效。")) return;
       await saveChanges(() => removeConfigItem(action, element.dataset.id), element.closest("form"));
     } else if (action === "test-upstream") {
@@ -1409,9 +1194,6 @@ async function handleFormSubmit(event, form) {
       "suite-upstream-form": () => saveSuiteUpstream(data),
       "suite-models-form": () => saveSuiteModels(form),
       "model-form": () => saveModel(data, form),
-      "route-form": () => saveRoute(data, form),
-      "vp-form": () => saveVirtualProvider(data),
-      "binding-form": () => saveBinding(data),
     };
     if (!handlers[formId]) throw new Error("无法保存此表单，请刷新页面后重试。");
     await saveChanges(handlers[formId], form);
@@ -1436,22 +1218,6 @@ function removeConfigItem(action, id) {
       if (provider.defaultModel === id) provider.defaultModel = provider.allowedModels[0] || "";
     }
     state.selected.model = firstKey(state.candidate.models);
-  } else if (action === "delete-route") {
-    delete state.candidate.routes[id];
-    for (const provider of values(state.candidate.virtualProviders)) {
-      if (provider.route === id) provider.route = "";
-    }
-    state.selected.route = firstKey(state.candidate.routes);
-    state.routeEditor = null;
-  } else if (action === "delete-vp") {
-    delete state.candidate.virtualProviders[id];
-    for (const binding of values(state.candidate.bindings)) {
-      if (binding.virtualProvider === id) binding.virtualProvider = "";
-    }
-    state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
-  } else if (action === "delete-binding") {
-    delete state.candidate.bindings[id];
-    state.selected.binding = firstKey(state.candidate.bindings);
   }
 }
 
@@ -1584,7 +1350,6 @@ function saveSuiteModels(form) {
       ? suite.binding.defaultModel
       : Object.keys(nextModels)[0],
   };
-  state.routeEditor = { routeId, items: [clone(nextRouteBackend)] };
   selectSuite(suite.bindingId);
 
 }
@@ -1703,7 +1468,6 @@ function saveSuiteCreate(data, form) {
 
   state.selected.upstream = upstreamId;
   state.selected.model = defaultModel;
-  state.selected.route = routeId;
   state.selected.virtualProvider = virtualProviderId;
   state.selected.binding = bindingId;
   state.selected.suite = bindingId;
@@ -1788,98 +1552,6 @@ function saveModel(data, form) {
     upstreams,
   };
   state.selected.model = id;
-
-}
-
-function saveRoute(data, form) {
-  const id = String(data.get("id") || "").trim();
-  if (!id) throw new Error("Route ID 不能为空");
-  const backends = [...form.querySelectorAll("[data-backend-index]")].map((row) => ({
-    upstream: row.querySelector("[data-backend-upstream]").value,
-    models: commaList(row.querySelector("[data-backend-models]").value),
-    priority: Number(row.querySelector("[data-backend-priority]").value || 10),
-    enabled: true,
-  }));
-  state.candidate.routes[id] = {
-    ...(state.candidate.routes[id] || {}),
-    id,
-    name: String(data.get("name") || id).trim(),
-    strategy: data.get("strategy") || "priority",
-    backends,
-  };
-  state.selected.route = id;
-  state.routeEditor = { routeId: id, items: clone(backends) };
-
-}
-
-function saveVirtualProvider(data) {
-  const id = String(data.get("id") || "").trim();
-  if (!id) throw new Error("Virtual Provider ID 不能为空");
-  const existing = state.candidate.virtualProviders[id] || {};
-  state.candidate.virtualProviders[id] = {
-    ...existing,
-    id,
-    name: String(data.get("name") || id).trim(),
-    listenHost: String(data.get("listenHost") || "127.0.0.1").trim(),
-    listenPort: Number(data.get("listenPort") || 43101),
-    ingressProtocol: data.get("ingressProtocol") || "openai.responses",
-    route: data.get("route") || "",
-    allowedModels: commaList(data.get("allowedModels")),
-    defaultModel: String(data.get("defaultModel") || "").trim(),
-    enabled: existing.enabled !== false,
-  };
-  state.selected.virtualProvider = id;
-
-}
-
-function saveBinding(data) {
-  const id = String(data.get("id") || "").trim();
-  if (!id) throw new Error("Binding ID 不能为空");
-  const existing = state.candidate.bindings[id] || {};
-  const target = data.get("target") || "codex";
-  const targetFormat =
-    target === "codex"
-      ? "codex.config.toml.v1"
-      : target === "claude-code"
-        ? "claude.env.v1"
-        : "generic.env.v1";
-  const nextBinding = {
-    ...existing,
-    id,
-    target,
-    ...(target === "codex" ? { integration: "codex-native-provider" } : {}),
-    targetFormat,
-    virtualProvider: data.get("virtualProvider") || "",
-    mode: data.get("mode") || "config",
-    defaultModel: data.get("defaultModel") || "",
-  };
-  if (target === "codex") {
-    nextBinding.codex = {
-      ...(existing.codex || {}),
-    };
-    delete nextBinding.codex.providerId;
-    delete nextBinding.claude;
-    delete nextBinding.env;
-    nextBinding.integration = "codex-native-provider";
-  } else if (target === "claude-code") {
-    nextBinding.claude = {
-      ...(existing.claude || {}),
-      setModel: data.get("claudeSetModel") === "on",
-    };
-    delete nextBinding.codex;
-    delete nextBinding.env;
-    delete nextBinding.integration;
-  } else {
-    nextBinding.env = {
-      ...(existing.env || {}),
-      prefix: String(data.get("envPrefix") || existing.env?.prefix || "CABLETIDY").trim(),
-    };
-    delete nextBinding.codex;
-    delete nextBinding.claude;
-    delete nextBinding.integration;
-  }
-  state.candidate.bindings[id] = nextBinding;
-  state.selected.binding = id;
 
 }
 
@@ -1968,7 +1640,6 @@ async function saveChanges(update, form) {
   const previous = {
     page: state.page,
     selected: clone(state.selected),
-    routeEditor: clone(state.routeEditor),
   };
   const preservedForms = captureEditedForms(form);
   state.candidate = clone(state.config);
@@ -2017,7 +1688,6 @@ async function refresh(showToast = true) {
   state.pendingSecrets = { upstreamSecrets: {} };
   state.runtime = runtime;
   state.events = events.events || [];
-  state.routeEditor = null;
   if (showToast) toast("状态已刷新。");
   render(preservedForms);
 }

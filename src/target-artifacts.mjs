@@ -5,8 +5,6 @@ import {
 } from "./codex-native-provider.mjs";
 import { clientModelIdForProfile, resolveModelProfile } from "./model-resolver.mjs";
 
-const TARGETS = new Set(["codex", "claude-code", "generic-env"]);
-
 export async function prepareTargetArtifacts(config, options = {}, secrets = {}) {
   const binding = findBinding(config, options.bindingId);
   if (!binding) throw new Error("找不到 Target binding");
@@ -43,10 +41,6 @@ export function publicTargetArtifacts(artifacts) {
     localSecret: undefined,
     environment: publicEnvironment(artifacts.environment),
   };
-}
-
-export function targetSupported(target) {
-  return TARGETS.has(target);
 }
 
 function findBinding(config, bindingId) {
