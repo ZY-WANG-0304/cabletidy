@@ -1,33 +1,46 @@
 const pageContent = document.querySelector("#page-content");
 const pageTitle = document.querySelector("#page-title");
-const pageEyebrow = document.querySelector("#page-eyebrow");
 const railStatus = document.querySelector("#rail-status");
 const revisionLabel = document.querySelector("#revision-label");
 const toastRegion = document.querySelector("#toast-region");
+const formBaselines = new WeakMap();
+const formConflicts = new WeakSet();
+const lockedControls = new WeakMap();
+let modelHintSequence = 0;
+
+// Explicit product guidance; catalog visibility does not indicate authorization.
+const SECURITY_MODELS = new Map([
+  ["gpt-daybreak-blue-latest", {
+    label: "Daybreak Blue · 需授权",
+    hint: "用于防御性安全工作，需确认上游支持并已获授权。",
+  }],
+  ["gpt-daybreak-red-latest", {
+    label: "Daybreak Red · 需专项授权",
+    hint: "用于专项授权安全研究，需单独获得 Red 授权并确认上游支持。",
+  }],
+]);
 
 const PAGE_META = {
-  overview: ["CONFIGURATION SETS", "把一套可用接入方案放在一起管理"],
-  "suite-create": ["NEW CONFIGURATION SET", "创建一套 CLI 接入方案"],
-  "suite-detail": ["CONFIGURATION SET", "编辑这套接入方案"],
-  upstreams: ["CONTROL / UPSTREAMS", "先把上游接进来"],
-  models: ["CONTROL / MODEL REGISTRY", "客户端看到的名字，由你定义"],
-  routes: ["CONTROL / ROUTING", "把稳定性写进路径"],
-  targets: ["CONTROL / TARGETS", "生成 CLI 真正要用的配置"],
-  diagnostics: ["OBSERVABILITY / DIAGNOSTICS", "在请求发出前看清楚它会去哪"],
+  overview: "配置套装",
+  "suite-create": "新建配置",
+  "suite-detail": "配置详情",
+  upstreams: "上游管理",
+  models: "模型管理",
+  routes: "路由管理",
+  targets: "CLI 接入",
+  diagnostics: "诊断",
 };
 
 const state = {
   page: "overview",
   config: null,
-  draft: null,
+  candidate: null,
   runtime: null,
   events: [],
   catalog: null,
   codexCatalog: null,
-  dirty: false,
-  showWizard: false,
-  suiteView: "overview",
-  secretDraft: {
+  busy: false,
+  pendingSecrets: {
     upstreamSecrets: {},
   },
   selected: {
@@ -38,9 +51,8 @@ const state = {
     binding: null,
     suite: null,
   },
-  routeDraftBackends: null,
+  routeEditor: null,
   artifactPreview: null,
-  validation: null,
   resolveResult: null,
 };
 
@@ -128,18 +140,19 @@ async function bootstrap() {
       api("/codex/models"),
     ]);
     state.config = configResult.config;
-    state.draft = clone(state.config);
+    state.candidate = clone(state.config);
     state.runtime = runtime;
     state.catalog = catalog;
     state.codexCatalog = codexCatalog;
     state.events = events.events || [];
-    state.selected.upstream = firstKey(state.draft.upstreams);
-    state.selected.model = firstKey(state.draft.models);
-    state.selected.route = firstKey(state.draft.routes);
-    state.selected.virtualProvider = firstKey(state.draft.virtualProviders);
-    state.selected.binding = firstKey(state.draft.bindings);
-    state.selected.suite = firstKey(state.draft.bindings);
-    railStatus.textContent = "DAEMON ONLINE";
+    state.selected.upstream = firstKey(state.candidate.upstreams);
+    state.selected.model = firstKey(state.candidate.models);
+    state.selected.route = firstKey(state.candidate.routes);
+    state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
+    state.selected.binding = firstKey(state.candidate.bindings);
+    state.selected.suite = firstKey(state.candidate.bindings);
+    railStatus.textContent = "服务运行中";
+    railStatus.parentElement.classList.remove("is-offline");
     render();
   } catch (error) {
     renderUnavailable(error.message);
@@ -148,40 +161,33 @@ async function bootstrap() {
 
 function renderUnavailable(message) {
   railStatus.textContent = "无法连接";
+  railStatus.parentElement.classList.add("is-offline");
   pageTitle.textContent = "无法连接到 CableTidy";
-  pageEyebrow.textContent = "LOCAL ACCESS / DAEMON";
   pageContent.innerHTML = `
-    <div class="hero-strip">
-      <div>
-        <p class="eyebrow">LOCAL DAEMON</p>
-        <h2>请确认 CableTidy daemon 正在运行</h2>
-        <p>管理台只绑定本机回环地址，不需要访问 token 或 session。请先运行 <span class="mono">npm start</span>，然后直接打开 <span class="mono">cabletidy web print-url</span> 输出的地址。</p>
-      </div>
-      <div class="hero-aside">
-        <span class="hero-aside-label">RESPONSE</span>
-        <span class="hero-aside-value">${esc(message || "unauthorized")}</span>
-      </div>
+    <div class="notice warning" role="alert">
+      <p>${esc(message || "服务不可用")}</p>
+      <span>运行 <code>npm start</code> 后重试。</span>
+      <button class="button" data-action="reconnect">重试连接</button>
     </div>
   `;
+  pageContent.querySelector('[data-action="reconnect"]').addEventListener("click", bootstrap);
 }
 
-function render() {
-  const [eyebrow, title] = pageMeta();
-  pageEyebrow.textContent = eyebrow;
-  pageTitle.textContent = title;
-  revisionLabel.textContent = `REV ${state.draft?.revision ?? 0}${state.dirty ? " / DRAFT" : ""}`;
+function render(preservedForms = []) {
+  pageTitle.textContent = state.page === "suite-detail"
+    ? selectedSuite()?.name || PAGE_META["suite-detail"]
+    : pageMeta();
+  revisionLabel.textContent = `版本 ${state.config?.revision ?? 0}`;
   document.querySelectorAll(".nav-item").forEach((item) => {
-    item.classList.toggle(
-      "is-active",
-      item.dataset.page === (state.page === "suite-detail" || state.page === "suite-create"
-        ? "overview"
-        : state.page),
-    );
+    const active = item.dataset.page === (state.page === "diagnostics" ? "diagnostics" : "overview");
+    item.classList.toggle("is-active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
   });
 
   const renderers = {
     overview: renderOverview,
-    "suite-create": renderSetupWizard,
+    "suite-create": renderSuiteCreate,
     "suite-detail": renderSuiteDetail,
     upstreams: renderUpstreams,
     models: renderModels,
@@ -190,19 +196,166 @@ function render() {
     diagnostics: renderDiagnostics,
   };
   pageContent.innerHTML = renderers[state.page]();
-  pageContent.querySelectorAll("[data-page]").forEach((item) => {
-    item.addEventListener("click", () => {
-      state.page = item.dataset.page;
-      render();
-    });
-  });
-  pageContent.querySelectorAll("[data-action]").forEach((item) => {
-    item.addEventListener("click", () => handleAction(item.dataset.action, item));
-  });
-  pageContent.querySelectorAll("form").forEach((form) => {
-    form.addEventListener("submit", (event) => handleFormSubmit(event, form));
-  });
+  for (const form of pageContent.querySelectorAll("form")) {
+    formBaselines.set(form, formSnapshot(form));
+  }
+  for (const form of preservedForms) {
+    const replacement = pageContent.querySelector(`#${CSS.escape(form.getAttribute("id"))}`);
+    if (replacement) restoreFormChanges(form, replacement);
+    else {
+      formConflicts.add(form);
+      pageContent.append(form);
+      showFormError(form, new Error("配置项已在其他窗口删除。"));
+    }
+  }
 }
+
+function fieldSnapshot(control) {
+  return [
+    control.name || "", control.type, { ...control.dataset },
+    control.closest("[data-suite-model]")?.dataset.modelId || "",
+    ["checkbox", "radio"].includes(control.type) ? control.checked
+      : control.multiple ? [...control.selectedOptions].map((option) => option.value)
+        : control.value,
+  ];
+}
+
+function formSnapshot(form) {
+  const fields = [...form.querySelectorAll("input, select, textarea")].filter((control) => {
+    // Official metadata is derived, not an editable configuration value.
+    if ("suiteModelContext" in control.dataset || "codexVision" in control.dataset) {
+      const mode = control.closest("[data-suite-model]")?.querySelector("[data-codex-metadata-mode]");
+      if (mode?.value === "official") return false;
+    }
+    return !["submit", "button", "reset"].includes(control.type);
+  });
+  return JSON.stringify(fields.map(fieldSnapshot));
+}
+
+function fieldKey(field) {
+  return JSON.stringify(field.slice(0, 4));
+}
+
+function mergeFormFields(base, local, remote) {
+  const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+  const index = (fields) => new Map(fields.map((field) => [fieldKey(field), field]));
+  const [before, ours, theirs] = [base, local, remote].map(index);
+  // Repeated controls without stable row IDs cannot be merged safely.
+  if ([base, local, remote].some((fields, i) => fields.length !== [before, ours, theirs][i].size)) return null;
+  for (const field of base) {
+    const key = fieldKey(field);
+    if (field[0] === "id" && !same(field, theirs.get(key))) return null;
+    if (!("suiteModelClient" in field[2] || "codexMetadataMode" in field[2])) continue;
+    if (same(field, ours.get(key)) && same(field, theirs.get(key))) continue;
+    const row = (fields) => fields.filter((item) => item[3] === field[3]);
+    // A changed model or metadata mode changes the meaning of its other fields.
+    if (!same(row(base), row(local)) && !same(row(base), row(remote)) && !same(row(local), row(remote))) return null;
+  }
+  const merged = [];
+  for (const key of new Set([...before.keys(), ...ours.keys(), ...theirs.keys()])) {
+    const original = before.get(key);
+    const current = ours.get(key);
+    const latest = theirs.get(key);
+    if (same(current, original)) {
+      if (latest) merged.push(latest);
+    } else if (same(latest, original) || same(current, latest)) {
+      if (current) merged.push(current);
+    } else return null;
+  }
+  return merged;
+}
+
+function restoreFormChanges(form, replacement) {
+  const baseline = formBaselines.get(form);
+  const latest = formBaselines.get(replacement);
+  const current = formSnapshot(form);
+  const sameContext = form.getAttribute("data-suite-context") === replacement.getAttribute("data-suite-context");
+  if (sameContext && current === latest) return;
+  if (sameContext && baseline === latest) {
+    if (formConflicts.has(form)) form.querySelector("[data-form-feedback]")?.remove();
+    formConflicts.delete(form);
+    replacement.replaceWith(form);
+    return;
+  }
+  const suiteModels = form.getAttribute("id") === "suite-models-form";
+  const savedFields = (snapshot) => JSON.parse(snapshot).filter((field) => !suiteModels || field[3]);
+  const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
+  const sameStructure = baseline !== undefined && (suiteModels
+    || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
+  const merged = sameContext && sameStructure
+    ? mergeFormFields(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
+  const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
+    .map((control) => [fieldKey(fieldSnapshot(control)), control]));
+  if (!merged || merged.some((field) => !controls.has(fieldKey(field)))) {
+    // Keep the old baseline and input; never bless a stale form with a new revision.
+    formConflicts.add(form);
+    replacement.replaceWith(form);
+    showFormError(form, new Error("配置存在并发修改冲突。"));
+    return;
+  }
+  for (const field of merged) {
+    const control = controls.get(fieldKey(field));
+    if (["checkbox", "radio"].includes(control.type)) control.checked = field[4];
+    else if (control.multiple) {
+      for (const option of control.options) option.selected = field[4].includes(option.value);
+    } else control.value = field[4];
+  }
+  if (suiteModels) {
+    const retained = new Set(merged.map((field) => field[3]));
+    replacement.querySelectorAll("[data-suite-model]").forEach((row) => {
+      if (!retained.has(row.dataset.modelId)) row.remove();
+      else syncCodexMetadata(row);
+    });
+    const list = replacement.querySelector("#suite-model-list");
+    form.querySelectorAll("[data-suite-model]").forEach((row) => {
+      if (!row.dataset.modelId) {
+        list.querySelector(".empty")?.remove();
+        list.append(row);
+      }
+    });
+  }
+  replacement.querySelectorAll("[data-official-model]").forEach(updateOfficialModelHint);
+}
+
+function isFormEdited(form) {
+  const baseline = formBaselines.get(form);
+  return formConflicts.has(form) || baseline !== undefined && baseline !== formSnapshot(form);
+}
+
+function captureEditedForms(excludedForm) {
+  return [...pageContent.querySelectorAll("form")].filter(
+    (form) => form !== excludedForm && isFormEdited(form),
+  );
+}
+
+function hasUnsavedChanges() {
+  return captureEditedForms().some((form) => form.getAttribute("id") !== "resolve-form");
+}
+
+function confirmPageLeave() {
+  return !hasUnsavedChanges() || window.confirm("有未保存的修改，确定放弃并离开？");
+}
+
+function navigatePage(page) {
+  if (state.busy || !state.config || page === state.page || !confirmPageLeave()) return;
+  state.page = page;
+  state.routeEditor = null;
+  render();
+}
+
+pageContent.addEventListener("click", (event) => {
+  const element = event.target.closest("[data-action], [data-page]");
+  if (!element || !pageContent.contains(element) || state.busy) return;
+  if (element.dataset.action) handleAction(element.dataset.action, element);
+  else navigatePage(element.dataset.page);
+});
+
+pageContent.addEventListener("submit", (event) => handleFormSubmit(event, event.target));
+window.addEventListener("beforeunload", (event) => {
+  if (!hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 function pageMeta() {
   return PAGE_META[state.page] || PAGE_META.overview;
@@ -276,13 +429,13 @@ function configurationSuites(config) {
 }
 
 function selectedSuite() {
-  return configurationSuites(state.draft || {}).find(
+  return configurationSuites(state.candidate || {}).find(
     (suite) => suite.id === state.selected.suite,
   ) || null;
 }
 
 function selectSuite(id) {
-  const suite = configurationSuites(state.draft || {}).find((item) => item.id === id);
+  const suite = configurationSuites(state.candidate || {}).find((item) => item.id === id);
   state.selected.suite = id || null;
   if (!suite) return;
   state.selected.binding = suite.bindingId;
@@ -294,111 +447,55 @@ function selectSuite(id) {
 
 function suiteHealth(suite) {
   if (suite.virtualProvider?.enabled === false) {
-    return { label: "paused", className: "warning" };
+    return { label: "已暂停", className: "warning" };
   }
   const runtimeProvider = state.runtime?.virtualProviders?.find(
     (item) => item.id === suite.virtualProvider?.id,
   );
   if (runtimeProvider?.status === "not_listening") {
-    return { label: "not listening", className: "danger" };
+    return { label: "未监听", className: "danger" };
   }
   const health = suite.upstreamId ? state.runtime?.health?.[suite.upstreamId] : null;
-  if (health?.outcome === "failure") return { label: "unhealthy", className: "danger" };
-  if (health?.outcome === "success") return { label: "healthy", className: "" };
-  if (!suite.upstream) return { label: "incomplete", className: "warning" };
+  if (health?.outcome === "failure") return { label: "连接异常", className: "danger" };
+  if (health?.outcome === "success") return { label: "连接正常", className: "" };
+  if (!suite.upstream) return { label: "配置不完整", className: "warning" };
   if (!upstreamSecretConfigured(suite.upstreamId, suite.upstream)) {
-    return { label: "needs key", className: "warning" };
+    return { label: "缺少密钥", className: "warning" };
   }
-  return { label: "ready", className: "" };
+  return { label: "未测试", className: "neutral" };
 }
 
 function suiteEndpoint(suite) {
   const provider = suite.virtualProvider;
-  if (!provider?.listenPort) return "尚未创建本地 endpoint";
+  if (!provider?.listenPort) return "未分配";
   return `http://${provider.listenHost || "127.0.0.1"}:${provider.listenPort}/v1`;
 }
 
 function suiteRow(suite) {
   const health = suiteHealth(suite);
-  const pendingSecret = hasPendingUpstreamSecret(suite.upstreamId);
-  const healthLabel = pendingSecret && health.label === "ready" ? "key staged" : health.label;
   return `
-    <button class="suite-row" data-action="open-suite" data-id="${esc(suite.id)}">
-      <div class="suite-row-main">
-        <div class="suite-row-kicker">${esc(targetLabel(suite.target))} · ${esc(suite.upstream?.name || suite.upstreamId || "未配置上游")}</div>
-        <h3>${esc(suite.name)}</h3>
-        <p>${suite.modelIds.length} 个客户端模型 · 单上游本地接入</p>
-      </div>
-      <div class="suite-row-side">
-        <span class="suite-endpoint mono">${esc(suiteEndpoint(suite))}</span>
-        <span class="status-badge ${health.className}">${esc(healthLabel)}</span>
-      </div>
-    </button>
+    <tr>
+      <th scope="row"><button class="suite-name" data-action="open-suite" data-id="${esc(suite.id)}">${esc(suite.name)}</button><span class="suite-upstream">${esc(suite.upstream?.name || suite.upstreamId || "未配置上游")}</span></th>
+      <td data-label="CLI">${esc(targetLabel(suite.target))}</td>
+      <td data-label="模型">${suite.modelIds.length}</td>
+      <td data-label="本地地址" class="mono">${esc(suiteEndpoint(suite))}</td>
+      <td data-label="状态"><span class="status-badge ${health.className}">${esc(health.label)}</span></td>
+    </tr>
   `;
 }
 
 function renderOverview() {
-  const config = state.draft;
-  const runtime = state.runtime || {};
-  const counts = runtime.counts || {};
-  const suites = configurationSuites(config);
-  const events = state.events.slice(0, 5);
-  const displayCounts = state.dirty
-    ? {
-        models: Object.keys(config.models || {}).length,
-        upstreams: Object.keys(config.upstreams || {}).length,
-        virtualProviders: Object.keys(config.virtualProviders || {}).length,
-      }
-    : counts;
+  const suites = configurationSuites(state.candidate);
   return `
-    <div class="hero-strip">
-      <div>
-        <p class="eyebrow">LOCAL CONFIGURATION SETS</p>
-        <h2>一套配置，负责一条 CLI 接入链路。</h2>
-        <p>把一个上游、一组客户端模型映射和一个本地 CLI 接入放在一起管理。CableTidy 吸收上游地址、模型名和能力差异，客户端只连接本地 endpoint。</p>
-      </div>
-      <div class="hero-aside">
-        <span class="hero-aside-label">ACTIVE REVISION</span>
-        <span class="hero-aside-value">${esc(config.revision)}</span>
-        <span class="status-badge">${suites.length} 套配置</span>
-      </div>
-    </div>
     <div class="suite-toolbar">
-      <div>
-        <div class="panel-title-label">CONFIGURATION SETS</div>
-        <h2>我的接入套装</h2>
-        <p>模型映射和路由属于同一套接入方案；底层 Route 由 CableTidy 自动维护。</p>
-      </div>
-      <button class="button button-primary" data-action="create-suite">创建配置套装</button>
+      <span class="muted">${suites.length} 套配置</span>
+      <button class="button button-primary" data-action="create-suite">新建配置</button>
     </div>
     ${
       suites.length
-        ? `<div class="suite-list">${suites.map(suiteRow).join("")}</div>`
-        : `<div class="panel empty-state-panel"><div class="empty"><strong>还没有配置套装</strong><span>从一个上游、一组客户端模型映射和一个 CLI 接入开始。</span><div class="form-actions"><button class="button button-primary" data-action="create-suite">开始创建</button></div></div></div>`
+        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型</th><th scope="col">本地地址</th><th scope="col">状态</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
+        : `<div class="panel"><div class="empty">暂无配置</div></div>`
     }
-    <div class="stat-grid">
-      ${stat("配置套装", suites.length)}
-      ${stat("客户端模型", displayCounts.models ?? Object.keys(config.models).length)}
-      ${stat("上游", displayCounts.upstreams ?? Object.keys(config.upstreams).length)}
-      ${stat("本地服务", displayCounts.virtualProviders ?? Object.keys(config.virtualProviders).length)}
-      ${stat("运行版本", config.revision)}
-    </div>
-    <div class="panel">
-      <div class="panel-header">
-        <div>
-          <div class="panel-title-label">RECENT EVENTS</div>
-          <h2>最近活动</h2>
-        </div>
-        <button class="mini-button" data-page="diagnostics">打开诊断</button>
-      </div>
-      <div class="panel-body">
-        ${
-          events.length
-            ? `<div class="list">${events.map(eventRow).join("")}</div>`
-            : `<div class="empty"><strong>还没有事件</strong><span>提交配置或测试上游后，运行轨迹会出现在这里。</span></div>`
-        }
-      </div>
-    </div>
   `;
 }
 
@@ -406,7 +503,7 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
   const model = profile || {};
   const isCodex = suite.target === "codex";
   const compact = model.compact || {};
-  const upstream = state.draft.upstreams?.[upstreamId] || {};
+  const upstream = state.candidate.upstreams?.[upstreamId] || {};
   const binding = model.upstreams?.[upstreamId] || {};
   const mappingRows = upstreamId
     ? `
@@ -424,7 +521,6 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
     <article class="suite-model-card" data-suite-model data-model-id="${esc(modelId)}">
       <div class="suite-model-card-header">
         <div>
-          <span class="panel-title-label">MODEL PROFILE</span>
           ${isCodex
             ? officialModelSelect("data-suite-model-client", model.clientModelId || model.aliases?.[0] || "")
             : `<input class="suite-model-client-input" data-suite-model-client value="${esc(model.clientModelId || model.aliases?.[0] || modelId)}" placeholder="客户端模型 ID" />`}
@@ -440,7 +536,7 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
         `}
       </div>
       <div class="suite-binding-section">
-        <div class="subsection-header"><h3>上游模型映射</h3><span class="field-hint">当前套装只连接一个上游</span></div>
+        <div class="subsection-header"><h3>上游模型映射</h3></div>
         <div class="suite-binding-list">${mappingRows}</div>
       </div>
     </article>
@@ -451,21 +547,47 @@ function officialModel(id) {
   return state.codexCatalog?.models?.find((model) => model.id === id);
 }
 
-function officialModelSelect(attributes, selected) {
+function officialModelOptions(selected) {
   const models = state.codexCatalog?.models || [];
   const unknown = selected && !officialModel(selected);
-  return `<div class="field"><label>Codex 官方模型</label><select ${attributes} data-official-model required>
+  const option = (model) => `<option value="${esc(model.id)}" ${selected === model.id ? "selected" : ""}>${esc(
+    SECURITY_MODELS.get(model.id)?.label || `${model.name} (${model.id})`,
+  )}</option>`;
+  const securityModels = models.filter((model) => SECURITY_MODELS.has(model.id));
+  return `
     <option value="">选择官方模型</option>
-    ${unknown ? `<option value="${esc(selected)}" selected>${esc(selected)}（旧配置，待确认）</option>` : ""}
-    ${models.map((model) => `<option value="${esc(model.id)}" ${selected === model.id ? "selected" : ""}>${esc(model.name)} (${esc(model.id)})</option>`).join("")}
-    </select>${unknown ? `<span class="field-hint">未匹配本机官方目录</span>` : ""}</div>`;
+    ${unknown ? `<option value="${esc(selected)}" selected>${esc(SECURITY_MODELS.get(selected)?.label || selected)}（旧配置，待确认）</option>` : ""}
+    ${models.filter((model) => !SECURITY_MODELS.has(model.id)).map(option).join("")}
+    ${securityModels.length ? `<optgroup label="安全专项模型">${securityModels.map(option).join("")}</optgroup>` : ""}
+  `;
+}
+
+function officialModelHint(selected) {
+  return [
+    SECURITY_MODELS.get(selected)?.hint,
+    selected && !officialModel(selected) ? "未匹配本机官方目录" : "",
+  ].filter(Boolean).join(" ");
+}
+
+function updateOfficialModelHint(select) {
+  const hint = select.parentElement.querySelector("[data-official-model-hint]");
+  hint.textContent = officialModelHint(select.value);
+  hint.hidden = !hint.textContent;
+}
+
+function officialModelSelect(attributes, selected) {
+  const hint = officialModelHint(selected);
+  const hintId = `official-model-hint-${++modelHintSequence}`;
+  return `<label class="field"><span>Codex 官方模型</span><select ${attributes} data-official-model aria-label="Codex 官方模型" aria-describedby="${hintId}" required>
+    ${officialModelOptions(selected)}
+    </select><span class="field-hint" id="${hintId}" data-official-model-hint aria-live="polite" ${hint ? "" : "hidden"}>${esc(hint)}</span></label>`;
 }
 
 function codexCatalogStatus() {
   return `<div class="catalog-status"><span>${esc(state.codexCatalog?.available
     ? `${state.codexCatalog.version} / ${state.codexCatalog.models.length} 个官方模型`
     : state.codexCatalog?.error?.message || "官方模型目录不可用")}</span>
-    <button class="mini-button" type="button" data-action="refresh-codex-models">刷新目录</button></div>`;
+    <button class="mini-button" type="button" data-action="refresh-codex-models">刷新模型列表</button></div>`;
 }
 
 function codexMetadataFields(model) {
@@ -484,22 +606,28 @@ function codexMetadataFields(model) {
   `;
 }
 
-pageContent.addEventListener("change", (event) => {
-  const row = event.target.closest("[data-suite-model]");
+function syncCodexMetadata(row, resetOverrides = false) {
   if (!row || !row.querySelector("[data-codex-metadata-mode]")) return;
-  if (!event.target.matches("[data-official-model], [data-codex-metadata-mode]")) return;
   const definition = officialModel(row.querySelector("[data-suite-model-client]").value);
   const override = row.querySelector("[data-codex-metadata-mode]").value === "override";
   const context = row.querySelector("[data-suite-model-context]");
   const vision = row.querySelector("[data-codex-vision]");
-  if (event.target.matches("[data-official-model]") || !override) {
+  if (resetOverrides || !override) {
     context.value = definition?.contextWindow || "";
     vision.checked = Boolean(definition?.inputModalities.includes("image"));
   }
   context.max = definition?.maxContextWindow || "";
-  context.disabled = !override;
-  vision.disabled = !override || !definition?.inputModalities.includes("image");
+  setControlDisabled(context, !override);
+  setControlDisabled(vision, !override || !definition?.inputModalities.includes("image"));
   row.querySelector("[data-codex-instructions]").textContent = `${definition?.name || "待选择官方模型"} / 官方定义`;
+}
+
+pageContent.addEventListener("change", (event) => {
+  const modelChanged = event.target.matches("[data-official-model]");
+  if (modelChanged) updateOfficialModelHint(event.target);
+  if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
+    syncCodexMetadata(event.target.closest("[data-suite-model]"), modelChanged);
+  }
 });
 
 function codexModelFields(clientModelId, existing = {}, row) {
@@ -527,48 +655,38 @@ function renderSuiteDetail() {
   if (!suite) {
     return `
       <div class="panel empty-state-panel">
-        <div class="empty"><strong>找不到这套配置</strong><span>它可能已被删除，返回配置套装列表重新选择。</span><div class="form-actions"><button class="button button-primary" data-action="back-overview">返回配置套装</button></div></div>
+        <div class="empty"><strong>配置不存在</strong><div class="form-actions"><button class="button" data-action="back-overview">返回列表</button></div></div>
       </div>
     `;
   }
   const health = suiteHealth(suite);
   const upstreamId = suite.upstreamId || "";
-  const upstream = upstreamId ? state.draft.upstreams[upstreamId] : null;
+  const upstream = upstreamId ? state.candidate.upstreams[upstreamId] : null;
   const binding = suite.binding;
   const provider = suite.virtualProvider;
   return `
-    <div class="suite-detail-head">
-      <button class="text-button" data-action="back-overview">← 配置套装</button>
-      <div class="suite-detail-title">
-        <div>
-          <p class="eyebrow">${esc(targetLabel(suite.target))} / CONFIGURATION SET</p>
-          <h2>${esc(suite.name)}</h2>
-          <p>${esc(upstream?.name || upstreamId || "尚未配置上游")} · ${suite.modelIds.length} 个客户端模型</p>
-        </div>
-        <div class="suite-detail-status">
-          <span class="status-badge ${health.className}">${esc(health.label)}</span>
-          <span class="mono">${esc(suiteEndpoint(suite))}</span>
-        </div>
-      </div>
+    <div class="suite-toolbar">
+      <button class="text-button" data-action="back-overview">返回列表</button>
+      <span class="status-badge ${health.className}">${esc(health.label)}</span>
     </div>
     ${suite.target === "codex" ? codexCatalogStatus() : ""}
     <div class="suite-layout">
       <div class="panel suite-main-panel">
         <div class="panel-header">
-          <div><div class="panel-title-label">MODEL MAPPING</div><h2>模型映射</h2><p>保留客户端模型展示、上游模型名称、能力和策略配置。</p></div>
+          <h2>模型映射</h2>
           <button class="button button-primary" type="button" data-action="add-suite-model">添加模型</button>
         </div>
         <div class="panel-body">
-          <form id="suite-models-form">
+          <form id="suite-models-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.target, binding.virtualProvider, suite.route?.id, upstreamId]))}">
             <div id="suite-model-list" class="suite-model-list">
               ${
                 suite.models.length
                   ? suite.models.map(({ id, profile }) => suiteModelEditor(suite, id, profile, upstreamId)).join("")
-                  : `<div class="empty"><strong>还没有模型</strong><span>添加至少一个客户端模型，再填写它对应的上游模型 ID。</span></div>`
+                  : `<div class="empty">暂无模型</div>`
               }
             </div>
             <div class="form-actions">
-              <button class="button button-primary" type="submit">保存模型映射</button>
+              <button class="button" type="submit">保存模型映射</button>
               ${suite.target === "codex" ? "" : `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>`}
             </div>
           </form>
@@ -576,7 +694,7 @@ function renderSuiteDetail() {
       </div>
       <div class="suite-side">
         <div class="panel">
-          <div class="panel-header"><div><div class="panel-title-label">UPSTREAM</div><h2>上游连接</h2><p>地址和上游 API Key 由 CableTidy 保存，不会出现在 Codex 配置中。</p></div></div>
+          <div class="panel-header"><h2>上游连接</h2></div>
           <div class="panel-body">
             ${
               upstream
@@ -584,30 +702,27 @@ function renderSuiteDetail() {
                   <form id="suite-upstream-form">
                     <input type="hidden" name="id" value="${esc(upstreamId)}" />
                     <input type="hidden" name="protocol" value="${esc(upstream.protocol || "openai.responses")}" />
-                    <input type="hidden" name="authHeader" value="${esc(upstream.auth?.header || "authorization")}" />
                     <div class="form-grid">
                       ${field("显示名称", "name", upstream.name || upstreamId, "例如 Relay A", true)}
                       ${field("真实上游地址", "baseUrl", upstream.baseUrl || "", "https://relay.example.com/v1", true)}
                       ${field("上游 API Key", "secret", "", upstreamSecretConfigured(upstreamId, upstream) ? "已配置，留空表示不修改" : "粘贴上游 API Key", false, "password")}
                       ${field("上游 env key（可选）", "envKey", upstream.envKey || "", "仅在 daemon 从环境变量读取时填写", false)}
                     </div>
-                    <div class="form-actions"><button class="button button-primary" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
+                    <div class="form-actions"><button class="button" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
                   </form>
                 `
-                : `<div class="empty"><strong>还没有上游</strong><span>请先添加一个上游，模型映射才能生效。</span><div class="form-actions"><button class="button button-primary" data-action="new-upstream">添加上游</button></div></div>`
+                : `<div class="empty"><strong>未配置上游</strong><div class="form-actions"><button class="button" data-action="new-upstream">添加上游</button></div></div>`
             }
           </div>
         </div>
         <div class="panel">
-          <div class="panel-header"><div><div class="panel-title-label">CLI ACCESS</div><h2>${esc(targetLabel(binding.target))} 接入</h2><p>客户端只看到本地 Virtual Provider 和 CableTidy 定义的模型名。</p></div></div>
+          <div class="panel-header"><h2>${esc(targetLabel(binding.target))} 接入</h2></div>
           <div class="panel-body">
             <div class="suite-facts">
-              <div><span>Local endpoint</span><strong class="mono">${esc(suiteEndpoint(suite))}</strong></div>
+              <div><span>本地地址</span><strong class="mono">${esc(suiteEndpoint(suite))}</strong></div>
               <div><span>Provider ID</span><strong class="mono">${esc(`cabletidy_${safeProviderId(binding.name, safeProviderId(binding.id))}`)}</strong></div>
-              <div><span>本地认证</span><strong>无需 API Key</strong></div>
-              <div><span>Models endpoint</span><strong class="mono">GET /v1/models</strong></div>
             </div>
-            <div class="form-actions"><button class="button ${provider.enabled === false ? "button-primary" : ""}" type="button" data-action="toggle-vp" data-id="${esc(provider.id)}">${provider.enabled === false ? "启动 Virtual Provider" : "暂停 Virtual Provider"}</button><button class="button" type="button" data-action="preview-artifacts">预览 CLI 配置</button>${binding.target === "codex" ? `<button class="button button-primary" type="button" data-action="apply-target">应用 Codex 配置</button>` : ""}</div>
+            <div class="form-actions"><button class="button" type="button" data-action="toggle-vp" data-id="${esc(provider.id)}">${provider.enabled === false ? "启动服务" : "暂停服务"}</button><button class="button" type="button" data-action="preview-artifacts">预览配置</button>${binding.target === "codex" ? `<button class="button button-primary" type="button" data-action="apply-target">应用到 Codex</button>` : ""}</div>
             ${state.artifactPreview ? artifactPanel(state.artifactPreview) : ""}
           </div>
         </div>
@@ -616,111 +731,70 @@ function renderSuiteDetail() {
   `;
 }
 
-function renderSetupWizard() {
-  const defaults = wizardDefaults();
+function renderSuiteCreate() {
   return `
-    <button class="text-button" data-action="back-overview">← 返回配置套装</button>
-    <div class="wizard-intro">
-      <div>
-        <p class="eyebrow">FIRST RUN / CABLETIDY CONFIGURATION</p>
-        <h2>把上游接入 CableTidy，而不是把复杂度交给 Codex。</h2>
-        <p>Codex 官方 GPT 模型接入</p>
-      </div>
-      <div class="wizard-callout">
-        <span class="wizard-callout-label">REFERENCE ONLY</span>
-        <strong>Codex Native Provider Integration</strong>
-        <span>是上游提供的使用教程，不需要导入，也不会成为 CableTidy 的配置文件。</span>
-      </div>
-    </div>
-    <form id="wizard-form" class="wizard">
-      <section class="wizard-step">
-        <div class="wizard-step-marker">01</div>
-        <div class="wizard-step-content">
-          <div class="wizard-step-heading"><div><span class="panel-title-label">CONFIGURATION SET</span><h2>先给这套接入起个名字</h2><p>套装名称只用于管理台展示。一个套装包含一个 CLI、一个上游、一组模型映射和一条由 CableTidy 自动维护的本地接入链路。</p></div><span class="wizard-status">optional</span></div>
-          <div class="form-grid">
-            ${field("套装名称", "suiteName", "", "例如 Codex / Relay A", true)}
-            ${selectField("CLI 类型", "target", "codex", ["codex"])}
-          </div>
-          <div class="wizard-step-heading wizard-substep-heading"><div><span class="panel-title-label">UPSTREAM CONNECTION</span><h2>连接上游</h2><p>只需要填写真实地址和 API Key。当前 Codex Native Provider 固定使用 OpenAI Responses 接入方式，认证 header、env key 和重试策略由 CableTidy 自动处理。</p></div><span class="wizard-status">2 fields</span></div>
-          <div class="form-grid">
-            ${field("真实上游地址", "upstreamBaseUrl", "", "https://relay.example.com/v1", true)}
-            ${field("上游 API Key", "upstreamSecret", "", "粘贴上游密钥", false, "password")}
-          </div>
-          <div class="notice">API Key 由 CableTidy 保存在本地 secrets store，并由 daemon 出站请求使用；不需要再填写或配置上游 env key。</div>
+    <button class="text-button" data-action="back-overview">返回列表</button>
+    <form id="suite-create-form" class="config-form panel">
+      <section class="config-section" aria-labelledby="config-basics">
+        <h2 id="config-basics">基本信息</h2>
+        <div class="form-grid">
+          ${field("配置名称（可选）", "suiteName", "", "Codex / Relay A")}
+          ${selectField("CLI", "target", "codex", ["codex"])}
         </div>
       </section>
-      <section class="wizard-step">
-        <div class="wizard-step-marker">02</div>
-        <div class="wizard-step-content">
-          <div class="wizard-step-heading"><div><span class="panel-title-label">MODEL PROFILES</span><h2>模型映射</h2></div></div>
-          ${codexCatalogStatus()}
-          <div class="subsection wizard-model-section">
-            <div class="subsection-header">
-              <div><h3>客户端模型列表</h3><span class="field-hint">例如 <span class="mono">gpt-5.6-sol</span> → <span class="mono">XXX-GPT-5.6-Sol</span>，可按需添加多个模型</span></div>
-              <button class="mini-button" type="button" data-action="add-wizard-model">添加模型</button>
-            </div>
-            <div id="wizard-model-list" class="wizard-model-list">
-              ${wizardModelRow()}
-            </div>
-          </div>
+      <section class="config-section" aria-labelledby="config-upstream">
+        <h2 id="config-upstream">上游连接</h2>
+        <div class="form-grid">
+          ${field("上游地址", "upstreamBaseUrl", "", "https://relay.example.com/v1", false, "url", false, true)}
+          ${field("API Key", "upstreamSecret", "", "", false, "password", false, true)}
         </div>
       </section>
-      <section class="wizard-step">
-        <div class="wizard-step-marker">03</div>
-        <div class="wizard-step-content">
-          <div class="wizard-step-heading"><div><span class="panel-title-label">LOCAL CODEX SERVICE</span><h2>本地服务自动创建</h2><p>这一步不需要填写。CableTidy 会自动创建 loopback Virtual Provider、模型列表、单上游 Route 和 Codex Binding。</p></div><span class="wizard-status">automatic</span></div>
-          <div class="wizard-auto-config">
-            <div><span>Virtual Provider</span><strong>${esc(defaults.virtualProviderId)}</strong></div>
-            <div><span>Local endpoint</span><strong>http://127.0.0.1:${esc(defaults.listenPort)}/v1</strong></div>
-            <div><span>Codex provider</span><strong>${esc(`cabletidy_${safeProviderId(suite.binding?.name, safeProviderId(suite.bindingId))}`)}</strong></div>
-          </div>
+      <section class="config-section" aria-labelledby="config-models">
+        <div class="subsection-header">
+          <h2 id="config-models">模型映射</h2>
+          <button class="mini-button" type="button" data-action="add-create-model">添加模型</button>
+        </div>
+        ${codexCatalogStatus()}
+        <div id="create-model-list" class="create-model-list">
+          ${createModelRow()}
         </div>
       </section>
-      <div class="wizard-footer">
-        <div><strong>完成后会创建一张配置图</strong><span>Upstream → Model Profiles → 单上游 Route → Virtual Provider → Codex Binding</span></div>
-        <button class="button button-primary button-large" type="submit">创建 CableTidy 配置</button>
+      <div class="config-form-footer">
+        <button class="button" type="button" data-action="back-overview">取消</button>
+        <button class="button button-primary" type="submit">创建配置</button>
       </div>
     </form>
   `;
 }
 
-function wizardModelRow(values = {}) {
+function createModelRow(values = {}) {
   const model = {
     clientModelId: values.clientModelId || "",
     upstreamModelId: values.upstreamModelId || "",
   };
   return `
-    <div class="wizard-model-row" data-wizard-model>
-      <div class="wizard-model-row-header">
-        <strong>MODEL</strong>
-        <button class="mini-button" type="button" data-action="remove-wizard-model">移除</button>
-      </div>
-      <div class="form-grid">
-        ${officialModelSelect('data-wizard-field="clientModelId"', model.clientModelId)}
-        ${wizardField("上游模型 ID", "upstreamModelId", model.upstreamModelId, "发送给上游的真实模型名")}
-      </div>
+    <div class="create-model-row" data-create-model>
+      ${officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
+      <label class="field"><span>上游模型 ID</span><input data-create-field="upstreamModelId" value="${esc(model.upstreamModelId)}" required /></label>
+      <button class="mini-button" type="button" data-action="remove-create-model" aria-label="移除模型映射">移除</button>
     </div>
   `;
 }
 
-function wizardField(label, key, value, placeholder = "", full = false) {
-  return `<div class="field ${full ? "full" : ""}"><label>${esc(label)}</label><input data-wizard-field="${esc(key)}" value="${esc(value)}" placeholder="${esc(placeholder)}" /></div>`;
-}
-
-function wizardDefaults() {
-  const upstreamId = nextWizardId(state.draft?.upstreams, "relay-main");
-  const virtualProviderId = nextWizardId(state.draft?.virtualProviders, "codex-main");
-  const routeId = nextWizardId(state.draft?.routes, `${upstreamId}-route`);
+function suiteDefaults() {
+  const upstreamId = nextConfigId(state.candidate?.upstreams, "relay-main");
+  const virtualProviderId = nextConfigId(state.candidate?.virtualProviders, "codex-main");
+  const routeId = nextConfigId(state.candidate?.routes, `${upstreamId}-route`);
   const usedPorts = new Set([
-    Number(state.draft?.web?.port),
-    ...values(state.draft?.virtualProviders).map((item) => Number(item.listenPort)),
+    Number(state.candidate?.web?.port),
+    ...values(state.candidate?.virtualProviders).map((item) => Number(item.listenPort)),
   ]);
-  let listenPort = Number(state.draft?.daemon?.proxyPortRange?.split("-")[0]) || 43101;
+  let listenPort = Number(state.candidate?.daemon?.proxyPortRange?.split("-")[0]) || 43101;
   while (usedPorts.has(listenPort)) listenPort += 1;
   return { upstreamId, virtualProviderId, routeId, listenPort };
 }
 
-function nextWizardId(record, base) {
+function nextConfigId(record, base) {
   const source = record || {};
   if (!source[base]) return base;
   let suffix = 2;
@@ -744,7 +818,7 @@ function modelProfileId(clientModelId, existingModels, reservedIds) {
   return id;
 }
 
-function wizardUpstreamName(baseUrl, fallback) {
+function upstreamDisplayName(baseUrl, fallback) {
   try {
     return new URL(baseUrl).hostname || fallback;
   } catch {
@@ -753,38 +827,38 @@ function wizardUpstreamName(baseUrl, fallback) {
 }
 
 function renderUpstreams() {
-  const config = state.draft;
+  const config = state.candidate;
   const selectedId = state.selected.upstream;
   const selected = selectedId ? config.upstreams[selectedId] : null;
   const integrationLabel = selected?.integration === "codex-native-provider"
     ? "Codex Native Provider Integration"
     : "Native upstream connection";
   return `
-    <div class="notice">MVP 支持 <strong>Codex Native Provider Integration</strong>，当前配置由本页面直接写入 CableTidy。</div>
+    <button class="text-button" data-action="back-overview">返回列表</button>
     <div class="form-layout">
       <div class="panel">
         <div class="panel-header">
-          <div><div class="panel-title-label">UPSTREAM REGISTRY</div><h2>已接入的上游</h2><p>每一个 key 或账号都可以独立统计健康状态，并由内部 Route 连接到对应的本地服务。</p></div>
-          <button class="button button-primary" data-action="new-upstream">新增 upstream</button>
+          <h2>上游列表</h2>
+          <button class="button" data-action="new-upstream">新增上游</button>
         </div>
         <div class="panel-body">
           ${
             Object.keys(config.upstreams).length
               ? `<div class="list">${entries(config.upstreams).map(([id, item]) => upstreamRow(id, item, id === selectedId)).join("")}</div>`
-              : `<div class="empty"><strong>还没有 upstream</strong><span>直接填写 CableTidy 的上游地址、认证和 wire protocol。</span><div class="form-actions"><button class="button button-primary" data-action="start-wizard">开始配置向导</button></div></div>`
+              : `<div class="empty">暂无上游</div>`
           }
         </div>
       </div>
       <div class="panel">
         <div class="panel-header">
-          <div><div class="panel-title-label">${selected ? "EDIT UPSTREAM" : "NEW UPSTREAM"}</div><h2>${selected ? esc(selected.name || selectedId) : "添加上游"}</h2><p>密钥只提交给 daemon，不会在配置 GET 或模型页面中回显。</p></div>
+          <h2>${selected ? esc(selected.name || selectedId) : "添加上游"}</h2>
         </div>
         <div class="panel-body">
           <form id="upstream-form">
             <div class="form-grid">
               ${field("Upstream ID", "id", selectedId || "", "例如 relay-main", false, "text", Boolean(selectedId))}
               ${field("显示名称", "name", selected?.name || "", "例如 xxx")}
-              <div class="field"><label>上游接入方式</label><div class="static-field"><strong>${integrationLabel}</strong><span>由 CableTidy 直接填写和管理</span></div></div>
+              <div class="field"><span>上游接入方式</span><div class="static-field">${integrationLabel}</div></div>
               ${selectField("上游协议", "protocol", selected?.protocol || "openai.responses", ["openai.responses", "openai.chat_completions", "anthropic.messages"])}
               ${field("真实 base URL", "baseUrl", selected?.baseUrl || "", "https://relay.example.com/v1", true)}
               ${field("API key", "secret", "", upstreamSecretConfigured(selectedId, selected) ? "已配置，留空表示不修改" : "粘贴上游 API key", false, "password")}
@@ -796,8 +870,7 @@ function renderUpstreams() {
               ${checkboxField("requires_openai_auth", "requiresOpenaiAuth", Boolean(selected?.requiresOpenaiAuth))}
               ${checkboxField("supports_websockets", "supportsWebsockets", Boolean(selected?.supportsWebsockets))}
             </div>
-            <div class="notice">基础转发只需要 base URL、API key、协议和模型映射。env key、认证 header、重试、超时和 WebSocket 选项属于高级运行策略，通常不需要修改。</div>
-            <div class="form-actions"><button class="button button-primary" type="submit">保存到草稿</button>${selected ? `<button class="button" type="button" data-action="test-upstream" data-id="${esc(selectedId)}">测试连通性</button><button class="button button-danger" type="button" data-action="delete-upstream" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
+            <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button" type="button" data-action="test-upstream" data-id="${esc(selectedId)}">测试连通性</button><button class="button button-danger" type="button" data-action="delete-upstream" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
           </form>
         </div>
       </div>
@@ -806,7 +879,7 @@ function renderUpstreams() {
 }
 
 function renderModels() {
-  const config = state.draft;
+  const config = state.candidate;
   const selectedId = state.selected.model;
   const selected = selectedId ? config.models[selectedId] : null;
   const compact = selected?.compact || {};
@@ -817,23 +890,23 @@ function renderModels() {
     })
     .join("");
   return `
-    <div class="notice">Client model ID、aliases、能力和 upstream model ID 参与模型解析与转发；context window 和 compact 是 CableTidy 的策略元数据。reasoning effort 由 CLI 请求自行选择。</div>
+    <button class="text-button" data-action="back-overview">返回列表</button>
     <div class="form-layout">
       <div class="panel">
         <div class="panel-header">
-          <div><div class="panel-title-label">MODEL REGISTRY</div><h2>逻辑模型</h2><p>alias、能力和 upstream binding 都在 CableTidy 管理。</p></div>
+          <h2>模型列表</h2>
           <button class="button button-primary" data-action="new-model">新增模型</button>
         </div>
         <div class="panel-body">
           ${
             Object.keys(config.models).length
               ? `<div class="list">${entries(config.models).map(([id, item]) => modelRow(id, item, id === selectedId)).join("")}</div>`
-              : `<div class="empty"><strong>还没有 Model Profile</strong><span>先添加 upstream，再给客户端定义一个稳定的模型名称。</span></div>`
+              : `<div class="empty">暂无模型</div>`
           }
         </div>
       </div>
       <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">${selected ? "EDIT MODEL PROFILE" : "NEW MODEL PROFILE"}</div><h2>${selected ? esc(selected.name || selectedId) : "建立模型身份"}</h2><p>左边是客户端看到的名字，右边是每个 upstream 的真实名字。</p></div></div>
+        <div class="panel-header"><h2>${selected ? esc(selected.name || selectedId) : "新增模型"}</h2></div>
         <div class="panel-body">
           <form id="model-form">
             <div class="form-grid">
@@ -847,10 +920,10 @@ function renderModels() {
               ${field("Compact token limit", "compactTokenLimit", compact.tokenLimit ?? 850000, "tokens")}
             </div>
             <div class="subsection">
-              <div class="subsection-header"><h3>Upstream Model Bindings</h3><span class="field-hint">每个 upstream 可以有不同的真实模型名</span></div>
+              <div class="subsection-header"><h3>上游模型映射</h3></div>
               <div class="mapping-list">${mappings || `<div class="empty">先添加 upstream</div>`}</div>
             </div>
-            <div class="form-actions"><button class="button button-primary" type="submit">保存到草稿</button>${selected ? `<button class="button button-danger" type="button" data-action="delete-model" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
+            <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button button-danger" type="button" data-action="delete-model" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
           </form>
         </div>
       </div>
@@ -858,40 +931,40 @@ function renderModels() {
   `;
 }
 
+function routeBackendEditor(backend, index) {
+  return `
+    <div class="backend-row" data-backend-index="${index}">
+      <div class="field"><label>UPSTREAM</label><select data-backend-upstream>${selectOptions(state.candidate.upstreams, backend.upstream, "选择 upstream")}</select></div>
+      <div class="field"><label>MODEL PROFILES</label><input data-backend-models value="${esc((backend.models || []).join(", "))}" placeholder="codex-gpt56-sol" /></div>
+      <div class="field"><label>PRIORITY</label><input data-backend-priority type="number" value="${esc(backend.priority ?? 10)}" /></div>
+      <button class="mini-button" type="button" data-action="remove-backend" data-index="${index}">移除</button>
+    </div>
+  `;
+}
+
 function renderRoutes() {
-  const config = state.draft;
+  const config = state.candidate;
   const selectedId = state.selected.route;
   const selected = selectedId ? config.routes[selectedId] : null;
-  if (state.routeDraftBackends === null || state.routeDraftBackends.routeId !== selectedId) {
-    state.routeDraftBackends = { routeId: selectedId, items: clone(selected?.backends || []) };
+  if (state.routeEditor === null || state.routeEditor.routeId !== selectedId) {
+    state.routeEditor = { routeId: selectedId, items: clone(selected?.backends || []) };
   }
-  const backendRows = state.routeDraftBackends.items
-    .map(
-      (backend, index) => `
-        <div class="backend-row" data-backend-index="${index}">
-          <div class="field"><label>UPSTREAM</label><select data-backend-upstream>${selectOptions(config.upstreams, backend.upstream, "选择 upstream")}</select></div>
-          <div class="field"><label>MODEL PROFILES</label><input data-backend-models value="${esc((backend.models || []).join(", "))}" placeholder="codex-gpt56-sol" /></div>
-          <div class="field"><label>PRIORITY</label><input data-backend-priority type="number" value="${esc(backend.priority ?? 10)}" /></div>
-          <button class="mini-button" type="button" data-action="remove-backend" data-index="${index}">移除</button>
-        </div>
-      `,
-    )
-    .join("");
+  const backendRows = state.routeEditor.items.map(routeBackendEditor).join("");
   return `
-    <div class="notice">MVP 先实现 priority 主备。只有在首字节之前失败时才会切换 upstream；流开始之后，响应会固定在已选中的 backend。</div>
+    <button class="text-button" data-action="back-overview">返回列表</button>
     <div class="form-layout">
       <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">ROUTE TABLE</div><h2>路由策略</h2><p>一个 route 可以复用多个 upstream，也可以同时承载多个 Model Profile。</p></div><button class="button button-primary" data-action="new-route">新增 route</button></div>
+        <div class="panel-header"><h2>路由列表</h2><button class="button" data-action="new-route">新增路由</button></div>
         <div class="panel-body">
           ${
             Object.keys(config.routes).length
               ? `<div class="list">${entries(config.routes).map(([id, item]) => routeRow(id, item, id === selectedId)).join("")}</div>`
-              : `<div class="empty"><strong>还没有 route</strong><span>route 是 Virtual Provider 和 upstream 之间的选择策略。</span></div>`
+              : `<div class="empty">暂无路由</div>`
           }
         </div>
       </div>
       <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">${selected ? "EDIT ROUTE" : "NEW ROUTE"}</div><h2>${selected ? esc(selected.name || selectedId) : "建立一条路径"}</h2><p>模型映射会在 route 选择前参与过滤。</p></div></div>
+        <div class="panel-header"><h2>${selected ? esc(selected.name || selectedId) : "新增路由"}</h2></div>
         <div class="panel-body">
           <form id="route-form">
             <div class="form-grid">
@@ -903,7 +976,7 @@ function renderRoutes() {
               <div class="subsection-header"><h3>Backends</h3><button class="mini-button" type="button" data-action="add-backend">添加 backend</button></div>
               <div class="backend-list">${backendRows || `<div class="empty">至少添加一个 backend</div>`}</div>
             </div>
-            <div class="form-actions"><button class="button button-primary" type="submit">保存到草稿</button>${selected ? `<button class="button button-danger" type="button" data-action="delete-route" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
+            <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button button-danger" type="button" data-action="delete-route" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
           </form>
         </div>
       </div>
@@ -912,7 +985,7 @@ function renderRoutes() {
 }
 
 function renderTargets() {
-  const config = state.draft;
+  const config = state.candidate;
   const vpId = state.selected.virtualProvider;
   const vp = vpId ? config.virtualProviders[vpId] : null;
   const bindingId = state.selected.binding;
@@ -925,15 +998,15 @@ function renderTargets() {
     binding?.defaultModel || boundVp?.defaultModel,
   );
   return `
-    <div class="notice">Managed Proxy 模式下，Codex 只需要本地 <span class="mono">model_provider</span>、client model 和 Virtual Provider 的 <span class="mono">base_url</span>。上游真实 URL、API Key、模型映射和能力差异都留在 CableTidy。</div>
+    <button class="text-button" data-action="back-overview">返回列表</button>
     <div class="content-grid">
       <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">LOCAL VIRTUAL PROVIDERS</div><h2>本地服务</h2><p>每个协议使用自己的 listener。Codex MVP 必须提供 <span class="mono">GET /v1/models</span> 和 <span class="mono">POST /v1/responses</span>。</p></div><button class="button button-primary" data-action="new-vp">新增服务</button></div>
+        <div class="panel-header"><h2>本地服务</h2><button class="button" data-action="new-vp">新增服务</button></div>
         <div class="panel-body">
           ${
             Object.keys(config.virtualProviders).length
               ? `<div class="list">${entries(config.virtualProviders).map(([id, item]) => virtualProviderRow(id, item, id === vpId)).join("")}</div>`
-              : `<div class="empty"><strong>还没有本地服务</strong><span>创建它之后，Codex 才会有一个指向 CableTidy 的本地 base URL。</span></div>`
+              : `<div class="empty">暂无本地服务</div>`
           }
           <div class="subsection">
             <form id="vp-form">
@@ -948,18 +1021,18 @@ function renderTargets() {
                 <div class="field full"><label>Allowed Model Profiles</label><input name="allowedModels" value="${esc((vp?.allowedModels || []).join(", "))}" placeholder="codex-gpt56-sol, codex-gpt55" /></div>
                 <div class="field full"><label>Default Model Profile</label><select name="defaultModel"><option value="">选择默认模型</option>${modelOptions}</select></div>
               </div>
-              <div class="form-actions"><button class="button button-primary" type="submit">保存到草稿</button>${vp ? `<button class="button" type="button" data-action="toggle-vp" data-id="${esc(vpId)}">${vp.enabled === false ? "启动 Virtual Provider" : "暂停 Virtual Provider"}</button><button class="button button-danger" type="button" data-action="delete-vp" data-id="${esc(vpId)}">删除</button>` : ""}</div>
+              <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${vp ? `<button class="button" type="button" data-action="toggle-vp" data-id="${esc(vpId)}">${vp.enabled === false ? "启动 Virtual Provider" : "暂停 Virtual Provider"}</button><button class="button button-danger" type="button" data-action="delete-vp" data-id="${esc(vpId)}">删除</button>` : ""}</div>
             </form>
           </div>
         </div>
       </div>
       <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">TARGET BINDINGS</div><h2>CLI 配置生成</h2><p>Binding 决定目标 CLI 使用哪个本地 Virtual Provider，以及如何生成它的原生配置。</p></div><button class="button button-primary" data-action="new-binding">新增 binding</button></div>
+        <div class="panel-header"><h2>CLI 绑定</h2><button class="button" data-action="new-binding">新增绑定</button></div>
         <div class="panel-body">
           ${
             Object.keys(config.bindings).length
               ? `<div class="list">${entries(config.bindings).map(([id, item]) => bindingRow(id, item, id === bindingId)).join("")}</div>`
-              : `<div class="empty"><strong>还没有 binding</strong><span>创建一个 Target Binding，生成 Codex 需要的本地 config.toml 接入片段。</span></div>`
+              : `<div class="empty">暂无绑定</div>`
           }
           <div class="subsection">
             <form id="binding-form">
@@ -970,11 +1043,10 @@ function renderTargets() {
                 ${selectField("Virtual Provider", "virtualProvider", boundVpId || "", Object.keys(config.virtualProviders))}
                 ${selectField("Mode", "mode", binding?.mode || "config", ["config", "run", "env"])}
                 ${selectField("Default Model", "defaultModel", binding?.defaultModel || vp?.defaultModel || "", Object.keys(config.models))}
-                ${bindingTarget === "codex" ? `<div class="field-hint full">Codex provider 将使用 cabletidy_ 加配置名称自动生成。</div>` : ""}
                 ${bindingTarget === "claude-code" ? checkboxField("设置 ANTHROPIC_MODEL", "claudeSetModel", binding?.claude?.setModel !== false) : ""}
                 ${bindingTarget === "generic-env" ? field("Generic env prefix", "envPrefix", binding?.env?.prefix || "CABLETIDY", "CABLETIDY") : ""}
               </div>
-              <div class="form-actions"><button class="button button-primary" type="submit">保存到草稿</button>${binding ? `<button class="button" type="button" data-action="preview-artifacts">预览 Target 配置</button><button class="button" type="button" data-action="apply-target">${bindingTarget === "codex" ? "应用到 Codex" : "生成环境配置"}</button><button class="button button-danger" type="button" data-action="delete-binding" data-id="${esc(bindingId)}">删除</button>` : ""}</div>
+              <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${binding ? `<button class="button" type="button" data-action="preview-artifacts">预览 Target 配置</button><button class="button" type="button" data-action="apply-target">${bindingTarget === "codex" ? "应用到 Codex" : "生成环境配置"}</button><button class="button button-danger" type="button" data-action="delete-binding" data-id="${esc(bindingId)}">删除</button>` : ""}</div>
             </form>
           </div>
           ${state.artifactPreview ? artifactPanel(state.artifactPreview) : ""}
@@ -985,71 +1057,44 @@ function renderTargets() {
 }
 
 function renderDiagnostics() {
-  const config = state.draft;
-  const validation = state.validation;
+  const config = state.config;
   const resolveResult = state.resolveResult;
   return `
-    <div class="content-grid">
-      <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">SERVER-SIDE CHECKS</div><h2>配置诊断</h2><p>在 commit 前验证引用、端口、模型映射和 capability 约束。</p></div><button class="button button-primary" data-action="validate">验证当前草稿</button></div>
-        <div class="panel-body">
-          ${
-            validation
-              ? validationResult(validation)
-              : `<div class="empty"><strong>还没有验证结果</strong><span>点击验证，查看当前草稿是否可以原子提交。</span></div>`
-          }
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header"><div><div class="panel-title-label">MODEL RESOLVER</div><h2>模型解析测试</h2><p>模拟一个客户端模型名，检查它会被送到哪个 upstream。</p></div></div>
-        <div class="panel-body">
-          <form id="resolve-form">
-            <div class="form-grid">
-              ${selectField("Virtual Provider", "virtualProviderId", state.selected.virtualProvider || "", Object.keys(config.virtualProviders))}
-              ${field("Client model ID", "model", "", "sonnet 或 codex-gpt56-sol")}
-              ${checkboxField("stream", "stream", true)}
-              ${checkboxField("reasoning", "reasoning", false)}
-            </div>
-            <div class="form-actions"><button class="button button-primary" type="submit">解析路径</button></div>
-          </form>
-          ${resolveResult ? resolveResultPanel(resolveResult) : ""}
-        </div>
+    <div class="panel">
+      <div class="panel-header"><h2>模型解析测试</h2></div>
+      <div class="panel-body">
+        <form id="resolve-form">
+          <div class="form-grid">
+            ${selectField("Virtual Provider", "virtualProviderId", state.selected.virtualProvider || "", Object.keys(config.virtualProviders))}
+            ${field("Client model ID", "model", "", "sonnet 或 codex-gpt56-sol")}
+            ${checkboxField("stream", "stream", true)}
+            ${checkboxField("reasoning", "reasoning", false)}
+          </div>
+          <div class="form-actions"><button class="button button-primary" type="submit">解析路径</button></div>
+        </form>
+        ${resolveResult ? resolveResultPanel(resolveResult) : ""}
       </div>
     </div>
     <div class="panel">
-      <div class="panel-header"><div><div class="panel-title-label">EVENT STREAM</div><h2>脱敏事件</h2><p>只记录路由和配置元数据，不记录 prompt、完整响应或任何 secret。</p></div><button class="mini-button" data-action="refresh">刷新</button></div>
-      <div class="panel-body">${state.events.length ? `<div class="list">${state.events.map(eventRow).join("")}</div>` : `<div class="empty"><strong>暂无事件</strong><span>提交配置、测试 upstream 或执行一次本地请求后再回来查看。</span></div>`}</div>
+      <div class="panel-header"><h2>事件记录</h2><button class="mini-button" data-action="refresh">刷新</button></div>
+      <div class="panel-body">${state.events.length ? `<div class="list">${state.events.map(eventRow).join("")}</div>` : `<div class="empty">暂无事件</div>`}</div>
     </div>
   `;
-}
-
-function stat(label, value) {
-  return `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${esc(value)}</div></div>`;
-}
-
-function step(index, title, description) {
-  return `<div class="step"><span class="step-index">${index}</span><div><h3>${title}</h3><p>${description}</p></div></div>`;
 }
 
 function upstreamRow(id, item, active = false) {
   const health = state.runtime?.health?.[id];
   const healthClass = health?.outcome === "failure" ? "danger" : health ? "" : "warning";
-  const pendingSecret = hasPendingUpstreamSecret(id);
   const status = health?.outcome || (
     upstreamSecretConfigured(id, item)
-      ? pendingSecret ? "key staged" : "ready"
+      ? "ready"
       : "needs key"
   );
   return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-upstream" data-id="${esc(id)}"><div><h3>${esc(item.name || id)}</h3><p>${esc(item.protocol || "protocol")} · ${esc(item.baseUrl || "未设置")}</p></div><span class="status-badge ${healthClass}">${status}</span></button>`;
 }
 
-function hasPendingUpstreamSecret(id) {
-  const value = state.secretDraft.upstreamSecrets?.[id];
-  return typeof value === "string" && Boolean(value.trim());
-}
-
 function upstreamSecretConfigured(id, item) {
-  return Boolean(item?.secretConfigured || hasPendingUpstreamSecret(id));
+  return Boolean(item?.secretConfigured);
 }
 
 function modelRow(id, item, active = false) {
@@ -1082,44 +1127,23 @@ function eventRow(event) {
   return `<div class="list-row"><div><h3>${esc(event.type)}</h3><p>${esc(new Date(event.at).toLocaleString())} · ${esc(event.data?.upstreamId || event.data?.revision || "control")}</p></div><span class="table-meta">${esc(event.id)}</span></div>`;
 }
 
-function field(label, name, value, placeholder = "", full = false, type = "text", readonly = false) {
-  return `<div class="field ${full ? "full" : ""}"><label>${esc(label)}</label><input name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}" ${readonly ? "readonly" : ""} /></div>`;
+function field(label, name, value, placeholder = "", full = false, type = "text", readonly = false, required = false) {
+  return `<label class="field ${full ? "full" : ""}"><span>${esc(label)}</span><input name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}" ${readonly ? "readonly" : ""} ${required ? "required" : ""} /></label>`;
 }
 
 function selectField(label, name, value, items, dataClass = "") {
-  return `<div class="field"><label>${esc(label)}</label><select name="${esc(name)}" ${dataClass ? `data-${esc(dataClass)}="true"` : ""}>${optionList(items, value)}</select></div>`;
+  return `<label class="field"><span>${esc(label)}</span><select name="${esc(name)}" aria-label="${esc(label)}" ${dataClass ? `data-${esc(dataClass)}="true"` : ""}>${optionList(items, value)}</select></label>`;
 }
 
 function checkboxField(label, name, checked) {
   return `<label class="field checkbox-field"><span><input name="${esc(name)}" type="checkbox" ${checked ? "checked" : ""} /> ${esc(label)}</span></label>`;
 }
 
-function validationResult(result) {
-  const errors = result.errors || [];
-  const warnings = result.warnings || [];
-  const diff = result.diff || {};
-  const diffItems = [
-    ...(diff.added || []).map((item) => `+ ${item.path}`),
-    ...(diff.removed || []).map((item) => `- ${item.path}`),
-    ...(diff.changed || []).map((item) => `~ ${item.path}`),
-  ];
-  return `
-    <div class="notice ${result.ok ? "" : "warning"}">${result.ok ? "当前草稿可以提交。" : "当前草稿还不能提交。"}</div>
-    ${errors.length ? `<div class="subsection"><h3>Errors</h3><ul class="error-list">${errors.map((item) => `<li><span class="mono">${esc(item.path)}</span> ${esc(item.message)}</li>`).join("")}</ul></div>` : ""}
-    ${warnings.length ? `<div class="subsection"><h3>Warnings</h3><ul class="error-list">${warnings.map((item) => `<li><span class="mono">${esc(item.path)}</span> ${esc(item.message)}</li>`).join("")}</ul></div>` : ""}
-    ${
-      diffItems.length
-        ? `<div class="subsection"><h3>Effective diff</h3><p class="field-hint">影响：${esc((diff.affected || []).join(", ") || "runtime")}</p><ul class="error-list diff-list">${diffItems.map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>`
-        : `<div class="subsection"><h3>Effective diff</h3><p class="field-hint">没有行为配置变化。</p></div>`
-    }
-  `;
-}
-
 function resolveResultPanel(result) {
   if (!result.ok) {
     return `<div class="subsection"><div class="notice warning">${esc(result.error?.message || "模型解析失败")}</div></div>`;
   }
-  return `<div class="subsection"><div class="panel-title-label">RESOLVED PATH</div><pre class="code-preview">${esc(
+  return `<div class="subsection"><h3>解析结果</h3><pre class="code-preview">${esc(
     `client model  : ${result.clientModelId}\nprofile        : ${result.profileId}\nroute          : ${result.routeId}\nupstream       : ${result.upstreamId}\nupstream model : ${result.upstreamModelId}\ncapabilities   : ${(result.capabilities || []).join(", ")}`,
   )}</pre></div>`;
 }
@@ -1136,7 +1160,6 @@ function artifactPanel(artifacts) {
   return `
     <div class="subsection">
       <div class="subsection-header"><h3>${title}</h3><span class="field-hint">${esc(artifacts.mode || "managed_proxy")}</span></div>
-      <div class="notice">Codex 只连接本地 Virtual Provider：<span class="mono">${esc(artifacts.virtualProviderId || "")}</span>。CableTidy 自己保存真实上游地址、API Key、模型映射、能力和路由策略。</div>
       ${artifacts.catalogSummary ? `<div class="field-hint">${esc(artifacts.catalogSummary.sourceVersion)} / ${artifacts.catalogSummary.mode === "managed" ? "生成模型目录" : "沿用当前 Codex 目录"}</div>` : ""}
       ${(artifacts.warnings || []).map((message) => `<div class="notice warning">${esc(message)}</div>`).join("")}
       ${(artifacts.files || []).map((file) => file.kind === "json"
@@ -1149,6 +1172,16 @@ function artifactPanel(artifacts) {
 }
 
 async function handleAction(action, element) {
+  if (state.busy) return;
+  if ([
+    "create-suite", "open-suite", "back-overview", "select-upstream", "select-model",
+    "select-route", "select-vp", "select-binding", "new-upstream", "new-model",
+    "new-route", "new-vp", "new-binding", "focus-upstream", "open-advanced-models",
+  ].includes(action)) {
+    if (!confirmPageLeave()) return;
+    state.routeEditor = null;
+  }
+  const unlock = lockControls();
   try {
     if (action === "refresh") {
       await refresh();
@@ -1156,18 +1189,19 @@ async function handleAction(action, element) {
       state.codexCatalog = await api("/codex/models?refresh=1");
       // Refresh choices without discarding unsaved form inputs or secrets.
       pageContent.querySelectorAll("[data-official-model]").forEach((select) => {
-        const selected = select.value;
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = officialModelSelect("", selected);
-        select.innerHTML = wrapper.querySelector("select").innerHTML;
+        select.innerHTML = officialModelOptions(select.value);
+        updateOfficialModelHint(select);
+        syncCodexMetadata(select.closest("[data-suite-model]"));
       });
       pageContent.querySelectorAll(".catalog-status").forEach((status) => {
         status.querySelector("span").textContent = state.codexCatalog.available ? `${state.codexCatalog.version} / ${state.codexCatalog.models.length} 个官方模型` : state.codexCatalog.error.message;
       });
-      toast(state.codexCatalog.available ? "模型目录已刷新。" : state.codexCatalog.error.message, !state.codexCatalog.available);
-    } else if (action === "create-suite" || action === "start-wizard") {
+      toast(state.codexCatalog.available ? "模型列表已刷新。" : state.codexCatalog.error.message, !state.codexCatalog.available);
+    } else if (action === "reload-form") {
+      if (!window.confirm("放弃此表单的本地修改并加载最新配置？")) return;
+      render(captureEditedForms(element.closest("form")));
+    } else if (action === "create-suite") {
       state.selected.suite = null;
-      state.showWizard = false;
       state.page = "suite-create";
       render();
     } else if (action === "open-suite") {
@@ -1187,7 +1221,7 @@ async function handleAction(action, element) {
       render();
     } else if (action === "select-route") {
       state.selected.route = element.dataset.id;
-      state.routeDraftBackends = null;
+      state.routeEditor = null;
       state.page = "routes";
       render();
     } else if (action === "select-vp") {
@@ -1208,7 +1242,7 @@ async function handleAction(action, element) {
       render();
     } else if (action === "new-route") {
       state.selected.route = null;
-      state.routeDraftBackends = { routeId: null, items: [] };
+      state.routeEditor = { routeId: null, items: [] };
       state.page = "routes";
       render();
     } else if (action === "new-vp") {
@@ -1233,9 +1267,6 @@ async function handleAction(action, element) {
       const row = wrapper.firstElementChild;
       list.querySelector(".empty")?.remove();
       list.appendChild(row);
-      row.querySelectorAll("[data-action]").forEach((item) => {
-        item.addEventListener("click", () => handleAction(item.dataset.action, item));
-      });
     } else if (action === "remove-suite-model") {
       const list = pageContent.querySelector("#suite-model-list");
       const rows = list?.querySelectorAll("[data-suite-model]") || [];
@@ -1244,76 +1275,43 @@ async function handleAction(action, element) {
       }
       element.closest("[data-suite-model]")?.remove();
     } else if (action === "add-backend") {
-      state.routeDraftBackends ||= { routeId: state.selected.route, items: [] };
-      state.routeDraftBackends.items.push({
-        upstream: firstKey(state.draft.upstreams) || "",
-        priority: (state.routeDraftBackends.items.length + 1) * 10,
+      const list = pageContent.querySelector(".backend-list");
+      const index = list.querySelectorAll("[data-backend-index]").length;
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = routeBackendEditor({
+        upstream: firstKey(state.candidate.upstreams) || "",
+        priority: (index + 1) * 10,
         models: [],
         enabled: true,
-      });
-      render();
-    } else if (action === "add-wizard-model") {
-      const list = pageContent.querySelector("#wizard-model-list");
+      }, index);
+      list.querySelector(".empty")?.remove();
+      list.appendChild(wrapper.firstElementChild);
+    } else if (action === "add-create-model") {
+      const list = pageContent.querySelector("#create-model-list");
       if (!list) return;
       const wrapper = document.createElement("div");
-      wrapper.innerHTML = wizardModelRow();
+      wrapper.innerHTML = createModelRow();
       const row = wrapper.firstElementChild;
       list.appendChild(row);
-      row.querySelectorAll("[data-action]").forEach((item) => {
-        item.addEventListener("click", () => handleAction(item.dataset.action, item));
-      });
     } else if (action === "remove-backend") {
-      state.routeDraftBackends.items.splice(Number(element.dataset.index), 1);
-      render();
-    } else if (action === "remove-wizard-model") {
-      const rows = pageContent.querySelectorAll("[data-wizard-model]");
+      element.closest("[data-backend-index]")?.remove();
+      pageContent.querySelectorAll("[data-backend-index]").forEach((row, index) => {
+        row.dataset.backendIndex = index;
+        row.querySelector('[data-action="remove-backend"]').dataset.index = index;
+      });
+    } else if (action === "remove-create-model") {
+      const rows = pageContent.querySelectorAll("[data-create-model]");
       if (rows.length <= 1) {
-        throw new Error("至少保留一个 Model Profile");
+        throw new Error("至少保留一个模型映射");
       }
-      element.closest("[data-wizard-model]")?.remove();
-    } else if (action === "delete-upstream") {
-      delete state.draft.upstreams[element.dataset.id];
-      for (const model of values(state.draft.models)) delete model.upstreams?.[element.dataset.id];
-      state.selected.upstream = firstKey(state.draft.upstreams);
-      state.dirty = true;
-      render();
-    } else if (action === "delete-model") {
-      delete state.draft.models[element.dataset.id];
-      for (const provider of values(state.draft.virtualProviders)) {
-        provider.allowedModels = (provider.allowedModels || []).filter((id) => id !== element.dataset.id);
-        if (provider.defaultModel === element.dataset.id) provider.defaultModel = provider.allowedModels[0] || "";
-      }
-      state.selected.model = firstKey(state.draft.models);
-      state.dirty = true;
-      render();
-    } else if (action === "delete-route") {
-      delete state.draft.routes[element.dataset.id];
-      for (const provider of values(state.draft.virtualProviders)) {
-        if (provider.route === element.dataset.id) provider.route = "";
-      }
-      state.selected.route = firstKey(state.draft.routes);
-      state.routeDraftBackends = null;
-      state.dirty = true;
-      render();
-    } else if (action === "delete-vp") {
-      delete state.draft.virtualProviders[element.dataset.id];
-      for (const binding of values(state.draft.bindings)) {
-        if (binding.virtualProvider === element.dataset.id) binding.virtualProvider = "";
-      }
-      state.selected.virtualProvider = firstKey(state.draft.virtualProviders);
-      state.dirty = true;
-      render();
-    } else if (action === "delete-binding") {
-      delete state.draft.bindings[element.dataset.id];
-      state.selected.binding = firstKey(state.draft.bindings);
-      state.dirty = true;
-      render();
+      element.closest("[data-create-model]")?.remove();
+    } else if (["delete-upstream", "delete-model", "delete-route", "delete-vp", "delete-binding"].includes(action)) {
+      if (!window.confirm("删除此配置项？删除后立即生效。")) return;
+      await saveChanges(() => removeConfigItem(action, element.dataset.id), element.closest("form"));
     } else if (action === "test-upstream") {
       await testUpstream(element.dataset.id);
     } else if (action === "toggle-vp") {
       await toggleVirtualProvider(element.dataset.id);
-    } else if (action === "validate") {
-      await validateDraft();
     } else if (action === "preview-artifacts") {
       await previewArtifacts();
     } else if (action === "apply-target") {
@@ -1324,40 +1322,141 @@ async function handleAction(action, element) {
       render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
-      state.selected.model = selectedSuite()?.modelIds?.[0] || firstKey(state.draft.models);
+      state.selected.model = selectedSuite()?.modelIds?.[0] || firstKey(state.candidate.models);
       render();
     }
   } catch (error) {
-    toast(error.message, true);
+    const form = element?.closest("form");
+    if (form) showFormError(form, error);
+    else toast(error.message, true);
+  } finally {
+    unlock();
   }
+}
+
+function lockControls() {
+  state.busy = true;
+  const controls = [...document.querySelectorAll("button, input, select, textarea")];
+  for (const control of controls) {
+    lockedControls.set(control, control.disabled);
+    control.disabled = true;
+  }
+  return () => {
+    for (const control of controls) {
+      control.disabled = lockedControls.get(control);
+      lockedControls.delete(control);
+    }
+    state.busy = false;
+  };
+}
+
+function setControlDisabled(control, disabled) {
+  // Metadata may change while an async action temporarily locks all controls.
+  if (lockedControls.has(control)) lockedControls.set(control, disabled);
+  else control.disabled = disabled;
+}
+
+function showFormError(form, error) {
+  form.querySelector("[data-form-feedback]")?.remove();
+  const feedback = document.createElement("div");
+  feedback.className = "notice warning form-feedback";
+  feedback.dataset.formFeedback = "";
+  feedback.setAttribute("role", "alert");
+  feedback.tabIndex = -1;
+  const conflict = formConflicts.has(form);
+  const message = conflict
+    ? "此表单与其他窗口的修改冲突，已暂停保存并保留当前输入。请先复制需要保留的内容，再加载最新配置后重新编辑。"
+    : error.status === 409
+    ? "配置已在其他窗口变更。点击页面顶部的“刷新”合并最新配置后重试；无法自动合并的修改会提示处理。"
+    : error.message || "保存失败，请重试。";
+  const errors = error.body?.errors || [];
+  feedback.innerHTML = esc(message) + (errors.length
+    ? "<ul>" + errors.map((item) => "<li>" + esc(item.path || "") + ": " + esc(item.message) + "</li>").join("") + "</ul>"
+    : "") + (conflict ? '<div class="form-actions"><button class="button" type="button" data-action="reload-form">加载最新配置</button></div>' : "");
+  form.prepend(feedback);
+  feedback.focus({ preventScroll: true });
+  feedback.scrollIntoView({ block: "nearest" });
 }
 
 async function handleFormSubmit(event, form) {
   event.preventDefault();
+  if (state.busy) return;
+  if (formConflicts.has(form)) {
+    showFormError(form, new Error("请先处理并发修改冲突。"));
+    return;
+  }
+  // Read FormData before disabling controls; disabled inputs are omitted.
+  const data = new FormData(form);
+  const unlock = lockControls();
+  const submitButton = form.querySelector('[type="submit"]');
+  const buttonLabel = submitButton?.textContent;
+  form.setAttribute("aria-busy", "true");
+  form.querySelector("[data-form-feedback]")?.remove();
   try {
-    const data = new FormData(form);
-    let savedDraft = true;
-    if (form.id === "wizard-form") saveWizard(data, form);
-    else if (form.id === "upstream-form") saveUpstream(data);
-    else if (form.id === "suite-upstream-form") saveSuiteUpstream(data);
-    else if (form.id === "suite-models-form") saveSuiteModels(form);
-    else if (form.id === "model-form") saveModel(data, form);
-    else if (form.id === "route-form") saveRoute(data, form);
-    else if (form.id === "vp-form") saveVirtualProvider(data);
-    else if (form.id === "binding-form") saveBinding(data);
-    else if (form.id === "resolve-form") {
-      savedDraft = false;
+    // Inputs named "id" shadow the form.id property in the browser.
+    const formId = form.getAttribute("id");
+    if (formId === "resolve-form") {
+      if (submitButton) submitButton.textContent = "解析中...";
       await resolveModel(data);
+      render([form]);
+      toast("模型解析已完成。");
+      return;
     }
-    render();
-    toast(savedDraft ? "已保存到草稿，点击右上角提交运行时变更。" : "模型解析已完成。");
+    if (submitButton) submitButton.textContent = "保存中...";
+    const handlers = {
+      "suite-create-form": () => saveSuiteCreate(data, form),
+      "upstream-form": () => saveUpstream(data),
+      "suite-upstream-form": () => saveSuiteUpstream(data),
+      "suite-models-form": () => saveSuiteModels(form),
+      "model-form": () => saveModel(data, form),
+      "route-form": () => saveRoute(data, form),
+      "vp-form": () => saveVirtualProvider(data),
+      "binding-form": () => saveBinding(data),
+    };
+    if (!handlers[formId]) throw new Error("无法保存此表单，请刷新页面后重试。");
+    await saveChanges(handlers[formId], form);
   } catch (error) {
-    toast(error.message, true);
+    showFormError(form, error);
+  } finally {
+    if (submitButton) submitButton.textContent = buttonLabel;
+    form.removeAttribute("aria-busy");
+    unlock();
+  }
+}
+
+function removeConfigItem(action, id) {
+  if (action === "delete-upstream") {
+    delete state.candidate.upstreams[id];
+    for (const model of values(state.candidate.models)) delete model.upstreams?.[id];
+    state.selected.upstream = firstKey(state.candidate.upstreams);
+  } else if (action === "delete-model") {
+    delete state.candidate.models[id];
+    for (const provider of values(state.candidate.virtualProviders)) {
+      provider.allowedModels = (provider.allowedModels || []).filter((modelId) => modelId !== id);
+      if (provider.defaultModel === id) provider.defaultModel = provider.allowedModels[0] || "";
+    }
+    state.selected.model = firstKey(state.candidate.models);
+  } else if (action === "delete-route") {
+    delete state.candidate.routes[id];
+    for (const provider of values(state.candidate.virtualProviders)) {
+      if (provider.route === id) provider.route = "";
+    }
+    state.selected.route = firstKey(state.candidate.routes);
+    state.routeEditor = null;
+  } else if (action === "delete-vp") {
+    delete state.candidate.virtualProviders[id];
+    for (const binding of values(state.candidate.bindings)) {
+      if (binding.virtualProvider === id) binding.virtualProvider = "";
+    }
+    state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
+  } else if (action === "delete-binding") {
+    delete state.candidate.bindings[id];
+    state.selected.binding = firstKey(state.candidate.bindings);
   }
 }
 
 function saveSuiteUpstream(data) {
-  saveUpstream(data);
+  saveUpstream(data, true);
   state.page = "suite-detail";
 }
 
@@ -1368,7 +1467,7 @@ function saveSuiteModels(form) {
   if (!modelRows.length) throw new Error("至少添加一个客户端模型");
 
   const upstreamId = suite.upstreamId;
-  if (!upstreamId || !state.draft.upstreams[upstreamId]) {
+  if (!upstreamId || !state.candidate.upstreams[upstreamId]) {
     throw new Error("当前配置套装没有可用的上游");
   }
 
@@ -1384,9 +1483,9 @@ function saveSuiteModels(form) {
   const nextModels = {};
   for (const row of modelRows) {
     const oldId = row.dataset.modelId || "";
-    const existing = state.draft.models[oldId] || {};
+    const existing = state.candidate.models[oldId] || {};
     const clientModelId = row.querySelector("[data-suite-model-client]").value.trim();
-    const profileId = oldId || modelProfileId(clientModelId, state.draft.models, reservedIds);
+    const profileId = oldId || modelProfileId(clientModelId, state.candidate.models, reservedIds);
     if (nextModels[profileId]) throw new Error(`模型 ID 冲突: ${profileId}`);
 
     const upstreams = {};
@@ -1454,51 +1553,51 @@ function saveSuiteModels(form) {
   const nextModelIds = new Set(Object.keys(nextModels));
   for (const oldModelId of oldModelIds) {
     if (nextModelIds.has(oldModelId)) continue;
-    const usedByOtherProvider = values(state.draft.virtualProviders).some(
+    const usedByOtherProvider = values(state.candidate.virtualProviders).some(
       (provider) =>
         provider !== suite.virtualProvider &&
         (provider.allowedModels || []).includes(oldModelId),
     );
-    const usedByOtherRoute = entries(state.draft.routes).some(
+    const usedByOtherRoute = entries(state.candidate.routes).some(
       ([id, route]) =>
         id !== routeId &&
         (route.backends || []).some((backend) => (backend.models || []).includes(oldModelId)),
     );
-    if (!usedByOtherProvider && !usedByOtherRoute) delete state.draft.models[oldModelId];
+    if (!usedByOtherProvider && !usedByOtherRoute) delete state.candidate.models[oldModelId];
   }
-  Object.assign(state.draft.models, nextModels);
-  state.draft.routes[routeId] = {
-    ...state.draft.routes[routeId],
+  Object.assign(state.candidate.models, nextModels);
+  state.candidate.routes[routeId] = {
+    ...state.candidate.routes[routeId],
     strategy: "priority",
     backends: [nextRouteBackend],
   };
-  state.draft.virtualProviders[suite.binding.virtualProvider] = {
-    ...state.draft.virtualProviders[suite.binding.virtualProvider],
+  state.candidate.virtualProviders[suite.binding.virtualProvider] = {
+    ...state.candidate.virtualProviders[suite.binding.virtualProvider],
     allowedModels: Object.keys(nextModels),
     defaultModel: Object.keys(nextModels).includes(suite.virtualProvider.defaultModel)
       ? suite.virtualProvider.defaultModel
       : Object.keys(nextModels)[0],
   };
-  state.draft.bindings[suite.bindingId] = {
-    ...state.draft.bindings[suite.bindingId],
+  state.candidate.bindings[suite.bindingId] = {
+    ...state.candidate.bindings[suite.bindingId],
     defaultModel: Object.keys(nextModels).includes(suite.binding.defaultModel)
       ? suite.binding.defaultModel
       : Object.keys(nextModels)[0],
   };
-  state.routeDraftBackends = { routeId, items: [clone(nextRouteBackend)] };
+  state.routeEditor = { routeId, items: [clone(nextRouteBackend)] };
   selectSuite(suite.bindingId);
-  state.dirty = true;
+
 }
 
-function saveWizard(data, form) {
-  const defaults = wizardDefaults();
+function saveSuiteCreate(data, form) {
+  const defaults = suiteDefaults();
   const upstreamBaseUrl = String(data.get("upstreamBaseUrl") || "").trim();
   const upstreamSecret = String(data.get("upstreamSecret") || "").trim();
   const target = String(data.get("target") || "codex").trim();
   const suiteName = String(data.get("suiteName") || "").trim();
-  const modelEntries = [...form.querySelectorAll("[data-wizard-model]")].map((row) => {
+  const modelEntries = [...form.querySelectorAll("[data-create-model]")].map((row) => {
     const read = (key) =>
-      row.querySelector(`[data-wizard-field="${CSS.escape(key)}"]`)?.value.trim() || "";
+      row.querySelector(`[data-create-field="${CSS.escape(key)}"]`)?.value.trim() || "";
     return {
       clientModelId: read("clientModelId"),
       upstreamModelId: read("upstreamModelId"),
@@ -1519,7 +1618,7 @@ function saveWizard(data, form) {
   }
 
   const upstreamId = defaults.upstreamId;
-  const upstreamName = wizardUpstreamName(upstreamBaseUrl, upstreamId);
+  const upstreamName = upstreamDisplayName(upstreamBaseUrl, upstreamId);
   const routeId = defaults.routeId;
   const virtualProviderId = defaults.virtualProviderId;
   const bindingId = virtualProviderId;
@@ -1529,7 +1628,7 @@ function saveWizard(data, form) {
     modelEntries.map((model) => {
       const profileId = modelProfileId(
         model.clientModelId,
-        state.draft.models,
+        state.candidate.models,
         reservedModelIds,
       );
       return [
@@ -1553,7 +1652,7 @@ function saveWizard(data, form) {
   const modelIds = Object.keys(models);
   const defaultModel = modelIds[0];
 
-  state.draft.upstreams[upstreamId] = {
+  state.candidate.upstreams[upstreamId] = {
     id: upstreamId,
     name: upstreamName,
     integration: "codex-native-provider",
@@ -1562,9 +1661,9 @@ function saveWizard(data, form) {
     secretRef: `secret://upstreams/${upstreamId}`,
     enabled: true,
   };
-  for (const modelId of modelIds) delete state.draft.models[modelId];
-  Object.assign(state.draft.models, models);
-  state.draft.routes[routeId] = {
+  for (const modelId of modelIds) delete state.candidate.models[modelId];
+  Object.assign(state.candidate.models, models);
+  state.candidate.routes[routeId] = {
     id: routeId,
     name: `${upstreamName} route`,
     strategy: "priority",
@@ -1577,7 +1676,7 @@ function saveWizard(data, form) {
       },
     ],
   };
-  state.draft.virtualProviders[virtualProviderId] = {
+  state.candidate.virtualProviders[virtualProviderId] = {
     id: virtualProviderId,
     name: `Codex via ${upstreamName}`,
     listenHost: "127.0.0.1",
@@ -1588,7 +1687,7 @@ function saveWizard(data, form) {
     defaultModel,
     enabled: true,
   };
-  state.draft.bindings[bindingId] = {
+  state.candidate.bindings[bindingId] = {
     id: bindingId,
     name: suiteName || `Codex / ${upstreamName}`,
     target,
@@ -1600,7 +1699,7 @@ function saveWizard(data, form) {
     codex: {},
   };
 
-  state.secretDraft.upstreamSecrets[upstreamId] = upstreamSecret;
+  state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;
 
   state.selected.upstream = upstreamId;
   state.selected.model = defaultModel;
@@ -1608,16 +1707,15 @@ function saveWizard(data, form) {
   state.selected.virtualProvider = virtualProviderId;
   state.selected.binding = bindingId;
   state.selected.suite = bindingId;
-  state.showWizard = false;
   state.page = "suite-detail";
-  state.dirty = true;
+
 }
 
-function saveUpstream(data) {
+function saveUpstream(data, connectionOnly = false) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("upstream ID 不能为空");
-  const existing = state.draft.upstreams[id] || {};
-  state.draft.upstreams[id] = {
+  const existing = state.candidate.upstreams[id] || {};
+  state.candidate.upstreams[id] = {
     ...existing,
     id,
     name: String(data.get("name") || id).trim(),
@@ -1627,35 +1725,37 @@ function saveUpstream(data) {
     protocol: data.get("protocol"),
     baseUrl: String(data.get("baseUrl") || "").trim(),
     envKey: String(data.get("envKey") || "").trim(),
-    auth: {
-      ...(existing.auth || {}),
-      header: String(data.get("authHeader") || "").trim().toLowerCase() || undefined,
-    },
     secretRef: existing.secretRef || `secret://upstreams/${id}`,
-    requestMaxRetries: Number(data.get("requestMaxRetries") || 0),
-    streamMaxRetries: Number(data.get("streamMaxRetries") || 0),
-    streamIdleTimeoutMs: Number(data.get("streamIdleTimeoutMs") || 0),
-    requiresOpenaiAuth: data.get("requiresOpenaiAuth") === "on",
-    supportsWebsockets: data.get("supportsWebsockets") === "on",
-    enabled: true,
+    ...(!connectionOnly ? {
+      auth: {
+        ...(existing.auth || {}),
+        header: String(data.get("authHeader") || "").trim().toLowerCase() || undefined,
+      },
+      requestMaxRetries: Number(data.get("requestMaxRetries") || 0),
+      streamMaxRetries: Number(data.get("streamMaxRetries") || 0),
+      streamIdleTimeoutMs: Number(data.get("streamIdleTimeoutMs") || 0),
+      requiresOpenaiAuth: data.get("requiresOpenaiAuth") === "on",
+      supportsWebsockets: data.get("supportsWebsockets") === "on",
+    } : {}),
+    enabled: existing.enabled !== false,
   };
-  delete state.draft.upstreams[id].codexNative;
+  delete state.candidate.upstreams[id].codexNative;
   if (data.get("protocol") !== "openai.responses") {
-    delete state.draft.upstreams[id].integration;
-    delete state.draft.upstreams[id].codexNative;
+    delete state.candidate.upstreams[id].integration;
+    delete state.candidate.upstreams[id].codexNative;
   }
   const secret = String(data.get("secret") || "").trim();
   if (secret) {
-    state.secretDraft.upstreamSecrets[id] = secret;
+    state.pendingSecrets.upstreamSecrets[id] = secret;
   }
   state.selected.upstream = id;
-  state.dirty = true;
+
 }
 
 function saveModel(data, form) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("CableTidy Model ID 不能为空");
-  const existing = state.draft.models[id] || {};
+  const existing = state.candidate.models[id] || {};
   const upstreams = {};
   form.querySelectorAll("[data-model-upstream]").forEach((input) => {
     const upstreamId = input.dataset.modelUpstream;
@@ -1673,7 +1773,7 @@ function saveModel(data, form) {
     }
   });
   const clientModelId = String(data.get("clientModelId") || "").trim();
-  state.draft.models[id] = {
+  state.candidate.models[id] = {
     ...existing,
     id,
     clientModelId: clientModelId || id,
@@ -1688,7 +1788,7 @@ function saveModel(data, form) {
     upstreams,
   };
   state.selected.model = id;
-  state.dirty = true;
+
 }
 
 function saveRoute(data, form) {
@@ -1700,23 +1800,23 @@ function saveRoute(data, form) {
     priority: Number(row.querySelector("[data-backend-priority]").value || 10),
     enabled: true,
   }));
-  state.draft.routes[id] = {
-    ...(state.draft.routes[id] || {}),
+  state.candidate.routes[id] = {
+    ...(state.candidate.routes[id] || {}),
     id,
     name: String(data.get("name") || id).trim(),
     strategy: data.get("strategy") || "priority",
     backends,
   };
   state.selected.route = id;
-  state.routeDraftBackends = { routeId: id, items: clone(backends) };
-  state.dirty = true;
+  state.routeEditor = { routeId: id, items: clone(backends) };
+
 }
 
 function saveVirtualProvider(data) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("Virtual Provider ID 不能为空");
-  const existing = state.draft.virtualProviders[id] || {};
-  state.draft.virtualProviders[id] = {
+  const existing = state.candidate.virtualProviders[id] || {};
+  state.candidate.virtualProviders[id] = {
     ...existing,
     id,
     name: String(data.get("name") || id).trim(),
@@ -1729,13 +1829,13 @@ function saveVirtualProvider(data) {
     enabled: existing.enabled !== false,
   };
   state.selected.virtualProvider = id;
-  state.dirty = true;
+
 }
 
 function saveBinding(data) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("Binding ID 不能为空");
-  const existing = state.draft.bindings[id] || {};
+  const existing = state.candidate.bindings[id] || {};
   const target = data.get("target") || "codex";
   const targetFormat =
     target === "codex"
@@ -1778,32 +1878,21 @@ function saveBinding(data) {
     delete nextBinding.claude;
     delete nextBinding.integration;
   }
-  state.draft.bindings[id] = nextBinding;
+  state.candidate.bindings[id] = nextBinding;
   state.selected.binding = id;
-  state.dirty = true;
+
 }
 
 async function testUpstream(id) {
   const result = await api("/tests/upstream", {
     method: "POST",
-    body: JSON.stringify({
-      id,
-      ...(state.dirty
-        ? {
-            config: state.draft,
-            upstreamSecrets: state.secretDraft.upstreamSecrets,
-          }
-        : {}),
-    }),
+    body: JSON.stringify({ id }),
   });
   toast(`${id}: ${result.message}，${result.latencyMs}ms${result.secretConfigured ? "" : "，未找到 API key"}`, !result.ok);
   await refresh(false);
 }
 
 async function toggleVirtualProvider(id) {
-  if (state.dirty) {
-    throw new Error("请先提交当前草稿，再启动或暂停 Virtual Provider。");
-  }
   const provider = state.config.virtualProviders?.[id];
   if (!provider) throw new Error("Virtual Provider 不存在");
   const enabled = provider.enabled === false;
@@ -1815,25 +1904,13 @@ async function toggleVirtualProvider(id) {
   toast(enabled ? "Virtual Provider 已启动。" : "Virtual Provider 已暂停。");
 }
 
-async function validateDraft() {
-  try {
-    state.validation = await api("/config/validate", {
-      method: "POST",
-      body: JSON.stringify({ config: state.draft }),
-    });
-  } catch (error) {
-    state.validation = error.body || { ok: false, errors: [{ path: "server", message: error.message }] };
-  }
-  state.page = "diagnostics";
-  render();
-}
 
 async function resolveModel(data) {
   try {
     state.resolveResult = await api("/tests/model-resolve", {
       method: "POST",
       body: JSON.stringify({
-        config: state.draft,
+        config: state.config,
         virtualProviderId: data.get("virtualProviderId"),
         model: String(data.get("model") || "").trim(),
         stream: data.get("stream") === "on",
@@ -1849,26 +1926,26 @@ async function resolveModel(data) {
 }
 
 async function previewArtifacts() {
+  const preservedForms = captureEditedForms();
   const result = await api("/config/preview-target-artifacts", {
     method: "POST",
     body: JSON.stringify({
-      config: state.draft,
+      config: state.config,
       bindingId: state.selected.binding,
-      upstreamSecrets: state.secretDraft.upstreamSecrets,
     }),
   });
   state.artifactPreview = result.artifacts;
   const target = result.artifacts?.target;
   toast(target === "codex" ? "已生成 Codex 本地 config.toml 预览。" : "已生成环境配置预览；实际注入请使用 cabletidy target env。");
-  render();
+  render(preservedForms);
 }
 
 async function applyTarget() {
-  if (state.dirty) {
-    throw new Error("请先提交当前草稿，再生成或应用 Target 配置。");
+  if (hasUnsavedChanges()) {
+    throw new Error("请先保存当前编辑，再应用到 CLI。");
   }
   if (!state.selected.binding) throw new Error("请先选择一个 Target binding。");
-  const binding = state.draft.bindings[state.selected.binding];
+  const binding = state.candidate.bindings[state.selected.binding];
   if (binding?.target !== "codex") {
     await previewArtifacts();
     return;
@@ -1887,79 +1964,62 @@ async function applyTarget() {
   render();
 }
 
-async function commit() {
-  if (!state.dirty) {
-    toast("当前没有待提交的变更。");
-    return;
-  }
-  let validation;
+async function saveChanges(update, form) {
+  const previous = {
+    page: state.page,
+    selected: clone(state.selected),
+    routeEditor: clone(state.routeEditor),
+  };
+  const preservedForms = captureEditedForms(form);
+  state.candidate = clone(state.config);
+  state.pendingSecrets = { upstreamSecrets: {} };
   try {
-    validation = await api("/config/validate", {
+    update();
+    // The commit endpoint validates and applies the change atomically.
+    const result = await api("/config/commit", {
       method: "POST",
-      body: JSON.stringify({ config: state.draft }),
+      body: JSON.stringify({
+        baseRevision: state.config.revision,
+        config: state.candidate,
+        upstreamSecrets: state.pendingSecrets.upstreamSecrets,
+      }),
+    });
+    state.config = result.config;
+    state.runtime = result.runtime;
+    state.artifactPreview = null;
+    state.resolveResult = null;
+    state.events.unshift({
+      id: "local-" + Date.now(),
+      type: "config.commit",
+      at: new Date().toISOString(),
+      data: { revision: result.revision },
     });
   } catch (error) {
-    state.validation = error.body || {
-      ok: false,
-      errors: [{ path: "server", message: error.message }],
-    };
-    state.page = "diagnostics";
-    render();
-    return;
+    Object.assign(state, previous);
+    throw error;
+  } finally {
+    state.candidate = clone(state.config);
+    state.pendingSecrets = { upstreamSecrets: {} };
   }
-  state.validation = validation;
-  if (!validation.ok) {
-    state.page = "diagnostics";
-    render();
-    toast("配置校验失败，请先修复错误。", true);
-    return;
-  }
-  if (validation.diff?.total && !window.confirm(`即将提交 ${validation.diff.total} 项配置变化，影响：${(validation.diff.affected || []).join(", ") || "runtime"}。继续？`)) {
-    state.page = "diagnostics";
-    render();
-    return;
-  }
-  const result = await api("/config/commit", {
-    method: "POST",
-    body: JSON.stringify({
-      baseRevision: state.config.revision,
-      config: state.draft,
-      upstreamSecrets: state.secretDraft.upstreamSecrets,
-    }),
-  });
-  state.config = result.config;
-  state.draft = clone(result.config);
-  state.runtime = result.runtime;
-  state.dirty = false;
-  state.showWizard = false;
-  state.secretDraft = { upstreamSecrets: {} };
-  state.validation = null;
-  state.artifactPreview = null;
-  state.events.unshift({
-    id: `local-${Date.now()}`,
-    type: "config.commit",
-    at: new Date().toISOString(),
-    data: { revision: result.revision },
-  });
-  toast(`配置已提交，runtime revision ${result.revision} 已生效。`);
-  render();
+  render(state.page === previous.page ? preservedForms : []);
+  toast("配置已保存并生效。");
 }
 
 async function refresh(showToast = true) {
+  const preservedForms = captureEditedForms();
   const [configResult, runtime, events] = await Promise.all([
     api("/config"),
     api("/runtime"),
     api("/events"),
   ]);
   state.config = configResult.config;
-  if (!state.dirty) {
-    state.draft = clone(state.config);
-    state.secretDraft = { upstreamSecrets: {} };
-  }
+  state.candidate = clone(state.config);
+  state.pendingSecrets = { upstreamSecrets: {} };
   state.runtime = runtime;
   state.events = events.events || [];
+  state.routeEditor = null;
   if (showToast) toast("状态已刷新。");
-  render();
+  render(preservedForms);
 }
 
 function firstKey(record, excluded = new Set()) {
@@ -1975,15 +2035,13 @@ function toast(message, error = false) {
 }
 
 document.querySelectorAll(".nav-item").forEach((item) => {
-  item.addEventListener("click", () => {
-    state.page = item.dataset.page;
-    render();
-  });
+  item.addEventListener("click", () => navigatePage(item.dataset.page));
 });
 
-document.querySelector("#refresh-button").addEventListener("click", () => refresh());
-document.querySelector("#save-button").addEventListener("click", () => {
-  commit().catch((error) => toast(error.message, true));
+document.querySelector("#refresh-button").addEventListener("click", () => {
+  if (state.busy) return;
+  if (!state.config) bootstrap();
+  else handleAction("refresh");
 });
 
 bootstrap();
