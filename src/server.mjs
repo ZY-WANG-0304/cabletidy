@@ -45,7 +45,7 @@ import {
 } from "./model-resolver.mjs";
 import { validateConfig } from "./validation.mjs";
 import { configurationBaseUrl, providerIdForConfiguration } from "../web/config-identity.js";
-import { loadCodexCatalog, publicCodexCatalog, validateCodexChanges } from "./codex-catalog.mjs";
+import { forceStopCodexCatalog, loadCodexCatalog, publicCodexCatalog, validateCodexChanges } from "./codex-catalog.mjs";
 
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const WEB_ROOT = path.join(PROJECT_ROOT, "web");
@@ -88,17 +88,19 @@ export async function createApplication(options = {}) {
   };
 
   let webServer = null;
+  const requests = new Set();
   const host = config.web.listenHost || "127.0.0.1";
   const port = Number(config.web.port || 43100);
   try {
     webServer = http.createServer((request, response) => {
-      handleWebRequest(state, request, response).catch((error) => {
+      const task = handleWebRequest(state, request, response).catch((error) => {
         if (!response.headersSent) {
           sendJson(response, 500, { error: { code: "internal_error", message: error.message } });
         } else {
           response.destroy(error);
         }
-      });
+      }).finally(() => requests.delete(task));
+      requests.add(task);
     });
     state.webServer = webServer;
     await listen(webServer, host, port);
@@ -120,8 +122,10 @@ export async function createApplication(options = {}) {
   state.updateConfig = updateConfig;
 
   const close = async () => {
-    await state.configOperation;
     await closeServer(webServer);
+    // Disconnected clients can still have probes, child processes or writes in flight.
+    await Promise.all(requests);
+    await state.configOperation;
     const runtime = await readRuntimeInfo(paths);
     if (runtime?.pid === process.pid) {
       await fs.unlink(paths.runtime).catch(() => {});
@@ -632,7 +636,7 @@ async function applyTarget(state, body, response) {
       sendJson(response, 501, {
         error: {
           code: "target_apply_not_supported",
-          message: `${artifacts.target} 当前没有可持久化写入的客户端配置；请使用预览或 cabletidy target env 生成进程环境`,
+          message: `${artifacts.target} 当前没有可持久化写入的客户端配置；请使用管理台预览并将环境变量注入客户端`,
         },
         target: artifacts.target,
         bindingId: artifacts.bindingId,
@@ -1224,14 +1228,42 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  createApplication()
-    .then(({ url }) => {
-      console.log(`CableTidy Web 管理台: ${url}`);
-      console.log("按 Ctrl+C 停止 daemon");
-    })
-    .catch((error) => {
+export async function startDaemon() {
+  const app = await createApplication();
+  let stopping = false;
+  const stop = async (signal) => {
+    if (stopping) {
+      if (signal === "SIGINT") {
+        console.error("CableTidy 强制退出");
+        try {
+          forceStopCodexCatalog();
+        } finally {
+          process.exit(130);
+        }
+      }
+      return;
+    }
+    stopping = true;
+    console.log("正在停止 CableTidy，等待请求和清理完成；再次按 Ctrl+C 强制退出。");
+    try {
+      await app.close();
+    } catch (error) {
       console.error(error.stack || error.message);
       process.exitCode = 1;
-    });
+    } finally {
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+    }
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  console.log(`CableTidy Web 管理台: ${app.url}`);
+  console.log("按 Ctrl+C 停止 daemon");
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startDaemon().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
 }

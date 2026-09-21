@@ -4,11 +4,22 @@
   "private": true,
   "description": "A local multi-target coding CLI gateway and provider manager.",
   "type": "module",
+  "bin": {
+    "cabletidy": "bin/cabletidy.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "web/"
+  ],
+  "engines": {
+    "node": "^22.13.0 || >=24"
+  },
   "scripts": {
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "config:check": "node src/cli.mjs config check"
+    "test:package": "node --test scripts/package-smoke.mjs"
   },
   "dependencies": {
     "toml-eslint-parser": "^1.0.3"

@@ -29,26 +29,73 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 仅模型名称不同且元数据一致时，不生成额外目录。显式覆盖上下文窗口或输入类型时，CableTidy 生成 `model_catalog_json` 并保留对应官方模型的完整指令、模板变量、reasoning 选项和工具配置。当前不实现逐模型 compact 策略同步，旧 compact 数据保留但不生效。
 
-## 运行
+## 安装与运行
+
+推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。目前验证平台为 Linux，macOS 和 Windows 尚待验证。
+
+### 从安装包使用
+
+当前尚未发布到 npm registry。拿到 `.tgz` 安装包后，无需 clone 仓库即可安装：
 
 ```bash
-npm install
-npm start
+npm install -g /absolute/path/cabletidy-0.1.0.tgz
+cabletidy --version
+cabletidy start
 ```
+
+也可以不做全局安装，直接运行同一个安装包：
+
+```bash
+npm exec --yes --package=/absolute/path/cabletidy-0.1.0.tgz -- cabletidy start
+```
+
+安装包仍依赖本机 Node.js；npm 会下载尚未缓存的运行时依赖，因此 `.tgz` 本身不代表完全离线安装。安装过程不会启动服务或修改客户端配置。
+
+`cabletidy start` 在前台运行，打印管理台地址；按 Ctrl+C 或收到 SIGTERM 后停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并退出，不设置退出倒计时。等待期间再次按 Ctrl+C 会强制退出，退出码为 130；此时可能保留过期的 `runtime.json`，状态检查会检测服务是否仍在线。当前不包含后台常驻或开机自启。
+
+在另一个终端可以运行：
+
+```bash
+cabletidy --help
+cabletidy status
+```
+
+`status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前配置套装列表；每套配置包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
+
+升级时先停止服务，再安装新版本 `.tgz` 并重新启动。卸载使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
+
+### 从源码运行与打包
+
+```bash
+npm ci
+npm start
+
+# 生成可安装的 cabletidy-0.1.0.tgz。
+npm pack
+```
+
+`npm start` 与 `cabletidy start` 使用相同的启动和退出逻辑。源码用户也可以通过 `node bin/cabletidy.mjs --help` 调用完整 CLI。
+
+验证源码和安装产物：
+
+```bash
+npm test
+npm run test:package
+```
+
+安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源及用户数据保留；需要能够获取 npm 依赖。Linux 上还验证 SIGINT / SIGTERM 和端口冲突。分发方案的取舍与后续服务管理设计见 [安装与分发决策](docs/installation-research.md)。
 
 使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。已在 Codex 0.154.0 验证目录加载和实际请求。
 
-管理台默认只监听本机回环地址。直接打开以下地址，或运行：
-
-```bash
-node src/cli.mjs web print-url
-```
+管理台默认只监听本机回环地址。启动后可从 `cabletidy status` 输出中取得地址。
 
 默认数据目录为 `~/.cabletidy`。如需启动一个临时实例：
 
 ```bash
-CABLETIDY_HOME="$PWD/.cabletidy-dev" npm start
+CABLETIDY_HOME="$PWD/.cabletidy-dev" cabletidy start
 ```
+
+源码运行时，将命令末尾的 `cabletidy start` 换成 `npm start`。
 
 Web 管理台与所有 Virtual Provider 共用 `127.0.0.1:43100`。每份配置通过 `/<配置ID>/v1/...` 接入，例如 `http://127.0.0.1:43100/codex-main/v1/responses`；管理接口仍使用 `/api/v1/...`。
 
@@ -95,11 +142,11 @@ wire_api = "responses"
 requires_openai_auth = false
 ```
 
-新配置不强制指定 `model`，应用时保留 Codex 已有的模型选择；使用临时 `cabletidy run` 时由 Codex 默认值或客户端参数决定。旧配置中的显式 `defaultModel` 仍受支持。
+新配置不强制指定 `model`，应用时保留 Codex 已有的模型选择。旧配置中的显式 `defaultModel` 仍受支持。
 
 配置与 Virtual Provider 一对一。例如填写配置名称 `my-relay`，配置 ID、Virtual Provider ID 和 Codex `model_provider` 分别为 `my-relay`、`cabletidy_my-relay` 和 `cabletidy_my-relay`。名称包含大写或空格时仍会规范化为同样的配置 ID。
 配置名称会转换为小写，并将空格等字符转换为 `-`；无法生成有效标识时使用原配置 ID。规范化后重名的配置，以及占用管理接口保留路径 `api` 的配置，会被拒绝。
-旧配置加载时自动对齐内部 ID 和引用，保留模型映射和上游密钥，并移除 Virtual Provider 的独立 `listenHost` / `listenPort` 及 `daemon.proxyPortRange`。共用监听地址由 `web.listenHost` / `web.port` 决定，修改它需要重启 daemon。CLI 的 `--binding` 使用对齐后的配置 ID，`model resolve` 使用带 `cabletidy_` 前缀的 Virtual Provider ID。
+旧配置加载时自动对齐内部 ID 和引用，保留模型映射和上游密钥，并移除 Virtual Provider 的独立 `listenHost` / `listenPort` 及 `daemon.proxyPortRange`。共用监听地址由 `web.listenHost` / `web.port` 决定，修改它需要重启 daemon。
 升级后重启 CableTidy，在详情页重新“应用到 Codex”，将旧的独立端口地址更新为配置路径。暂停一份配置只暂停对应入口；重命名配置会改变路径，需要再次应用客户端配置。
 上游连接的内部 ID 只用于 CableTidy 关联模型映射和路由，不参与 Codex provider 命名。
 CableTidy 不会在 daemon 启动时改写已有 Codex `config.toml`；只有用户主动应用配置时才会写入新的 provider。
@@ -123,19 +170,11 @@ CableTidy 生成的 `base_url` 永远指向本地 Virtual Provider。Codex 不�
 - 外部教程、profile ID 或 profile 文件。
 - CableTidy 的内部 Model Profile 和 Upstream Model Binding。
 
-可以预览或应用 Codex 配置：
-
-```bash
-node src/cli.mjs codex artifacts <binding-id>
-node src/cli.mjs target env <binding-id>
-node src/cli.mjs run --target codex --binding <binding-id> -- codex
-```
-
-`run` 使用临时 `CODEX_HOME`，不会覆盖用户全局 Codex 文件。Web 管理台的“应用”操作会在 `~/.codex/config.toml` 中增量维护 CableTidy 的根级选择和 provider 条目，不修改其他 `model_providers`，并创建备份。
+Web 管理台的“应用”操作会在 `~/.codex/config.toml` 中增量维护 CableTidy 的根级选择和 provider 条目，不修改其他 `model_providers`，并创建备份。
 
 启用元数据覆盖后，“应用”还会写入 `model-catalogs/cabletidy-<hash>.json`，将根级 `model_catalog_json` 指向其绝对路径，并暂时移除会覆盖逐模型窗口的根级 `model_context_window`。原目录引用和窗口保存在 `.cabletidy-model-catalog.json`，所有模型恢复官方定义、再次应用时会恢复它们。原目录文件不被覆盖，其其他条目保留在生成目录中。
 
-Codex 的模型目录是当前配置级别的，不按 provider 隔离。手动切换其他 provider 不会自动撤销目录覆盖；应先恢复官方定义并应用，或使用隔离的 `cabletidy run`。已有 `model_instructions_file`、`developer_instructions`、reasoning effort、compact 阈值和其他用户设置保持不变，预览会提示影响模型行为的覆盖项。生成目录后重启 Codex；更新 Codex 版本后刷新模型列表并重新应用。
+Codex 的模型目录是当前配置级别的，不按 provider 隔离。手动切换其他 provider 不会自动撤销目录覆盖；应先恢复官方定义并应用。已有 `model_instructions_file`、`developer_instructions`、reasoning effort、compact 阈值和其他用户设置保持不变，预览会提示影响模型行为的覆盖项。生成目录后重启 Codex；更新 Codex 版本后刷新模型列表并重新应用。
 
 Virtual Provider 只监听 `127.0.0.1`、`localhost` 或 `::1`，不生成或校验本地 API Key。
 Codex 配置不包含 `env_key`，也不需要设置认证环境变量。例如，可以直接请求：
@@ -152,14 +191,12 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 
 ## 其他 CLI
 
-Claude Code 使用 Anthropic Messages Virtual Provider，目标配置通过环境变量预览或 `cabletidy run` 注入。未来的 Gemini CLI、OpenCode 和其他编程 CLI 可以增加各自的 Target Adapter；它们不需要被强行改成 OpenAI 配置。
+Claude Code 使用 Anthropic Messages Virtual Provider，目标配置通过管理台预览。未来的 Gemini CLI、OpenCode 和其他编程 CLI 可以增加各自的 Target Adapter；它们不需要被强行改成 OpenAI 配置。
 
-## CLI 与检查
+## CLI
 
 ```bash
 node src/cli.mjs status
-node src/cli.mjs config check
-node src/cli.mjs model resolve <virtual-provider-id> <client-model-id>
 npm test
 ```
 

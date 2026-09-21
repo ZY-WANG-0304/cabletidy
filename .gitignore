@@ -3,3 +3,4 @@ node_modules/
 .cabletidy-debug/
 data/
 *.log
+*.tgz

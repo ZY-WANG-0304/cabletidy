@@ -1528,7 +1528,7 @@ async function previewArtifacts() {
   });
   state.artifactPreview = result.artifacts;
   const target = result.artifacts?.target;
-  toast(target === "codex" ? "已生成 Codex 本地 config.toml 预览。" : "已生成环境配置预览；实际注入请使用 cabletidy target env。");
+  toast(target === "codex" ? "已生成 Codex 本地 config.toml 预览。" : "已生成环境配置预览；请将这些变量注入对应客户端。");
   render(preservedForms);
 }
 

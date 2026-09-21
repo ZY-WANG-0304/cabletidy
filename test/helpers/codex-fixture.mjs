@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-
 export function catalogFixture() {
   return {
     version: "codex-cli test",
@@ -19,14 +16,6 @@ export function catalogFixture() {
       })),
     },
   };
-}
-
-export async function mockCodexEnvironment(home) {
-  const bin = path.join(home, "bin");
-  await fs.mkdir(bin, { recursive: true });
-  const snapshot = catalogFixture();
-  await fs.writeFile(path.join(bin, "codex"), `#!${process.execPath}\nconst args=process.argv.slice(2); console.log(args.includes('--version') ? ${JSON.stringify(snapshot.version)} : ${JSON.stringify(JSON.stringify(snapshot.catalog))});\n`, { mode: 0o700 });
-  return { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CABLETIDY_HOME: home, CODEX_HOME: path.join(home, "client") };
 }
 
 export function codexConfigFixture() {

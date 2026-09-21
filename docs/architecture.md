@@ -35,7 +35,7 @@ CableTidy 管理模型能力、上下文窗口和相关策略；Codex 仍需通�
 
 生成器完整复制本机官方目录，只修改需要覆盖的模型字段，保留提示词、模板变量、reasoning 选项和工具定义。不生成中性提示词，也不将全部模型固定到同一套指令。`GET /v1/models` 仍是 CableTidy 的必需接口，但不作为 Codex 模型元数据自动同步机制。逐模型 compact 策略尚未同步，旧数据保留但不改变压缩行为。
 
-预览、应用及临时启动使用同一套生成逻辑。应用时使用 TOML 语法树定位根级配置和当前 provider，保留其他 provider、多行指令和用户设置。模型目录采用内容寻址文件名，先写目录再切换 config.toml 引用；原目录和根级窗口的恢复信息独立保存。全部模型取消覆盖后再次应用时恢复原配置，不撤销用户随后自行修改的目录引用。目录覆盖是 Codex 当前配置级别的，不按 provider 隔离；手动切换其他 provider 前需要恢复原目录，或使用隔离 CODEX_HOME。
+预览和应用使用同一套生成逻辑。应用时使用 TOML 语法树定位根级配置和当前 provider，保留其他 provider、多行指令和用户设置。模型目录采用内容寻址文件名，先写目录再切换 config.toml 引用；原目录和根级窗口的恢复信息独立保存。全部模型取消覆盖后再次应用时恢复原配置，不撤销用户随后自行修改的目录引用。目录覆盖是 Codex 当前配置级别的，不按 provider 隔离；手动切换其他 provider 前需要恢复原目录。
 
 ## 2. Codex Native Provider Integration
 
@@ -344,7 +344,7 @@ Codex 自行选择请求的 `model`，daemon 默认原样发送；仅在命中�
 ```
 
 Web API 和 artifact preview 不返回上游密钥明文。Virtual Provider 无需认证，
-Codex 接入不生成 `env_key`，`target env` 和 `run` 不读取或注入本地密钥。
+Codex 接入不生成 `env_key`，Web 管理台负责目标配置的预览和应用，不通过 CLI 读取或注入本地密钥。
 已有 Codex 配置重新应用后，该 CableTidy provider 的旧 `env_key` 会被移除，
 其他 provider 保留。旧 secrets store 中的本地密钥不再使用。
 Claude Code 适配器自动使用固定的 `cabletidy-local` 占位值满足客户端认证检查，
@@ -624,7 +624,7 @@ src/server.mjs
   shared listener / Web control API / configuration path dispatch
 
 src/cli.mjs
-  status / config check / artifact / run
+  start / status
 
 web/index.html + web/app.js + web/styles.css
   local configuration console and first-run wizard
@@ -658,7 +658,7 @@ MVP 至少覆盖：
 8. 未登记模型透传，显式设置缺少上游绑定、能力不足和协议不兼容会在本地失败。模型设置可为空，元数据覆盖不要求改名。
 9. 上游失败时直接返回错误，不向其他配置的 upstream 重试。即使额外 backend 被禁用，多上游配置也必须被拒绝。
 10. commit 失败时旧 runtime 继续服务；配置入口独立暂停、重命名或删除，不影响其他入口和已有流式请求。
-11. `cabletidy run` 不修改用户全局 Codex 配置。
+11. 客户端配置由 Web 管理台应用，不通过 CLI 临时改写用户全局配置。
 12. 外部教程和 profile 文件不是启动依赖，也不是运行时对象。
 
 ## 13. 演进路线
