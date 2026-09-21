@@ -70,6 +70,8 @@ test("Claude Code uses a public client placeholder instead of a local secret", (
 
   const publicView = publicTargetArtifacts(artifacts);
   assert.doesNotMatch(JSON.stringify(publicView), /local-secret-value/);
+  assert.equal(Object.hasOwn(publicView, "localSecret"), false);
+  assert.equal(Object.hasOwn(publicView.environment, "value"), false);
   assert.equal(publicView.environment.vars.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
   assert.match(publicView.environment.shell, /ANTHROPIC_AUTH_TOKEN='cabletidy-local'/);
 });
@@ -86,4 +88,21 @@ test("generic CLI environments need only a local URL and model", () => {
   });
   assert.doesNotMatch(JSON.stringify(artifacts), /API_KEY|legacy-local-key/);
   assert.deepEqual(publicTargetArtifacts(artifacts).environment.vars, artifacts.environment.vars);
+});
+
+test("passthrough leaves Claude and generic CLI model selection to the client", () => {
+  for (const target of ["claude-code", "generic-env"]) {
+    const config = claudeConfig();
+    config.models = {};
+    config.routes["claude-route"].backends[0].models = [];
+    config.virtualProviders["cabletidy_claude-main"].allowedModels = [];
+    delete config.virtualProviders["cabletidy_claude-main"].defaultModel;
+    delete config.bindings["claude-main"].defaultModel;
+    config.bindings["claude-main"].target = target;
+    const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+    assert.equal(artifacts.clientModelId, null);
+    assert.equal(Object.keys(artifacts.environment.vars).some(key => key.endsWith("_MODEL")), false);
+    config.bindings["claude-main"].defaultModel = "unconfigured-model";
+    assert.equal(buildTargetArtifacts(config, { bindingId: "claude-main" }).clientModelId, "unconfigured-model");
+  }
 });

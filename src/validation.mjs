@@ -1,5 +1,4 @@
 import { normalizeConfig } from "./config.mjs";
-import { findModelProfile } from "./model-resolver.mjs";
 import { configurationId, providerIdForConfiguration } from "../web/config-identity.js";
 
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
@@ -80,18 +79,9 @@ export function validateConfig(input) {
     if (upstream.integration && !INTEGRATIONS.has(upstream.integration)) {
       add(errors, `upstreams.${id}.integration`, "未注册的上游接入方式");
     }
-    const envKey = upstream.envKey || upstream.codexNative?.envKey;
-    if (envKey && !ENV_PATTERN.test(envKey)) {
-      add(errors, `upstreams.${id}.envKey`, "env_key 必须是大写环境变量名");
-    }
     const authHeader = upstream.auth?.header || upstream.authHeader;
     if (authHeader && !HEADER_PATTERN.test(authHeader)) {
       add(errors, `upstreams.${id}.auth.header`, "认证 header 名称不合法");
-    }
-    for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs"]) {
-      if (upstream[field] !== undefined && !isInteger(upstream[field])) {
-        add(errors, `upstreams.${id}.${field}`, "必须是非负整数");
-      }
     }
   }
 
@@ -176,8 +166,11 @@ export function validateConfig(input) {
         if (!config.upstreams[upstreamId]) {
           add(errors, `models.${id}.upstreams.${upstreamId}`, "引用的 upstream 不存在");
         }
-        if (!binding?.upstreamModelId) {
-          add(errors, `models.${id}.upstreams.${upstreamId}.upstreamModelId`, "不能为空");
+        if (!isRecord(binding)) {
+          add(errors, `models.${id}.upstreams.${upstreamId}`, "模型设置必须是 object");
+        } else if (binding.upstreamModelId !== undefined &&
+            (typeof binding.upstreamModelId !== "string" || !binding.upstreamModelId.trim())) {
+          add(errors, `models.${id}.upstreams.${upstreamId}.upstreamModelId`, "如需改名，必须填写非空字符串");
         }
         if (
           binding?.capabilityOverrides !== undefined &&
@@ -215,10 +208,10 @@ export function validateConfig(input) {
       const base = `routes.${id}.backends.${index}`;
       if (!isRecord(rawBackend)) add(errors, base, "backend 必须是 object");
       if (!config.upstreams[backend.upstream]) add(errors, `${base}.upstream`, "upstream 不存在");
-      if (!Array.isArray(backend.models) || backend.models.length === 0) {
-        add(errors, `${base}.models`, "backend 至少需要绑定一个 Model Profile");
+      if (backend.models !== undefined && !Array.isArray(backend.models)) {
+        add(errors, `${base}.models`, "models 必须是数组，可留空以透传模型名");
       }
-      for (const modelId of backend.models || []) {
+      for (const modelId of Array.isArray(backend.models) ? backend.models : []) {
         if (typeof modelId !== "string" || !modelId.trim()) {
           add(errors, `${base}.models`, "模型 ID 必须是非空字符串");
           continue;
@@ -260,11 +253,11 @@ export function validateConfig(input) {
       });
     }
     if (!config.routes[provider.route]) add(errors, `virtualProviders.${id}.route`, "route 不存在");
-    if (!Array.isArray(provider.allowedModels) || provider.allowedModels.length === 0) {
-      add(errors, `virtualProviders.${id}.allowedModels`, "至少需要一个 allowed model");
+    if (provider.allowedModels !== undefined && !Array.isArray(provider.allowedModels)) {
+      add(errors, `virtualProviders.${id}.allowedModels`, "模型设置必须是数组，可留空以透传模型名");
     } else {
       const aliasOwners = new Map();
-      for (const modelId of provider.allowedModels) {
+      for (const modelId of provider.allowedModels || []) {
         if (typeof modelId !== "string" || !modelId.trim()) {
           add(errors, `virtualProviders.${id}.allowedModels`, "模型 ID 必须是非空字符串");
           continue;
@@ -284,16 +277,9 @@ export function validateConfig(input) {
         }
       }
     }
-    if (provider.defaultModel) {
-      const match = findModelProfile(config, provider.defaultModel, provider.allowedModels);
-      if (!match) {
-        add(errors, `virtualProviders.${id}.defaultModel`, "defaultModel 对应的模型不存在");
-      } else if (
-        provider.allowedModels?.length &&
-        !provider.allowedModels.includes(match.profileId)
-      ) {
-        add(errors, `virtualProviders.${id}.defaultModel`, "defaultModel 必须属于 allowedModels");
-      }
+    if (provider.defaultModel !== undefined &&
+        (typeof provider.defaultModel !== "string" || !provider.defaultModel.trim())) {
+      add(errors, `virtualProviders.${id}.defaultModel`, "defaultModel 必须是非空字符串");
     }
   }
 
@@ -347,26 +333,9 @@ export function validateConfig(input) {
         );
       }
     }
-    let bindingProfileId;
-    if (binding.defaultModel) {
-      const match = findModelProfile(config, binding.defaultModel, config.virtualProviders[binding.virtualProvider]?.allowedModels);
-      if (!match) {
-        add(errors, `bindings.${id}.defaultModel`, "defaultModel 对应的模型不存在");
-      } else {
-        bindingProfileId = match.profileId;
-      }
-    }
-    const boundVirtualProvider = config.virtualProviders[binding.virtualProvider];
-    if (
-      bindingProfileId &&
-      boundVirtualProvider?.allowedModels?.length &&
-      !boundVirtualProvider.allowedModels.includes(bindingProfileId)
-    ) {
-      add(
-        errors,
-        `bindings.${id}.defaultModel`,
-        "binding defaultModel 必须属于其 Virtual Provider 的 allowedModels",
-      );
+    if (binding.defaultModel !== undefined &&
+        (typeof binding.defaultModel !== "string" || !binding.defaultModel.trim())) {
+      add(errors, `bindings.${id}.defaultModel`, "defaultModel 必须是非空字符串");
     }
     if (binding.integration && !INTEGRATIONS.has(binding.integration)) {
       add(errors, `bindings.${id}.integration`, "未注册的上游接入方式");
@@ -395,9 +364,6 @@ export function validateConfig(input) {
 
   if (Object.keys(config.upstreams).length === 0) {
     warnings.push({ path: "upstreams", message: "还没有配置 upstream" });
-  }
-  if (Object.keys(config.models).length === 0) {
-    warnings.push({ path: "models", message: "还没有配置 Model Profile" });
   }
   if (Object.keys(config.virtualProviders).length === 0) {
     warnings.push({ path: "virtualProviders", message: "还没有配置本地 Virtual Provider" });

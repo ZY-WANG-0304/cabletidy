@@ -96,7 +96,7 @@ test("run gives Codex an ephemeral CODEX_HOME", async () => {
       env,
     });
     const environment = JSON.parse(envResult.stdout);
-    assert.equal(environment.envKey, undefined);
+    assert.deepEqual(environment.vars, {});
     assert.equal(environment.shell, "");
     await assert.rejects(fs.access(path.join(home, ".codex")));
   } finally {

@@ -8,7 +8,7 @@ import { createApplication } from "../src/server.mjs";
 import { getPaths, saveSecrets } from "../src/config.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
-async function fixture(t) {
+async function fixture(t, configure = () => {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-shared-port-"));
   const paths = getPaths(home);
   const calls = [];
@@ -64,6 +64,7 @@ async function fixture(t) {
   config.bindings.other = {
     ...config.bindings.relay, id: "other", name: "Other", virtualProvider: "cabletidy_other", defaultModel: "other",
   };
+  configure(config);
   await fs.writeFile(paths.config, JSON.stringify(config));
   await saveSecrets({ "secret://upstreams/relay": "left-key", "secret://upstreams/other": "right-key" }, paths);
   app = await createApplication({ paths, codexHome: path.join(home, "client"), loadCodexCatalog: async () => catalogFixture() });
@@ -109,6 +110,89 @@ test("shared paths isolate models, credentials and pause state while keeping con
   assert.equal((await call("api/v1/runtime")).status, 200);
   assert.equal((await call("api/v1/virtual-providers/cabletidy_relay/start", {})).status, 200);
   assert.equal((await call("relay/v1/models")).status, 200);
+});
+
+test("saving an API key uses it on outbound requests despite legacy environment credentials", async (t) => {
+  const envKey = "CABLETIDY_TEST_UPSTREAM_API_KEY";
+  const previous = process.env[envKey];
+  t.after(() => {
+    if (previous === undefined) delete process.env[envKey];
+    else process.env[envKey] = previous;
+  });
+  process.env[envKey] = "stale-environment-key";
+  const { app, paths, call, calls } = await fixture(t, config => {
+    config.upstreams.relay.envKey = envKey;
+    config.upstreams.other.envKey = envKey;
+    delete config.upstreams.other.secretRef;
+  });
+
+  const publicConfig = (await call("api/v1/config")).body.config;
+  assert.equal(publicConfig.upstreams.relay.secretConfigured, true);
+  assert.equal(publicConfig.upstreams.other.secretConfigured, false);
+  assert.doesNotMatch(JSON.stringify(publicConfig), /envKey|stale-environment-key/);
+  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "other" });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.artifacts.upstream.secretConfigured, false);
+  assert.equal(Object.hasOwn(preview.body.artifacts.upstream, "envKey"), false);
+  assert.equal((await call("other/v1/responses", { model: "gpt-5.5" })).status, 200);
+  assert.equal(calls.at(-1).authorization, undefined);
+
+  const config = structuredClone(app.state.config);
+  // A stale browser may still submit the removed fields when saving a new key.
+  config.upstreams.relay.envKey = envKey;
+  config.upstreams.relay.codexToml = { envKey };
+  config.upstreams.relay.codexNative = { envKey };
+  const saved = await call("api/v1/config/commit", {
+    config, baseRevision: config.revision, upstreamSecrets: { relay: "new-saved-key" },
+  });
+  assert.equal(saved.status, 200);
+  assert.doesNotMatch(JSON.stringify(saved.body.config), /envKey|codexToml|codexNative|new-saved-key/);
+  const storedConfig = await fs.readFile(paths.config, "utf8");
+  assert.doesNotMatch(storedConfig, /envKey|codexToml|codexNative/);
+  const storedSecrets = JSON.parse(await fs.readFile(paths.secrets, "utf8"));
+  assert.equal(storedSecrets["secret://upstreams/relay"], "new-saved-key");
+  assert.equal((await call("relay/v1/responses", { model: "gpt-5.5" })).status, 200);
+  assert.equal(calls.at(-1).authorization, "Bearer new-saved-key");
+});
+
+test("upstream-only configuration commits, previews and relays JSON and SSE without model registration", async (t) => {
+  const { app, call, commit, calls, streams } = await fixture(t);
+  const config = structuredClone(app.state.config);
+  delete config.models.model;
+  delete config.routes.route.backends[0].models;
+  delete config.virtualProviders.cabletidy_relay.allowedModels;
+  delete config.virtualProviders.cabletidy_relay.defaultModel;
+  delete config.bindings.relay.defaultModel;
+  app.state.loadCodexCatalog = async () => { throw new Error("catalog unavailable"); };
+  assert.equal((await commit(config)).status, 200);
+  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "relay" });
+  assert.equal(preview.status, 200);
+  assert.doesNotMatch(preview.body.artifacts.files[0].contents, /^model =/m);
+  assert.deepEqual((await call("relay/v1/models")).body.data, []);
+  const request = {
+    model: "gpt-5.5", input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,test" }] }],
+    instructions: "Client instructions", tools: [{ type: "function", name: "lookup", parameters: {} }],
+    tool_choice: "auto", parallel_tool_calls: true, reasoning: { effort: "high" },
+  };
+  assert.equal((await call("relay/v1/responses", request)).body.model, "gpt-5.5");
+  assert.deepEqual(calls.at(-1).body, request);
+  assert.equal(calls.at(-1).authorization, "Bearer left-key");
+  assert.equal((await call("other/v1/responses", { model: "gpt-5.5" })).body.model, "gpt-5.5");
+  assert.equal(calls.at(-1).body.model, "OTHER-GPT");
+  const unknown = { model: "new-upstream-model", input: "hello", stream: true };
+  const response = await fetch(`${app.url}relay/v1/responses`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(unknown),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.at(-1).body, unknown);
+  streams.forEach(finish => finish());
+  assert.match(await response.text(), /"model":"new-upstream-model","delta":"last"/);
+  const resolved = await call("api/v1/tests/model-resolve", { virtualProviderId: "cabletidy_relay", model: "new-upstream-model" });
+  assert.equal(resolved.body.profileId, null);
+  assert.equal(resolved.body.upstreamModelId, "new-upstream-model");
+  const count = calls.length;
+  assert.equal((await call("relay/v1/responses", { input: "missing model" })).status, 400);
+  assert.equal(calls.length, count);
 });
 
 test("renames and removals update shared paths without interrupting an existing stream", async (t) => {

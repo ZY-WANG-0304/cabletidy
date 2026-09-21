@@ -49,7 +49,54 @@ test("official mode keeps one config file without forced effort or a generated c
   assert.equal(settings.model_reasoning_effort, undefined);
   assert.equal(settings.model_context_window, undefined);
   assert.equal(settings.model_providers.cabletidy_relay.env_key, undefined);
-  assert.equal(publicArtifacts(artifacts).catalogPlan, undefined);
+  const publicView = publicArtifacts(artifacts);
+  assert.equal(publicView.catalogPlan, undefined);
+  assert.equal(Object.hasOwn(publicView, "localSecret"), false);
+  assert.equal(Object.hasOwn(publicView.environment, "value"), false);
+});
+
+test("passthrough can be applied without a model catalog and preserves the client's model choice", async (t) => {
+  const { config, options, root } = await fixture(t);
+  config.models = {};
+  config.routes.route.backends[0].models = [];
+  config.virtualProviders.cabletidy_relay.allowedModels = [];
+  delete config.virtualProviders.cabletidy_relay.defaultModel;
+  delete config.bindings.relay.defaultModel;
+  options.loadCatalog = async () => { throw new Error("catalog must not be needed"); };
+  let artifacts = await prepareCodexArtifacts(config, options);
+  assert.equal(readCodexConfig(artifacts.files[0].contents).model, undefined);
+  assert.equal(artifacts.clientModelId, null);
+  await fs.writeFile(root, 'model = "client-selected-model"\nmodel_reasoning_effort = "high"\n');
+  artifacts = await prepareCodexArtifacts(config, options);
+  await applyCodexArtifacts(artifacts, options);
+  const settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model, "client-selected-model");
+  assert.equal(settings.model_reasoning_effort, "high");
+  assert.equal(settings.model_provider, "cabletidy_relay");
+  assert.equal(settings.model_providers.cabletidy_relay.wire_api, "responses");
+  assert.deepEqual(artifacts.files.map(file => file.path), ["config.toml"]);
+});
+
+test("metadata-only settings preserve names and restore the original catalog after the last setting is removed", async (t) => {
+  const { config, options, root } = await fixture(t);
+  await fs.writeFile(root, 'model = "gpt-5.6-sol"\nmodel_context_window = 64000\n');
+  enableOverrides(config);
+  delete config.models.model.upstreams.relay.upstreamModelId;
+  delete config.virtualProviders.cabletidy_relay.defaultModel;
+  delete config.bindings.relay.defaultModel;
+  const artifacts = await prepareCodexArtifacts(config, options);
+  assert.equal(JSON.parse(artifacts.files[1].contents).models[0].context_window, 128000);
+  assert.equal(readCodexConfig(artifacts.files[0].contents).model, "gpt-5.6-sol");
+  await applyCodexArtifacts(artifacts, options);
+  config.models = {};
+  config.virtualProviders.cabletidy_relay.allowedModels = [];
+  config.routes.route.backends[0].models = [];
+  options.loadCatalog = async () => { throw new Error("catalog must not be needed"); };
+  await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
+  const settings = readCodexConfig(await fs.readFile(root, "utf8"));
+  assert.equal(settings.model, "gpt-5.6-sol");
+  assert.equal(settings.model_catalog_json, undefined);
+  assert.equal(settings.model_context_window, 64000);
 });
 
 test("legacy context and compact values are preserved but require explicit metadata opt-in", async (t) => {

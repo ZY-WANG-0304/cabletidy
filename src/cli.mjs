@@ -102,7 +102,7 @@ async function main() {
       print({
         bindingId: artifacts.bindingId,
         target: artifacts.target,
-        envKey: artifacts.environment.name,
+        vars: artifacts.environment.vars || {},
         shell: artifacts.environment.shell,
       });
     } else {
@@ -186,9 +186,6 @@ async function runTarget(args, paths) {
         await fs.writeFile(targetFile, file.contents, { mode: 0o600 });
       }
       environment.CODEX_HOME = temporaryCodexHome;
-      if (artifacts.environment.name) {
-        environment[artifacts.environment.name] = String(artifacts.environment.value ?? "");
-      }
     }
 
     const result = spawnSync(commandArgs[0], commandArgs.slice(1), {

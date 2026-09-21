@@ -9,7 +9,7 @@ export class ModelResolveError extends Error {
 
 export function findModelProfile(config, clientModelId, allowedModels) {
   if (!clientModelId) return null;
-  const allowed = allowedModels?.length ? new Set(allowedModels) : null;
+  const allowed = Array.isArray(allowedModels) ? new Set(allowedModels) : null;
   if (config.models?.[clientModelId] && (!allowed || allowed.has(clientModelId))) {
     return { profileId: clientModelId, profile: config.models[clientModelId], matchedBy: "id" };
   }
@@ -30,9 +30,7 @@ export function clientModelIdForProfile(profileId, profile) {
 }
 
 export function listClientModels(config, virtualProvider) {
-  const allowed = virtualProvider?.allowedModels?.length
-    ? virtualProvider.allowedModels
-    : Object.keys(config.models || {});
+  const allowed = virtualProvider?.allowedModels || [];
   return allowed
     .map((profileId) => {
       const profile = config.models?.[profileId];
@@ -51,34 +49,25 @@ export function listClientModels(config, virtualProvider) {
 }
 
 export function resolveModelProfile(config, virtualProvider, requestedModel) {
+  if (requestedModel !== undefined && (typeof requestedModel !== "string" || !requestedModel.trim())) {
+    throw new ModelResolveError("invalid_model", "model 必须是非空字符串");
+  }
   const clientModelId =
     requestedModel ||
     virtualProvider?.defaultModel ||
-    virtualProvider?.allowedModels?.[0] ||
     null;
   if (!clientModelId) {
     throw new ModelResolveError("model_required", "请求没有模型，Virtual Provider 也没有默认模型");
   }
 
-  const match = findModelProfile(config, clientModelId, virtualProvider?.allowedModels);
+  // allowedModels scopes optional overrides, not the models a client may request.
+  const match = findModelProfile(config, clientModelId, virtualProvider?.allowedModels || []);
   if (!match) {
-    throw new ModelResolveError("unknown_model", `未知模型: ${clientModelId}`, {
-      clientModelId,
-    });
-  }
-
-  if (
-    virtualProvider?.allowedModels?.length &&
-    !virtualProvider.allowedModels.includes(match.profileId)
-  ) {
-    throw new ModelResolveError("model_not_allowed", `Virtual Provider 不允许模型: ${clientModelId}`, {
-      clientModelId,
-      profileId: match.profileId,
-    });
+    return { clientModelId, profileId: null, profile: null, matchedBy: "passthrough" };
   }
 
   return {
-    clientModelId,
+    clientModelId: requestedModel || clientModelIdForProfile(match.profileId, match.profile),
     profileId: match.profileId,
     profile: match.profile,
     matchedBy: match.matchedBy,
@@ -92,7 +81,7 @@ export function effectiveCapabilities(profile, binding) {
     else if (item.startsWith("+")) capabilities.add(item.slice(1));
     else capabilities.add(item);
   }
-  if (profile.codex?.metadataMode === "override" &&
+  if (profile?.codex?.metadataMode === "override" &&
       profile.codex.inputModalities && !profile.codex.inputModalities.includes("image")) {
     capabilities.delete("vision");
   }
@@ -133,23 +122,24 @@ export function selectBackend(config, virtualProvider, modelResolution, request 
 
   const backend = route.backends[0];
   const upstream = config.upstreams?.[backend?.upstream];
-  const modelBindings = modelResolution.profile.upstreams || {};
+  const profile = modelResolution.profile;
+  const modelBindings = profile?.upstreams || {};
   if (Object.keys(modelBindings).length > 1) {
     throw new ModelResolveError("invalid_model_binding", "每个 Model Profile 只能映射一个 upstream");
   }
   const modelBinding = modelBindings[backend?.upstream];
   const required = requiredCapabilities(request);
-  const capabilities = effectiveCapabilities(modelResolution.profile, modelBinding);
+  const capabilities = effectiveCapabilities(profile, modelBinding);
   let reason;
   if (!backend || backend.enabled === false || !upstream || upstream.enabled === false) {
     reason = "upstream_disabled_or_missing";
-  } else if (backend.models?.length && !backend.models.includes(modelResolution.profileId)) {
+  } else if (profile && !backend.models?.includes(modelResolution.profileId)) {
     reason = "model_not_in_route";
-  } else if (!modelBinding?.upstreamModelId) {
+  } else if (profile && !modelBinding) {
     reason = "model_binding_missing";
   } else if (virtualProvider.ingressProtocol !== upstream.protocol) {
     reason = "protocol_transform_missing";
-  } else if (!hasCapabilities(capabilities, required)) {
+  } else if (profile && !hasCapabilities(capabilities, required)) {
     reason = "capability_missing";
   }
   if (reason) {
@@ -168,7 +158,7 @@ export function selectBackend(config, virtualProvider, modelResolution, request 
     backend,
     backendIndex: 0,
     upstream,
-    upstreamModelId: modelBinding.upstreamModelId,
+    upstreamModelId: modelBinding?.upstreamModelId || modelResolution.clientModelId,
     capabilities: [...capabilities],
     rejected: [],
   };

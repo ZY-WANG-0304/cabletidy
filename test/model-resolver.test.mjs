@@ -126,12 +126,62 @@ test("rejects multiple upstream mappings on one model", () => {
     (error) => error.code === "invalid_model_binding");
 });
 
-test("rejects unknown models", () => {
+test("unconfigured models pass through without inheriting another model's capability limits", () => {
   const config = sampleConfig();
+  const request = {
+    model: "unconfigured-model", stream: true, tools: [{}], parallel_tool_calls: true,
+    reasoning: { effort: "high" },
+    input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/image" }] }],
+  };
+  const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, request);
+  assert.equal(result.upstreamModelId, request.model);
+  assert.equal(result.upstream.id, "primary");
+  assert.equal(result.model.profileId, null);
+  assert.equal(result.model.matchedBy, "passthrough");
+});
+
+test("an empty configuration model list never imports profiles from another configuration", () => {
+  const config = sampleConfig();
+  const provider = config.virtualProviders.cabletidy_codex;
+  provider.allowedModels = [];
+  config.routes[provider.route].backends[0].models = [];
+  delete provider.defaultModel;
+  const result = resolveRequest(config, provider, { model: "sol" });
+  assert.equal(result.upstreamModelId, "sol");
+  assert.equal(result.model.profile, null);
+  assert.deepEqual(listClientModels(config, provider), []);
+  delete provider.allowedModels;
+  assert.equal(resolveRequest(config, provider, { model: "sol" }).upstreamModelId, "sol");
+  assert.deepEqual(listClientModels(config, provider), []);
   assert.throws(
-    () => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "not-real" }),
-    (error) => error instanceof ModelResolveError && error.code === "unknown_model",
+    () => resolveRequest(config, provider, {}),
+    (error) => error instanceof ModelResolveError && error.code === "model_required",
   );
+});
+
+test("metadata-only profiles keep the requested name and enforce their explicit limits", () => {
+  const config = sampleConfig();
+  const provider = config.virtualProviders.cabletidy_codex;
+  delete config.models["codex-sol"].upstreams.primary.upstreamModelId;
+  assert.equal(resolveRequest(config, provider, { model: "sol" }).upstreamModelId, "sol");
+  assert.equal(resolveRequest(config, provider, {}).upstreamModelId, "sol");
+  assert.throws(() => resolveRequest(config, provider, { model: "sol", parallel_tool_calls: true }),
+    (error) => error.details.rejected[0].reason === "capability_missing");
+});
+
+test("passthrough still validates model names, upstream state and protocol", () => {
+  const config = sampleConfig();
+  const provider = config.virtualProviders.cabletidy_codex;
+  for (const model of [null, "", " ", 42, [], {}]) {
+    assert.throws(() => resolveRequest(config, provider, { model }), (error) => error.code === "invalid_model");
+  }
+  config.upstreams.primary.enabled = false;
+  assert.throws(() => resolveRequest(config, provider, { model: "new-model" }),
+    (error) => error.details.rejected[0].reason === "upstream_disabled_or_missing");
+  config.upstreams.primary.enabled = true;
+  config.upstreams.primary.protocol = "anthropic.messages";
+  assert.throws(() => resolveRequest(config, provider, { model: "new-model" }),
+    (error) => error.details.rejected[0].reason === "protocol_transform_missing");
 });
 
 test("rewrites nested response model fields back to the client model", () => {
