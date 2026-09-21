@@ -33,6 +33,8 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     CABLETIDY_HOME: home,
     CODEX_HOME: codexHome,
     npm_config_cache: path.join(directory, "cache"),
+    // A publish dry run must still exercise a real temporary install.
+    npm_config_dry_run: "false",
     npm_config_update_notifier: "false",
   };
   const options = { cwd, env, timeout: 90000 };

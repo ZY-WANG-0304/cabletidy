@@ -6,7 +6,7 @@
 
 采用 Node.js CLI 的 npm 包，同时支持同一产物的 `.tgz` 安装。现有应用由 Node.js HTTP 服务和静态管理台组成，没有前端构建步骤；用户数据独立于安装目录，因此无需引入 Electron、打包器或重写服务。
 
-安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。包继续保留 `private: true`，可通过本地 tarball 安装，尚未发布到 registry。
+安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。主发布渠道为 npm 官方源 `https://registry.npmjs.org/`，包名为 `cabletidy`；本地 tarball 继续作为同一产物的安装方式。首版 `cabletidy@0.1.0` 已于 2026-09-21 公开发布，`latest` 指向 `0.1.0`。
 
 CLI 只提供 `start`、`status`、帮助和版本查询。`status` 汇总 daemon 状态、管理台 URL 和配置套装列表。配置校验仍在服务启动和管理台保存时执行；客户端配置预览和应用由管理台负责，不再提供单独的调试命令或临时客户端启动命令。
 
@@ -32,7 +32,7 @@ CLI 只提供 `start`、`status`、帮助和版本查询。`status` 汇总 daemo
 
 | 方式 | 适用情况 | 决策与重新评估条件 |
 | --- | --- | --- |
-| npm registry | 已有 Node.js 的 CLI 用户 | 主要发布渠道；完成包归属、许可和发布验证后启用 |
+| npm 官方 registry | 已有 Node.js 的 CLI 用户 | 主要发布渠道；已发布 `0.1.0`，采用 MIT 许可 |
 | npm tarball | 内测、固定版本、未发布 registry | 已支持，与 registry 共用包结构 |
 | Git URL / 固定提交 | 开发者试用 | 依赖 Git 和仓库权限，不作为普通用户主路径 |
 | Node 运行时与应用压缩包 | 不希望预装 Node.js、需要离线交付 | 出现明确需求时优先评估；需维护 OS/CPU 产物和依赖 |
@@ -52,13 +52,38 @@ Docker 不能只添加 Dockerfile 就宣称完整支持：容器回环地址与�
 - `npm run test:package`：实际 tarball 的隔离安装、跨工作目录运行、Web 资源内容、状态与 URL、端口冲突、SIGINT / SIGTERM、npm exec、卸载保留数据。
 - 安装测试保留独立 `CODEX_HOME` 并检查它未被创建，以隔离真实客户端目录并验证服务启动不会应用客户端配置。
 
-Windows 的安装测试目前不会验证信号生命周期或直接执行 cmd shim；macOS、Windows、真实上游、registry 发布和系统服务仍需各自验收。Linux 检查通过不代表这些边界已经验证。
+2026-09-21 首版发布在 Linux / Node.js 25.6.0 上通过 136 项源码测试、安装冒烟测试与发布预演。正式发布后，确认官方源的版本、`latest` 标签和 tarball 校验值，并使用独立 npm 配置、全新缓存及临时安装目录，从官方源按包名安装 `cabletidy@0.1.0`。验证覆盖 CLI 版本与帮助、Web 资源、状态查询、端口冲突、SIGINT / SIGTERM、按包名运行 `npm exec`，以及卸载保留用户数据。
+
+Windows 的安装测试目前不会验证信号生命周期或直接执行 cmd shim；macOS、Windows、真实上游和系统服务仍需各自验收。Linux 检查通过不代表这些边界已经验证。
 
 初始 HTTP 探测曾受环境代理影响；手工验证脚本对回环请求绕过代理后通过。部署验证应注意回环请求的代理配置，不据此改变应用的访问边界。
 
-## 尚未实施的发布与服务管理
+## npm 官方源发布流程
 
-正式发布前，需要确定包名或 scope 的归属、许可及真实仓库信息，补齐目标平台验证和发布流程，再移除 `private`。不预设 MIT 许可，也不通过安装脚本修改用户配置。2026-09-21 查询公共 registry 的 `cabletidy` 返回 E404，仅表示当时查不到可访问的包，不代表名称已预留或必定允许发布。
+`package.json` 的 `publishConfig` 将发布目标设为 npm 官方源，并将访问级别设为 `public`。仓库地址取自 Git origin：`https://github.com/ZY-WANG-0304/cabletidy`。经维护者确认采用 MIT 许可，根目录 `LICENSE` 随包分发。交互式发布前，应在 npm 账号设置中启用双因素验证（2FA），并在 npm 提示时完成本次发布的浏览器身份验证；登录成功本身不代表满足发布认证要求。
+
+从仓库根目录执行：
+
+```bash
+npm ci
+npm publish --dry-run --registry=https://registry.npmjs.org/
+npm login --registry=https://registry.npmjs.org/
+npm whoami --registry=https://registry.npmjs.org/
+npm publish --registry=https://registry.npmjs.org/
+```
+
+`prepublishOnly` 在发布及发布预演时自动运行源码测试与安装冒烟测试；任一失败会阻止发布。预演成功只验证本地检查和打包流程，不验证账号发布权限或包名可用性。实际发布需要完成 npm 要求的身份验证。此钩子不会在用户安装包时执行。
+
+发布成功后，确认官方源记录与 CLI 版本：
+
+```bash
+npm view cabletidy@0.1.0 version dist.integrity --registry=https://registry.npmjs.org/
+npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy@0.1.0 -- cabletidy --version
+```
+
+首版为 `0.1.0`，后续发布必须递增版本号，并对应更新锁文件；同名同版本不能覆盖发布。当前平台验收范围仍为 Linux，不将 npm 发布成功视为 macOS 或 Windows 已验证。
+
+## 尚未实施的服务管理
 
 后台常驻优先使用平台原有的用户级进程管理：Linux systemd user service、macOS LaunchAgent，Windows 另行评估任务计划程序或服务。若增加服务管理命令，应仅在用户主动执行时注册，并解决：
 
