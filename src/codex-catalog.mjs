@@ -6,33 +6,38 @@ let pending;
 let activeCommand;
 
 async function executeCodex(args) {
+  const timeout = AbortSignal.timeout(15_000);
   const command = spawn("codex", args, {
-    signal: AbortSignal.timeout(15_000),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     // Keep npm launcher descendants in a group we can stop on forced daemon exit.
     detached: process.platform !== "win32",
   });
   activeCommand = command;
-  let spawnError;
-  command.once("error", error => { spawnError = error; });
   const closed = new Promise(resolve => {
     command.once("close", (code, signal) => resolve({ code, signal }));
   });
+  let onTimeout;
+  const completed = new Promise((resolve, reject) => {
+    command.once("error", reject);
+    command.once("exit", (code, signal) => {
+      if (code !== 0) reject(new Error(`codex exited with ${signal || code}`));
+    });
+    // Descendants may hold the pipes open after the launcher has exited.
+    onTimeout = () => reject(timeout.reason);
+    timeout.addEventListener("abort", onTimeout, { once: true });
+    closed.then(resolve);
+  });
+  const output = [readCommandOutput(command.stdout), readCommandOutput(command.stderr)];
   try {
-    const [result, stdout] = await Promise.all([
-      closed,
-      readCommandOutput(command.stdout),
-      readCommandOutput(command.stderr),
-    ]);
-    if (spawnError) throw spawnError;
-    if (result.code !== 0) throw new Error(`codex exited with ${result.signal || result.code}`);
+    const [, stdout] = await Promise.all([completed, ...output]);
     return { stdout };
   } catch (error) {
     forceStopCodexCatalog();
-    await closed;
+    await Promise.allSettled([closed, ...output]);
     throw error;
   } finally {
+    timeout.removeEventListener("abort", onTimeout);
     activeCommand = undefined;
   }
 }
