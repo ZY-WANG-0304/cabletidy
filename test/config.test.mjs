@@ -10,6 +10,49 @@ import {
 import { validateConfig } from "../src/validation.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
+test("upstream-only configurations allow empty or omitted model settings and optional defaults", () => {
+  const config = codexConfigFixture();
+  config.models = {};
+  config.routes.route.backends[0].models = [];
+  config.virtualProviders.cabletidy_relay.allowedModels = [];
+  delete config.virtualProviders.cabletidy_relay.defaultModel;
+  delete config.bindings.relay.defaultModel;
+  assert.equal(validateConfig(config).ok, true);
+  assert.deepEqual(validateConfig(config).warnings, []);
+  delete config.routes.route.backends[0].models;
+  delete config.virtualProviders.cabletidy_relay.allowedModels;
+  config.bindings.relay.defaultModel = "unconfigured-model";
+  config.virtualProviders.cabletidy_relay.defaultModel = "unconfigured-model";
+  assert.equal(validateConfig(config).ok, true);
+});
+
+test("unused upstream policy fields are removed during normalization", () => {
+  const config = normalizeConfig({
+    upstreams: {
+      relay: {
+        requestMaxRetries: 7,
+        streamMaxRetries: 4,
+        streamIdleTimeoutMs: 123000,
+        requiresOpenaiAuth: true,
+        supportsWebsockets: true,
+      },
+    },
+  });
+  for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
+    assert.equal(config.upstreams.relay[field], undefined, field);
+  }
+});
+
+test("metadata settings do not require a rename but reject invalid upstream model IDs", () => {
+  const config = codexConfigFixture();
+  delete config.models.model.upstreams.relay.upstreamModelId;
+  assert.equal(validateConfig(config).ok, true);
+  for (const upstreamModelId of [null, "", " ", 123, {}]) {
+    config.models.model.upstreams.relay.upstreamModelId = upstreamModelId;
+    assert.ok(validateConfig(config).errors.some((error) => error.path.endsWith("upstreamModelId")));
+  }
+});
+
 test("legacy names and provider ports migrate to the shared listener without changing models", () => {
   const original = codexConfigFixture();
   original.daemon = { proxyPortRange: "43101-43199" };

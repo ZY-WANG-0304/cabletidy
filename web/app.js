@@ -354,9 +354,6 @@ function configurationSuites(config) {
     for (const modelId of routeBackend?.models || []) {
       modelIdSet.add(modelId);
     }
-    if (!modelIdSet.size) {
-      for (const modelId of Object.keys(config.models || {})) modelIdSet.add(modelId);
-    }
     const modelIds = [...modelIdSet].filter((id) => config.models?.[id]);
     const name =
       binding.name ||
@@ -418,7 +415,7 @@ function suiteRow(suite) {
     <tr>
       <th scope="row"><button class="suite-name" data-action="open-suite" data-id="${esc(suite.id)}">${esc(suite.name)}</button><span class="suite-upstream">${esc(suite.upstream?.name || suite.upstreamId || "未配置上游")}</span></th>
       <td data-label="CLI">${esc(targetLabel(suite.target))}</td>
-      <td data-label="模型">${suite.modelIds.length}</td>
+      <td data-label="模型设置">${suite.modelIds.length ? `${suite.modelIds.length} 项设置` : "直接透传"}</td>
       <td data-label="本地地址" class="mono">${esc(suiteEndpoint(suite))}</td>
       <td data-label="本地服务"><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></td>
     </tr>
@@ -434,7 +431,7 @@ function renderOverview() {
     </div>
     ${
       suites.length
-        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型</th><th scope="col">本地地址</th><th scope="col">本地服务</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
+        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
         : `<div class="panel"><div class="empty">暂无配置</div></div>`
     }
   `;
@@ -455,7 +452,7 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
           : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(model.clientModelId || model.aliases?.[0] || modelId)}" placeholder="客户端模型 ID" required /></label>`}
         <span class="suite-mapping-arrow" aria-hidden="true">&rarr;</span>
         ${upstreamId
-          ? `<label class="field"><span>上游模型 ID</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(binding.upstreamModelId || "")}" placeholder="填写上游实际使用的模型 ID" required /></label>`
+          ? `<label class="field"><span>上游模型 ID（可选）</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(binding.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
           : `<div class="notice warning">请先配置上游连接</div>`}
         <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(model.clientModelId || modelId || "映射")}">移除</button>
       </div>
@@ -607,7 +604,7 @@ function renderSuiteDetail() {
   return `
     <div class="suite-toolbar">
       <button class="text-button" data-action="back-overview">返回列表</button>
-      <div class="suite-status"><span>${esc(targetLabel(binding.target))} · ${suite.models.length} 个模型</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></div>
+      <div class="suite-status"><span>${esc(targetLabel(binding.target))} · ${suite.models.length ? `${suite.models.length} 项模型设置` : "模型名直接透传"}</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></div>
     </div>
     <div class="panel suite-editor">
       <section class="suite-section" aria-labelledby="suite-upstream-title">
@@ -623,7 +620,6 @@ function renderSuiteDetail() {
               ${field("上游名称", "name", upstream.name || upstreamId, "例如 Relay A")}
               ${field("上游地址", "baseUrl", upstream.baseUrl || "", "https://relay.example.com/v1", false, "url")}
               ${field("API Key", "secret", "", upstreamSecretConfigured(upstreamId, upstream) ? "已配置，留空保留现有密钥" : "粘贴上游 API Key", false, "password")}
-              ${field("环境变量（可选）", "envKey", upstream.envKey || "", "例如 RELAY_API_KEY")}
             </div>
             <div class="suite-section-footer">
               <span class="field-hint">保存后生效，测试使用已保存的连接。</span>
@@ -634,20 +630,20 @@ function renderSuiteDetail() {
       </section>
       <section class="suite-section" aria-labelledby="suite-models-title">
         <div class="suite-section-heading suite-models-heading">
-          <div><h2 id="suite-models-title">模型映射</h2><p>将客户端模型对应到上游实际使用的模型 ID。</p></div>
-          <button class="button" type="button" data-action="add-suite-model">添加模型</button>
+          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。</p></div>
+          <button class="button" type="button" data-action="add-suite-model">添加模型设置</button>
         </div>
         ${suite.target === "codex" ? codexCatalogStatus() : ""}
         <form id="suite-models-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.target, binding.virtualProvider, suite.route?.id, upstreamId]))}">
           <div id="suite-model-list" class="suite-model-list">
             ${suite.models.length
               ? suite.models.map(({ id, profile }) => suiteModelEditor(suite, id, profile, upstreamId)).join("")
-              : `<div class="empty">暂无模型，请添加需要使用的模型。</div>`}
+              : `<div class="empty">已启用模型名直接透传，无需添加模型设置。</div>`}
           </div>
           <div class="suite-section-footer">
             <span class="field-hint">按需展开模型能力与上下文设置。</span>
             <div class="form-actions">
-              <button class="button" type="submit">保存模型映射</button>
+              <button class="button" type="submit">保存模型设置</button>
               ${suite.target === "codex" ? "" : `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>`}
             </div>
           </div>
@@ -681,7 +677,7 @@ function renderSuiteCreate() {
       <section class="config-section" aria-labelledby="config-basics">
         <h2 id="config-basics">基本信息</h2>
         <div class="form-grid">
-          ${field("配置名称（可选）", "suiteName", "", "Codex / Relay A")}
+          ${field("配置名称（可选）", "suiteName", "", "例如 my-relay；留空自动生成")}
           ${selectField("CLI", "target", "codex", ["codex"])}
         </div>
       </section>
@@ -694,13 +690,12 @@ function renderSuiteCreate() {
       </section>
       <section class="config-section" aria-labelledby="config-models">
         <div class="subsection-header">
-          <h2 id="config-models">模型映射</h2>
-          <button class="mini-button" type="button" data-action="add-create-model">添加模型</button>
+          <h2 id="config-models">模型设置（可选）</h2>
+          <button class="mini-button" type="button" data-action="add-create-model">添加模型设置</button>
         </div>
+        <p class="field-hint">默认透传请求中的模型名。需要改名时添加设置，上下文等参数可在创建后调整。</p>
         ${codexCatalogStatus()}
-        <div id="create-model-list" class="create-model-list">
-          ${createModelRow()}
-        </div>
+        <div id="create-model-list" class="create-model-list"></div>
       </section>
       <div class="config-form-footer">
         <button class="button" type="button" data-action="back-overview">取消</button>
@@ -718,7 +713,7 @@ function createModelRow(values = {}) {
   return `
     <div class="create-model-row" data-create-model>
       ${officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
-      <label class="field"><span>上游模型 ID</span><input data-create-field="upstreamModelId" value="${esc(model.upstreamModelId)}" required /></label>
+      <label class="field"><span>上游模型 ID（可选）</span><input data-create-field="upstreamModelId" value="${esc(model.upstreamModelId)}" placeholder="留空使用请求中的模型名" /></label>
       <button class="mini-button" type="button" data-action="remove-create-model" aria-label="移除模型映射">移除</button>
     </div>
   `;
@@ -799,13 +794,7 @@ function renderUpstreams() {
               ${selectField("上游协议", "protocol", selected?.protocol || "openai.responses", ["openai.responses", "openai.chat_completions", "anthropic.messages"])}
               ${field("真实 base URL", "baseUrl", selected?.baseUrl || "", "https://relay.example.com/v1", true)}
               ${field("API key", "secret", "", upstreamSecretConfigured(selectedId, selected) ? "已配置，留空表示不修改" : "粘贴上游 API key", false, "password")}
-              ${field("上游 env_key（可选）", "envKey", selected?.envKey || "", "仅在 daemon 从环境变量读取时填写")}
               ${field("上游认证 header", "authHeader", selected?.auth?.header || selected?.authHeader || (selected?.protocol === "anthropic.messages" ? "x-api-key" : "authorization"), "authorization 或 x-api-key")}
-              ${field("request retries", "requestMaxRetries", selected?.requestMaxRetries ?? 5, "5")}
-              ${field("stream retries", "streamMaxRetries", selected?.streamMaxRetries ?? 5, "5")}
-              ${field("stream idle timeout (ms)", "streamIdleTimeoutMs", selected?.streamIdleTimeoutMs ?? 300000, "300000")}
-              ${checkboxField("requires_openai_auth", "requiresOpenaiAuth", Boolean(selected?.requiresOpenaiAuth))}
-              ${checkboxField("supports_websockets", "supportsWebsockets", Boolean(selected?.supportsWebsockets))}
             </div>
             <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button" type="button" data-action="test-upstream" data-id="${esc(selectedId)}">测试连通性</button><button class="button button-danger" type="button" data-action="delete-upstream" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
           </form>
@@ -856,7 +845,7 @@ function renderModels() {
               <div class="subsection-header"><h3>上游模型映射</h3></div>
               <div class="form-grid">
                 ${selectField("Upstream", "upstreamId", upstreamId, Object.keys(config.upstreams))}
-                ${field("上游模型 ID", "upstreamModelId", mapping.upstreamModelId || "", "真实上游模型名")}
+                ${field("上游模型 ID（可选）", "upstreamModelId", mapping.upstreamModelId || "", "留空使用请求中的模型名")}
                 ${field("能力覆盖", "capabilityOverrides", (mapping.capabilityOverrides || []).join(", "), "可留空")}
               </div>
             </div>
@@ -1032,11 +1021,6 @@ async function handleAction(action, element) {
       list.querySelector(".empty")?.remove();
       list.appendChild(row);
     } else if (action === "remove-suite-model") {
-      const list = pageContent.querySelector("#suite-model-list");
-      const rows = list?.querySelectorAll("[data-suite-model]") || [];
-      if (rows.length <= 1) {
-        throw new Error("至少保留一个客户端模型");
-      }
       element.closest("[data-suite-model]")?.remove();
     } else if (action === "add-create-model") {
       const list = pageContent.querySelector("#create-model-list");
@@ -1046,10 +1030,6 @@ async function handleAction(action, element) {
       const row = wrapper.firstElementChild;
       list.appendChild(row);
     } else if (action === "remove-create-model") {
-      const rows = pageContent.querySelectorAll("[data-create-model]");
-      if (rows.length <= 1) {
-        throw new Error("至少保留一个模型映射");
-      }
       element.closest("[data-create-model]")?.remove();
     } else if (["delete-upstream", "delete-model"].includes(action)) {
       if (!window.confirm("删除此配置项？删除后立即生效。")) return;
@@ -1176,7 +1156,15 @@ function removeConfigItem(action, id) {
     delete state.candidate.models[id];
     for (const provider of values(state.candidate.virtualProviders)) {
       provider.allowedModels = (provider.allowedModels || []).filter((modelId) => modelId !== id);
-      if (provider.defaultModel === id) provider.defaultModel = provider.allowedModels[0] || "";
+      if (provider.defaultModel === id) delete provider.defaultModel;
+    }
+    for (const route of values(state.candidate.routes)) {
+      for (const backend of route.backends || []) {
+        backend.models = (backend.models || []).filter((modelId) => modelId !== id);
+      }
+    }
+    for (const binding of values(state.candidate.bindings)) {
+      if (binding.defaultModel === id) delete binding.defaultModel;
     }
     state.selected.model = firstKey(state.candidate.models);
   }
@@ -1191,7 +1179,6 @@ function saveSuiteModels(form) {
   const suite = selectedSuite();
   if (!suite) throw new Error("找不到当前配置套装");
   const modelRows = [...form.querySelectorAll("[data-suite-model]")];
-  if (!modelRows.length) throw new Error("至少添加一个客户端模型");
 
   const upstreamId = suite.upstreamId;
   if (!upstreamId || !state.candidate.upstreams[upstreamId]) {
@@ -1223,20 +1210,12 @@ function saveSuiteModels(form) {
       `[data-suite-model-capabilities="${CSS.escape(upstreamId)}"]`,
     );
     const upstreamModelId = upstreamInput?.value.trim() || "";
-    if (upstreamModelId) {
-      const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.upstreams?.[upstreamId]?.capabilityOverrides || [];
-      upstreams[upstreamId] = {
-        ...(existing.upstreams?.[upstreamId] || {}),
-        upstreamModelId,
-        ...(capabilityOverrides.length ? { capabilityOverrides } : {}),
-      };
-      if (!capabilityOverrides.length) {
-        delete upstreams[upstreamId].capabilityOverrides;
-      }
-    }
-    if (!Object.keys(upstreams).length) {
-      throw new Error(`模型 ${clientModelId} 至少需要一个上游模型映射`);
-    }
+    const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.upstreams?.[upstreamId]?.capabilityOverrides || [];
+    upstreams[upstreamId] = { ...(existing.upstreams?.[upstreamId] || {}) };
+    if (upstreamModelId) upstreams[upstreamId].upstreamModelId = upstreamModelId;
+    else delete upstreams[upstreamId].upstreamModelId;
+    if (capabilityOverrides.length) upstreams[upstreamId].capabilityOverrides = capabilityOverrides;
+    else delete upstreams[upstreamId].capabilityOverrides;
 
     const aliases = [...new Set([
       ...(existing.aliases || []).filter((alias) => alias !== existing.clientModelId),
@@ -1300,15 +1279,13 @@ function saveSuiteModels(form) {
   state.candidate.virtualProviders[suite.binding.virtualProvider] = {
     ...state.candidate.virtualProviders[suite.binding.virtualProvider],
     allowedModels: Object.keys(nextModels),
-    defaultModel: Object.keys(nextModels).includes(suite.virtualProvider.defaultModel)
-      ? suite.virtualProvider.defaultModel
-      : Object.keys(nextModels)[0],
+    defaultModel: oldModelIds.has(suite.virtualProvider.defaultModel) && !nextModelIds.has(suite.virtualProvider.defaultModel)
+      ? undefined : suite.virtualProvider.defaultModel,
   };
   state.candidate.bindings[suite.bindingId] = {
     ...state.candidate.bindings[suite.bindingId],
-    defaultModel: Object.keys(nextModels).includes(suite.binding.defaultModel)
-      ? suite.binding.defaultModel
-      : Object.keys(nextModels)[0],
+    defaultModel: oldModelIds.has(suite.binding.defaultModel) && !nextModelIds.has(suite.binding.defaultModel)
+      ? undefined : suite.binding.defaultModel,
   };
   selectSuite(suite.bindingId);
 
@@ -1328,14 +1305,14 @@ function saveSuiteCreate(data, form) {
       upstreamModelId: read("upstreamModelId"),
     };
   });
-  if (!upstreamBaseUrl || !upstreamSecret || !modelEntries.length) {
-    throw new Error("请填写上游地址、上游 API Key，并至少添加一个模型");
+  if (!upstreamBaseUrl || !upstreamSecret) {
+    throw new Error("请填写上游地址和上游 API Key");
   }
   const missingModelField = modelEntries.find(
-    (model) => !model.clientModelId || !model.upstreamModelId,
+    (model) => !model.clientModelId,
   );
   if (missingModelField) {
-    throw new Error("每个模型都必须填写 client model ID 和上游模型 ID");
+    throw new Error("添加模型设置时请选择客户端模型");
   }
   const clientModelIds = modelEntries.map((model) => model.clientModelId);
   if (new Set(clientModelIds).size !== clientModelIds.length) {
@@ -1370,7 +1347,7 @@ function saveSuiteCreate(data, form) {
           ...codexModelFields(model.clientModelId),
           upstreams: {
             [upstreamId]: {
-              upstreamModelId: model.upstreamModelId,
+              ...(model.upstreamModelId ? { upstreamModelId: model.upstreamModelId } : {}),
             },
           },
         },
@@ -1378,7 +1355,6 @@ function saveSuiteCreate(data, form) {
     }),
   );
   const modelIds = Object.keys(models);
-  const defaultModel = modelIds[0];
 
   state.candidate.upstreams[upstreamId] = {
     id: upstreamId,
@@ -1408,7 +1384,6 @@ function saveSuiteCreate(data, form) {
     ingressProtocol: "openai.responses",
     route: routeId,
     allowedModels: modelIds,
-    defaultModel,
     enabled: true,
   };
   state.candidate.bindings[bindingId] = {
@@ -1419,14 +1394,13 @@ function saveSuiteCreate(data, form) {
     targetFormat: "codex.config.toml.v1",
     mode: "config",
     virtualProvider: virtualProviderId,
-    defaultModel,
     codex: {},
   };
 
   state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;
 
   state.selected.upstream = upstreamId;
-  state.selected.model = defaultModel;
+  state.selected.model = modelIds[0] || null;
   state.selected.virtualProvider = virtualProviderId;
   state.selected.binding = bindingId;
   state.selected.suite = bindingId;
@@ -1447,18 +1421,12 @@ function saveUpstream(data, connectionOnly = false) {
       : {}),
     protocol: data.get("protocol"),
     baseUrl: String(data.get("baseUrl") || "").trim(),
-    envKey: String(data.get("envKey") || "").trim(),
     secretRef: existing.secretRef || `secret://upstreams/${id}`,
     ...(!connectionOnly ? {
       auth: {
         ...(existing.auth || {}),
         header: String(data.get("authHeader") || "").trim().toLowerCase() || undefined,
       },
-      requestMaxRetries: Number(data.get("requestMaxRetries") || 0),
-      streamMaxRetries: Number(data.get("streamMaxRetries") || 0),
-      streamIdleTimeoutMs: Number(data.get("streamIdleTimeoutMs") || 0),
-      requiresOpenaiAuth: data.get("requiresOpenaiAuth") === "on",
-      supportsWebsockets: data.get("supportsWebsockets") === "on",
     } : {}),
     enabled: existing.enabled !== false,
   };
@@ -1481,14 +1449,15 @@ function saveModel(data, form) {
   const existing = state.candidate.models[id] || {};
   const upstreamId = String(data.get("upstreamId") || "").trim();
   const upstreamModelId = String(data.get("upstreamModelId") || "").trim();
-  if (!upstreamId || !upstreamModelId) throw new Error("请选择一个 upstream 并填写上游模型 ID");
+  if (!upstreamId) throw new Error("请选择一个 upstream");
   const upstreams = {
     [upstreamId]: {
       ...(existing.upstreams?.[upstreamId] || {}),
-      upstreamModelId,
+      ...(upstreamModelId ? { upstreamModelId } : {}),
       capabilityOverrides: commaList(data.get("capabilityOverrides")),
     },
   };
+  if (!upstreamModelId) delete upstreams[upstreamId].upstreamModelId;
   const clientModelId = String(data.get("clientModelId") || "").trim();
   state.candidate.models[id] = {
     ...existing,

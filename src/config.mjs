@@ -97,6 +97,10 @@ function migratePrototypeCodexFields(config) {
   // profile-file metadata before the config reaches runtime or disk.
   for (const upstream of Object.values(config.upstreams)) {
     if (!isRecord(upstream)) continue;
+    // These policy placeholders never affected runtime behavior.
+    for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
+      delete upstream[field];
+    }
     if (!upstream.integration && upstream.providerFormat === "codex.toml.v1") {
       upstream.integration = "codex-native-provider";
     }

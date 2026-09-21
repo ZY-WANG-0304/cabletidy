@@ -111,6 +111,46 @@ test("shared paths isolate models, credentials and pause state while keeping con
   assert.equal((await call("relay/v1/models")).status, 200);
 });
 
+test("upstream-only configuration commits, previews and relays JSON and SSE without model registration", async (t) => {
+  const { app, call, commit, calls, streams } = await fixture(t);
+  const config = structuredClone(app.state.config);
+  delete config.models.model;
+  delete config.routes.route.backends[0].models;
+  delete config.virtualProviders.cabletidy_relay.allowedModels;
+  delete config.virtualProviders.cabletidy_relay.defaultModel;
+  delete config.bindings.relay.defaultModel;
+  app.state.loadCodexCatalog = async () => { throw new Error("catalog unavailable"); };
+  assert.equal((await commit(config)).status, 200);
+  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "relay" });
+  assert.equal(preview.status, 200);
+  assert.doesNotMatch(preview.body.artifacts.files[0].contents, /^model =/m);
+  assert.deepEqual((await call("relay/v1/models")).body.data, []);
+  const request = {
+    model: "gpt-5.5", input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,test" }] }],
+    instructions: "Client instructions", tools: [{ type: "function", name: "lookup", parameters: {} }],
+    tool_choice: "auto", parallel_tool_calls: true, reasoning: { effort: "high" },
+  };
+  assert.equal((await call("relay/v1/responses", request)).body.model, "gpt-5.5");
+  assert.deepEqual(calls.at(-1).body, request);
+  assert.equal(calls.at(-1).authorization, "Bearer left-key");
+  assert.equal((await call("other/v1/responses", { model: "gpt-5.5" })).body.model, "gpt-5.5");
+  assert.equal(calls.at(-1).body.model, "OTHER-GPT");
+  const unknown = { model: "new-upstream-model", input: "hello", stream: true };
+  const response = await fetch(`${app.url}relay/v1/responses`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(unknown),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.at(-1).body, unknown);
+  streams.forEach(finish => finish());
+  assert.match(await response.text(), /"model":"new-upstream-model","delta":"last"/);
+  const resolved = await call("api/v1/tests/model-resolve", { virtualProviderId: "cabletidy_relay", model: "new-upstream-model" });
+  assert.equal(resolved.body.profileId, null);
+  assert.equal(resolved.body.upstreamModelId, "new-upstream-model");
+  const count = calls.length;
+  assert.equal((await call("relay/v1/responses", { input: "missing model" })).status, 400);
+  assert.equal(calls.length, count);
+});
+
 test("renames and removals update shared paths without interrupting an existing stream", async (t) => {
   const { app, call, commit, streams } = await fixture(t);
   const response = await fetch(`${app.url}relay/v1/responses`, {

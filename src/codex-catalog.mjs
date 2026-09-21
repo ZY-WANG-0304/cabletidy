@@ -135,7 +135,7 @@ export function planCodexCatalog(config, provider, snapshot) {
     }
     const binding = profile.upstreams?.[backends[0].upstream];
     if (Object.keys(profile.upstreams || {}).length !== 1) throw new Error(`${entry.slug} 必须且只能映射一个 upstream`);
-    if (!binding?.upstreamModelId) throw new Error(`${entry.slug} 缺少上游模型映射`);
+    if (!binding) throw new Error(`${entry.slug} 缺少上游模型设置`);
     if (profile.codex && !effectiveCapabilities(profile, binding).has("vision") && entry.input_modalities?.includes("image")) {
       entry.input_modalities = entry.input_modalities.filter((item) => item !== "image");
       warnings.push(`${entry.slug} 的上游 vision 能力未启用，生成目录将禁用图片输入。`);

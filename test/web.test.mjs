@@ -96,6 +96,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     FormData: class {
       constructor(form) { return new Map(Object.entries(form.fields)); }
     },
+    URL,
     CSS: { escape: (value) => value },
     structuredClone,
     setTimeout() {},
@@ -143,7 +144,7 @@ for (const formId of ["suite-upstream-form", "upstream-form"]) {
     const app = await controller();
     const form = formNode(formId, {
       id: "relay", name: "Edited relay", protocol: "openai.responses",
-      baseUrl: "https://example.invalid/v1", secret: "", envKey: "",
+      baseUrl: "https://example.invalid/v1", secret: "",
     });
     // HTMLFormElement exposes the named input as form.id.
     form.id = { name: "id", value: "relay" };
@@ -181,6 +182,17 @@ test("creation commits immediately and clears transient secrets", async () => {
   assert.doesNotMatch(app.read("renderDiagnostics()"), /配置校验|校验草稿/);
 });
 
+test("an empty configuration name derives a stable identity from the upstream host", async () => {
+  const app = await controller(normalizeConfig({}));
+  const form = creationForm();
+  form.fields.suiteName = "";
+  await app.submit(form);
+  const binding = Object.values(app.persisted().bindings)[0];
+  assert.equal(binding.name, "Codex / example.invalid");
+  assert.equal(binding.id, "codex-example-invalid");
+  assert.equal(binding.virtualProvider, "cabletidy_codex-example-invalid");
+});
+
 test("creating a duplicate normalized name preserves the existing configuration", async () => {
   const app = await controller(normalizeConfig({}));
   await app.submit(creationForm());
@@ -191,6 +203,64 @@ test("creating a duplicate normalized name preserves the existing configuration"
   assert.match(form.feedback.innerHTML, /ID 已存在/);
   assert.deepEqual(app.persisted(), first);
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+});
+
+test("creation needs only upstream credentials and keeps other configurations' model settings isolated", async () => {
+  const app = await controller();
+  app.read('state.codexCatalog = { available: false, models: [], error: { message: "unavailable" } }');
+  assert.doesNotMatch(app.read("renderSuiteCreate()"), /data-create-model[ >]/);
+  await app.submit(formNode("suite-create-form", creationForm().fields));
+  const config = app.persisted();
+  assert.equal(config.bindings.development.defaultModel, undefined);
+  assert.deepEqual(config.virtualProviders.cabletidy_development.allowedModels, []);
+  assert.equal(config.virtualProviders.cabletidy_development.defaultModel, undefined);
+  assert.deepEqual(config.routes[config.virtualProviders.cabletidy_development.route].backends[0].models, []);
+  assert.deepEqual(Object.keys(config.models), ["model"]);
+  assert.equal(validateConfig(config).ok, true);
+  assert.match(app.read("renderSuiteDetail()"), /模型名直接透传/);
+  assert.doesNotMatch(app.read("renderSuiteDetail()"), /data-model-id="model"/);
+  const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
+  assert.deepEqual(Object.values(commit.body.upstreamSecrets), ["test-key"]);
+});
+
+test("model settings can override context without a rename and can all be removed", async () => {
+  const app = await controller();
+  await app.submit(formNode("suite-models-form", {}, [{
+    dataset: { modelId: "model" },
+    querySelector(selector) {
+      if (selector === "[data-suite-model-client]") return { value: "gpt-5.5" };
+      if (selector.startsWith("[data-suite-model-upstream=")) return { value: "" };
+      if (selector === "[data-codex-metadata-mode]") return { value: "override" };
+      if (selector === "[data-suite-model-context]") return { value: "128000" };
+      if (selector === "[data-codex-vision]") return { checked: true };
+      return null;
+    },
+  }]));
+  let config = app.persisted();
+  assert.equal(config.models.model.contextWindow, 128000);
+  assert.equal(config.models.model.codex.metadataMode, "override");
+  assert.deepEqual(config.models.model.upstreams.relay, {});
+  assert.equal(validateConfig(config).ok, true);
+  await app.submit(formNode("suite-models-form"));
+  config = app.persisted();
+  assert.deepEqual(config.models, {});
+  assert.deepEqual(config.virtualProviders.cabletidy_relay.allowedModels, []);
+  assert.deepEqual(config.routes.route.backends[0].models, []);
+  assert.equal(config.virtualProviders.cabletidy_relay.defaultModel, undefined);
+  assert.equal(config.bindings.relay.defaultModel, undefined);
+  assert.equal(validateConfig(config).ok, true);
+});
+
+test("optional creation rows may leave the upstream model name blank", async () => {
+  const app = await controller(normalizeConfig({}));
+  await app.submit(formNode("suite-create-form", creationForm().fields, [{
+    querySelector: selector => ({ value: selector.includes("clientModelId") ? "gpt-5.5" : "" }),
+  }]));
+  const config = app.persisted();
+  const model = Object.values(config.models)[0];
+  assert.deepEqual(Object.values(model.upstreams), [{}]);
+  assert.equal(config.bindings.development.defaultModel, undefined);
+  assert.equal(validateConfig(config).ok, true);
 });
 
 test("separate configurations each keep their own upstream and model mappings", async () => {
@@ -310,18 +380,21 @@ test("a pending save cannot submit a second change", async () => {
 test("editing connection fields retains unrelated upstream settings", async () => {
   const config = normalizeConfig(codexConfigFixture());
   Object.assign(config.upstreams.relay, {
+    envKey: "RELAY_API_KEY",
     auth: { header: "x-relay-key" },
-    requestMaxRetries: 7, streamMaxRetries: 4, streamIdleTimeoutMs: 123000,
-    requiresOpenaiAuth: true, supportsWebsockets: true, enabled: false,
+    enabled: false,
   });
   const app = await controller(config);
   await app.submit(formNode("suite-upstream-form", {
     id: "relay", name: "Edited relay", protocol: "openai.responses",
-    baseUrl: "https://example.invalid/v1", secret: "", envKey: "",
+    baseUrl: "https://example.invalid/v1", secret: "",
   }));
   const upstream = app.persisted().upstreams.relay;
-  for (const key of ["auth", "requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets", "enabled"]) {
+  for (const key of ["envKey", "auth", "enabled"]) {
     assert.deepEqual(upstream[key], config.upstreams.relay[key], key);
+  }
+  for (const key of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
+    assert.equal(upstream[key], undefined, key);
   }
   assert.equal(upstream.name, "Edited relay");
 });

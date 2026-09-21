@@ -82,20 +82,20 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
     throw new Error(`binding ${bindingId} 不是 Codex target`);
   }
   const defaultModel = binding.defaultModel || virtualProvider.defaultModel;
-  const modelResolution = resolveModelProfile(config, virtualProvider, defaultModel);
+  const modelResolution = defaultModel ? resolveModelProfile(config, virtualProvider, defaultModel) : null;
 
   const upstream = providerForBinding(config, binding, virtualProvider);
   if (!upstream) throw new Error("找不到 binding 对应的 upstream");
   const providerId = virtualProvider.id;
   const clientModel =
-    modelResolution.profile.clientModelId ||
-    modelResolution.profile.aliases?.[0] ||
-    modelResolution.profile.id;
-  const policy = profilePolicy(modelResolution.profile);
+    modelResolution?.profile?.clientModelId ||
+    modelResolution?.profile?.aliases?.[0] ||
+    modelResolution?.clientModelId || null;
+  const policy = profilePolicy(modelResolution?.profile);
   const activeContents = [
     `${ACTIVE_BEGIN} ${providerId} -->`,
     `model_provider = ${quote(providerId)}`,
-    `model = ${quote(clientModel)}`,
+    ...(clientModel ? [`model = ${quote(clientModel)}`] : []),
     `${ACTIVE_END} ${providerId} <--`,
     "",
   ].join("\n");
@@ -138,9 +138,10 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
 export async function prepareCodexArtifacts(config, options = {}, secrets = {}) {
   const artifacts = buildCodexArtifacts(config, options, secrets);
   config = normalizeConfig(config);
-  const snapshot = await (options.loadCatalog || loadCodexCatalog)();
   const provider = config.virtualProviders[config.bindings[artifacts.bindingId].virtualProvider];
-  artifacts.catalogPlan = planCodexCatalog(config, provider, snapshot);
+  artifacts.catalogPlan = provider.allowedModels?.length
+    ? planCodexCatalog(config, provider, await (options.loadCatalog || loadCodexCatalog)())
+    : { catalog: null, models: [], overrides: [], warnings: [] };
   return stageCodexArtifacts(artifacts, options);
 }
 
@@ -165,7 +166,10 @@ async function stageCodexArtifacts(artifacts, options = {}) {
   const ownsCatalog = saved?.version === 1 && current.model_catalog_json === saved.managedPath;
   const previousCatalog = ownsCatalog ? saved.previousCatalog : current.model_catalog_json;
   const previousContext = ownsCatalog ? current.model_context_window ?? saved.previousContext : current.model_context_window;
-  const rootValues = { model_provider: artifacts.providerId, model: artifacts.clientModelId };
+  const rootValues = {
+    model_provider: artifacts.providerId,
+    ...(artifacts.clientModelId ? { model: artifacts.clientModelId } : {}),
+  };
   const files = [];
   let catalogState;
   if (artifacts.catalogPlan?.catalog) {
@@ -300,10 +304,8 @@ export function publicArtifacts(artifacts) {
   const { catalogPlan, catalogState, rootBefore, codexHome, ...publicValues } = artifacts;
   return {
     ...publicValues,
-    localSecret: undefined,
     environment: {
-      ...artifacts.environment,
-      value: undefined,
+      vars: artifacts.environment?.vars || {},
       shell: artifacts.environment?.shell || "",
     },
   };

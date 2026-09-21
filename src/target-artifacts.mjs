@@ -44,7 +44,6 @@ export function publicTargetArtifacts(artifacts) {
   if (artifacts?.target === "codex") return publicCodexArtifacts(artifacts);
   return {
     ...artifacts,
-    localSecret: undefined,
     environment: publicEnvironment(artifacts.environment),
   };
 }
@@ -81,7 +80,7 @@ function buildClaudeArtifacts(config, binding) {
     // Satisfy Claude Code's client-side credential check; the local service
     // ignores this public placeholder and authenticates only to the upstream.
     ANTHROPIC_AUTH_TOKEN: "cabletidy-local",
-    ...(binding.claude?.setModel === false ? {} : { ANTHROPIC_MODEL: clientModel }),
+    ...(binding.claude?.setModel === false || !clientModel ? {} : { ANTHROPIC_MODEL: clientModel }),
   };
 
   return {
@@ -99,7 +98,7 @@ function buildClaudeArtifacts(config, binding) {
     instructions: [
       "将以下环境变量注入 Claude Code 进程即可，不需要修改上游 provider 配置。",
       `ANTHROPIC_BASE_URL 指向本地 Virtual Provider: ${baseUrl}`,
-      `Claude 客户端模型名: ${clientModel}`,
+      clientModel ? `Claude 客户端模型名: ${clientModel}` : "模型由 Claude Code 选择，默认透传请求中的模型名。",
     ],
   };
 }
@@ -118,7 +117,7 @@ function buildGenericEnvArtifacts(config, binding) {
   }
   const vars = {
     [`${keyPrefix}_BASE_URL`]: baseUrl,
-    [`${keyPrefix}_MODEL`]: clientModel,
+    ...(clientModel ? { [`${keyPrefix}_MODEL`]: clientModel } : {}),
   };
   return {
     format: "generic.env.v1",
@@ -149,11 +148,14 @@ function getVirtualProvider(config, binding) {
 
 function defaultProfile(config, binding, virtualProvider) {
   const requested = binding.defaultModel || virtualProvider.defaultModel;
+  if (!requested) return { profileId: null, profile: null, clientModelId: null };
   const resolved = resolveModelProfile(config, virtualProvider, requested);
   return {
     profileId: resolved.profileId,
     profile: resolved.profile,
-    clientModelId: clientModelIdForProfile(resolved.profileId, resolved.profile),
+    clientModelId: resolved.profile
+      ? clientModelIdForProfile(resolved.profileId, resolved.profile)
+      : resolved.clientModelId,
   };
 }
 
@@ -169,8 +171,6 @@ function quoteShell(value) {
 
 function publicEnvironment(environment = {}) {
   return {
-    ...environment,
-    value: undefined,
     vars: environment.vars || {},
     shell: environment.shell || "",
   };
