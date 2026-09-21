@@ -5,13 +5,15 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { defaultConfig } from "../src/config.mjs";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+const execute = promisify(execFile);
 const signalTest = { skip: process.platform === "win32", timeout: 20000 };
 
 async function waitFor(predicate) {
@@ -152,10 +154,20 @@ test("SIGINT drains a stream beyond five seconds and cleans runtime after comple
   assert.equal(app.child.exitCode, null);
   assert.equal(app.child.signalCode, null);
   await fs.access(app.runtime);
+  await assert.rejects(execute(process.execPath, ["bin/cabletidy.mjs", "start"], {
+    cwd: root,
+    env: { ...process.env, CABLETIDY_HOME: app.directory },
+    timeout: 5000,
+  }), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /ELOCKED/);
+    return true;
+  });
   upstream.end('data: {"delta":"last"}\n\n');
   assert.match(await text, /first[\s\S]*last/);
   await app.expectExit(0);
   await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(app.directory, "daemon.lock")), { code: "ENOENT" });
 });
 
 test("direct startup waits for a probe after its client disconnects on SIGTERM", signalTest, async t => {

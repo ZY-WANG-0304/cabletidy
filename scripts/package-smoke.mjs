@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -62,14 +61,11 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   assert.match((await cli(["--help"])).stdout, /Usage: cabletidy/);
   await assert.rejects(fs.access(home), { code: "ENOENT" });
   assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.status, "offline");
+  await assert.rejects(fs.access(home), { code: "ENOENT" });
 
   const configFile = path.join(home, "config.json");
-  const config = JSON.parse(await fs.readFile(configFile, "utf8"));
-  const port = await availablePort();
-  config.web.port = port;
-  await fs.writeFile(configFile, JSON.stringify(config));
-  const savedConfig = await fs.readFile(configFile, "utf8");
-  const url = `http://127.0.0.1:${port}/`;
+  let savedConfig;
+  let url;
 
   for (const signal of process.platform === "win32" ? [] : ["SIGTERM", "SIGINT"]) {
     const processHandle = spawn(executable, [...entryArgs, "start"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -94,6 +90,16 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
         throw error;
       }
     });
+    const runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
+    if (url === undefined) {
+      url = runtime.web.url;
+      savedConfig = await fs.readFile(configFile, "utf8");
+      assert.equal(JSON.parse(savedConfig).web.port, runtime.web.port);
+      assert.ok(runtime.web.port > 0);
+    } else {
+      assert.equal(runtime.web.url, url);
+      assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
+    }
     for (const asset of ["", "app.js", "styles.css", "config-identity.js"]) {
       const response = await fetch(`${url}${asset}`, { signal: AbortSignal.timeout(3000) });
       assert.equal(response.status, 200);
@@ -104,7 +110,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.web.url, url);
     await assert.rejects(cli(["start"]), error => {
       assert.equal(error.code, 1);
-      assert.match(error.stderr, /EADDRINUSE/);
+      assert.match(error.stderr, /ELOCKED/);
       return true;
     });
     processHandle.kill(signal);
@@ -119,24 +125,17 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     "exec", "--yes", `--package=${tarball}`, "--", "cabletidy", "status",
   ])).stdout).runtime.status, "offline");
   await assert.rejects(fs.access(codexHome), { code: "ENOENT" });
-  const savedSecrets = await fs.readFile(path.join(home, "secrets.json"), "utf8");
+  const savedSecrets = savedConfig === undefined ? null : await fs.readFile(path.join(home, "secrets.json"), "utf8");
   await npm(["uninstall", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", "cabletidy"]);
   await assert.rejects(fs.access(shim), { code: "ENOENT" });
-  assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
-  assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
+  if (savedConfig === undefined) {
+    await assert.rejects(fs.access(home), { code: "ENOENT" });
+  } else {
+    assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
+    assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
+  }
   t.diagnostic(`${packed.filename}: ${packed.entryCount} files, ${packed.size} packed bytes`);
 });
-
-async function availablePort() {
-  const server = net.createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const port = server.address().port;
-  await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-  return port;
-}
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 10000;

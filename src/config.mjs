@@ -27,6 +27,7 @@ export function getPaths(home = DEFAULT_HOME) {
     config: path.join(home, "config.json"),
     secrets: path.join(home, "secrets.json"),
     runtime: path.join(home, "runtime.json"),
+    lock: path.join(home, "daemon.lock"),
     backups: path.join(home, "backups"),
   };
 }
@@ -179,29 +180,27 @@ export function stripSecretFields(value) {
 export async function ensureStore(paths = getPaths()) {
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
   await fs.mkdir(paths.backups, { recursive: true, mode: 0o700 });
-  try {
-    await fs.access(paths.config);
-  } catch {
-    await writeJsonAtomic(paths.config, defaultConfig(), 0o600);
-  }
-  try {
-    await fs.access(paths.secrets);
-  } catch {
-    await writeJsonAtomic(paths.secrets, {}, 0o600);
-  }
 }
 
 export async function loadConfig(paths = getPaths()) {
-  await ensureStore(paths);
-  const raw = await fs.readFile(paths.config, "utf8");
-  return normalizeConfig(JSON.parse(raw));
+  try {
+    const raw = await fs.readFile(paths.config, "utf8");
+    return normalizeConfig(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 export async function loadSecrets(paths = getPaths()) {
-  await ensureStore(paths);
-  const raw = await fs.readFile(paths.secrets, "utf8");
-  const parsed = JSON.parse(raw);
-  return isRecord(parsed) ? parsed : {};
+  try {
+    const raw = await fs.readFile(paths.secrets, "utf8");
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : {};
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
 }
 
 export async function writeJsonAtomic(file, value, mode = 0o600) {

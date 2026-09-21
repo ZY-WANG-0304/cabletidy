@@ -6,11 +6,14 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 import { randomBytes } from "node:crypto";
+import lockfile from "proper-lockfile";
 
 import {
   applySecretPayload,
   backupFile,
   computeConfigDiff,
+  defaultConfig,
+  ensureStore,
   getPaths,
   loadConfig,
   loadSecrets,
@@ -64,7 +67,38 @@ const CODEX_NATIVE_RESPONSES_PATH = CODEX_NATIVE_REQUIRED_ENDPOINTS.find(
 export async function createApplication(options = {}) {
   const paths = options.paths || getPaths();
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
+  let release;
+  try {
+    release = await lockfile.lock(paths.home, { lockfilePath: paths.lock, stale: 10000, update: 2000 });
+  } catch (error) {
+    if (error.code === "ELOCKED") {
+      throw Object.assign(new Error(
+        `此数据目录已有 CableTidy 实例运行，或异常退出后的锁尚未过期 (ELOCKED)；请检查已有实例，异常退出后等待 10 秒再重试: ${paths.home}`,
+        { cause: error },
+      ), { code: error.code });
+    }
+    throw error;
+  }
+  try {
+    const app = await createLockedApplication(options, paths);
+    let closing;
+    return {
+      ...app,
+      close() {
+        return closing ||= app.close().finally(release);
+      },
+    };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+async function createLockedApplication(options, paths) {
+  await ensureStore(paths);
   let config = await loadConfig(paths);
+  const allocatePort = config === null;
+  config ||= defaultConfig();
   let secrets = await loadSecrets(paths);
   const startupValidation = validateConfig(config);
   if (!startupValidation.ok) {
@@ -90,7 +124,7 @@ export async function createApplication(options = {}) {
   let webServer = null;
   const requests = new Set();
   const host = config.web.listenHost || "127.0.0.1";
-  const port = Number(config.web.port || 43100);
+  let port = Number(config.web.port);
   try {
     webServer = http.createServer((request, response) => {
       const task = handleWebRequest(state, request, response).catch((error) => {
@@ -103,9 +137,24 @@ export async function createApplication(options = {}) {
       requests.add(task);
     });
     state.webServer = webServer;
-    await listen(webServer, host, port);
+    try {
+      await listen(webServer, host, port);
+    } catch (error) {
+      if (error.code !== "EADDRINUSE") throw error;
+      if (!allocatePort) {
+        throw Object.assign(new Error(
+          `端口 ${host}:${port} 已被占用 (EADDRINUSE)。请停止占用端口的服务，或修改 ${paths.config} 中的 web.port 后重启，并重新应用客户端配置。`,
+          { cause: error },
+        ), { code: error.code });
+      }
+      // Keep the OS-assigned listener open so nobody can claim the chosen port.
+      await listen(webServer, host, 0);
+    }
+    port = webServer.address().port;
+    config.web.port = port;
 
     await saveSecrets(secrets, paths);
+    if (allocatePort) await saveConfig(config, paths);
     await persistRuntimeInfo(state, host, port);
   } catch (error) {
     if (webServer) await closeServer(webServer).catch(() => {});

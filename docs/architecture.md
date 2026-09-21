@@ -231,7 +231,8 @@ Virtual Provider 是 CableTidy 在本地暴露的一个面向客户端的服务�
 Virtual Provider 与管理台共用一个本机回环监听器，不生成或校验本地 API Key。
 监听地址由 `web.listenHost` / `web.port` 决定；旧配置中的 `localAuth`、独立
 `listenHost` / `listenPort` 和 `daemon.proxyPortRange` 在加载时移除。
-配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数：
+首次启动且没有配置文件时，优先绑定 `43100`，遇到 `EADDRINUSE` 则在同一个服务对象上绑定端口 `0`，由操作系统选择可用端口。监听器始终保持打开，实际端口保存到配置和运行状态中，所有入口和客户端配置均使用这个端口。已有配置的端口被占用时直接报错，需要手动修改后重启并重新应用客户端配置。
+配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数。以下示例假设最终端口为 `43100`：
 
 ```text
 127.0.0.1:43100/                       Web 管理台
@@ -568,20 +569,23 @@ POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
 
-管理台是本地 daemon 的 loopback-only 控制面，默认监听 `127.0.0.1:43100`，不使用访问 token 或 session 有效期。远程使用应通过 SSH port forwarding 等方式完成。Web 不把上游 secret 明文返回给浏览器。Virtual Provider 同样仅监听本机回环地址，无需本地 API Key。
+管理台是本地 daemon 的 loopback-only 控制面，首次启动优先监听 `127.0.0.1:43100`，占用时自动分配其他端口并保存，不使用访问 token 或 session 有效期。远程使用应通过 SSH port forwarding 等方式完成。Web 不把上游 secret 明文返回给浏览器。Virtual Provider 同样仅监听本机回环地址，无需本地 API Key。
 
 ## 9. 配置存储
 
-当前 MVP 使用 Node.js 内置模块和本地 JSON store：
+当前 MVP 使用 Node.js 和本地 JSON store，通过 `proper-lockfile` 管理实例锁：
 
 ```text
 ~/.cabletidy/config.json
 ~/.cabletidy/secrets.json
 ~/.cabletidy/runtime.json
+~/.cabletidy/daemon.lock/
 ~/.cabletidy/backups/
 ```
 
 `config.json` 保存非敏感的 CableTidy 配置图，`secrets.json` 只保存 secret reference 对应的本地 secret。后续可以替换为 Rust daemon、TOML 配置和 OS keyring，但不能改变领域对象边界。
+
+配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例。锁每 2 秒刷新，10 秒未刷新则可作为异常退出的残留锁回收；启动失败会释放锁。
 
 新配置的最小结构：
 
