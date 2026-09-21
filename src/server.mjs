@@ -632,7 +632,7 @@ async function applyTarget(state, body, response) {
       sendJson(response, 501, {
         error: {
           code: "target_apply_not_supported",
-          message: `${artifacts.target} 当前没有可持久化写入的客户端配置；请使用预览或 cabletidy target env 生成进程环境`,
+          message: `${artifacts.target} 当前没有可持久化写入的客户端配置；请使用管理台预览并将环境变量注入客户端`,
         },
         target: artifacts.target,
         bindingId: artifacts.bindingId,
@@ -1224,14 +1224,38 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  createApplication()
-    .then(({ url }) => {
-      console.log(`CableTidy Web 管理台: ${url}`);
-      console.log("按 Ctrl+C 停止 daemon");
-    })
-    .catch((error) => {
+export async function startDaemon() {
+  const app = await createApplication();
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return;
+    stopping = true;
+    // Active streaming requests must not hold shutdown open indefinitely.
+    const deadline = setTimeout(() => {
+      console.error("CableTidy shutdown timed out after 5 seconds");
+      process.exit(1);
+    }, 5000);
+    deadline.unref();
+    try {
+      await app.close();
+    } catch (error) {
       console.error(error.stack || error.message);
       process.exitCode = 1;
-    });
+    } finally {
+      clearTimeout(deadline);
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+    }
+  };
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  console.log(`CableTidy Web 管理台: ${app.url}`);
+  console.log("按 Ctrl+C 停止 daemon");
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startDaemon().catch((error) => {
+    console.error(error.stack || error.message);
+    process.exitCode = 1;
+  });
 }
