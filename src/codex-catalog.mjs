@@ -1,10 +1,62 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { clientModelIdForProfile, effectiveCapabilities } from "./model-resolver.mjs";
 
-const execute = promisify(execFile);
 let cached;
 let pending;
+let activeCommand;
+
+async function executeCodex(args) {
+  const command = spawn("codex", args, {
+    signal: AbortSignal.timeout(15_000),
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    // Keep npm launcher descendants in a group we can stop on forced daemon exit.
+    detached: process.platform !== "win32",
+  });
+  activeCommand = command;
+  let spawnError;
+  command.once("error", error => { spawnError = error; });
+  const closed = new Promise(resolve => {
+    command.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  try {
+    const [result, stdout] = await Promise.all([
+      closed,
+      readCommandOutput(command.stdout),
+      readCommandOutput(command.stderr),
+    ]);
+    if (spawnError) throw spawnError;
+    if (result.code !== 0) throw new Error(`codex exited with ${result.signal || result.code}`);
+    return { stdout };
+  } catch (error) {
+    forceStopCodexCatalog();
+    await closed;
+    throw error;
+  } finally {
+    activeCommand = undefined;
+  }
+}
+
+async function readCommandOutput(stream) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    size += chunk.length;
+    if (size > 16 * 1024 * 1024) throw new Error("codex output exceeded 16 MiB");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export function forceStopCodexCatalog() {
+  if (!activeCommand?.pid) return;
+  try {
+    if (process.platform === "win32") activeCommand.kill("SIGKILL");
+    else process.kill(-activeCommand.pid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
 
 export function validateCatalog(value) {
   if (!value || !Array.isArray(value.models) || !value.models.length) {
@@ -24,12 +76,11 @@ export async function loadCodexCatalog({ refresh = false } = {}) {
   if (!refresh && cached && Date.now() - cached.loadedAt < 60_000) return structuredClone(cached);
   if (!pending) {
     pending = (async () => {
-      const options = { timeout: 15_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true };
       try {
-        const version = (await execute("codex", ["--version"], options)).stdout.trim();
+        const version = (await executeCodex(["--version"])).stdout.trim();
         // Bundled metadata is independent of the user's catalog and never
         // needs their upstream credentials or a remote model request.
-        const result = await execute("codex", ["debug", "models", "--bundled"], options);
+        const result = await executeCodex(["debug", "models", "--bundled"]);
         const catalog = validateCatalog(JSON.parse(result.stdout));
         cached = { version, catalog, loadedAt: Date.now() };
         return cached;

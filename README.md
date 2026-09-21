@@ -51,7 +51,7 @@ npm exec --yes --package=/absolute/path/cabletidy-0.1.0.tgz -- cabletidy start
 
 安装包仍依赖本机 Node.js；npm 会下载尚未缓存的运行时依赖，因此 `.tgz` 本身不代表完全离线安装。安装过程不会启动服务或修改客户端配置。
 
-`cabletidy start` 在前台运行，打印管理台地址；按 Ctrl+C 停止。当前不包含后台常驻或开机自启。停止时等待正在处理的请求，超过 5 秒会强制退出并返回非零退出码；此时可能保留过期的 `runtime.json`，状态检查会检测服务是否仍在线。
+`cabletidy start` 在前台运行，打印管理台地址；按 Ctrl+C 或收到 SIGTERM 后停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并退出，不设置退出倒计时。等待期间再次按 Ctrl+C 会强制退出，退出码为 130；此时可能保留过期的 `runtime.json`，状态检查会检测服务是否仍在线。当前不包含后台常驻或开机自启。
 
 在另一个终端可以运行：
 
