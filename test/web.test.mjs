@@ -390,10 +390,10 @@ test("editing connection fields retains unrelated upstream settings", async () =
     baseUrl: "https://example.invalid/v1", secret: "",
   }));
   const upstream = app.persisted().upstreams.relay;
-  for (const key of ["envKey", "auth", "enabled"]) {
+  for (const key of ["auth", "enabled"]) {
     assert.deepEqual(upstream[key], config.upstreams.relay[key], key);
   }
-  for (const key of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
+  for (const key of ["envKey", "requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
     assert.equal(upstream[key], undefined, key);
   }
   assert.equal(upstream.name, "Edited relay");

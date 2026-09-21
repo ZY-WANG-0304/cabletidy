@@ -79,10 +79,6 @@ export function validateConfig(input) {
     if (upstream.integration && !INTEGRATIONS.has(upstream.integration)) {
       add(errors, `upstreams.${id}.integration`, "未注册的上游接入方式");
     }
-    const envKey = upstream.envKey || upstream.codexNative?.envKey;
-    if (envKey && !ENV_PATTERN.test(envKey)) {
-      add(errors, `upstreams.${id}.envKey`, "env_key 必须是大写环境变量名");
-    }
     const authHeader = upstream.auth?.header || upstream.authHeader;
     if (authHeader && !HEADER_PATTERN.test(authHeader)) {
       add(errors, `upstreams.${id}.auth.header`, "认证 header 名称不合法");

@@ -129,7 +129,6 @@ export function buildCodexArtifacts(config, options = {}, secrets = {}) {
     upstream: {
       id: upstream.id,
       baseUrl: upstream.baseUrl,
-      envKey: upstream.envKey,
       secretConfigured: Boolean(resolveUpstreamSecret(upstream, secrets)),
     },
   };

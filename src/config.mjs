@@ -104,17 +104,8 @@ function migratePrototypeCodexFields(config) {
     if (!upstream.integration && upstream.providerFormat === "codex.toml.v1") {
       upstream.integration = "codex-native-provider";
     }
-    if (isRecord(upstream.codexToml)) {
-      if (!upstream.codexNative) {
-        upstream.codexNative = {
-          providerId: upstream.codexToml.providerId,
-          envKey: upstream.codexToml.envKey,
-        };
-      }
-      if (upstream.envKey === undefined && upstream.codexToml.envKey) {
-        upstream.envKey = upstream.codexToml.envKey;
-      }
-    }
+    delete upstream.envKey;
+    delete upstream.codexNative;
     delete upstream.providerFormat;
     delete upstream.codexToml;
   }
@@ -249,21 +240,11 @@ export function secretRefForUpstream(id) {
 
 export function resolveSecret(reference, secrets = {}) {
   if (typeof reference !== "string" || !reference) return "";
-  if (reference.startsWith("env://")) {
-    return process.env[reference.slice("env://".length)] || "";
-  }
-  if (reference.startsWith("secret://")) {
-    return secrets[reference] || "";
-  }
-  return secrets[reference] || process.env[reference] || "";
+  return secrets[reference] || "";
 }
 
 export function resolveUpstreamSecret(upstream, secrets = {}) {
-  const envKey = upstream?.envKey;
-  return (
-    (typeof envKey === "string" && process.env[envKey]) ||
-    resolveSecret(upstream?.secretRef, secrets)
-  );
+  return resolveSecret(upstream?.secretRef, secrets);
 }
 
 export function applySecretPayload(config, secrets, payload = {}) {

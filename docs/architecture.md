@@ -410,9 +410,10 @@ Codex 配置只有在用户主动执行应用操作时才会写入新的 provide
 contextWindow 可经模型目录同步，compact 尚未实现逐模型同步。reasoning 只作为能力
 参与请求筛选，effort 由 CLI 请求选择。首次配置从官方定义初始化请求能力，不要求填写上下文数值；后续可显式限制窗口或图片输入。
 
-同理，上游的 `env_key` 不是新配置流程的一部分。若用户在 Web
-向导直接填写 API Key，CableTidy 使用自己的 `secretRef`；旧配置中的
-`envKey` 仅作为兼容读取，不会由新配置生成，也不需要设置环境变量。
+上游 API Key 只通过 `secretRef` 从 CableTidy 的 secrets store 读取。
+配置规范化会丢弃旧 `envKey`、`codexToml` 和 `codexNative`，不再迁移或读取其中的认证环境变量。
+`env://` 和裸变量名形式的 secret 引用也不再读取环境变量，保存的新 API Key 会直接用于出站认证。
+原先仅通过环境变量提供密钥的配置需要在管理台填写并保存 API Key。
 
 ## 6. 请求与能力路由
 

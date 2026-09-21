@@ -41,6 +41,7 @@ test("Codex renderer emits only a local config.toml provider block", async () =>
   assert.doesNotMatch(artifacts.files[0].contents, /env_key|local-key/);
   assert.match(artifacts.files[0].contents, /requires_openai_auth = false/);
   assert.deepEqual(artifacts.environment.vars, {});
+  assert.equal(Object.hasOwn(artifacts.upstream, "envKey"), false);
   assert.equal(artifacts.providerId, config.bindings[artifacts.bindingId].virtualProvider);
   assert.equal(artifacts.providerId, artifacts.virtualProviderId);
 });

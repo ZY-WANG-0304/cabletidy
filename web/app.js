@@ -1430,10 +1430,8 @@ function saveUpstream(data, connectionOnly = false) {
     } : {}),
     enabled: existing.enabled !== false,
   };
-  delete state.candidate.upstreams[id].codexNative;
   if (data.get("protocol") !== "openai.responses") {
     delete state.candidate.upstreams[id].integration;
-    delete state.candidate.upstreams[id].codexNative;
   }
   const secret = String(data.get("secret") || "").trim();
   if (secret) {

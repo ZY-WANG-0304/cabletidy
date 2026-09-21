@@ -6,6 +6,7 @@ import {
   computeConfigDiff,
   normalizeConfig,
   publicConfig,
+  resolveUpstreamSecret,
 } from "../src/config.mjs";
 import { validateConfig } from "../src/validation.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
@@ -40,6 +41,50 @@ test("unused upstream policy fields are removed during normalization", () => {
   });
   for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
     assert.equal(config.upstreams.relay[field], undefined, field);
+  }
+});
+
+test("normalization discards upstream envKey and Codex auth metadata", () => {
+  for (const metadata of [
+    { envKey: "no longer a valid env name" },
+    { codexToml: { providerId: "relay", envKey: "LEGACY_KEY" } },
+    { codexNative: { providerId: "relay", envKey: "LEGACY_KEY" } },
+  ]) {
+    const original = codexConfigFixture();
+    Object.assign(original.upstreams.relay, metadata, { secretRef: "secret://upstreams/relay" });
+    const result = validateConfig(original);
+    assert.equal(result.ok, true, JSON.stringify(result.errors));
+    const upstream = result.config.upstreams.relay;
+    for (const field of ["envKey", "codexToml", "codexNative"]) {
+      assert.equal(Object.hasOwn(upstream, field), false, field);
+    }
+    assert.equal(upstream.secretRef, "secret://upstreams/relay");
+    assert.deepEqual(normalizeConfig(result.config), result.config);
+    for (const [field, value] of Object.entries(metadata)) {
+      assert.deepEqual(original.upstreams.relay[field], value);
+    }
+  }
+});
+
+test("upstream credentials come only from the secrets store even when env references exist", (t) => {
+  const envKey = "CABLETIDY_TEST_UPSTREAM_API_KEY";
+  const previous = process.env[envKey];
+  t.after(() => {
+    if (previous === undefined) delete process.env[envKey];
+    else process.env[envKey] = previous;
+  });
+  process.env[envKey] = "stale-environment-key";
+  const secretRef = "secret://upstreams/relay";
+  const upstream = { envKey, secretRef };
+  const secrets = { [secretRef]: "saved-key" };
+  assert.equal(resolveUpstreamSecret(upstream, secrets), "saved-key");
+  assert.equal(resolveUpstreamSecret(upstream), "");
+  assert.equal(resolveUpstreamSecret({ envKey }), "");
+  for (const reference of [envKey, `env://${envKey}`]) {
+    assert.equal(resolveUpstreamSecret({ secretRef: reference }), "");
+    const config = { upstreams: { relay: { secretRef: reference } } };
+    const updated = applySecretPayload(config, {}, { upstreamSecrets: { relay: "new-key" } });
+    assert.equal(resolveUpstreamSecret(config.upstreams.relay, updated), "new-key");
   }
 });
 
@@ -242,8 +287,9 @@ test("migrates prototype Codex fields into CableTidy fields and drops profile me
   });
 
   assert.equal(config.upstreams.primary.integration, "codex-native-provider");
-  assert.equal(config.upstreams.primary.codexNative.envKey, "PRIMARY_API_KEY");
-  assert.equal(config.upstreams.primary.envKey, "PRIMARY_API_KEY");
+  assert.equal(config.upstreams.primary.codexNative, undefined);
+  assert.equal(config.upstreams.primary.envKey, undefined);
+  assert.equal(config.upstreams.primary.codexToml, undefined);
   assert.equal(config.upstreams.primary.providerFormat, undefined);
   assert.equal(config.models["logical-model"].clientModelId, "logical");
   assert.equal(config.models["logical-model"].contextWindow, 1000000);
