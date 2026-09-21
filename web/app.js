@@ -26,7 +26,6 @@ const PAGE_META = {
   overview: "配置套装",
   "suite-create": "新建配置",
   "suite-detail": "配置详情",
-  upstreams: "上游管理",
   models: "模型管理",
   diagnostics: "诊断",
 };
@@ -43,10 +42,8 @@ const state = {
     upstreamSecrets: {},
   },
   selected: {
-    upstream: null,
     model: null,
     virtualProvider: null,
-    binding: null,
     suite: null,
   },
   artifactPreview: null,
@@ -119,10 +116,8 @@ async function bootstrap() {
     state.runtime = runtime;
     state.codexCatalog = codexCatalog;
     state.events = events.events || [];
-    state.selected.upstream = firstKey(state.candidate.upstreams);
     state.selected.model = firstKey(state.candidate.models);
     state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
-    state.selected.binding = firstKey(state.candidate.bindings);
     state.selected.suite = firstKey(state.candidate.bindings);
     railStatus.textContent = "服务运行中";
     railStatus.parentElement.classList.remove("is-offline");
@@ -162,7 +157,6 @@ function render(preservedForms = []) {
     overview: renderOverview,
     "suite-create": renderSuiteCreate,
     "suite-detail": renderSuiteDetail,
-    upstreams: renderUpstreams,
     models: renderModels,
     diagnostics: renderDiagnostics,
   };
@@ -386,9 +380,7 @@ function selectSuite(id) {
   const suite = configurationSuites(state.candidate || {}).find((item) => item.id === id);
   state.selected.suite = id || null;
   if (!suite) return;
-  state.selected.binding = suite.bindingId;
   state.selected.virtualProvider = suite.binding.virtualProvider;
-  state.selected.upstream = suite.upstreamId;
   state.selected.model = suite.modelIds[0] || null;
 }
 
@@ -619,14 +611,14 @@ function renderSuiteDetail() {
             <div class="form-grid suite-upstream-fields">
               ${field("上游名称", "name", upstream.name || upstreamId, "例如 Relay A")}
               ${field("上游地址", "baseUrl", upstream.baseUrl || "", "https://relay.example.com/v1", false, "url")}
-              ${field("API Key", "secret", "", upstreamSecretConfigured(upstreamId, upstream) ? "已配置，留空保留现有密钥" : "粘贴上游 API Key", false, "password")}
+              ${field("API Key", "secret", "", upstream.secretConfigured ? "已配置，留空保留现有密钥" : "粘贴上游 API Key", false, "password")}
             </div>
             <div class="suite-section-footer">
               <span class="field-hint">保存后生效，测试使用已保存的连接。</span>
               <div class="form-actions"><button class="button" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
             </div>
           </form>
-        ` : `<div class="empty"><strong>未配置上游</strong><div class="form-actions"><button class="button" data-action="new-upstream">添加上游</button></div></div>`}
+        ` : `<div class="empty"><strong>未配置上游</strong></div>`}
       </section>
       <section class="suite-section" aria-labelledby="suite-models-title">
         <div class="suite-section-heading suite-models-heading">
@@ -758,52 +750,6 @@ function upstreamDisplayName(baseUrl, fallback) {
   }
 }
 
-function renderUpstreams() {
-  const config = state.candidate;
-  const selectedId = state.selected.upstream;
-  const selected = selectedId ? config.upstreams[selectedId] : null;
-  const integrationLabel = selected?.integration === "codex-native-provider"
-    ? "Codex Native Provider Integration"
-    : "Native upstream connection";
-  return `
-    <button class="text-button" data-action="back-overview">返回列表</button>
-    <div class="form-layout">
-      <div class="panel">
-        <div class="panel-header">
-          <h2>上游列表</h2>
-          <button class="button" data-action="new-upstream">新增上游</button>
-        </div>
-        <div class="panel-body">
-          ${
-            Object.keys(config.upstreams).length
-              ? `<div class="list">${entries(config.upstreams).map(([id, item]) => upstreamRow(id, item, id === selectedId)).join("")}</div>`
-              : `<div class="empty">暂无上游</div>`
-          }
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-header">
-          <h2>${selected ? esc(selected.name || selectedId) : "添加上游"}</h2>
-        </div>
-        <div class="panel-body">
-          <form id="upstream-form">
-            <div class="form-grid">
-              ${field("Upstream ID", "id", selectedId || "", "例如 relay-main", false, "text", Boolean(selectedId))}
-              ${field("显示名称", "name", selected?.name || "", "例如 xxx")}
-              <div class="field"><span>上游接入方式</span><div class="static-field">${integrationLabel}</div></div>
-              ${selectField("上游协议", "protocol", selected?.protocol || "openai.responses", ["openai.responses", "openai.chat_completions", "anthropic.messages"])}
-              ${field("真实 base URL", "baseUrl", selected?.baseUrl || "", "https://relay.example.com/v1", true)}
-              ${field("API key", "secret", "", upstreamSecretConfigured(selectedId, selected) ? "已配置，留空表示不修改" : "粘贴上游 API key", false, "password")}
-              ${field("上游认证 header", "authHeader", selected?.auth?.header || selected?.authHeader || (selected?.protocol === "anthropic.messages" ? "x-api-key" : "authorization"), "authorization 或 x-api-key")}
-            </div>
-            <div class="form-actions"><button class="button button-primary" type="submit">保存</button>${selected ? `<button class="button" type="button" data-action="test-upstream" data-id="${esc(selectedId)}">测试连通性</button><button class="button button-danger" type="button" data-action="delete-upstream" data-id="${esc(selectedId)}">删除</button>` : ""}</div>
-          </form>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
 function renderModels() {
   const config = state.candidate;
   const selectedId = state.selected.model;
@@ -883,21 +829,6 @@ function renderDiagnostics() {
   `;
 }
 
-function upstreamRow(id, item, active = false) {
-  const health = state.runtime?.health?.[id];
-  const healthClass = health?.outcome === "failure" ? "danger" : health ? "" : "warning";
-  const status = health?.outcome || (
-    upstreamSecretConfigured(id, item)
-      ? "ready"
-      : "needs key"
-  );
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-upstream" data-id="${esc(id)}"><div><h3>${esc(item.name || id)}</h3><p>${esc(item.protocol || "protocol")} · ${esc(item.baseUrl || "未设置")}</p></div><span class="status-badge ${healthClass}">${status}</span></button>`;
-}
-
-function upstreamSecretConfigured(id, item) {
-  return Boolean(item?.secretConfigured);
-}
-
 function modelRow(id, item, active = false) {
   const context = item.contextWindow ? `${item.contextWindow.toLocaleString()} ctx` : "context unset";
   const compact = item.compact?.tokenLimit ? `${item.compact.tokenLimit.toLocaleString()} compact` : "compact unset";
@@ -955,8 +886,8 @@ function artifactPanel(artifacts) {
 async function handleAction(action, element) {
   if (state.busy) return;
   if ([
-    "create-suite", "open-suite", "back-overview", "select-upstream", "select-model",
-    "new-upstream", "new-model", "focus-upstream", "open-advanced-models",
+    "create-suite", "open-suite", "back-overview", "select-model",
+    "new-model", "open-advanced-models",
   ].includes(action)) {
     if (!confirmPageLeave()) return;
   }
@@ -990,17 +921,9 @@ async function handleAction(action, element) {
     } else if (action === "back-overview") {
       state.page = "overview";
       render();
-    } else if (action === "select-upstream") {
-      state.selected.upstream = element.dataset.id;
-      state.page = "upstreams";
-      render();
     } else if (action === "select-model") {
       state.selected.model = element.dataset.id;
       state.page = "models";
-      render();
-    } else if (action === "new-upstream") {
-      state.selected.upstream = null;
-      state.page = "upstreams";
       render();
     } else if (action === "new-model") {
       state.selected.model = null;
@@ -1031,9 +954,9 @@ async function handleAction(action, element) {
       list.appendChild(row);
     } else if (action === "remove-create-model") {
       element.closest("[data-create-model]")?.remove();
-    } else if (["delete-upstream", "delete-model"].includes(action)) {
+    } else if (action === "delete-model") {
       if (!window.confirm("删除此配置项？删除后立即生效。")) return;
-      await saveChanges(() => removeConfigItem(action, element.dataset.id), element.closest("form"));
+      await saveChanges(() => removeModel(element.dataset.id), element.closest("form"));
     } else if (action === "test-upstream") {
       await testUpstream(element.dataset.id);
     } else if (action === "toggle-vp") {
@@ -1042,10 +965,6 @@ async function handleAction(action, element) {
       await previewArtifacts();
     } else if (action === "apply-target") {
       await applyTarget();
-    } else if (action === "focus-upstream") {
-      state.page = "upstreams";
-      state.selected.upstream = element.dataset.id;
-      render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
       state.selected.model = selectedSuite()?.modelIds?.[0] || firstKey(state.candidate.models);
@@ -1131,7 +1050,6 @@ async function handleFormSubmit(event, form) {
     if (submitButton) submitButton.textContent = "保存中...";
     const handlers = {
       "suite-create-form": () => saveSuiteCreate(data, form),
-      "upstream-form": () => saveUpstream(data),
       "suite-upstream-form": () => saveSuiteUpstream(data),
       "suite-models-form": () => saveSuiteModels(form),
       "model-form": () => saveModel(data, form),
@@ -1147,32 +1065,21 @@ async function handleFormSubmit(event, form) {
   }
 }
 
-function removeConfigItem(action, id) {
-  if (action === "delete-upstream") {
-    delete state.candidate.upstreams[id];
-    for (const model of values(state.candidate.models)) delete model.upstreams?.[id];
-    state.selected.upstream = firstKey(state.candidate.upstreams);
-  } else if (action === "delete-model") {
-    delete state.candidate.models[id];
-    for (const provider of values(state.candidate.virtualProviders)) {
-      provider.allowedModels = (provider.allowedModels || []).filter((modelId) => modelId !== id);
-      if (provider.defaultModel === id) delete provider.defaultModel;
-    }
-    for (const route of values(state.candidate.routes)) {
-      for (const backend of route.backends || []) {
-        backend.models = (backend.models || []).filter((modelId) => modelId !== id);
-      }
-    }
-    for (const binding of values(state.candidate.bindings)) {
-      if (binding.defaultModel === id) delete binding.defaultModel;
-    }
-    state.selected.model = firstKey(state.candidate.models);
+function removeModel(id) {
+  delete state.candidate.models[id];
+  for (const provider of values(state.candidate.virtualProviders)) {
+    provider.allowedModels = (provider.allowedModels || []).filter((modelId) => modelId !== id);
+    if (provider.defaultModel === id) delete provider.defaultModel;
   }
-}
-
-function saveSuiteUpstream(data) {
-  saveUpstream(data, true);
-  state.page = "suite-detail";
+  for (const route of values(state.candidate.routes)) {
+    for (const backend of route.backends || []) {
+      backend.models = (backend.models || []).filter((modelId) => modelId !== id);
+    }
+  }
+  for (const binding of values(state.candidate.bindings)) {
+    if (binding.defaultModel === id) delete binding.defaultModel;
+  }
+  state.selected.model = firstKey(state.candidate.models);
 }
 
 function saveSuiteModels(form) {
@@ -1399,16 +1306,14 @@ function saveSuiteCreate(data, form) {
 
   state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;
 
-  state.selected.upstream = upstreamId;
   state.selected.model = modelIds[0] || null;
   state.selected.virtualProvider = virtualProviderId;
-  state.selected.binding = bindingId;
   state.selected.suite = bindingId;
   state.page = "suite-detail";
 
 }
 
-function saveUpstream(data, connectionOnly = false) {
+function saveSuiteUpstream(data) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("upstream ID 不能为空");
   const existing = state.candidate.upstreams[id] || {};
@@ -1422,12 +1327,6 @@ function saveUpstream(data, connectionOnly = false) {
     protocol: data.get("protocol"),
     baseUrl: String(data.get("baseUrl") || "").trim(),
     secretRef: existing.secretRef || `secret://upstreams/${id}`,
-    ...(!connectionOnly ? {
-      auth: {
-        ...(existing.auth || {}),
-        header: String(data.get("authHeader") || "").trim().toLowerCase() || undefined,
-      },
-    } : {}),
     enabled: existing.enabled !== false,
   };
   if (data.get("protocol") !== "openai.responses") {
@@ -1437,8 +1336,7 @@ function saveUpstream(data, connectionOnly = false) {
   if (secret) {
     state.pendingSecrets.upstreamSecrets[id] = secret;
   }
-  state.selected.upstream = id;
-
+  state.page = "suite-detail";
 }
 
 function saveModel(data, form) {
@@ -1523,7 +1421,7 @@ async function previewArtifacts() {
     method: "POST",
     body: JSON.stringify({
       config: state.config,
-      bindingId: state.selected.binding,
+      bindingId: state.selected.suite,
     }),
   });
   state.artifactPreview = result.artifacts;
@@ -1536,20 +1434,21 @@ async function applyTarget() {
   if (hasUnsavedChanges()) {
     throw new Error("请先保存当前编辑，再应用到 CLI。");
   }
-  if (!state.selected.binding) throw new Error("请先选择一个 Target binding。");
-  const binding = state.candidate.bindings[state.selected.binding];
+  const suite = selectedSuite();
+  if (!suite) throw new Error("请先选择一个配置套装。");
+  const binding = suite.binding;
   if (binding?.target !== "codex") {
     await previewArtifacts();
     return;
   }
   const result = await api("/targets/apply", {
     method: "POST",
-    body: JSON.stringify({ bindingId: state.selected.binding }),
+    body: JSON.stringify({ bindingId: suite.bindingId }),
   });
   state.artifactPreview = result.report ? {
     ...result.report,
     target: result.target,
-    bindingId: state.selected.binding,
+    bindingId: suite.bindingId,
     mode: result.report.mode || "managed_proxy",
   } : null;
   toast("Codex 配置已应用。");
@@ -1567,9 +1466,7 @@ async function saveChanges(update, form) {
   try {
     update();
     const identities = normalizeConfigurationIdentities(state.candidate);
-    for (const field of ["binding", "suite"]) {
-      state.selected[field] = identities.bindingIds.get(state.selected[field]) ?? state.selected[field];
-    }
+    state.selected.suite = identities.bindingIds.get(state.selected.suite) ?? state.selected.suite;
     state.selected.virtualProvider = identities.providerIds.get(state.selected.virtualProvider) ?? state.selected.virtualProvider;
     // The commit endpoint validates and applies the change atomically.
     const result = await api("/config/commit", {

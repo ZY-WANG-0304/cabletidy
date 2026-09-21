@@ -41,9 +41,8 @@ function sampleConfig() {
     routes: {
       "codex-route": {
         id: "codex-route",
-        strategy: "priority",
         backends: [
-          { upstream: "primary", priority: 10, models: ["codex-sol"], enabled: true },
+          { upstream: "primary", models: ["codex-sol"], enabled: true },
         ],
       },
     },

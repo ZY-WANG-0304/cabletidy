@@ -54,7 +54,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
   const config = {
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       primary: {
         id: "primary",
@@ -79,8 +79,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     routes: {
       primary: {
         id: "primary",
-        strategy: "priority",
-        backends: [{ upstream: "primary", priority: 10, models: ["codex-sol"], enabled: true }],
+        backends: [{ upstream: "primary", models: ["codex-sol"], enabled: true }],
       },
     },
     virtualProviders: {
@@ -299,7 +298,7 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
   await saveConfig({
     version: 1,
     revision: 0,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {},
     models: {},
     routes: {},
@@ -361,7 +360,7 @@ test("Web configuration graph can be committed without external reference files"
   const initialConfig = {
     version: 1,
     revision: 0,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {},
     models: {},
     routes: {},
@@ -406,11 +405,9 @@ test("Web configuration graph can be committed without external reference files"
         primary: {
           id: "primary",
           name: "Primary route",
-          strategy: "priority",
           backends: [
             {
               upstream: "primary",
-              priority: 10,
               models: ["gpt56-sol"],
               enabled: true,
             },
@@ -534,7 +531,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
   const config = {
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       anthropic: {
         id: "anthropic",
@@ -558,8 +555,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     routes: {
       "claude-route": {
         id: "claude-route",
-        strategy: "priority",
-        backends: [{ upstream: "anthropic", priority: 10, models: ["claude-sonnet"] }],
+        backends: [{ upstream: "anthropic", models: ["claude-sonnet"] }],
       },
     },
     virtualProviders: {
@@ -697,7 +693,7 @@ test("upstream errors are returned without contacting another configured upstrea
   const config = {
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       primary: {
         id: "primary",
@@ -722,11 +718,10 @@ test("upstream errors are returned without contacting another configured upstrea
       },
     },
     routes: {
-      "priority-route": {
-        id: "priority-route",
-        strategy: "priority",
+      "model-route": {
+        id: "model-route",
         backends: [
-          { upstream: "primary", priority: 10, models: ["logical-coder"] },
+          { upstream: "primary", models: ["logical-coder"] },
         ],
       },
     },
@@ -734,7 +729,7 @@ test("upstream errors are returned without contacting another configured upstrea
       codex: {
         id: "codex",
         ingressProtocol: "openai.responses",
-        route: "priority-route",
+        route: "model-route",
         allowedModels: ["logical-coder"],
         defaultModel: "logical-coder",
         localAuth: { secretRef: "secret://virtual-providers/codex" },
@@ -782,7 +777,7 @@ test("changing the shared listener requires restart and preserves the running co
   const config = {
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       primary: {
         id: "primary",
@@ -801,7 +796,6 @@ test("changing the shared listener requires restart and preserves the running co
     routes: {
       route: {
         id: "route",
-        strategy: "priority",
         backends: [{ upstream: "primary", models: ["model"] }],
       },
     },
@@ -860,7 +854,7 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
   const config = {
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       primary: {
         id: "primary",
@@ -879,7 +873,6 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
     routes: {
       route: {
         id: "route",
-        strategy: "priority",
         backends: [{ upstream: "primary", models: ["model"] }],
       },
     },
@@ -931,7 +924,7 @@ test("startup failure on the shared listener does not create provider listeners"
   await saveConfig({
     version: 1,
     revision: 1,
-    web: { enabled: true, listenHost: "127.0.0.1", port: webPort },
+    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       relay: {
         id: "relay",
@@ -950,7 +943,6 @@ test("startup failure on the shared listener does not create provider listeners"
     routes: {
       route: {
         id: "route",
-        strategy: "priority",
         backends: [{ upstream: "relay", models: ["model"] }],
       },
     },

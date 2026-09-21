@@ -29,7 +29,6 @@ function claudeConfig() {
     routes: {
       "claude-route": {
         id: "claude-route",
-        strategy: "priority",
         backends: [{ upstream: "anthropic", models: ["claude-sonnet"] }],
       },
     },

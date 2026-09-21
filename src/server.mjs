@@ -30,7 +30,6 @@ import {
 import {
   applyCodexArtifacts,
   prepareCodexArtifacts,
-  publicArtifacts,
   CODEX_NATIVE_PROVIDER_INTEGRATION,
   CODEX_NATIVE_REQUIRED_ENDPOINTS,
   CODEX_TARGET_FORMAT,
@@ -388,7 +387,7 @@ async function handleApiRequest(state, request, response, url) {
         upstreamModelId: result.upstreamModelId,
         routeId: result.routeId,
         capabilities: result.capabilities,
-        rejectedBackends: result.rejected,
+        rejectedBackends: [],
       });
     } catch (error) {
       sendJson(response, 422, {
@@ -408,29 +407,18 @@ async function handleApiRequest(state, request, response, url) {
     return;
   }
 
-  if (
-    (url.pathname === "/api/v1/config/preview-target-artifacts" ||
-      url.pathname === "/api/v1/config/preview-codex-config") &&
-    method === "POST"
-  ) {
+  // Prototype aliases share target preview behavior; none import reference files.
+  if (method === "POST" && [
+    "/api/v1/config/preview-target-artifacts",
+    "/api/v1/config/preview-codex-config",
+    "/api/v1/config/preview-provider-artifacts",
+  ].includes(url.pathname)) {
     await previewTargetArtifacts(state, body, response);
     return;
   }
 
-  // Compatibility alias for clients built against the first prototype. It
-  // previews target artifacts and does not inspect or import reference files.
-  if (url.pathname === "/api/v1/config/preview-provider-artifacts" && method === "POST") {
-    await previewTargetArtifacts(state, body, response);
-    return;
-  }
-
-  if (url.pathname === "/api/v1/targets/codex/apply" && method === "POST") {
-    await applyCodexTarget(state, body, response);
-    return;
-  }
-
-  if (url.pathname === "/api/v1/targets/apply" && method === "POST") {
-    await applyTarget(state, body, response);
+  if (method === "POST" && ["/api/v1/targets/apply", "/api/v1/targets/codex/apply"].includes(url.pathname)) {
+    await applyTarget(state, body, response, url.pathname === "/api/v1/targets/codex/apply");
     return;
   }
 
@@ -653,30 +641,11 @@ async function previewTargetArtifacts(state, body, response) {
   }
 }
 
-async function applyCodexTarget(state, body, response) {
+async function applyTarget(state, body, response, legacyCodex = false) {
   try {
-    const artifacts = await prepareCodexArtifacts(state.config, {
-      bindingId: body.bindingId,
-      loadCatalog: state.loadCodexCatalog,
-      codexHome: state.codexHome,
-    }, state.secrets);
-    const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
-    recordEvent(state, "target.codex.apply", { bindingId: body.bindingId || null, files: report.applied });
-    sendJson(response, 200, {
-      ok: true,
-      report: {
-        ...report,
-        environment: publicArtifacts({ ...artifacts, ...report }).environment,
-      },
-    });
-  } catch (error) {
-    sendJson(response, 422, { error: { code: "codex_apply_failed", message: error.message } });
-  }
-}
-
-async function applyTarget(state, body, response) {
-  try {
-    const artifacts = await prepareTargetArtifacts(state.config, {
+    // The old endpoint selects the first Codex binding and keeps its wire contract.
+    const prepare = legacyCodex ? prepareCodexArtifacts : prepareTargetArtifacts;
+    const artifacts = await prepare(state.config, {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
       codexHome: state.codexHome,
@@ -693,16 +662,15 @@ async function applyTarget(state, body, response) {
       });
       return;
     }
-    let report = { applied: [], mode: artifacts.mode };
-    report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
-    recordEvent(state, "target.apply", {
-      bindingId: artifacts.bindingId,
-      target: artifacts.target,
+    const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
+    recordEvent(state, legacyCodex ? "target.codex.apply" : "target.apply", {
+      bindingId: legacyCodex ? body.bindingId || null : artifacts.bindingId,
+      ...(!legacyCodex ? { target: artifacts.target } : {}),
       files: report.applied,
     });
     sendJson(response, 200, {
       ok: true,
-      target: artifacts.target,
+      ...(!legacyCodex ? { target: artifacts.target } : {}),
       report: {
         ...report,
         environment: publicTargetArtifacts({ ...artifacts, ...report }).environment,
@@ -710,7 +678,7 @@ async function applyTarget(state, body, response) {
     });
   } catch (error) {
     sendJson(response, 422, {
-      error: { code: "target_apply_failed", message: error.message },
+      error: { code: legacyCodex ? "codex_apply_failed" : "target_apply_failed", message: error.message },
     });
   }
 }

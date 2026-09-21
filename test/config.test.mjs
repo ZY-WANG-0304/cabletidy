@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import {
   applySecretPayload,
   computeConfigDiff,
+  defaultConfig,
   normalizeConfig,
   publicConfig,
   resolveUpstreamSecret,
 } from "../src/config.mjs";
 import { validateConfig } from "../src/validation.mjs";
+import { resolveRequest } from "../src/model-resolver.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 test("upstream-only configurations allow empty or omitted model settings and optional defaults", () => {
@@ -42,6 +44,31 @@ test("unused upstream policy fields are removed during normalization", () => {
   for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
     assert.equal(config.upstreams.relay[field], undefined, field);
   }
+});
+
+test("obsolete configuration fields round-trip without affecting routing or provider state", () => {
+  assert.equal(Object.hasOwn(defaultConfig().web, "enabled"), false);
+  const config = normalizeConfig(codexConfigFixture());
+  config.web.enabled = false;
+  config.routes.route.strategy = "obsolete-strategy";
+  config.routes.route.backends[0].priority = "obsolete-priority";
+  config.routes.route.backends[0].weight = "obsolete-weight";
+  config.models.model.capabilityOverrides = ["-vision"];
+  config.virtualProviders.cabletidy_relay.enabled = false;
+  const result = validateConfig(config);
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  assert.deepEqual(JSON.parse(JSON.stringify(result.config)), config);
+  assert.equal(result.config.virtualProviders.cabletidy_relay.enabled, false);
+  assert.equal(resolveRequest(result.config, result.config.virtualProviders.cabletidy_relay, {
+    model: "gpt-5.5", images: true,
+  }).upstreamModelId, "VENDOR-GPT");
+
+  config.models.model.upstreams.relay.capabilityOverrides = ["-vision"];
+  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_relay, {
+    model: "gpt-5.5", images: true,
+  }), (error) => error.details.rejected[0].reason === "capability_missing");
+  config.models.model.upstreams.relay.capabilityOverrides = "invalid";
+  assert.ok(validateConfig(config).errors.some(({ path }) => path === "models.model.upstreams.relay.capabilityOverrides"));
 });
 
 test("normalization discards upstream envKey and Codex auth metadata", () => {

@@ -89,6 +89,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/targets/apply": { target: "codex" },
+        "/api/v1/config/preview-target-artifacts": { artifacts: { target: persisted.bindings[body?.bindingId]?.target } },
       };
       assert.ok(url in responses, "Unexpected endpoint: " + url);
       return { ok: true, json: async () => responses[url] };
@@ -139,22 +140,45 @@ function clone(value) {
   return structuredClone(value);
 }
 
-for (const formId of ["suite-upstream-form", "upstream-form"]) {
-  test(formId + " commits edits when a named input shadows the form ID", async () => {
-    const app = await controller();
-    const form = formNode(formId, {
-      id: "relay", name: "Edited relay", protocol: "openai.responses",
-      baseUrl: "https://example.invalid/v1", secret: "",
-    });
-    // HTMLFormElement exposes the named input as form.id.
-    form.id = { name: "id", value: "relay" };
-    await app.submit(form);
-    assert.equal(app.persisted().upstreams.relay.name, "Edited relay");
-    assert.equal(app.read("state.config.upstreams.relay.name"), "Edited relay");
-    assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
-    assert.equal(app.read("state.busy"), false);
+test("suite upstream edits preserve authentication when a named input shadows the form ID", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  config.upstreams.relay.auth = { header: "x-custom-key", prefix: "Token " };
+  config.upstreams.relay.secretRef = "secret://upstreams/custom-relay";
+  const app = await controller(config);
+  const form = formNode("suite-upstream-form", {
+    id: "relay", name: "Edited relay", protocol: "openai.responses",
+    baseUrl: "https://example.invalid/v1", secret: "",
   });
-}
+  // HTMLFormElement exposes the named input as form.id.
+  form.id = { name: "id", value: "relay" };
+  await app.submit(form);
+  assert.equal(app.persisted().upstreams.relay.name, "Edited relay");
+  assert.equal(app.read("state.config.upstreams.relay.name"), "Edited relay");
+  assert.deepEqual(app.persisted().upstreams.relay.auth, config.upstreams.relay.auth);
+  assert.equal(app.persisted().upstreams.relay.secretRef, config.upstreams.relay.secretRef);
+  const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
+  assert.equal(commits.length, 1);
+  assert.deepEqual(commits[0].body.upstreamSecrets, {});
+  assert.equal(app.read("state.busy"), false);
+});
+
+test("preview and apply follow the selected suite after creation, switching and cancellation", async () => {
+  const app = await controller();
+  await app.submit(creationForm());
+  for (const id of ["development", "relay"]) {
+    await app.action("open-suite", { dataset: { id } });
+    await app.action("preview-artifacts", {});
+    assert.equal(app.requests.at(-1).body.bindingId, id);
+    await app.action("apply-target", {});
+    assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
+    assert.equal(app.requests.at(-1).body.bindingId, id);
+  }
+  await app.action("create-suite", {});
+  await app.action("back-overview", {});
+  await app.action("open-suite", { dataset: { id: "development" } });
+  await app.action("apply-target", {});
+  assert.equal(app.requests.at(-1).body.bindingId, "development");
+});
 
 test("creation commits immediately and clears transient secrets", async () => {
   const app = await controller(normalizeConfig({}));

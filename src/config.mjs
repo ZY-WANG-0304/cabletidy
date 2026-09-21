@@ -38,7 +38,6 @@ export function defaultConfig() {
     revision: 0,
     daemon: {},
     web: {
-      enabled: true,
       listenHost: "127.0.0.1",
       port: 43100,
     },
