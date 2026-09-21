@@ -33,9 +33,23 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。目前验证平台为 Linux，macOS 和 Windows 尚待验证。
 
-### 从安装包使用
+### 从 npm 官方源安装
 
-当前尚未发布到 npm registry。拿到 `.tgz` 安装包后，无需 clone 仓库即可安装：
+```bash
+npm install -g cabletidy --registry=https://registry.npmjs.org/
+cabletidy --version
+cabletidy start
+```
+
+也可以不做全局安装，直接运行：
+
+```bash
+npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cabletidy start
+```
+
+### 从本地安装包使用
+
+拿到 `.tgz` 安装包后，无需 clone 仓库即可安装：
 
 ```bash
 npm install -g /absolute/path/cabletidy-0.1.0.tgz
@@ -51,6 +65,8 @@ npm exec --yes --package=/absolute/path/cabletidy-0.1.0.tgz -- cabletidy start
 
 安装包仍依赖本机 Node.js；npm 会下载尚未缓存的运行时依赖，因此 `.tgz` 本身不代表完全离线安装。安装过程不会启动服务或修改客户端配置。
 
+### 启动、升级与卸载
+
 `cabletidy start` 在前台运行，打印管理台地址；按 Ctrl+C 或收到 SIGTERM 后停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并退出，不设置退出倒计时。等待期间再次按 Ctrl+C 会强制退出，退出码为 130；此时可能保留过期的 `runtime.json`，状态检查会检测服务是否仍在线。当前不包含后台常驻或开机自启。
 
 在另一个终端可以运行：
@@ -62,7 +78,14 @@ cabletidy status
 
 `status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前配置套装列表；每套配置包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
 
-升级时先停止服务，再安装新版本 `.tgz` 并重新启动。卸载使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
+升级时先停止服务，再安装最新版本并重新启动：
+
+```bash
+npm install -g cabletidy@latest --registry=https://registry.npmjs.org/
+cabletidy start
+```
+
+从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
 
 ### 从源码运行与打包
 
@@ -83,7 +106,7 @@ npm test
 npm run test:package
 ```
 
-安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源及用户数据保留；需要能够获取 npm 依赖。Linux 上还验证 SIGINT / SIGTERM 和端口冲突。分发方案的取舍与后续服务管理设计见 [安装与分发决策](docs/installation-research.md)。
+安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源及用户数据保留；需要能够获取 npm 依赖。Linux 上还验证 SIGINT / SIGTERM 和端口冲突。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
 
 使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。已在 Codex 0.154.0 验证目录加载和实际请求。
 
@@ -201,3 +224,7 @@ npm test
 ```
 
 配置文件和 secrets 使用原子写入。管理台和 Virtual Provider 都只绑定 loopback，不需要本地访问 token、API Key 或 session 有效期。上游 API Key 由 CableTidy 单独保存和使用。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

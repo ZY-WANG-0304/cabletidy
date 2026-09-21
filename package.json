@@ -1,8 +1,20 @@
 {
   "name": "cabletidy",
   "version": "0.1.0",
-  "private": true,
   "description": "A local multi-target coding CLI gateway and provider manager.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZY-WANG-0304/cabletidy.git"
+  },
+  "homepage": "https://github.com/ZY-WANG-0304/cabletidy#readme",
+  "bugs": {
+    "url": "https://github.com/ZY-WANG-0304/cabletidy/issues"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "cabletidy": "bin/cabletidy.mjs"
@@ -19,7 +31,8 @@
     "start": "node src/server.mjs",
     "dev": "node --watch src/server.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:package": "node --test scripts/package-smoke.mjs"
+    "test:package": "node --test scripts/package-smoke.mjs",
+    "prepublishOnly": "npm test && npm run test:package"
   },
   "dependencies": {
     "toml-eslint-parser": "^1.0.3"
