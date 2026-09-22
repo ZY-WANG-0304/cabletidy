@@ -233,3 +233,15 @@ for (const force of [false, true]) {
     await waitFor(() => app.catalogConnections.size === 0);
   });
 }
+
+if (process.platform === "win32") {
+  test("Windows catalog descendants exit after abrupt daemon termination", signalTest, async t => {
+    const app = await fixture(t, { mockCatalog: true });
+    const request = http.get(`${app.url}api/v1/codex/models`);
+    request.on("error", () => {});
+    await app.waitForCatalog();
+    app.child.kill("SIGKILL");
+    await app.closed;
+    await waitFor(() => app.catalogConnections.size === 0);
+  });
+}

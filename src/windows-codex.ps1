@@ -52,6 +52,15 @@ public static class CableTidyCodexJob {
             !AssignProcessToJobObject(job, Process.GetCurrentProcess().Handle)) {
             throw new Win32Exception();
         }
+        // The daemon keeps stdin open. EOF also closes the job after a daemon
+        // crash or TerminateProcess, when its signal handlers cannot run.
+        Task.Run(() => {
+            try {
+                using (var input = Console.OpenStandardInput()) {
+                    while (input.ReadByte() != -1) { }
+                }
+            } finally { Environment.Exit(130); }
+        });
         // Only fixed arguments reach cmd.exe; it resolves native binaries and npm .cmd shims.
         var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec"),
             "/d /s /c \"codex " + command + "\"");

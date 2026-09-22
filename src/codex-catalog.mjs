@@ -16,9 +16,9 @@ async function executeCodex(args) {
     args[0] === "--version" ? "version" : "models",
   ] : args, {
     windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-    // Keep npm launcher descendants in a group we can stop on forced daemon exit.
-    detached: process.platform !== "win32",
+    stdio: [windows ? "pipe" : "ignore", "pipe", "pipe"],
+    // The daemon controls shutdown; terminal interrupts must not bypass draining.
+    detached: true,
   });
   activeCommand = command;
   const closed = new Promise(resolve => {
