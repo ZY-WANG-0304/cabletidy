@@ -1,4 +1,7 @@
-param([ValidateSet('version', 'models')][string]$Query)
+param(
+    [ValidateSet('version', 'models')][string]$Query,
+    [ValidateRange(1, 2147483647)][int]$DaemonPid
+)
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue)) {
     [Console]::Error.WriteLine('Cannot find codex in PATH')
@@ -41,9 +44,11 @@ public static class CableTidyCodexJob {
     static extern bool SetInformationJobObject(IntPtr job, int type, ref ExtendedLimits limits, uint size);
     [DllImport("kernel32.dll", SetLastError = true)]
     static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll")]
+    static extern bool SetConsoleCtrlHandler(IntPtr handler, bool ignore);
     static IntPtr job;
 
-    public static int Run(string command) {
+    public static int Run(string command, int daemonPid) {
         job = CreateJobObject(IntPtr.Zero, null);
         if (job == IntPtr.Zero) throw new Win32Exception();
         var limits = new ExtendedLimits();
@@ -52,14 +57,14 @@ public static class CableTidyCodexJob {
             !AssignProcessToJobObject(job, Process.GetCurrentProcess().Handle)) {
             throw new Win32Exception();
         }
-        // The daemon keeps stdin open. EOF also closes the job after a daemon
-        // crash or TerminateProcess, when its signal handlers cannot run.
+        // The daemon controls Ctrl+C draining. This flag is inherited by children.
+        SetConsoleCtrlHandler(IntPtr.Zero, true);
+        // Hold a process handle so PID reuse cannot disguise daemon termination.
+        var daemon = Process.GetProcessById(daemonPid);
+        if (daemon.Handle == IntPtr.Zero) throw new Win32Exception();
         Task.Run(() => {
-            try {
-                using (var input = Console.OpenStandardInput()) {
-                    while (input.ReadByte() != -1) { }
-                }
-            } finally { Environment.Exit(130); }
+            daemon.WaitForExit();
+            Environment.Exit(130);
         });
         // Only fixed arguments reach cmd.exe; it resolves native binaries and npm .cmd shims.
         var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("ComSpec"),
@@ -82,4 +87,4 @@ public static class CableTidyCodexJob {
 '@
 
 $command = if ($Query -eq 'version') { '--version' } else { 'debug models --bundled' }
-exit [CableTidyCodexJob]::Run($command)
+exit [CableTidyCodexJob]::Run($command, $DaemonPid)

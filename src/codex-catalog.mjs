@@ -13,12 +13,12 @@ async function executeCodex(args) {
   const command = spawn(windows ? powershell : "codex", windows ? [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
     fileURLToPath(new URL("./windows-codex.ps1", import.meta.url)),
-    args[0] === "--version" ? "version" : "models",
+    args[0] === "--version" ? "version" : "models", String(process.pid),
   ] : args, {
     windowsHide: true,
-    stdio: [windows ? "pipe" : "ignore", "pipe", "pipe"],
-    // The daemon controls shutdown; terminal interrupts must not bypass draining.
-    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    // Windows ignores console Ctrl+C inside the supervisor; POSIX uses a group.
+    detached: !windows,
   });
   activeCommand = command;
   const closed = new Promise(resolve => {
