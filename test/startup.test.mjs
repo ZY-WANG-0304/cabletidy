@@ -4,9 +4,10 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "../src/server.mjs";
 import { defaultConfig, getPaths, loadConfig, readRuntimeInfo, saveConfig } from "../src/config.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
@@ -196,6 +197,49 @@ test("stale instance locks are recovered on startup", async t => {
   await fs.utimes(paths.lock, stale, stale);
   const app = await f.start(paths);
   assert.equal((await status(paths)).runtime.web.url, app.url);
+});
+
+test("a stale lock held by a paused live instance is never reclaimed", { skip: process.platform === "win32" }, async t => {
+  const f = await fixture(t);
+  const paths = f.paths();
+  const child = spawn(process.execPath, [cli, "start"], {
+    env: { ...process.env, CABLETIDY_HOME: paths.home },
+    stdio: "ignore",
+  });
+  const closed = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  t.after(async () => {
+    if (child.exitCode === null) {
+      process.kill(child.pid, "SIGCONT");
+      process.kill(child.pid, "SIGTERM");
+      await closed;
+    }
+  });
+
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const runtime = await readRuntimeInfo(paths);
+      if (runtime?.pid === child.pid) break;
+    } catch {
+      // The daemon may be between its atomic runtime writes.
+    }
+    await delay(25);
+  }
+  assert.equal((await readRuntimeInfo(paths))?.pid, child.pid);
+  process.kill(child.pid, "SIGSTOP");
+  const stale = new Date(Date.now() - 60_000);
+  await fs.utimes(paths.lock, stale, stale);
+
+  await assert.rejects(f.start(paths), error => {
+    assert.equal(error.code, "ELOCKED");
+    return true;
+  });
+  process.kill(child.pid, "SIGCONT");
+  process.kill(child.pid, "SIGTERM");
+  assert.deepEqual(await closed, { code: 0, signal: null });
 });
 
 test("invalid configuration releases the lock and is preserved", async t => {
