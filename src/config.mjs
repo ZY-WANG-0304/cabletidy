@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeConfigurationIdentities } from "../web/config-identity.js";
@@ -206,9 +207,23 @@ export async function writeJsonAtomic(file, value, mode = 0o600) {
   const directory = path.dirname(file);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  await fs.chmod(temporary, mode);
-  await fs.rename(temporary, file);
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
+    await fs.chmod(temporary, mode);
+    const deadline = Date.now() + 1000;
+    while (true) {
+      try {
+        await fs.rename(temporary, file);
+        return;
+      } catch (error) {
+        // Windows readers and antivirus can briefly deny an atomic replacement.
+        if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || Date.now() >= deadline) throw error;
+        await delay(50);
+      }
+    }
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+  }
 }
 
 export async function saveConfig(config, paths = getPaths()) {
