@@ -44,7 +44,9 @@ for (const [name, body, expected] of [
 
 for (const [name, exitCode, expected] of [
   ["timeout", null, /TimeoutError/],
-  ["successful launcher exit before timeout", 0, /TimeoutError/],
+  // Windows may close the redirected pipes at launcher exit; the Job Object
+  // then kills the remaining worker and the empty catalog fails JSON parsing.
+  ["successful launcher exit", 0, process.platform === "win32" ? /JSON/ : /TimeoutError/],
   ["nonzero launcher exit", 7, /exited with 7/],
 ]) {
   test(`catalog ${name} terminates descendants holding pipes and allows retry`, {
