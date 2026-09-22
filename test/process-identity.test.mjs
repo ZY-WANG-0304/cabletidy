@@ -55,6 +55,9 @@ test("identity distinguishes reused PIDs, reboot, death, permissions and legacy 
   assert.equal(await inspectProcess({ pid: 42, startTime: `linux:${boot}:456` }, live), "dead");
   assert.equal(await inspectProcess({ pid: 42, startTime: `linux:${"0".repeat(36)}:123` }, live), "dead");
   assert.equal(await inspectProcess({ pid: 42 }, live), "unknown");
+  for (const malformed of [123, 456, {}, [startTime]]) {
+    assert.equal(await inspectProcess({ pid: 42, startTime: malformed }, live), "unknown");
+  }
   assert.equal(await inspectProcess({ pid: 42, startTime: "123" }, live), "unknown");
   assert.equal(await inspectProcess({ pid: 42, startTime: "456" }, live), "dead");
   assert.equal(await inspectProcess({ pid: 42, startTime }, { ...live, readStartTime: async () => null }), "unknown");

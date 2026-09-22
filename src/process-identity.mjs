@@ -57,7 +57,7 @@ export async function inspectProcess(identity, {
     if (error.code === "ESRCH") return "dead";
     if (error.code !== "EPERM") return "unknown";
   }
-  if (!identity.startTime) return "unknown";
+  if (typeof identity.startTime !== "string" || !identity.startTime) return "unknown";
   const current = await readStartTime(pid);
   if (!current) return "unknown";
   if (/^(linux|darwin|win32):/.test(identity.startTime)) {
