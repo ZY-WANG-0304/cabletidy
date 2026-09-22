@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "../src/server.mjs";
+import { processStartTime } from "../src/process-identity.mjs";
 import { defaultConfig, getPaths, loadConfig, readRuntimeInfo, saveConfig } from "../src/config.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
@@ -189,19 +190,47 @@ test("concurrent starts of the same store create one instance and do not overwri
   assert.equal((await status(paths)).runtime.status, "online");
 });
 
-test("stale instance locks are recovered on startup", async t => {
+test("legacy locks without reliable identity give actionable recovery instructions", async t => {
   const f = await fixture(t);
   const paths = f.paths();
   await fs.mkdir(paths.lock, { recursive: true });
+  await fs.writeFile(paths.runtime, JSON.stringify({ pid: process.pid }));
+  const stale = new Date(Date.now() - 60000);
+  await fs.utimes(paths.lock, stale, stale);
+  for (const owner of [undefined, { pid: process.pid, startTime: null }]) {
+    if (owner) {
+      await fs.writeFile(path.join(paths.lock, "owner.json"), JSON.stringify(owner));
+      await fs.utimes(paths.lock, stale, stale);
+    }
+    await assert.rejects(f.start(paths), error => {
+      assert.equal(error.code, "ELOCKUNKNOWN");
+      assert.ok(error.message.includes(paths.lock));
+      assert.match(error.message, /确认实例已退出/);
+      return true;
+    });
+    await assert.rejects(fs.access(paths.config), { code: "ENOENT" });
+  }
+  // Simulate the documented recovery after the operator verifies no daemon owns this store.
+  await fs.rm(paths.lock, { recursive: true });
+  const app = await f.start(paths);
+  assert.equal((await status(paths)).runtime.web.url, app.url);
+});
+
+test("a stale lock is recovered when its PID belongs to a different process generation", async t => {
+  const f = await fixture(t);
+  const paths = f.paths();
+  await fs.mkdir(paths.lock, { recursive: true });
+  const current = await processStartTime(process.pid);
+  const previous = current.replace(/\d$/, digit => String((Number(digit) + 1) % 10));
+  assert.notEqual(previous, current);
+  await fs.writeFile(path.join(paths.lock, "owner.json"), JSON.stringify({ pid: process.pid, startTime: previous }));
   const stale = new Date(Date.now() - 60000);
   await fs.utimes(paths.lock, stale, stale);
   const app = await f.start(paths);
   assert.equal((await status(paths)).runtime.web.url, app.url);
 });
 
-test("a stale lock held by a paused live instance is never reclaimed", { skip: process.platform === "win32" }, async t => {
-  const f = await fixture(t);
-  const paths = f.paths();
+async function startChild(t, paths) {
   const child = spawn(process.execPath, [cli, "start"], {
     env: { ...process.env, CABLETIDY_HOME: paths.home },
     stdio: "ignore",
@@ -211,9 +240,8 @@ test("a stale lock held by a paused live instance is never reclaimed", { skip: p
     child.once("close", (code, signal) => resolve({ code, signal }));
   });
   t.after(async () => {
-    if (child.exitCode === null) {
-      process.kill(child.pid, "SIGCONT");
-      process.kill(child.pid, "SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
       await closed;
     }
   });
@@ -229,15 +257,43 @@ test("a stale lock held by a paused live instance is never reclaimed", { skip: p
     await delay(25);
   }
   assert.equal((await readRuntimeInfo(paths))?.pid, child.pid);
-  process.kill(child.pid, "SIGSTOP");
-  const stale = new Date(Date.now() - 60_000);
+  return { child, closed };
+}
+
+test("concurrent stale-lock reclaimers preserve the new owner after a killed daemon", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const paths = f.paths();
+  const { child, closed } = await startChild(t, paths);
+  child.kill("SIGKILL");
+  await closed;
+  const stale = new Date(Date.now() - 60000);
   await fs.utimes(paths.lock, stale, stale);
+  const results = await Promise.allSettled(Array.from({ length: 4 }, () => f.start(paths)));
+  const started = results.filter(result => result.status === "fulfilled");
+  assert.equal(started.length, 1);
+  for (const result of results.filter(result => result.status === "rejected")) assert.equal(result.reason.code, "ELOCKED");
+  await delay(2500);
+  assert.equal((await status(paths)).runtime.web.url, started[0].value.url);
+  assert.equal((await fetch(started[0].value.url)).status, 200);
+});
+
+test("a stale lock held by a paused live instance survives resume and subsequent heartbeats", {
+  skip: process.platform === "win32", timeout: 30000,
+}, async t => {
+  const f = await fixture(t);
+  const paths = f.paths();
+  const { child, closed } = await startChild(t, paths);
+  const runtime = await readRuntimeInfo(paths);
+  process.kill(child.pid, "SIGSTOP");
+  await delay(11500);
 
   await assert.rejects(f.start(paths), error => {
     assert.equal(error.code, "ELOCKED");
     return true;
   });
   process.kill(child.pid, "SIGCONT");
+  await delay(2500);
+  assert.equal((await fetch(runtime.web.url, { signal: AbortSignal.timeout(3000) })).status, 200);
   process.kill(child.pid, "SIGTERM");
   assert.deepEqual(await closed, { code: 0, signal: null });
 });

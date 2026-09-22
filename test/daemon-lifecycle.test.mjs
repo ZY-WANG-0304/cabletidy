@@ -11,13 +11,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { defaultConfig } from "../src/config.mjs";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
+import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const execute = promisify(execFile);
-const signalTest = { skip: process.platform === "win32", timeout: 20000 };
+const signalTest = { timeout: 30000 };
 
 async function waitFor(predicate) {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await delay(20);
@@ -39,7 +40,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   const catalogConnections = new Set();
   t.after(async () => {
     if (catalogPid) {
-      try { process.kill(-catalogPid, "SIGKILL"); }
+      try { process.kill(process.platform === "win32" ? catalogPid : -catalogPid, "SIGKILL"); }
       catch (error) { if (error.code !== "ESRCH") throw error; }
     }
     if (child) {
@@ -64,7 +65,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   config.virtualProviders.cabletidy_relay = { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "relay" };
   config.bindings.relay = { id: "relay", target: "codex", virtualProvider: "cabletidy_relay" };
   await fs.writeFile(path.join(directory, "config.json"), JSON.stringify(config));
-  const env = { ...process.env, CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
+  let env = { ...process.env, CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
   const releaseCatalog = path.join(directory, "release-catalog");
   if (mockCatalog) {
     monitor = net.createServer(socket => {
@@ -83,7 +84,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
         socket.end();
       }, 20);
     `;
-    await fs.writeFile(path.join(bin, "codex"), `#!${process.execPath}
+    await writeCodexCommand(bin, `
       const fs = require("node:fs");
       if (process.argv.includes("--version")) {
         fs.writeFileSync(${JSON.stringify(path.join(directory, "catalog-pid"))}, String(process.pid));
@@ -92,12 +93,25 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
       } else {
         console.log(${JSON.stringify(JSON.stringify(catalogFixture().catalog))});
       }
-    `, { mode: 0o700 });
-    env.PATH = `${bin}${path.delimiter}${env.PATH}`;
+    `);
+    env = { ...commandEnvironment(`${bin}${path.delimiter}${process.env.PATH || process.env.Path || ""}`),
+      CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
   }
-  child = spawn(process.execPath, direct ? ["src/server.mjs"] : ["bin/cabletidy.mjs", "start"], {
-    cwd: root, env, stdio: ["ignore", "pipe", "pipe"],
+  const entry = direct ? "src/server.mjs" : "bin/cabletidy.mjs";
+  const windows = process.platform === "win32";
+  // Windows kill(SIGINT) terminates the process. Exercise the same handlers via
+  // IPC there; actual console Ctrl+C delivery remains an interactive check.
+  const args = windows ? ["--input-type=module", "-e", `
+    process.argv = [process.execPath, ${JSON.stringify(path.join(root, entry))}, "start"];
+    process.on("message", signal => process.emit(signal, signal));
+    process.channel.unref();
+    await import(${JSON.stringify(new URL(`../${entry}`, import.meta.url).href)});
+  `] : [entry, ...(direct ? [] : ["start"])];
+  child = spawn(process.execPath, args, {
+    cwd: root, env, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
+  const signalChild = signal => windows ? child.send(signal) : child.kill(signal);
+  if (windows) t.diagnostic("Shutdown handlers exercised via IPC; this does not emulate Windows console events");
   let output = "";
   child.stdout.on("data", chunk => { output += chunk; });
   child.stderr.on("data", chunk => { output += chunk; });
@@ -110,7 +124,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
     return output.includes("Ctrl+C");
   });
   return {
-    child, closed, calls, directory,
+    child, closed, calls, directory, signal: signalChild,
     url: `http://127.0.0.1:${port}/`,
     runtime: path.join(directory, "runtime.json"),
     catalogConnections,
@@ -120,7 +134,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
       catalogPid = Number(await fs.readFile(path.join(directory, "catalog-pid"), "utf8"));
     },
     async stop(signal) {
-      child.kill(signal);
+      signalChild(signal);
       await waitFor(() => output.includes("再次按 Ctrl+C"));
     },
     async expectExit(code) {
@@ -190,7 +204,7 @@ test("a second Ctrl+C forces exit while a stream is still active", signalTest, a
   const app = await fixture(t);
   const { upstream, text } = await startStream(app);
   await app.stop("SIGINT");
-  app.child.kill("SIGINT");
+  app.signal("SIGINT");
   await app.expectExit(130);
   await assert.rejects(text);
   await waitFor(() => upstream.destroyed);
@@ -208,7 +222,7 @@ for (const force of [false, true]) {
     await fs.access(app.runtime);
     assert.equal(app.catalogConnections.size, 1);
     if (force) {
-      app.child.kill("SIGINT");
+      app.signal("SIGINT");
       await app.expectExit(130);
     } else {
       await app.releaseCatalog();

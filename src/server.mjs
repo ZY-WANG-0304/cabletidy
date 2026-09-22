@@ -1,5 +1,4 @@
 import http from "node:http";
-import callbackFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 import { randomBytes } from "node:crypto";
-import lockfile from "proper-lockfile";
+import { acquireInstanceLock } from "./instance-lock.mjs";
 
 import {
   applySecretPayload,
@@ -64,40 +63,13 @@ const CODEX_NATIVE_MODEL_PATH = CODEX_NATIVE_REQUIRED_ENDPOINTS.find(
 const CODEX_NATIVE_RESPONSES_PATH = CODEX_NATIVE_REQUIRED_ENDPOINTS.find(
   (endpoint) => endpoint.purpose === "responses",
 ).path;
-const INSTANCE_LOCK_STALE_MS = 10_000;
-const INSTANCE_LOCK_UPDATE_MS = 2_000;
-// proper-lockfile's automatic stale reclaim cannot distinguish a paused process
-// from a dead one, so stale decisions are made by inspectInstanceLock below.
-const INSTANCE_LOCKFILE_STALE_MS = Number.MAX_SAFE_INTEGER;
-const INSTANCE_LOCK_FILESYSTEM = {
-  ...callbackFs,
-  // The owner marker is kept inside the lock directory. Remove it with the
-  // directory in one release operation instead of making the lock non-empty.
-  rmdir(directory, callback) {
-    callbackFs.rm(directory, { recursive: true, force: true }, callback);
-  },
-  rmdirSync(directory) {
-    callbackFs.rmSync(directory, { recursive: true, force: true });
-  },
-};
 
 export async function createApplication(options = {}) {
   const paths = options.paths || getPaths();
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
-  let release;
+  const { release, identity } = await acquireInstanceLock(paths);
   try {
-    release = await acquireInstanceLock(paths);
-  } catch (error) {
-    if (error.code === "ELOCKED") {
-      throw Object.assign(new Error(
-        `此数据目录已有 CableTidy 实例运行，或异常退出后的锁尚未过期 (ELOCKED)；请检查已有实例，异常退出后等待 10 秒再重试: ${paths.home}`,
-        { cause: error },
-      ), { code: error.code });
-    }
-    throw error;
-  }
-  try {
-    const app = await createLockedApplication(options, paths);
+    const app = await createLockedApplication(options, paths, identity);
     let closing;
     return {
       ...app,
@@ -111,115 +83,7 @@ export async function createApplication(options = {}) {
   }
 }
 
-async function acquireInstanceLock(paths) {
-  const lockOptions = {
-    lockfilePath: paths.lock,
-    stale: INSTANCE_LOCKFILE_STALE_MS,
-    update: INSTANCE_LOCK_UPDATE_MS,
-    fs: INSTANCE_LOCK_FILESYSTEM,
-  };
-  const ownerFile = path.join(paths.lock, "owner.json");
-
-  while (true) {
-    let release;
-    try {
-      release = await lockfile.lock(paths.home, lockOptions);
-    } catch (error) {
-      if (error.code !== "ELOCKED") throw error;
-      const inspection = await inspectInstanceLock(paths);
-      if (inspection.lockMissing) continue;
-      if (inspection.holderAlive || !inspection.stale) {
-        throw error;
-      }
-      await fs.rm(paths.lock, { recursive: true, force: true });
-      continue;
-    }
-
-    try {
-      // The owner marker lives inside the lock directory. Restore the mtime
-      // after writing it so proper-lockfile does not mistake that write for a
-      // lock takeover on its next refresh.
-      const lockStat = await fs.stat(paths.lock);
-      await writeJsonAtomic(ownerFile, {
-        pid: process.pid,
-        startTime: await processStartTime(process.pid),
-      }, 0o600);
-      await fs.utimes(paths.lock, lockStat.atime, lockStat.mtime);
-    } catch (error) {
-      await release().catch(() => {});
-      throw error;
-    }
-
-    return async () => {
-      await release();
-    };
-  }
-}
-
-async function inspectInstanceLock(paths) {
-  let stat;
-  try {
-    stat = await fs.stat(paths.lock);
-  } catch (error) {
-    if (error.code === "ENOENT") return { lockMissing: true };
-    throw error;
-  }
-
-  let owner = null;
-  try {
-    owner = JSON.parse(await fs.readFile(path.join(paths.lock, "owner.json"), "utf8"));
-  } catch (error) {
-    if (error.code !== "ENOENT" && error.name !== "SyntaxError") throw error;
-  }
-  if (await processIsAlive(owner)) return { holderAlive: true, stale: false };
-
-  // Older versions did not write owner.json; runtime.json still identifies a
-  // live daemon and prevents reclaiming its lock during an upgrade.
-  let runtime = null;
-  try {
-    runtime = await readRuntimeInfo(paths);
-  } catch {
-    // A malformed runtime file cannot establish ownership; use the lock age.
-  }
-  if (await processIsAlive(runtime && {
-    pid: runtime.pid,
-    startTime: runtime.pidStartTime,
-  })) {
-    return { holderAlive: true, stale: false };
-  }
-
-  return {
-    holderAlive: false,
-    stale: Date.now() - stat.mtimeMs >= INSTANCE_LOCK_STALE_MS,
-  };
-}
-
-async function processIsAlive(identity) {
-  const pid = Number(identity?.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if (error.code === "EPERM") return true;
-    return false;
-  }
-  if (!identity.startTime) return true;
-  const currentStartTime = await processStartTime(pid);
-  return !currentStartTime || currentStartTime === identity.startTime;
-}
-
-async function processStartTime(pid) {
-  try {
-    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-    const endOfCommand = stat.lastIndexOf(")");
-    const fields = stat.slice(endOfCommand + 2).trim().split(/\s+/);
-    return fields[19] || null;
-  } catch {
-    return null;
-  }
-}
-
-async function createLockedApplication(options, paths) {
+async function createLockedApplication(options, paths, identity) {
   await ensureStore(paths);
   let config = await loadConfig(paths);
   const allocatePort = config === null;
@@ -235,6 +99,7 @@ async function createLockedApplication(options, paths) {
 
   const state = {
     paths,
+    identity,
     config,
     secrets,
     events: [],
@@ -1170,7 +1035,7 @@ async function persistRuntimeInfo(state, host, port) {
   await writeRuntimeInfo(
     {
       pid: process.pid,
-      pidStartTime: await processStartTime(process.pid),
+      pidStartTime: state.identity.startTime,
       startedAt: state.startedAt,
       web: {
         host,

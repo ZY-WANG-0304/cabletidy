@@ -589,7 +589,13 @@ GET  /api/v1/integrations
 
 新配置不再生成 `web.enabled`。旧配置中的该字段以及顶层 `models.<id>.capabilityOverrides` 保留原值，但运行时忽略，不进行专用校验。套餐入口的启停由 `virtualProviders.<id>.enabled` 控制；实际生效的能力覆盖位于 `models.<id>.upstreams.<upstream>.capabilityOverrides`，继续校验和应用。
 
-配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁记录持有者 PID 和进程启动标识，在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例。锁每 2 秒刷新；检测到冲突时先确认持有者进程已结束，再回收至少 10 秒未更新的异常残留锁。被暂停的实例不会被仅凭 mtime 回收，恢复后也不会因 `ECOMPROMISED` 崩溃；启动失败会释放锁。
+配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
+
+`instance-lock.mjs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和 `process-identity.mjs` 查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 PowerShell `StartTime` UTC ticks。库每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
+
+身份检查明确区分存活、死亡和未知。存活或未过期返回 `ELOCKED`；过期但身份未知（旧格式缺字段、查询失败、其他主机）或缺少可安全删除的 owner 标记，返回 `ELOCKUNKNOWN` 和人工恢复步骤。旧 Linux start ticks 不含 boot ID，只能在数值不同时排除原持有者，不能凭数值相同确认存活。空的旧锁目录也需要人工确认和删除。暂停的实例不被 mtime 误回收，恢复后的心跳仍能正常更新。
+
+Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` 命令，兼容 `.exe` 和 npm `.cmd`。监督进程先加入带 `KILL_ON_JOB_CLOSE` 的 Windows Job Object，所有后代继承该归属；查询结束、超时或强制终止监督进程时一并清理后代，即使中间启动器已退出也不遗留持有管道的进程。Linux / macOS 使用进程组处理同一生命周期边界。
 
 新配置的最小结构：
 

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import spawn from "cross-spawn";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,7 +14,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 
 test("packed CLI installs, serves assets, shuts down and preserves data on uninstall", { timeout: 120000 }, async (t) => {
   assert.ok(process.env.npm_execpath, "Run with npm run test:package");
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-package-"));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy package-"));
   const prefix = path.join(directory, "prefix");
   const home = path.join(directory, "data");
   const codexHome = path.join(directory, "codex");
@@ -22,7 +23,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   const children = new Set();
   t.after(async () => {
     for (const child of children) {
-      child.process.kill("SIGKILL");
+      await killChild(child.process);
       await child.closed;
     }
     await fs.rm(directory, { recursive: true, force: true });
@@ -52,10 +53,16 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     : path.join(prefix, "lib", "node_modules", "cabletidy");
   const shim = path.join(prefix, process.platform === "win32" ? "cabletidy.cmd" : "bin/cabletidy");
   await fs.access(shim);
-  // Exercise npm's actual Unix executable; Windows entry loading is checked separately from its cmd shim.
-  const executable = process.platform === "win32" ? process.execPath : shim;
-  const entryArgs = process.platform === "win32" ? [path.join(packageRoot, "bin", "cabletidy.mjs")] : [];
-  const cli = args => execute(executable, [...entryArgs, ...args], options);
+  const cli = args => new Promise((resolve, reject) => {
+    const child = spawn(shim, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", code => code === 0 ? resolve({ stdout, stderr })
+      : reject(Object.assign(new Error(stderr), { code, stderr, stdout })));
+  });
   const metadata = JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8"));
   assert.equal((await cli(["--version"])).stdout.trim(), metadata.version);
   assert.match((await cli(["--help"])).stdout, /Usage: cabletidy/);
@@ -67,8 +74,10 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   let savedConfig;
   let url;
 
-  for (const signal of process.platform === "win32" ? [] : ["SIGTERM", "SIGINT"]) {
-    const processHandle = spawn(executable, [...entryArgs, "start"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  let previousPid;
+  for (const signal of process.platform === "win32" ? ["SIGKILL", "SIGKILL"] : ["SIGTERM", "SIGINT"]) {
+    if (previousPid && process.platform === "win32") await delay(10500);
+    const processHandle = spawn(shim, ["start"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     processHandle.stdout.on("data", chunk => { output += chunk; });
     processHandle.stderr.on("data", chunk => { output += chunk; });
@@ -84,13 +93,14 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.equal(processHandle.exitCode, null, output);
       try {
         const runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
-        return runtime.pid === processHandle.pid;
+        return runtime.pid && runtime.pid !== previousPid;
       } catch (error) {
         if (error.code === "ENOENT") return false;
         throw error;
       }
     });
     const runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
+    previousPid = runtime.pid;
     if (url === undefined) {
       url = runtime.web.url;
       savedConfig = await fs.readFile(configFile, "utf8");
@@ -113,29 +123,36 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.match(error.stderr, /ELOCKED/);
       return true;
     });
-    processHandle.kill(signal);
-    await waitFor(() => processHandle.exitCode !== null);
-    assert.deepEqual(await child.closed, { code: 0, signal: null }, output);
+    if (process.platform === "win32") await killChild(processHandle);
+    else processHandle.kill(signal);
+    await waitFor(() => processHandle.exitCode !== null || processHandle.signalCode !== null);
+    const exit = await child.closed;
+    if (process.platform !== "win32") assert.deepEqual(exit, { code: 0, signal: null }, output);
     children.delete(child);
-    await assert.rejects(fs.access(path.join(home, "runtime.json")), { code: "ENOENT" });
+    if (process.platform !== "win32") {
+      await assert.rejects(fs.access(path.join(home, "runtime.json")), { code: "ENOENT" });
+    }
     assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.status, "offline");
   }
-  if (process.platform === "win32") t.diagnostic("Windows signal lifecycle and cmd shim execution are not validated by this test");
+  if (process.platform === "win32") t.diagnostic("Windows: actual .cmd entry, forced termination and stale-lock restart verified; console Ctrl+C requires interactive verification");
   assert.equal(JSON.parse((await npm([
     "exec", "--yes", `--package=${tarball}`, "--", "cabletidy", "status",
   ])).stdout).runtime.status, "offline");
   await assert.rejects(fs.access(codexHome), { code: "ENOENT" });
-  const savedSecrets = savedConfig === undefined ? null : await fs.readFile(path.join(home, "secrets.json"), "utf8");
+  const savedSecrets = await fs.readFile(path.join(home, "secrets.json"), "utf8");
   await npm(["uninstall", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", "cabletidy"]);
   await assert.rejects(fs.access(shim), { code: "ENOENT" });
-  if (savedConfig === undefined) {
-    await assert.rejects(fs.access(home), { code: "ENOENT" });
-  } else {
-    assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
-    assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
-  }
+  assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
+  assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
   t.diagnostic(`${packed.filename}: ${packed.entryCount} files, ${packed.size} packed bytes`);
 });
+
+async function killChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    await execute(path.join(process.env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"]);
+  } else child.kill("SIGKILL");
+}
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 10000;

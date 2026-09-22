@@ -31,7 +31,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 ## 安装与运行
 
-推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。目前验证平台为 Linux，macOS 和 Windows 尚待验证。
+推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。CI 在 Linux、macOS 和 Windows 上执行源码测试与安装冒烟测试，平台验证结果以对应提交的 CI 为准。Windows 使用系统自带的 Windows PowerShell 查询进程身份；Codex 模型目录查询还需要允许 PowerShell `Add-Type` 调用 Windows Job Object API。
 
 ### 从 npm 官方源安装
 
@@ -107,7 +107,7 @@ npm test
 npm run test:package
 ```
 
-安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源及用户数据保留；需要能够获取 npm 依赖。Linux 上还验证 SIGINT / SIGTERM 和端口冲突。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
+安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源、重复启动、重启地址及用户数据保留；需要能够获取 npm 依赖。Linux / macOS 验证 SIGINT / SIGTERM；Windows 直接执行 npm 的 `.cmd` 入口，验证强制终止后的旧锁恢复。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
 
 使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。已在 Codex 0.154.0 验证目录加载和实际请求。
 
@@ -125,7 +125,9 @@ CABLETIDY_HOME="$PWD/.cabletidy-dev" cabletidy start
 
 已有配置中的端口（包括手动指定的端口）被占用时，启动会明确报错，不会自动更换。可以停止占用端口的服务，或修改 `web.port` 后重启，并重新应用客户端配置。实际地址以启动输出或 `cabletidy status` 为准。
 
-同一份数据目录只允许运行一个实例，启动和退出清理期间均持有 `daemon.lock`。锁记录持有者 PID 和进程启动标识；正常退出或启动失败后释放，异常退出后只有在确认原进程已结束且锁至少 10 秒未更新时才会回收。被暂停的旧进程仍然持有锁，恢复后不会因锁被误回收而崩溃。
+同一份数据目录只允许运行一个实例，启动和退出清理期间均持有 `daemon.lock`。锁记录主机名、持有者 PID 和进程启动标识：Linux 使用系统启动 ID 与进程启动时钟，macOS 使用 `ps` 的启动时间，Windows 使用 PowerShell 的 `StartTime`。正常退出或启动失败后释放；只有能识别锁的代次、确认原进程已退出或 PID 已被复用，且锁至少 10 秒未更新时才自动回收。被暂停的实例仍然持有锁，恢复后不会因锁被误回收而崩溃。
+
+旧版本的空锁目录、缺少启动标识的存活 PID、进程查询不可用或来自另一主机的锁，可能无法确认归属。此时启动返回 `ELOCKUNKNOWN` 并列出锁目录路径；继续等待不会补全缺失信息。请检查并停止使用该数据目录的 CableTidy，确认没有运行中或暂停中的实例后，手动删除提示的 `daemon.lock` 目录并重新启动，保留 `config.json` 和 `secrets.json`。不要仅凭 `status` 离线就删除锁，暂停中的实例也可能无法响应探测。
 
 Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示例假设端口为 `43100`；每份配置通过 `/<配置ID>/v1/...` 接入，例如 `http://127.0.0.1:43100/codex-main/v1/responses`；管理接口仍使用 `/api/v1/...`。
 

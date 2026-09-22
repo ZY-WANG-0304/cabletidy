@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { powershell } from "./process-identity.mjs";
 import { clientModelIdForProfile, effectiveCapabilities } from "./model-resolver.mjs";
 
 let cached;
@@ -7,7 +9,12 @@ let activeCommand;
 
 async function executeCodex(args) {
   const timeout = AbortSignal.timeout(15_000);
-  const command = spawn("codex", args, {
+  const windows = process.platform === "win32";
+  const command = spawn(windows ? powershell : "codex", windows ? [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+    fileURLToPath(new URL("./windows-codex.ps1", import.meta.url)),
+    args[0] === "--version" ? "version" : "models",
+  ] : args, {
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
     // Keep npm launcher descendants in a group we can stop on forced daemon exit.
@@ -21,7 +28,8 @@ async function executeCodex(args) {
   const completed = new Promise((resolve, reject) => {
     command.once("error", reject);
     command.once("exit", (code, signal) => {
-      if (code !== 0) reject(new Error(`codex exited with ${signal || code}`));
+      if (code !== 0) reject(Object.assign(new Error(`codex exited with ${signal || code}`),
+        windows && code === 9009 ? { code: "ENOENT" } : {}));
     });
     // Descendants may hold the pipes open after the launcher has exited.
     onTimeout = () => reject(timeout.reason);
@@ -56,6 +64,7 @@ async function readCommandOutput(stream) {
 export function forceStopCodexCatalog() {
   if (!activeCommand?.pid) return;
   try {
+    // Terminating the Windows supervisor closes its Job Object and its entire tree.
     if (process.platform === "win32") activeCommand.kill("SIGKILL");
     else process.kill(-activeCommand.pid, "SIGKILL");
   } catch (error) {

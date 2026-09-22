@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
+import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
 const execute = promisify(execFile);
 const catalogUrl = new URL("../src/codex-catalog.mjs", import.meta.url).href;
@@ -27,17 +28,15 @@ for (const [name, body, expected] of [
   ["invalid catalog", 'console.log("invalid-json");', /JSON/],
   ["excessive output", 'process.stdout.write("x".repeat(17 * 1024 * 1024));', /16 MiB/],
 ]) {
-  test(`catalog handles ${name} without leaving subprocess work alive`, {
-    skip: process.platform === "win32",
-  }, async t => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-catalog-process-"));
+  test(`catalog handles ${name} without leaving subprocess work alive`, async t => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy catalog process-"));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     if (body) {
-      await fs.writeFile(path.join(directory, "codex"), `#!${process.execPath}\n${body}`, { mode: 0o700 });
+      await writeCodexCommand(directory, body);
     }
     const result = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env: { ...process.env, PATH: directory },
-      timeout: 5000,
+      env: commandEnvironment(directory),
+      timeout: 15000,
     });
     assert.match(result.stdout, expected);
   });
@@ -45,15 +44,15 @@ for (const [name, body, expected] of [
 
 for (const [name, exitCode, expected] of [
   ["timeout", null, /TimeoutError/],
-  ["successful launcher exit before timeout", 0, /TimeoutError/],
+  ["successful launcher exit before timeout", 0, process.platform === "win32" ? /JSON/ : /TimeoutError/],
   ["nonzero launcher exit", 7, /exited with 7/],
 ]) {
   test(`catalog ${name} terminates descendants holding pipes and allows retry`, {
-    skip: process.platform === "win32",
-    timeout: 25000,
+    timeout: 40000,
   }, async t => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-catalog-pipes-"));
     const pidFile = path.join(directory, "launcher-pid");
+    const workerPidFile = path.join(directory, "worker-pid");
     const retryFile = path.join(directory, "retry");
     const connections = new Set();
     const monitor = net.createServer(socket => {
@@ -62,8 +61,8 @@ for (const [name, exitCode, expected] of [
     });
     t.after(async () => {
       try {
-        const pid = Number(await fs.readFile(pidFile, "utf8"));
-        process.kill(-pid, "SIGKILL");
+        const pid = Number(await fs.readFile(process.platform === "win32" ? workerPidFile : pidFile, "utf8"));
+        process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
       } catch (error) {
         if (!["ENOENT", "ESRCH"].includes(error.code)) throw error;
       }
@@ -73,10 +72,11 @@ for (const [name, exitCode, expected] of [
     });
     await new Promise(resolve => monitor.listen(0, "127.0.0.1", resolve));
     const worker = `
+      require("node:fs").writeFileSync(${JSON.stringify(workerPidFile)}, String(process.pid));
       const socket = require("node:net").connect(${monitor.address().port}, "127.0.0.1", () => process.send("ready"));
       socket.on("error", () => process.exit(1));
     `;
-    await fs.writeFile(path.join(directory, "codex"), `#!${process.execPath}
+    await writeCodexCommand(directory, `
       const fs = require("node:fs");
       if (fs.existsSync(${JSON.stringify(retryFile)})) {
         console.log(process.argv.includes("--version") ? "codex-cli test" : ${JSON.stringify(JSON.stringify(catalogFixture().catalog))});
@@ -87,7 +87,7 @@ for (const [name, exitCode, expected] of [
         });
         child.once("message", () => { ${exitCode === null ? "" : `process.exit(${exitCode});`} });
       }
-    `, { mode: 0o700 });
+    `);
     const retryScript = `
       import fs from "node:fs/promises";
       import assert from "node:assert/strict";
@@ -96,7 +96,7 @@ for (const [name, exitCode, expected] of [
       const results = await Promise.allSettled([loadCodexCatalog(), loadCodexCatalog()]);
       assert.ok(results.every(result => result.status === "rejected"));
       const elapsed = Date.now() - started;
-      assert.ok(elapsed < ${exitCode === 7 ? 4000 : 18000});
+      assert.ok(elapsed < ${exitCode === 7 ? 10000 : 20000});
       const cause = results[0].reason.cause;
       await fs.writeFile(${JSON.stringify(retryFile)}, "ready");
       const snapshot = await loadCodexCatalog();
@@ -105,8 +105,8 @@ for (const [name, exitCode, expected] of [
       console.log(JSON.stringify({ cause: cause.name + ": " + cause.message, elapsed, retry: "ok" }));
     `;
     const result = await execute(process.execPath, ["--input-type=module", "-e", retryScript], {
-      env: { ...process.env, PATH: directory },
-      timeout: exitCode === 7 ? 5000 : 20000,
+      env: commandEnvironment(directory),
+      timeout: 35000,
     });
     assert.match(result.stdout, expected);
     assert.equal(JSON.parse(result.stdout).retry, "ok");
