@@ -99,7 +99,6 @@ async function removeOwner(directory, marker) {
 
 async function inspectLock(paths) {
   try {
-    const stat = await fs.stat(paths.lock);
     const entries = await fs.readdir(paths.lock);
     const markers = entries.filter(name => ownerName.test(name) || name === "owner.json");
     const marker = entries.length === 1 && markers.length === 1 ? markers[0] : null;
@@ -118,7 +117,11 @@ async function inspectLock(paths) {
         identity = runtime && { pid: runtime.pid, startTime: runtime.pidStartTime };
       } catch { /* Missing or malformed legacy metadata requires manual recovery. */ }
     }
-    return { marker, pid: identity?.pid, state: await inspectProcess(identity), stale: Date.now() - stat.mtimeMs >= STALE_MS };
+    const state = await inspectProcess(identity);
+    // Another reclaimer may have removed its marker while we read the entries.
+    // Read freshness last so that transition is not mistaken for an old empty lock.
+    const stat = await fs.stat(paths.lock);
+    return { marker, pid: identity?.pid, state, stale: Date.now() - stat.mtimeMs >= STALE_MS };
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
