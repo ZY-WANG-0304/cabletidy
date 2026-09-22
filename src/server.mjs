@@ -25,12 +25,10 @@ import {
   saveSecrets,
   secretRefForUpstream,
   stripSecretFields,
-  writeJsonAtomic,
   writeRuntimeInfo,
 } from "./config.mjs";
 import {
   applyCodexArtifacts,
-  prepareCodexArtifacts,
   CODEX_NATIVE_PROVIDER_INTEGRATION,
   CODEX_NATIVE_REQUIRED_ENDPOINTS,
   CODEX_TARGET_FORMAT,
@@ -88,7 +86,7 @@ async function createLockedApplication(options, paths, identity) {
   let config = await loadConfig(paths);
   const allocatePort = config === null;
   config ||= defaultConfig();
-  let secrets = await loadSecrets(paths);
+  const secrets = await loadSecrets(paths);
   const startupValidation = validateConfig(config);
   if (!startupValidation.ok) {
     const details = startupValidation.errors
@@ -152,10 +150,8 @@ async function createLockedApplication(options, paths, identity) {
   }
 
   function updateConfig(nextConfig, nextSecrets) {
-    config = nextConfig;
-    secrets = nextSecrets;
-    state.config = config;
-    state.secrets = secrets;
+    state.config = nextConfig;
+    state.secrets = nextSecrets;
   }
 
   state.updateConfig = updateConfig;
@@ -398,18 +394,13 @@ async function handleApiRequest(state, request, response, url) {
     return;
   }
 
-  // Prototype aliases share target preview behavior; none import reference files.
-  if (method === "POST" && [
-    "/api/v1/config/preview-target-artifacts",
-    "/api/v1/config/preview-codex-config",
-    "/api/v1/config/preview-provider-artifacts",
-  ].includes(url.pathname)) {
+  if (method === "POST" && url.pathname === "/api/v1/config/preview-target-artifacts") {
     await previewTargetArtifacts(state, body, response);
     return;
   }
 
-  if (method === "POST" && ["/api/v1/targets/apply", "/api/v1/targets/codex/apply"].includes(url.pathname)) {
-    await applyTarget(state, body, response, url.pathname === "/api/v1/targets/codex/apply");
+  if (method === "POST" && url.pathname === "/api/v1/targets/apply") {
+    await applyTarget(state, body, response);
     return;
   }
 
@@ -632,11 +623,9 @@ async function previewTargetArtifacts(state, body, response) {
   }
 }
 
-async function applyTarget(state, body, response, legacyCodex = false) {
+async function applyTarget(state, body, response) {
   try {
-    // The old endpoint selects the first Codex binding and keeps its wire contract.
-    const prepare = legacyCodex ? prepareCodexArtifacts : prepareTargetArtifacts;
-    const artifacts = await prepare(state.config, {
+    const artifacts = await prepareTargetArtifacts(state.config, {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
       codexHome: state.codexHome,
@@ -654,14 +643,14 @@ async function applyTarget(state, body, response, legacyCodex = false) {
       return;
     }
     const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
-    recordEvent(state, legacyCodex ? "target.codex.apply" : "target.apply", {
-      bindingId: legacyCodex ? body.bindingId || null : artifacts.bindingId,
-      ...(!legacyCodex ? { target: artifacts.target } : {}),
+    recordEvent(state, "target.apply", {
+      bindingId: artifacts.bindingId,
+      target: artifacts.target,
       files: report.applied,
     });
     sendJson(response, 200, {
       ok: true,
-      ...(!legacyCodex ? { target: artifacts.target } : {}),
+      target: artifacts.target,
       report: {
         ...report,
         environment: publicTargetArtifacts({ ...artifacts, ...report }).environment,
@@ -669,7 +658,7 @@ async function applyTarget(state, body, response, legacyCodex = false) {
     });
   } catch (error) {
     sendJson(response, 422, {
-      error: { code: legacyCodex ? "codex_apply_failed" : "target_apply_failed", message: error.message },
+      error: { code: "target_apply_failed", message: error.message },
     });
   }
 }
@@ -762,11 +751,6 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
     sendProtocolError(response, protocol, 503, error.code || "upstream_unavailable", error.message);
     return;
   }
-  if (protocol !== selected.upstream.protocol) {
-    sendProtocolError(response, protocol, 501, "unsupported_transform", "MVP 暂不执行跨协议数据面转换");
-    return;
-  }
-
   const outgoing = structuredClone(body);
   // Model metadata is a client-side artifact. Preserve the instructions,
   // tools and per-request reasoning effort constructed by Codex.

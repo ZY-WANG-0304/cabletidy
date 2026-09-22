@@ -11,7 +11,7 @@ export function findModelProfile(config, clientModelId, allowedModels) {
   if (!clientModelId) return null;
   const allowed = Array.isArray(allowedModels) ? new Set(allowedModels) : null;
   if (config.models?.[clientModelId] && (!allowed || allowed.has(clientModelId))) {
-    return { profileId: clientModelId, profile: config.models[clientModelId], matchedBy: "id" };
+    return { profileId: clientModelId, profile: config.models[clientModelId] };
   }
   for (const [profileId, profile] of Object.entries(config.models || {})) {
     if (allowed && !allowed.has(profileId)) continue;
@@ -19,7 +19,7 @@ export function findModelProfile(config, clientModelId, allowedModels) {
       profile.clientModelId === clientModelId ||
       (profile.aliases || []).includes(clientModelId)
     ) {
-      return { profileId, profile, matchedBy: "alias" };
+      return { profileId, profile };
     }
   }
   return null;
@@ -63,14 +63,13 @@ export function resolveModelProfile(config, virtualProvider, requestedModel) {
   // allowedModels scopes optional overrides, not the models a client may request.
   const match = findModelProfile(config, clientModelId, virtualProvider?.allowedModels || []);
   if (!match) {
-    return { clientModelId, profileId: null, profile: null, matchedBy: "passthrough" };
+    return { clientModelId, profileId: null, profile: null };
   }
 
   return {
     clientModelId: requestedModel || clientModelIdForProfile(match.profileId, match.profile),
     profileId: match.profileId,
     profile: match.profile,
-    matchedBy: match.matchedBy,
   };
 }
 
@@ -155,7 +154,6 @@ export function selectBackend(config, virtualProvider, modelResolution, request 
   }
   return {
     routeId: virtualProvider.route,
-    backend,
     upstream,
     upstreamModelId: modelBinding?.upstreamModelId || modelResolution.clientModelId,
     capabilities: [...capabilities],

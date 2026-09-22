@@ -35,13 +35,10 @@ function claudeConfig() {
     virtualProviders: {
       "claude-main": {
         id: "claude-main",
-        listenHost: "127.0.0.1",
-        listenPort: 43102,
         ingressProtocol: "anthropic.messages",
         route: "claude-route",
         allowedModels: ["claude-sonnet"],
         defaultModel: "claude-sonnet",
-        localAuth: { secretRef: "secret://virtual-providers/claude-main" },
       },
     },
     bindings: {
@@ -51,7 +48,7 @@ function claudeConfig() {
         targetFormat: "claude.env.v1",
         virtualProvider: "claude-main",
         defaultModel: "claude-sonnet",
-        claude: { authEnv: "ANTHROPIC_AUTH_TOKEN", setModel: true },
+        claude: { setModel: true },
       },
     },
   });

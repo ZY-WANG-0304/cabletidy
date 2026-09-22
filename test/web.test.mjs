@@ -140,10 +140,11 @@ function clone(value) {
   return structuredClone(value);
 }
 
-test("suite upstream edits preserve authentication when a named input shadows the form ID", async () => {
+test("suite upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {
   const config = normalizeConfig(codexConfigFixture());
   config.upstreams.relay.auth = { header: "x-custom-key", prefix: "Token " };
   config.upstreams.relay.secretRef = "secret://upstreams/custom-relay";
+  config.upstreams.relay.enabled = false;
   const app = await controller(config);
   const form = formNode("suite-upstream-form", {
     id: "relay", name: "Edited relay", protocol: "openai.responses",
@@ -156,6 +157,7 @@ test("suite upstream edits preserve authentication when a named input shadows th
   assert.equal(app.read("state.config.upstreams.relay.name"), "Edited relay");
   assert.deepEqual(app.persisted().upstreams.relay.auth, config.upstreams.relay.auth);
   assert.equal(app.persisted().upstreams.relay.secretRef, config.upstreams.relay.secretRef);
+  assert.equal(app.persisted().upstreams.relay.enabled, false);
   const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
   assert.equal(commits.length, 1);
   assert.deepEqual(commits[0].body.upstreamSecrets, {});
@@ -401,28 +403,6 @@ test("a pending save cannot submit a second change", async () => {
   assert.equal(app.read("state.busy"), false);
 });
 
-test("editing connection fields retains unrelated upstream settings", async () => {
-  const config = normalizeConfig(codexConfigFixture());
-  Object.assign(config.upstreams.relay, {
-    envKey: "RELAY_API_KEY",
-    auth: { header: "x-relay-key" },
-    enabled: false,
-  });
-  const app = await controller(config);
-  await app.submit(formNode("suite-upstream-form", {
-    id: "relay", name: "Edited relay", protocol: "openai.responses",
-    baseUrl: "https://example.invalid/v1", secret: "",
-  }));
-  const upstream = app.persisted().upstreams.relay;
-  for (const key of ["auth", "enabled"]) {
-    assert.deepEqual(upstream[key], config.upstreams.relay[key], key);
-  }
-  for (const key of ["envKey", "requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
-    assert.equal(upstream[key], undefined, key);
-  }
-  assert.equal(upstream.name, "Edited relay");
-});
-
 function securityCatalogFixture() {
   const catalog = catalogFixture();
   const base = catalog.catalog.models[0];
@@ -516,6 +496,8 @@ for (const color of ["blue", "red"]) {
 
 test("catalog refresh retains Daybreak selection and refreshes stale missing-catalog hints", async () => {
   const app = await controller(undefined, { catalog: securityCatalogFixture() });
+  assert.match(app.read("codexCatalogStatus()"), /刷新模型列表/);
+  assert.doesNotMatch(app.read("codexCatalogStatus()"), /刷新目录/);
   const select = officialSelectNode("gpt-daybreak-red-latest");
   const page = app.node("#page-content");
   page.querySelectorAll = (selector) => selector === "[data-official-model]" ? [select] : [];
@@ -726,12 +708,6 @@ test("official metadata changes are ignored when determining whether a form is d
   assert.equal(app.edited(form), true);
   metadata.metadataMode.value = "official";
   assert.equal(app.edited(form), false);
-});
-
-test("the catalog action is labelled refresh model list", async () => {
-  const app = await controller();
-  assert.match(app.read("codexCatalogStatus()"), /刷新模型列表/);
-  assert.doesNotMatch(app.read("codexCatalogStatus()"), /刷新目录/);
 });
 
 function addFixtureModel(config, id = "second", clientModelId = "gpt-5.6-sol") {

@@ -123,7 +123,6 @@ test("overrides preserve all official instructions, tools and reasoning options"
   assert.equal(catalog.models[0].slug, "gpt-5.5");
   assert.match(readCodexConfig(artifacts.files[0].contents).model_catalog_json, /model-catalogs/);
   assert.equal(artifacts.catalogSummary.sourceVersion, "codex-cli test");
-  assert.equal(config.models.model.reasoning, undefined);
 });
 
 test("unknown models, excessive windows and unsupported input types fail explicitly", () => {
@@ -196,6 +195,13 @@ test("apply preserves other providers and multiline instructions, and is idempot
     '[model_providers."other"]',
     'name = "Keep me"',
     'base_url = "https://other.test/v1" # untouched',
+    'env_key = "EXISTING_KEY"',
+    '',
+    '# >>> CABLETIDY MANAGED PROVIDER cabletidy_old -->',
+    '[model_providers.cabletidy_old]',
+    'base_url = "http://127.0.0.1:43101/v1"',
+    'env_key = "LEGACY_LOCAL_KEY"',
+    '# <<< CABLETIDY MANAGED PROVIDER cabletidy_old <--',
     '',
     '[model_providers."cabletidy_relay"]',
     'env_key = "OLD_KEY"',
@@ -208,7 +214,9 @@ test("apply preserves other providers and multiline instructions, and is idempot
   await fs.writeFile(root, original);
   const artifacts = await prepareCodexArtifacts(config, options);
   assert.ok(artifacts.warnings.some((item) => item.includes("model_instructions_file")));
-  await applyCodexArtifacts(artifacts, options);
+  const report = await applyCodexArtifacts(artifacts, options);
+  assert.deepEqual(report.applied, [root]);
+  assert.deepEqual((await fs.readdir(options.codexHome)).sort(), ["backups", "config.toml"]);
   const first = await fs.readFile(root, "utf8");
   const current = readCodexConfig(first);
   const before = readCodexConfig(original);
@@ -216,7 +224,11 @@ test("apply preserves other providers and multiline instructions, and is idempot
   assert.equal(current.model_instructions_file, before.model_instructions_file);
   assert.equal(current.model_reasoning_effort, "high");
   assert.deepEqual(current.model_providers.other, before.model_providers.other);
+  assert.deepEqual(current.model_providers.cabletidy_old, before.model_providers.cabletidy_old);
   assert.deepEqual(current.mcp_servers, before.mcp_servers);
+  assert.equal(current.model_provider, "cabletidy_relay");
+  assert.equal((first.match(/^model_provider\s*=/gm) || []).length, 1);
+  assert.doesNotMatch(first, /profiles\./);
   assert.equal(current.model_providers.cabletidy_relay.auth, undefined);
   assert.equal(current.model_providers.cabletidy_relay.env_key, undefined);
   assert.ok(

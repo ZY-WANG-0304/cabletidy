@@ -569,7 +569,9 @@ POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
 
-`preview-codex-config` 和 `preview-provider-artifacts` 保留为 `preview-target-artifacts` 的兼容路径。旧 `/api/v1/targets/codex/apply` 与通用应用接口共用写入流程，但保留 Codex 专用的默认 binding 选择、响应字段、错误码和事件名。
+预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `bindingId` 时选择首个启用的 binding；要应用特定 Codex 配置，应显式传入其 `bindingId`。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。
+
+原型接口 `preview-codex-config`、`preview-provider-artifacts` 和 `/api/v1/targets/codex/apply` 已退役，均返回 `404 not_found`。
 
 管理台是本地 daemon 的 loopback-only 控制面，首次启动优先监听 `127.0.0.1:43100`，占用时自动分配其他端口并保存，不使用访问 token 或 session 有效期。远程使用应通过 SSH port forwarding 等方式完成。Web 不把上游 secret 明文返回给浏览器。Virtual Provider 同样仅监听本机回环地址，无需本地 API Key。
 
@@ -586,6 +588,15 @@ GET  /api/v1/integrations
 ```
 
 `config.json` 保存非敏感的 CableTidy 配置图，`secrets.json` 只保存 secret reference 对应的本地 secret。后续可以替换为 Rust daemon、TOML 配置和 OS keyring，但不能改变领域对象边界。
+
+原型 Codex 配置不再自动迁移。`providerFormat`、`targetOverrides.codex`、`legacyCodex` 和原型 profile 文件元数据在规范化时被丢弃，保存时不再保留，也不会填充当前字段。仍使用原型格式的配置应在升级前备份并手动转换：
+
+- upstream 或 binding 的 `providerFormat: "codex.toml.v1"` 改为 `integration: "codex-native-provider"`。
+- binding 的 `targetFormat: "codex.toml.v1"` 改为 `"codex.config.toml.v1"`；旧值会被校验拒绝。
+- 模型 `targetOverrides.codex` 或 `legacyCodex` 中的 `model`、`modelContextWindow`、`personality` 分别移至模型的 `clientModelId`、`contextWindow`、`personality`。
+- 若需要保留历史 compact 元数据，将 `modelAutoCompactTokenLimit` 移至模型的 `compact: { strategy: "auto", tokenLimit: ... }`；该元数据仍不改变运行时压缩行为。
+
+已采用当前字段的模型数据继续保留。配置名称与引用的同步重命名、旧本地认证字段清理和密钥脱敏继续生效。
 
 新配置不再生成 `web.enabled`。旧配置中的该字段以及顶层 `models.<id>.capabilityOverrides` 保留原值，但运行时忽略，不进行专用校验。套餐入口的启停由 `virtualProviders.<id>.enabled` 控制；实际生效的能力覆盖位于 `models.<id>.upstreams.<upstream>.capabilityOverrides`，继续校验和应用。
 

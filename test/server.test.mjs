@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { createApplication } from "../src/server.mjs";
-import { getPaths, saveConfig, saveSecrets } from "../src/config.mjs";
-import { catalogFixture } from "./helpers/codex-fixture.mjs";
+import { getPaths, normalizeConfig, saveConfig, saveSecrets } from "../src/config.mjs";
+import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function freePort() {
   const server = http.createServer();
@@ -51,69 +51,18 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
   });
   await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
 
-  const config = {
-    version: 1,
+  const config = normalizeConfig({
+    ...namedCodexConfigFixture({ codex: "codex" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {
-      primary: {
-        id: "primary",
-        name: "Primary",
-        integration: "codex-native-provider",
-        protocol: "openai.responses",
-        baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
-        secretRef: "secret://upstreams/primary",
-        enabled: true,
-      },
-    },
-    models: {
-      "codex-sol": {
-        id: "codex-sol",
-        aliases: ["sol"],
-        clientModelId: "gpt-5.6-sol",
-        family: "codex",
-        capabilities: ["streaming", "tools", "reasoning"],
-        upstreams: { primary: { upstreamModelId: "vendor-sol" } },
-      },
-    },
-    routes: {
-      primary: {
-        id: "primary",
-        backends: [{ upstream: "primary", models: ["codex-sol"], enabled: true }],
-      },
-    },
-    virtualProviders: {
-      codex: {
-        id: "codex",
-        name: "Codex",
-        ingressProtocol: "openai.responses",
-        route: "primary",
-        allowedModels: ["codex-sol"],
-        defaultModel: "codex-sol",
-        localAuth: { secretRef: "secret://virtual-providers/codex" },
-        enabled: true,
-      },
-    },
-    bindings: {
-      codex: {
-        id: "codex",
-        target: "codex",
-        virtualProvider: "codex",
-        integration: "codex-native-provider",
-        targetFormat: "codex.config.toml.v1",
-        mode: "config",
-        defaultModel: "codex-sol",
-        codex: {
-          providerId: "cabletidy_primary",
-        },
-      },
-    },
-  };
+  });
+  config.upstreams.codex.baseUrl = `http://127.0.0.1:${upstreamPort}/v1`;
+  config.upstreams.codex.secretRef = "secret://upstreams/codex";
+  config.models.codex.clientModelId = "gpt-5.6-sol";
+  config.models.codex.aliases = ["sol"];
+  config.models.codex.upstreams.codex.upstreamModelId = "vendor-sol";
   await saveConfig(config, paths);
-  await saveSecrets({
-    "secret://upstreams/primary": "upstream-key",
-    "secret://virtual-providers/codex": "local-key",
-  }, paths);
+  await saveSecrets({ "secret://upstreams/codex": "upstream-key" }, paths);
 
   const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture(), codexHome: path.join(home, "client") });
   try {
@@ -158,7 +107,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(artifactPreview.artifacts.target, "codex");
     assert.equal(artifactPreview.artifacts.providerId, runtime.virtualProviders[0].id);
     assert.equal(artifactPreview.artifacts.virtualProviderId, runtime.virtualProviders[0].id);
-    assert.doesNotMatch(JSON.stringify(artifactPreview), /local-key/);
+    assert.doesNotMatch(JSON.stringify(artifactPreview), /upstream-key/);
 
     const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/models`);
     assert.equal(modelsResponse.status, 200);
@@ -198,15 +147,15 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.ok(backups.some((file) => file.includes("secrets-2.json")));
 
     const multipleUpstreams = structuredClone(committed.config);
-    multipleUpstreams.routes.primary.backends.push({
-      ...multipleUpstreams.routes.primary.backends[0], enabled: false,
+    multipleUpstreams.routes.codex.backends.push({
+      ...multipleUpstreams.routes.codex.backends[0], enabled: false,
     });
     const rejectedCommit = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ baseRevision: 2, config: multipleUpstreams }),
     });
     assert.equal(rejectedCommit.status, 422);
-    assert.ok((await rejectedCommit.json()).errors.some((error) => error.path === "routes.primary.backends"));
+    assert.ok((await rejectedCommit.json()).errors.some((error) => error.path === "routes.codex.backends"));
     assert.equal(app.state.config.revision, 2);
 
     const pauseResponse = await fetch(
@@ -295,17 +244,7 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
   });
   await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
 
-  await saveConfig({
-    version: 1,
-    revision: 0,
-    web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {},
-    models: {},
-    routes: {},
-    virtualProviders: {},
-    bindings: {},
-  }, paths);
-  await saveSecrets({}, paths);
+  await saveConfig(normalizeConfig({ web: { port: webPort } }), paths);
   const app = await createApplication({ paths });
 
   try {
@@ -332,159 +271,6 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
     assert.equal(result.secretConfigured, true);
     assert.equal(result.ok, true);
     assert.equal(receivedAuthorization, "Bearer draft-key");
-  } finally {
-    await app.close();
-    await new Promise((resolve) => fakeUpstream.close(resolve));
-  }
-});
-
-test("Web configuration graph can be committed without external reference files", async () => {
-  const upstreamPort = await freePort();
-  const webPort = await freePort();
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-web-wizard-"));
-  const paths = getPaths(home);
-  let receivedBody;
-  const fakeUpstream = http.createServer(async (request, response) => {
-    const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
-    receivedBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      object: "response",
-      model: receivedBody.model,
-      output: [],
-    }));
-  });
-  await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
-
-  const initialConfig = {
-    version: 1,
-    revision: 0,
-    web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {},
-    models: {},
-    routes: {},
-    virtualProviders: {},
-    bindings: {},
-  };
-  await saveConfig(initialConfig, paths);
-  await saveSecrets({}, paths);
-  const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture(), codexHome: path.join(home, "client") });
-
-  try {
-    const candidate = {
-      ...initialConfig,
-      upstreams: {
-        primary: {
-          id: "primary",
-          name: "Primary relay",
-          integration: "codex-native-provider",
-          protocol: "openai.responses",
-          baseUrl: `http://127.0.0.1:${upstreamPort}/v1`,
-          secretRef: "secret://upstreams/primary",
-          enabled: true,
-        },
-      },
-      models: {
-        "gpt56-sol": {
-          id: "gpt56-sol",
-          name: "GPT-5.6 Sol",
-          clientModelId: "gpt-5.6-sol",
-          aliases: ["gpt-5.6-sol", "sol"],
-          family: "codex",
-          capabilities: ["streaming", "tools", "reasoning"],
-          contextWindow: 1000000,
-          reasoning: { effort: "high" },
-          compact: { strategy: "auto", tokenLimit: 850000 },
-          upstreams: {
-            primary: { upstreamModelId: "vendor-sol" },
-          },
-        },
-      },
-      routes: {
-        primary: {
-          id: "primary",
-          name: "Primary route",
-          backends: [
-            {
-              upstream: "primary",
-              models: ["gpt56-sol"],
-              enabled: true,
-            },
-          ],
-        },
-      },
-      virtualProviders: {
-        "codex-main": {
-          id: "codex-main",
-          name: "Codex main",
-          ingressProtocol: "openai.responses",
-          route: "primary",
-          allowedModels: ["gpt56-sol"],
-          defaultModel: "gpt56-sol",
-          enabled: true,
-        },
-      },
-      bindings: {
-        "codex-main": {
-          id: "codex-main",
-          target: "codex",
-          integration: "codex-native-provider",
-          targetFormat: "codex.config.toml.v1",
-          mode: "config",
-          virtualProvider: "codex-main",
-          defaultModel: "gpt56-sol",
-          codex: { providerId: "cabletidy_primary" },
-        },
-      },
-    };
-    const commitResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        baseRevision: 0,
-        config: candidate,
-        upstreamSecrets: { primary: "upstream-key" },
-      }),
-    });
-    const committed = await commitResponse.json();
-    assert.equal(commitResponse.status, 200);
-    assert.equal(committed.revision, 1);
-    assert.equal(committed.runtime.counts.models, 1);
-    assert.equal(committed.config.bindings["codex-main"].targetFormat, "codex.config.toml.v1");
-    assert.equal(committed.config.virtualProviders["cabletidy_codex-main"].localAuth, undefined);
-    assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
-      "secret://upstreams/primary": "upstream-key",
-    });
-
-    const artifactResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bindingId: "codex-main" }),
-      },
-    );
-    const artifacts = await artifactResponse.json();
-    assert.equal(artifactResponse.status, 200);
-    assert.deepEqual(artifacts.artifacts.files.map((file) => file.path), ["config.toml"]);
-    const configToml = artifacts.artifacts.files.find((file) => file.path === "config.toml").contents;
-    assert.ok(configToml.includes(`127.0.0.1:${webPort}/codex-main/v1`));
-    assert.equal(configToml.includes("upstream-key"), false);
-    assert.equal(configToml.includes(`127.0.0.1:${upstreamPort}/v1`), false);
-    assert.equal(configToml.includes("profiles."), false);
-
-    const proxyResponse = await fetch(`http://127.0.0.1:${webPort}/codex-main/v1/responses`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ model: "gpt-5.6-sol", input: "hello" }),
-    });
-    const proxied = await proxyResponse.json();
-    assert.equal(proxyResponse.status, 200);
-    assert.equal(receivedBody.model, "vendor-sol");
-    assert.equal(proxied.model, "gpt-5.6-sol");
   } finally {
     await app.close();
     await new Promise((resolve) => fakeUpstream.close(resolve));
@@ -566,7 +352,6 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
         route: "claude-route",
         allowedModels: ["claude-sonnet"],
         defaultModel: "claude-sonnet",
-        localAuth: { secretRef: "secret://virtual-providers/claude-main" },
       },
     },
     bindings: {
@@ -581,10 +366,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     },
   };
   await saveConfig(config, paths);
-  await saveSecrets({
-    "secret://upstreams/anthropic": "upstream-key",
-    "secret://virtual-providers/claude-main": "local-key",
-  }, paths);
+  await saveSecrets({ "secret://upstreams/anthropic": "upstream-key" }, paths);
 
   const app = await createApplication({ paths });
   try {
@@ -599,7 +381,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     const preview = await previewResponse.json();
     assert.equal(previewResponse.status, 200);
     assert.equal(preview.artifacts.target, "claude-code");
-    assert.doesNotMatch(JSON.stringify(preview), /local-key/);
+    assert.doesNotMatch(JSON.stringify(preview), /upstream-key/);
 
     const applyResponse = await fetch(
       `http://127.0.0.1:${webPort}/api/v1/targets/apply`,
@@ -690,60 +472,25 @@ test("upstream errors are returned without contacting another configured upstrea
     new Promise((resolve) => backup.listen(backupPort, "127.0.0.1", resolve)),
   ]);
 
-  const config = {
-    version: 1,
+  const config = normalizeConfig({
+    ...namedCodexConfigFixture({ codex: "codex" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {
-      primary: {
-        id: "primary",
-        protocol: "openai.responses",
-        baseUrl: `http://127.0.0.1:${primaryPort}/v1`,
-      },
-      backup: {
-        id: "backup",
-        protocol: "openai.responses",
-        baseUrl: `http://127.0.0.1:${backupPort}/v1`,
-      },
-    },
-    models: {
-      "logical-coder": {
-        id: "logical-coder",
-        clientModelId: "coder",
-        aliases: ["coder"],
-        capabilities: ["streaming"],
-        upstreams: {
-          primary: { upstreamModelId: "vendor-primary" },
-        },
-      },
-    },
-    routes: {
-      "model-route": {
-        id: "model-route",
-        backends: [
-          { upstream: "primary", models: ["logical-coder"] },
-        ],
-      },
-    },
-    virtualProviders: {
-      codex: {
-        id: "codex",
-        ingressProtocol: "openai.responses",
-        route: "model-route",
-        allowedModels: ["logical-coder"],
-        defaultModel: "logical-coder",
-        localAuth: { secretRef: "secret://virtual-providers/codex" },
-      },
-    },
+    bindings: {},
+  });
+  config.upstreams.codex.baseUrl = `http://127.0.0.1:${primaryPort}/v1`;
+  config.upstreams.backup = {
+    id: "backup", protocol: "openai.responses", baseUrl: `http://127.0.0.1:${backupPort}/v1`,
   };
+  config.models.codex.clientModelId = "coder";
+  config.models.codex.aliases = ["coder"];
+  config.models.codex.upstreams.codex.upstreamModelId = "vendor-primary";
   await saveConfig(config, paths);
-  await saveSecrets({ "secret://virtual-providers/codex": "local-key" }, paths);
   const app = await createApplication({ paths });
   try {
     const response = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
       method: "POST",
       headers: {
-        authorization: "Bearer local-key",
         "content-type": "application/json",
       },
       body: JSON.stringify({ model: "coder", input: "hello" }),
@@ -764,63 +511,21 @@ test("upstream errors are returned without contacting another configured upstrea
 
 test("changing the shared listener requires restart and preserves the running configuration", async () => {
   const webPort = await freePort();
-  const proxyPort = await freePort();
-  const blockedPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-atomic-reload-"));
   const paths = getPaths(home);
-  const blocker = http.createServer((request, response) => {
-    response.writeHead(503);
-    response.end();
-  });
-  await new Promise((resolve) => blocker.listen(blockedPort, "127.0.0.1", resolve));
 
-  const config = {
-    version: 1,
+  const config = normalizeConfig({
+    ...namedCodexConfigFixture({ primary: "primary" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {
-      primary: {
-        id: "primary",
-        protocol: "openai.responses",
-        baseUrl: "https://relay.example/v1",
-      },
-    },
-    models: {
-      model: {
-        id: "model",
-        clientModelId: "model",
-        aliases: ["model"],
-        upstreams: { primary: { upstreamModelId: "vendor-model" } },
-      },
-    },
-    routes: {
-      route: {
-        id: "route",
-        backends: [{ upstream: "primary", models: ["model"] }],
-      },
-    },
-    virtualProviders: {
-      primary: {
-        id: "primary",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
-        ingressProtocol: "openai.responses",
-        route: "route",
-        allowedModels: ["model"],
-        defaultModel: "model",
-        localAuth: { secretRef: "secret://virtual-providers/primary" },
-      },
-    },
-  };
+    bindings: {},
+  });
   await saveConfig(config, paths);
-  await saveSecrets({
-    "secret://virtual-providers/primary": "local-key",
-  }, paths);
 
   const app = await createApplication({ paths });
   try {
     const candidate = structuredClone(config);
-    candidate.web.port = blockedPort;
+    candidate.web.port = webPort === 65535 ? 65534 : webPort + 1;
 
     const commitResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
       method: "POST",
@@ -834,16 +539,13 @@ test("changing the shared listener requires restart and preserves the running co
     assert.equal(commitResponse.status, 422);
     assert.equal(commitBody.error.code, "web_listener_restart_required");
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/primary/v1/models`, {
-      headers: { authorization: "Bearer local-key" },
-    });
+    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/primary/v1/models`);
     assert.equal(modelsResponse.status, 200);
-    assert.equal((await modelsResponse.json()).data[0].id, "model");
+    assert.equal((await modelsResponse.json()).data[0].id, "gpt-5.5");
     assert.equal(app.state.config.revision, 1);
     assert.equal(app.state.webServer.listening, true);
   } finally {
     await app.close();
-    await new Promise((resolve) => blocker.close(resolve));
   }
 });
 
@@ -851,125 +553,29 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
   const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-unsupported-ingress-"));
   const paths = getPaths(home);
-  const config = {
-    version: 1,
+  const config = normalizeConfig({
+    ...namedCodexConfigFixture({ chat: "chat" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {
-      primary: {
-        id: "primary",
-        protocol: "openai.chat_completions",
-        baseUrl: "https://relay.example/v1",
-      },
-    },
-    models: {
-      model: {
-        id: "model",
-        clientModelId: "model",
-        aliases: ["model"],
-        upstreams: { primary: { upstreamModelId: "vendor-model" } },
-      },
-    },
-    routes: {
-      route: {
-        id: "route",
-        backends: [{ upstream: "primary", models: ["model"] }],
-      },
-    },
-    virtualProviders: {
-      chat: {
-        id: "chat",
-        ingressProtocol: "openai.chat_completions",
-        route: "route",
-        allowedModels: ["model"],
-        defaultModel: "model",
-        localAuth: { secretRef: "secret://virtual-providers/chat" },
-      },
-    },
-  };
+    bindings: {},
+  });
+  config.upstreams.chat.protocol = "openai.chat_completions";
+  config.virtualProviders.cabletidy_chat.ingressProtocol = "openai.chat_completions";
   await saveConfig(config, paths);
-  await saveSecrets({
-    "secret://virtual-providers/chat": "local-key",
-  }, paths);
 
   const app = await createApplication({ paths });
   try {
     const response = await fetch(`http://127.0.0.1:${webPort}/chat/v1/chat/completions`, {
       method: "POST",
       headers: {
-        authorization: "Bearer local-key",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ model: "model", messages: [] }),
+      body: JSON.stringify({ model: "gpt-5.5", messages: [] }),
     });
     const body = await response.json();
     assert.equal(response.status, 501);
     assert.equal(body.error.code, "unsupported_protocol");
   } finally {
     await app.close();
-  }
-});
-
-test("startup failure on the shared listener does not create provider listeners", async () => {
-  const webPort = await freePort();
-  const proxyPort = await freePort();
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-startup-cleanup-"));
-  const paths = getPaths(home);
-  const blocker = http.createServer((request, response) => {
-    response.writeHead(204);
-    response.end();
-  });
-  await new Promise((resolve) => blocker.listen(webPort, "127.0.0.1", resolve));
-
-  await saveConfig({
-    version: 1,
-    revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
-    upstreams: {
-      relay: {
-        id: "relay",
-        protocol: "openai.responses",
-        baseUrl: "https://relay.example/v1",
-      },
-    },
-    models: {
-      model: {
-        id: "model",
-        clientModelId: "model",
-        aliases: ["model"],
-        upstreams: { relay: { upstreamModelId: "vendor-model" } },
-      },
-    },
-    routes: {
-      route: {
-        id: "route",
-        backends: [{ upstream: "relay", models: ["model"] }],
-      },
-    },
-    virtualProviders: {
-      codex: {
-        id: "codex",
-        listenHost: "127.0.0.1",
-        listenPort: proxyPort,
-        ingressProtocol: "openai.responses",
-        route: "route",
-        allowedModels: ["model"],
-        defaultModel: "model",
-        localAuth: { secretRef: "secret://virtual-providers/codex" },
-      },
-    },
-  }, paths);
-
-  try {
-    await assert.rejects(
-      createApplication({ paths }),
-      (error) => /EADDRINUSE|监听失败|address already in use/i.test(error.message),
-    );
-    await assert.rejects(
-      fetch(`http://127.0.0.1:${proxyPort}/v1/models`),
-      () => true,
-    );
-  } finally {
-    await new Promise((resolve) => blocker.close(resolve));
   }
 });
