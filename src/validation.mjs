@@ -11,7 +11,7 @@ const PROTOCOLS = new Set([
   "gemini.generate_content",
 ]);
 const INTEGRATIONS = new Set(["codex-native-provider"]);
-const TARGET_FORMATS = new Set(["codex.config.toml.v1", "claude.env.v1", "generic.env.v1"]);
+const TARGET_FORMATS = new Set(["codex.config.toml.v1", "claude.env.v1", "claude.settings.json.v1", "generic.env.v1"]);
 const TARGETS = new Set(["codex", "claude-code", "generic-env"]);
 const COMPACT_STRATEGIES = new Set(["auto", "manual", "disabled"]);
 const IMPLEMENTED_INGRESS_PROTOCOLS = new Set([
@@ -81,6 +81,10 @@ export function validateConfig(input) {
     const authHeader = upstream.auth?.header || upstream.authHeader;
     if (authHeader && !HEADER_PATTERN.test(authHeader)) {
       add(errors, `upstreams.${id}.auth.header`, "认证 header 名称不合法");
+    }
+    if (upstream.auth?.scheme !== undefined &&
+        (typeof upstream.auth.scheme !== "string" || !HEADER_PATTERN.test(upstream.auth.scheme))) {
+      add(errors, `upstreams.${id}.auth.scheme`, "认证 scheme 必须是合法的 HTTP token");
     }
   }
 
@@ -333,8 +337,27 @@ export function validateConfig(input) {
     ) {
       add(errors, `bindings.${id}.targetFormat`, "Codex binding 必须使用本地 config.toml 接入");
     }
-    if (binding.target === "claude-code" && binding.targetFormat && binding.targetFormat !== "claude.env.v1") {
-      add(errors, `bindings.${id}.targetFormat`, "Claude Code binding 必须使用 claude.env.v1");
+    if (binding.target === "claude-code" && binding.targetFormat &&
+        !["claude.env.v1", "claude.settings.json.v1"].includes(binding.targetFormat)) {
+      add(errors, `bindings.${id}.targetFormat`, "Claude Code binding 必须使用 Claude settings 或 env 接入");
+    }
+    if (binding.target === "claude-code" && binding.claude !== undefined) {
+      if (!isRecord(binding.claude)) add(errors, `bindings.${id}.claude`, "Claude 设置必须是 object");
+      else {
+        for (const key of ["setModel", "discoverModels"]) {
+          if (binding.claude[key] !== undefined && typeof binding.claude[key] !== "boolean") {
+            add(errors, `bindings.${id}.claude.${key}`, "必须是 boolean");
+          }
+        }
+        if (binding.claude.models !== undefined) {
+          if (!isRecord(binding.claude.models)) add(errors, `bindings.${id}.claude.models`, "模型选择必须是 object");
+          else for (const [key, value] of Object.entries(binding.claude.models)) {
+            if (!["opus", "sonnet", "haiku", "subagent"].includes(key) || typeof value !== "string" || !value.trim()) {
+              add(errors, `bindings.${id}.claude.models.${key}`, "仅支持 opus、sonnet、haiku、subagent 的非空模型 ID");
+            }
+          }
+        }
+      }
     }
     if (
       binding.target === "generic-env" &&

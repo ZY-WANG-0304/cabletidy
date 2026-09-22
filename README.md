@@ -135,9 +135,11 @@ Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示�
 
 管理台直接显示配置列表，首次使用与后续使用采用相同的操作流程，不设置介绍页或配置向导。点击“新建配置”填写：
 
-- 配置名称（可选）；留空时按 `Codex / <上游主机名>` 自动生成展示名称。
+- 目标 CLI：Codex 或 Claude Code。
+- 配置名称（可选）；留空时按 `<CLI 名称> / <上游主机名>` 自动生成展示名称。
 - 上游地址和 API Key。
-- 模型设置（可选）：需要改名时选择 Codex 官方模型并填写上游真实模型名；默认无需添加。
+- Claude Code 上游可选 `x-api-key` 或 `Authorization: Bearer` 认证。
+- 模型设置（可选）：Codex 选择官方模型，Claude Code 填写客户端请求中的完整模型 ID；上游模型 ID 留空时直接透传。
 
 点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务入口和路由自动生成。配置 ID 按配置名称规范化生成，Virtual Provider ID 为 `cabletidy_<配置ID>`，并直接用作 Codex 的 `model_provider`；URL 路径使用不带此前缀的配置 ID。留空名称时，自动生成的名称也会参与 ID 规范化；如果多个配置使用同一上游主机且都留空名称，需要为后续配置填写不同名称。
 
@@ -145,7 +147,7 @@ Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示�
 
 仅在存在实际未保存修改时，切换页面、返回列表或关闭页面会提示确认；改回原值后不再拦截。点击“刷新模型列表”同步更新沿用官方定义的元数据和最新限制，保留手动覆盖值与其他表单输入。
 
-“应用到 Codex”保持独立，只有主动点击时才修改 Codex 配置文件。测试连通性和配置预览使用已保存的配置。
+“应用到 Codex”和“应用到 Claude Code”保持独立，只有主动点击时才修改客户端配置文件。测试连通性和配置预览使用已保存的配置。
 
 按需在 Codex 套装详情页中添加模型设置；仅覆盖上下文时无需填写上游模型 ID。模型能力与上下文默认折叠，元数据默认“沿用官方定义”；
 展开并选择“覆盖上游限制”后可设置 context window 和图片输入，已有覆盖值或待确认的旧策略会自动展开。不提供固定 reasoning effort 或未实现的 compact 控件。
@@ -221,9 +223,76 @@ curl http://127.0.0.1:43100/codex-main/v1/models
 Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满足客户端认证检查，
 它不是密钥，本地服务不会校验这个值。Generic CLI 只生成本地地址和模型环境变量。
 
+## Claude Code 接入
+
+新建配置时选择 Claude Code，填写 Anthropic Messages 兼容上游地址、认证方式和凭据。Anthropic 官方 API 和提供同协议的中转服务使用同一接入流程，每份配置仍只连接一个上游。
+
+默认透传客户端模型名，无需登记模型。按需添加“客户端完整模型 ID → 上游模型 ID”映射；仅改名不会限制工具、图片、thinking 等能力，具体能力由客户端和上游决定。已有配置中的显式能力限制仍然生效。Claude Code 的 `sonnet`、`opus` 等别名会在客户端解析，映射应填写实际发到 API 的完整模型 ID。
+
+“Claude Code 模型选择”可以配置启动模型、Opus/Sonnet/Haiku 家族模型、子代理模型，以及模型发现开关。全部留空时保留已有客户端选择。启动模型通过 `ANTHROPIC_MODEL` 设置，后续每次启动都会生效；只想临时选模型可用 Claude 自身的 `--model`。上下文、reasoning effort 和压缩策略仍由 Claude Code 管理，不生成没有实际效果的逐模型窗口或 compact 设置。
+
+### 预览、应用与撤销
+
+点击“预览配置”不会写入文件。预览仅展示 CableTidy 生成的字段、目标路径和冲突提示，不回显原客户端文件中的凭据。“应用到 Claude Code”增量合并用户配置的 `env`：默认位置为 `~/.claude/settings.json`，Windows 为 `%USERPROFILE%\.claude\settings.json`；设置了 `CLAUDE_CONFIG_DIR` 时使用该目录。
+
+接入的核心配置如下，Base URL 不额外带 `/v1`：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:43100/claude-main",
+    "ANTHROPIC_AUTH_TOKEN": "cabletidy-local"
+  }
+}
+```
+
+生成的完整配置还会将用户环境中的旧 API Key、OAuth Token、自定义请求头置空，并将云厂商接入开关设为 `0`，使该配置使用 Messages 本地入口。原值会保留供撤销使用。权限、Hooks、MCP、根级 `model` 和其他用户设置保持不变；项目配置、`--settings` 或企业 managed settings 仍可能覆盖用户配置。应用后重新启动 Claude Code，用 `/status` 核对 Base URL 和认证来源。
+
+用户只填写上游凭据。本地不生成、保存或校验 Key；`cabletidy-local` 是公开占位值，仅满足 Claude 客户端认证检查，不会转发给上游。直接调用四个本地接口可以完全不带认证头。真实上游认证始终来自 CableTidy 的 secrets store。
+
+应用前会在 CableTidy 的 `backups` 目录备份原文件，在 Claude 配置目录的 `.cabletidy-settings.json` 中记录接管字段及原值，文件权限为 `0600`。切换到另一份 Claude 配置后，撤销仍恢复最初接入前的值。点击当前已应用配置的“撤销接入”恢复这些字段，保留应用后新增的无关设置；不会停止本地服务。
+
+如果接管字段已被手工修改，预览列出冲突字段，应用和撤销均停止写入，不覆盖修改，也不显示冲突字段的秘密值。请先核对备份并保留自己的修改后处理冲突。无效 JSON、非普通文件和符号链接文件不会被替换。已有 `claude.env.v1` 配置继续兼容，新配置使用 `claude.settings.json.v1`。
+
+预览同时提供 Bash/Zsh 和 PowerShell 环境变量，以及独立 JSON 文件的内容。将预览文件保存为 `cabletidy-claude.settings.json` 后，也可用官方命令临时接入：
+
+```bash
+claude --settings /absolute/path/cabletidy-claude.settings.json
+```
+
+### 本地接口
+
+所有路径均相对于 `ANTHROPIC_BASE_URL`，共享配置的启停状态：
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| POST | `/v1/messages` | 普通及 SSE 推理；保留查询参数、协议扩展字段和 `anthropic-*` 请求头 |
+| POST | `/v1/messages/count_tokens` | 使用相同上游和模型映射，返回上游计数；不要求 `max_tokens`，上游不支持时保留其错误 |
+| GET | `/v1/models` | 返回当前配置显式设置的客户端模型、显示名称和说明；支持 `limit=1..1000` 和 `after_id` |
+| HEAD | `/api/hello` | 本地返回 204、不请求上游，仅确认本地入口可达 |
+
+`/messages` 保留为旧版兼容路径。标准接口应使用 `/v1/messages`。SSE 保留 ping、工具参数增量和流内错误，客户端断开时取消上游请求；模型改名只修改 Messages 响应及 `message_start` 的模型字段，不改工具数据。上游错误保留原状态码和响应体，重试、请求 ID 和 Anthropic 限流头随响应转发。
+
+模型发现需在客户端开启 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`，可通过管理台复选框生成。纯透传配置返回空列表，不影响其他模型请求；模型列表不是白名单，也不自动发现上游模型。Claude 会按自身版本过滤发现条目，不含 `claude` 或 `anthropic` 的别名可能不显示。Token counting 为官方可选接口，上游不支持时 Claude 可退回上下文估算。
+
+“测试推理”使用已保存的配置和指定模型发起少量 Messages 请求，可以选择 SSE 测试，会产生上游用量。HTTP 可达、认证有效、模型可用及流式响应有效分别判断；返回 HTML 或仅能访问上游根地址不会被当作推理成功。
+
+### 验证与范围
+
+`npm test` 包含模拟上游的协议、免认证入口、配置合并、恢复、冲突与管理台测试。安装本机 Claude Code 后可执行原生 CLI 冒烟测试，它使用临时配置目录和本地模拟上游，不调用真实模型，也不修改日常 Claude 配置：
+
+```bash
+npm run test:claude
+
+# 多个安装版本共存时，可指定要验证的可执行文件。
+CABLETIDY_CLAUDE_BIN=/absolute/path/claude npm run test:claude
+```
+
+首版仅支持 Anthropic Messages 兼容上游。HTTP/HTTPS 企业网络代理、动态上游凭据、Bedrock/Vertex 原生协议转换和内置 `claude gateway` 托管不在本版范围。模型网关不代表 npm、Git、MCP 子进程或 Claude 其他联网流量也经过 CableTidy。
+
 ## 其他 CLI
 
-Claude Code 使用 Anthropic Messages Virtual Provider，目标配置通过管理台预览。未来的 Gemini CLI、OpenCode 和其他编程 CLI 可以增加各自的 Target Adapter；它们不需要被强行改成 OpenAI 配置。
+未来的 Gemini CLI、OpenCode 和其他编程 CLI 可以增加各自的 Target Adapter；它们不需要被强行改成 OpenAI 配置。
 
 ## CLI
 

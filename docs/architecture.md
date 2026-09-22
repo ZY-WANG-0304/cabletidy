@@ -351,6 +351,19 @@ Codex 接入不生成 `env_key`，Web 管理台负责目标配置的预览和应
 Claude Code 适配器自动使用固定的 `cabletidy-local` 占位值满足客户端认证检查，
 该值不是密钥，也不会在本地 listener 或上游认证中使用。
 
+Claude Code 使用官方 `ANTHROPIC_BASE_URL` 接入，地址为配置入口根路径，不带 `/v1`。
+本地入口支持 `POST /v1/messages`、`POST /v1/messages/count_tokens`、
+`GET /v1/models` 和 `HEAD /api/hello`；模型发现只返回当前配置显式登记的模型，
+不限制未登记模型的请求透传。上游支持 API Key 和 Bearer 认证，客户端认证头由
+daemon 替换为已保存的上游凭据。消息和 token 计数使用相同的模型映射，保留
+Anthropic 扩展字段、协议头和 SSE 事件，仅在消息的模型字段还原客户端模型名。
+
+目标配置生成 `claude.settings.json.v1`，同时提供独立 `--settings` 文件和
+Bash / PowerShell 环境变量。应用只合并用户 `settings.json` 的相关 `env` 字段，
+通过独立 ownership 记录保留原值，支持重复应用、切换配置和撤销接入。写入使用
+文件锁、备份和原子替换；受管理字段在应用后被手动修改时拒绝覆盖，并提示冲突字段。
+项目设置和 managed policy 等更高优先级配置可能覆盖用户设置，预览会提示检查。
+
 ### 5.4 转发请求真正需要的配置
 
 CableTidy 的配置图包含运行时对象、策略对象和展示/目标适配对象。不能因为
@@ -495,7 +508,8 @@ Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按�
 套装详情页按上游连接、可选模型设置、客户端接入的顺序纵向排列。底部展示本地地址、
 Virtual Provider ID 以及服务启停、预览和应用操作。一个 Virtual Provider 只连接
 一个上游，内部 Route 由 CableTidy 自动创建，不向用户暴露主备或优先级配置。
-上游连接单独编辑，只需地址和 API Key；通栏可选模型设置区域每行展示：
+上游连接单独编辑，只需地址和凭据；Claude Code 还可选择 API Key 或 Bearer 认证。
+Codex 的通栏可选模型设置区域每行展示：
 
 - 对应的 Codex 官方模型名，客户端默认保持同名。
 - 当前上游对应的 `upstream_model_id`（可选，留空使用请求中的模型名）。
@@ -514,7 +528,11 @@ CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Bi
 套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
 底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
 理解或点击的高级设置入口，也不再作为一级导航和首次配置的必经步骤。
-Claude Code 和 Generic CLI 的详情页仍保留高级模型编辑入口。
+Claude Code 模型行只提供客户端模型名、上游模型名和可选的展示名称、描述，
+不套用 Codex 的模型能力和上下文元数据。客户端区域可设置启动模型、
+Opus / Sonnet / Haiku 与子代理模型，以及是否启用模型发现。
+Claude 上游诊断使用指定模型执行少量 Messages 推理，可选验证 SSE，
+分别报告连接、认证、模型与流式结果。Generic CLI 仍保留高级模型编辑入口。
 
 ### 7.2 创建配置
 
@@ -522,17 +540,17 @@ Claude Code 和 Generic CLI 的详情页仍保留高级模型编辑入口。
 
 ```text
 基本信息
-  配置名称（可选）/ CLI（当前新建入口为 Codex）
+  配置名称（可选）/ CLI（Codex 或 Claude Code）
 
 上游连接
-  base URL / API Key
+  base URL / 凭据（Claude Code 可选 API Key 或 Bearer）
 
 模型设置（可选，默认不添加）
-  官方模型 / upstream_model_id（可选）
-  上下文等参数在创建后的详情页调整
+  Codex 官方模型或 Claude 客户端模型 / upstream_model_id（可选）
+  Codex 上下文等参数在创建后的详情页调整
 
 创建配置
-  自动创建 Route、Virtual Provider 和 Codex Target Binding
+  自动创建 Route、Virtual Provider 和所选 CLI 的 Target Binding
   保存成功后进入详情页，再按需预览或应用客户端配置
 ```
 
@@ -563,13 +581,14 @@ POST /api/v1/config/validate
 POST /api/v1/config/commit
 POST /api/v1/config/preview-target-artifacts
 POST /api/v1/targets/apply
+POST /api/v1/targets/restore
 
 POST /api/v1/tests/upstream
 POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
 
-预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `bindingId` 时选择首个启用的 binding；要应用特定 Codex 配置，应显式传入其 `bindingId`。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。
+预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `bindingId` 时选择首个启用的 binding；要应用特定配置，应显式传入其 `bindingId`。Codex 和 Claude Code 均支持持久化应用。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。`/api/v1/targets/restore` 仅用于撤销当前已应用的 Claude Code binding，恢复原有受管理字段，保留其他用户设置；失败返回 `422 target_restore_failed`。
 
 原型接口 `preview-codex-config`、`preview-provider-artifacts` 和 `/api/v1/targets/codex/apply` 已退役，均返回 `404 not_found`。
 
@@ -645,6 +664,9 @@ src/codex-native-provider.mjs
 src/target-artifacts.mjs
   Codex / Claude Code / generic target artifacts
 
+src/claude-config-file.mjs
+  Claude settings preview / merge / ownership / restore
+
 src/server.mjs
   shared listener / Web control API / configuration path dispatch
 
@@ -696,7 +718,8 @@ MVP 至少覆盖：
 - Upstream、Model Profile、Upstream Model Binding、Route、Virtual Provider、Target Binding。
 - Codex Native Provider Integration 的 Web 配置和原生配置生成。
 - Codex 只生成本地 `config.toml` managed block。
-- Claude Code 环境变量 artifact。
+- Claude Code 官方 Base URL 接入、四个本地接口、模型映射与 Messages / SSE 诊断。
+- Claude Code settings 预览、应用和恢复，以及独立文件、Bash / PowerShell artifact。
 - 配置校验、diff、原子 reload 和脱敏事件。
 
 ### Phase 2：可靠性与更多目标

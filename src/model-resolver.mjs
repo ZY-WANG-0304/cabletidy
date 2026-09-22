@@ -138,7 +138,9 @@ export function selectBackend(config, virtualProvider, modelResolution, request 
     reason = "model_binding_missing";
   } else if (virtualProvider.ingressProtocol !== upstream.protocol) {
     reason = "protocol_transform_missing";
-  } else if (profile && !hasCapabilities(capabilities, required)) {
+  } else if (profile &&
+      (virtualProvider.ingressProtocol !== "anthropic.messages" || profile.capabilities !== undefined || modelBinding?.capabilityOverrides?.length) &&
+      !hasCapabilities(capabilities, required)) {
     reason = "capability_missing";
   }
   if (reason) {

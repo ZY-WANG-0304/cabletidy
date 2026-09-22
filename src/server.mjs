@@ -36,7 +36,10 @@ import {
 import {
   publicTargetArtifacts,
   prepareTargetArtifacts,
+  CLAUDE_ENDPOINTS,
+  CLAUDE_TARGET_FORMAT,
 } from "./target-artifacts.mjs";
+import { applyClaudeSettings, restoreClaudeSettings } from "./claude-config-file.mjs";
 import {
   listClientModels,
   resolveModelProfile,
@@ -107,6 +110,7 @@ async function createLockedApplication(options, paths, identity) {
     configOperation: Promise.resolve(),
     loadCodexCatalog: options.loadCodexCatalog || loadCodexCatalog,
     codexHome: options.codexHome,
+    claudeHome: options.claudeHome,
   };
 
   let webServer = null;
@@ -271,8 +275,9 @@ async function handleApiRequest(state, request, response, url) {
       integrations: [CODEX_NATIVE_PROVIDER_INTEGRATION],
       requiredEndpoints: {
         [CODEX_NATIVE_PROVIDER_INTEGRATION]: CODEX_NATIVE_REQUIRED_ENDPOINTS,
+        "claude-code": CLAUDE_ENDPOINTS,
       },
-      targetFormats: [CODEX_TARGET_FORMAT, "claude.env.v1", "generic.env.v1"],
+      targetFormats: [CODEX_TARGET_FORMAT, CLAUDE_TARGET_FORMAT, "claude.env.v1", "generic.env.v1"],
       targets: ["codex", "claude-code", "generic-env"],
       capabilities: [
         "streaming",
@@ -401,6 +406,19 @@ async function handleApiRequest(state, request, response, url) {
 
   if (method === "POST" && url.pathname === "/api/v1/targets/apply") {
     await applyTarget(state, body, response);
+    return;
+  }
+
+  if (method === "POST" && url.pathname === "/api/v1/targets/restore") {
+    try {
+      const binding = state.config.bindings[body.bindingId];
+      if (binding?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+      const report = await restoreClaudeSettings(body.bindingId, { paths: state.paths, claudeHome: state.claudeHome });
+      recordEvent(state, "target.restore", { bindingId: body.bindingId, target: "claude-code" });
+      sendJson(response, 200, { ok: true, target: "claude-code", report });
+    } catch (error) {
+      sendJson(response, 422, { error: { code: "target_restore_failed", message: error.message } });
+    }
     return;
   }
 
@@ -568,6 +586,10 @@ async function testUpstream(state, body, response) {
     sendJson(response, 404, { error: { code: "upstream_not_found", message: "upstream 不存在" } });
     return;
   }
+  if (upstream.protocol === "anthropic.messages") {
+    await testClaudeUpstream(state, config, secrets, upstream, body, response);
+    return;
+  }
   const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -603,6 +625,71 @@ async function testUpstream(state, body, response) {
   }
 }
 
+async function testClaudeUpstream(state, config, secrets, upstream, body, response) {
+  const started = Date.now();
+  const secret = resolveUpstreamSecret(upstream, secrets);
+  const report = { ok: false, connected: false, authenticated: null, modelAvailable: null, streaming: null,
+    secretConfigured: Boolean(secret) };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    if (typeof body.model !== "string" || !body.model.trim()) throw new Error("请填写要测试的客户端模型 ID");
+    if (upstream.enabled === false) throw new Error("上游已暂停");
+    let model = body.model.trim();
+    if (body.bindingId) {
+      const binding = config.bindings[body.bindingId];
+      const provider = config.virtualProviders[binding?.virtualProvider];
+      if (!provider || provider.enabled === false) throw new Error("配置入口不存在或已暂停");
+      const resolved = resolveRequest(config, provider, { model, stream: Boolean(body.stream) });
+      if (resolved.upstream.id !== upstream.id) throw new Error("测试上游与当前配置不一致");
+      model = resolved.upstreamModelId;
+    }
+    const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
+    applyUpstreamAuth(headers, upstream, upstream.protocol, secret);
+    const result = await fetch(joinUpstreamUrl(upstream.baseUrl, "/v1/messages"), {
+      method: "POST", headers, signal: controller.signal, redirect: "manual",
+      body: JSON.stringify({ model, max_tokens: 16, stream: Boolean(body.stream), messages: [{ role: "user", content: "." }] }),
+    });
+    report.connected = true;
+    report.status = result.status;
+    if ([401, 403].includes(result.status)) report.authenticated = false;
+    let text = "";
+    let bytes = 0;
+    const decoder = new StringDecoder("utf8");
+    for await (const chunk of result.body || []) {
+      bytes += chunk.length;
+      if (bytes > 256 * 1024) throw new Error("测试响应过大，无法确认协议兼容性");
+      text += decoder.write(Buffer.from(chunk));
+    }
+    text += decoder.end();
+    if (body.stream) {
+      const events = text.split(/\r?\n\r?\n/).map((event) => {
+        const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+        try { return JSON.parse(data); } catch { return null; }
+      });
+      report.streaming = Boolean(result.ok && result.headers.get("content-type")?.includes("text/event-stream") &&
+        events.some((event) => event?.type === "message_start") && events.some((event) => event?.type === "message_stop") &&
+        !events.some((event) => event?.type === "error"));
+      report.ok = report.streaming;
+    } else {
+      let message;
+      try { message = JSON.parse(text); } catch { /* A reachable HTML page is not a Messages endpoint. */ }
+      report.ok = Boolean(result.ok && message?.type === "message" && Array.isArray(message.content));
+    }
+    if (report.ok) report.authenticated = report.modelAvailable = true;
+    report.message = report.ok ? (body.stream ? "认证、模型和流式推理测试通过" : "认证与模型推理测试通过")
+      : report.authenticated === false ? "上游拒绝认证或访问权限"
+        : `上游已连接，但 Messages ${body.stream ? "流式" : "推理"}测试未通过 (HTTP ${result.status})`;
+    recordHealth(state, upstream.id, report.ok ? "success" : "failure", result.status);
+  } catch (error) {
+    report.message = error.name === "AbortError" ? "推理测试超时" : error.message;
+    recordHealth(state, upstream.id, "failure", report.status ?? null);
+  } finally {
+    clearTimeout(timeout);
+  }
+  sendJson(response, 200, { ...report, latencyMs: Date.now() - started });
+}
+
 async function previewTargetArtifacts(state, body, response) {
   try {
     const config = normalizeConfig(body.config || state.config);
@@ -611,6 +698,7 @@ async function previewTargetArtifacts(state, body, response) {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
       codexHome: state.codexHome,
+      claudeHome: state.claudeHome,
     }, secrets);
     sendJson(response, 200, {
       ok: true,
@@ -629,8 +717,9 @@ async function applyTarget(state, body, response) {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
       codexHome: state.codexHome,
+      claudeHome: state.claudeHome,
     }, state.secrets);
-    if (artifacts.target !== "codex") {
+    if (!["codex", "claude-code"].includes(artifacts.target)) {
       sendJson(response, 501, {
         error: {
           code: "target_apply_not_supported",
@@ -642,7 +731,9 @@ async function applyTarget(state, body, response) {
       });
       return;
     }
-    const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
+    const report = artifacts.target === "claude-code"
+      ? await applyClaudeSettings(artifacts, { paths: state.paths, claudeHome: state.claudeHome })
+      : await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
     recordEvent(state, "target.apply", {
       bindingId: artifacts.bindingId,
       target: artifacts.target,
@@ -671,6 +762,7 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
   }
 
   const protocol = provider.ingressProtocol;
+  const isClaude = protocol === "anthropic.messages";
 
   if (!IMPLEMENTED_INGRESS_PROTOCOLS.has(protocol)) {
     sendProtocolError(
@@ -683,6 +775,36 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
     return;
   }
 
+  if (isClaude && request.method === "HEAD" && url.pathname === "/api/hello") {
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
+  if (isClaude && request.method === "GET" && url.pathname === "/v1/models") {
+    const limit = url.searchParams.get("limit") ?? "1000";
+    if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 1000) {
+      sendProtocolError(response, protocol, 400, "invalid_request_error", "limit 必须是 1 到 1000 之间的整数");
+      return;
+    }
+    let models = listClientModels(config, provider).map((model) => {
+      const profile = config.models[model.profileId];
+      return { id: model.id, type: "model", display_name: profile.name || model.id,
+        ...(profile.description ? { description: profile.description } : {}) };
+    });
+    const after = url.searchParams.get("after_id");
+    if (after) {
+      const index = models.findIndex((model) => model.id === after);
+      if (index < 0) {
+        sendProtocolError(response, protocol, 400, "invalid_request_error", "after_id 不在当前模型列表中");
+        return;
+      }
+      models = models.slice(index + 1);
+    }
+    const data = models.slice(0, Number(limit));
+    sendJson(response, 200, { data, has_more: models.length > data.length,
+      first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null });
+    return;
+  }
   if (
     protocol === "openai.responses" &&
     request.method === "GET" &&
@@ -692,8 +814,9 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
     sendJson(response, 200, { object: "list", data: models });
     return;
   }
-  const supportedPaths = protocol === "anthropic.messages"
-    ? ["/v1/messages", "/messages"]
+  const countTokens = isClaude && url.pathname === "/v1/messages/count_tokens";
+  const supportedPaths = isClaude
+    ? ["/v1/messages", "/messages", "/v1/messages/count_tokens"]
     : [CODEX_NATIVE_RESPONSES_PATH, "/responses"];
   if (request.method !== "POST" || !supportedPaths.includes(url.pathname)) {
     sendProtocolError(
@@ -702,7 +825,7 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       404,
       "not_found",
       protocol === "anthropic.messages"
-        ? "只支持 POST /v1/messages"
+        ? "支持 POST /v1/messages、POST /v1/messages/count_tokens、GET /v1/models 和 HEAD /api/hello"
         : "只支持 POST /v1/responses 和 GET /v1/models",
     );
     return;
@@ -745,15 +868,14 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       config,
       provider,
       resolution,
-      body,
+      countTokens ? {} : body,
     );
   } catch (error) {
     sendProtocolError(response, protocol, 503, error.code || "upstream_unavailable", error.message);
     return;
   }
   const outgoing = structuredClone(body);
-  // Model metadata is a client-side artifact. Preserve the instructions,
-  // tools and per-request reasoning effort constructed by Codex.
+  // Only the protocol model field is mapped; prompts and tool payloads stay intact.
   outgoing.model = selected.upstreamModelId;
   const upstreamUrl = joinUpstreamUrl(selected.upstream.baseUrl, url.pathname, url.search);
   const upstreamHeaders = {
@@ -770,6 +892,7 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       headers: upstreamHeaders,
       body: JSON.stringify(outgoing),
       signal: upstreamAbort.signal,
+      ...(isClaude ? { redirect: "manual" } : {}),
     });
     recordHealth(
       state,
@@ -782,6 +905,7 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       upstreamId: selected.upstream.id,
       clientModelId: resolution.clientModelId,
       upstreamModelId: selected.upstreamModelId,
+      path: url.pathname,
       status: upstreamResponse.status,
       latencyMs: Date.now() - started,
     });
@@ -790,6 +914,8 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       upstreamResponse,
       resolution.clientModelId,
       selected.upstreamModelId,
+      protocol,
+      countTokens,
     );
     return;
   } catch (error) {
@@ -803,21 +929,29 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
   }
 }
 
-async function relayResponse(response, upstreamResponse, clientModelId, upstreamModelId) {
+async function relayResponse(response, upstreamResponse, clientModelId, upstreamModelId, protocol, countTokens = false) {
   const contentType = upstreamResponse.headers.get("content-type") || "application/json";
   const isEventStream = contentType.includes("text/event-stream");
   const headers = {
     "content-type": contentType,
     "cache-control": upstreamResponse.headers.get("cache-control") || "no-cache",
   };
-  const requestId = upstreamResponse.headers.get("x-request-id");
-  if (requestId) headers["x-request-id"] = requestId;
+  for (const [name, value] of upstreamResponse.headers) {
+    if (["x-request-id", "request-id", "retry-after", "x-should-retry"].includes(name) || name.startsWith("anthropic-ratelimit-")) headers[name] = value;
+  }
   response.writeHead(upstreamResponse.status, headers);
+  response.flushHeaders();
 
   if (!upstreamResponse.body) {
     response.end();
     return;
   }
+
+  if (!upstreamResponse.ok || countTokens || clientModelId === upstreamModelId) {
+    await pipeline(Readable.fromWeb(upstreamResponse.body), response);
+    return;
+  }
+  const rewrite = protocol === "anthropic.messages" ? rewriteClaudeModel : rewriteModelFields;
 
   if (!isEventStream) {
     const text = await upstreamResponse.text();
@@ -826,7 +960,7 @@ async function relayResponse(response, upstreamResponse, clientModelId, upstream
       return;
     }
     try {
-      const body = rewriteModelFields(JSON.parse(text), clientModelId, upstreamModelId);
+      const body = rewrite(JSON.parse(text), clientModelId, upstreamModelId);
       response.end(JSON.stringify(body));
     } catch {
       response.end(text);
@@ -836,12 +970,20 @@ async function relayResponse(response, upstreamResponse, clientModelId, upstream
 
   await pipeline(
     Readable.fromWeb(upstreamResponse.body),
-    createSseRewriteTransform(clientModelId, upstreamModelId),
+    createSseRewriteTransform(clientModelId, upstreamModelId, rewrite),
     response,
   );
 }
 
-function createSseRewriteTransform(clientModelId, upstreamModelId) {
+function rewriteClaudeModel(value, clientModelId, upstreamModelId) {
+  if (value?.type === "message" && value.model === upstreamModelId) return { ...value, model: clientModelId };
+  if (value?.type === "message_start" && value.message?.model === upstreamModelId) {
+    return { ...value, message: { ...value.message, model: clientModelId } };
+  }
+  return value;
+}
+
+function createSseRewriteTransform(clientModelId, upstreamModelId, rewrite) {
   const decoder = new StringDecoder("utf8");
   let buffer = "";
 
@@ -851,7 +993,7 @@ function createSseRewriteTransform(clientModelId, upstreamModelId) {
         buffer += Buffer.isBuffer(chunk)
           ? decoder.write(chunk)
           : String(chunk, encoding);
-        const drained = drainSseBuffer(buffer, clientModelId, upstreamModelId);
+        const drained = drainSseBuffer(buffer, clientModelId, upstreamModelId, rewrite);
         buffer = drained.remaining;
         callback(null, drained.output || undefined);
       } catch (error) {
@@ -864,7 +1006,7 @@ function createSseRewriteTransform(clientModelId, upstreamModelId) {
         callback(
           null,
           buffer
-            ? rewriteSseEvent(buffer, clientModelId, upstreamModelId)
+            ? rewriteSseEvent(buffer, clientModelId, upstreamModelId, rewrite)
             : undefined,
         );
       } catch (error) {
@@ -874,21 +1016,21 @@ function createSseRewriteTransform(clientModelId, upstreamModelId) {
   });
 }
 
-function drainSseBuffer(buffer, clientModelId, upstreamModelId) {
+function drainSseBuffer(buffer, clientModelId, upstreamModelId, rewrite) {
   let remaining = buffer;
   let output = "";
   while (true) {
     const delimiter = remaining.match(/\r?\n\r?\n/);
     if (!delimiter || delimiter.index === undefined) break;
     const event = remaining.slice(0, delimiter.index);
-    output += rewriteSseEvent(event, clientModelId, upstreamModelId);
+    output += rewriteSseEvent(event, clientModelId, upstreamModelId, rewrite);
     output += delimiter[0];
     remaining = remaining.slice(delimiter.index + delimiter[0].length);
   }
   return { output, remaining };
 }
 
-function rewriteSseEvent(event, clientModelId, upstreamModelId) {
+function rewriteSseEvent(event, clientModelId, upstreamModelId, rewrite) {
   const separator = event.includes("\r\n") ? "\r\n" : "\n";
   const lines = event.split(/\r?\n/);
   const dataLines = [];
@@ -902,7 +1044,8 @@ function rewriteSseEvent(event, clientModelId, upstreamModelId) {
   if (!payload || payload === "[DONE]") return event;
   try {
     const parsed = JSON.parse(payload);
-    const rewritten = rewriteModelFields(parsed, clientModelId, upstreamModelId);
+    const rewritten = rewrite(parsed, clientModelId, upstreamModelId);
+    if (rewritten === parsed) return event;
     const first = dataLines[0];
     const prefix = lines[first.index].match(/^data:/)?.[0] || "data:";
     lines[first.index] = `${prefix} ${JSON.stringify(rewritten)}`;
@@ -915,7 +1058,7 @@ function rewriteSseEvent(event, clientModelId, upstreamModelId) {
 
 function copyProtocolHeaders(request, target, protocol) {
   const names = protocol === "anthropic.messages"
-    ? ["anthropic-version", "anthropic-beta"]
+    ? Object.keys(request.headers).filter((name) => name.startsWith("anthropic-") || name.startsWith("x-claude-code-"))
     : ["openai-beta", "openai-organization", "openai-project"];
   for (const name of names) {
     const value = request.headers[name];
@@ -1179,7 +1322,8 @@ function sendProtocolError(response, protocol, status, code, message) {
           ? "overloaded_error"
           : code === "not_found"
             ? "not_found_error"
-            : "invalid_request_error";
+            : status === 413 ? "request_too_large"
+              : status >= 500 ? "api_error" : "invalid_request_error";
     sendJson(response, status, {
       type: "error",
       error: {

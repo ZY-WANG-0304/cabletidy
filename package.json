@@ -32,6 +32,7 @@
     "dev": "node --watch src/server.mjs",
     "test": "node --test test/*.test.mjs",
     "test:package": "node --test scripts/package-smoke.mjs",
+    "test:claude": "node --test scripts/claude-smoke.mjs",
     "prepublishOnly": "npm test && npm run test:package"
   },
   "dependencies": {

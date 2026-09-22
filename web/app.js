@@ -37,6 +37,7 @@ const state = {
   runtime: null,
   events: [],
   codexCatalog: null,
+  createTarget: "codex",
   busy: false,
   pendingSecrets: {
     upstreamSecrets: {},
@@ -294,7 +295,7 @@ function captureEditedForms(excludedForm) {
 }
 
 function hasUnsavedChanges() {
-  return captureEditedForms().some((form) => form.getAttribute("id") !== "resolve-form");
+  return captureEditedForms().some((form) => !["resolve-form", "claude-probe-form"].includes(form.getAttribute("id")));
 }
 
 function confirmPageLeave() {
@@ -379,6 +380,7 @@ function selectedSuite() {
 function selectSuite(id) {
   const suite = configurationSuites(state.candidate || {}).find((item) => item.id === id);
   state.selected.suite = id || null;
+  if (state.artifactPreview?.bindingId !== id) state.artifactPreview = null;
   if (!suite) return;
   state.selected.virtualProvider = suite.binding.virtualProvider;
   state.selected.model = suite.modelIds[0] || null;
@@ -398,7 +400,7 @@ function suiteProviderStatus(suite) {
 }
 
 function suiteEndpoint(suite) {
-  return `${configurationBaseUrl(state.candidate, suite.bindingId)}/v1`;
+  return `${configurationBaseUrl(state.candidate, suite.bindingId)}${suite.target === "claude-code" ? "" : "/v1"}`;
 }
 
 function suiteRow(suite) {
@@ -448,7 +450,14 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
           : `<div class="notice warning">请先配置上游连接</div>`}
         <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(model.clientModelId || modelId || "映射")}">移除</button>
       </div>
-      <details class="suite-model-settings" ${expanded ? "open" : ""}>
+      ${suite.target === "claude-code" ? `
+      <details class="suite-model-settings">
+        <summary>模型列表显示（可选）</summary>
+        <div class="form-grid">
+          <label class="field"><span>显示名称</span><input data-claude-model-name value="${esc(model.name || "")}" placeholder="留空使用客户端模型 ID" /></label>
+          <label class="field"><span>说明</span><input data-claude-model-description value="${esc(model.description || "")}" /></label>
+        </div>
+      </details>` : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
         <summary><span>模型能力与上下文</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
         <div class="form-grid suite-model-policy">
           ${isCodex ? codexMetadataFields(model) : `
@@ -459,7 +468,7 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
           ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-suite-model-capabilities="${esc(upstreamId)}" value="${esc((binding.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
           `}
         </div>
-      </details>
+      </details>`}
     </article>
   `;
 }
@@ -546,6 +555,20 @@ function syncCodexMetadata(row, resetOverrides = false) {
 }
 
 pageContent.addEventListener("change", (event) => {
+  if (event.target.matches('#suite-create-form [name="target"]')) {
+    state.createTarget = event.target.value;
+    const form = event.target.closest("form");
+    form.querySelector(".catalog-status-wrapper").hidden = state.createTarget !== "codex";
+    form.querySelector("[data-claude-create-auth]").hidden = state.createTarget !== "claude-code";
+    form.querySelectorAll("[data-create-model]").forEach((row) => {
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = createModelRow({
+        clientModelId: row.querySelector('[data-create-field="clientModelId"]').value,
+        upstreamModelId: row.querySelector('[data-create-field="upstreamModelId"]').value,
+      });
+      row.replaceWith(wrapper.firstElementChild);
+    });
+  }
   const modelChanged = event.target.matches("[data-official-model]");
   if (modelChanged) updateOfficialModelHint(event.target);
   if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
@@ -611,18 +634,26 @@ function renderSuiteDetail() {
             <div class="form-grid suite-upstream-fields">
               ${field("上游名称", "name", upstream.name || upstreamId, "例如 Relay A")}
               ${field("上游地址", "baseUrl", upstream.baseUrl || "", "https://relay.example.com/v1", false, "url")}
-              ${field("API Key", "secret", "", upstream.secretConfigured ? "已配置，留空保留现有密钥" : "粘贴上游 API Key", false, "password")}
+              ${field(suite.target === "claude-code" ? "上游凭据" : "API Key", "secret", "", upstream.secretConfigured ? "已配置，留空保留现有密钥" : "粘贴上游凭据", false, "password")}
+              ${suite.target === "claude-code" ? upstreamAuthField("authHeader", upstream.auth?.header || upstream.authHeader || "x-api-key") : ""}
             </div>
             <div class="suite-section-footer">
               <span class="field-hint">保存后生效，测试使用已保存的连接。</span>
-              <div class="form-actions"><button class="button" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
+              <div class="form-actions"><button class="button" type="submit">保存上游</button>${suite.target === "claude-code" ? "" : `<button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button>`}</div>
             </div>
           </form>
+          ${suite.target === "claude-code" ? `<form id="claude-probe-form" class="subsection">
+            <div class="form-grid">
+              ${field("测试模型", "model", claudeDefaultModel(suite) || suite.models[0]?.profile.clientModelId || "", "填写客户端完整模型 ID", false, "text", false, true)}
+              ${checkboxField("测试 SSE 流式响应", "stream", true)}
+            </div>
+            <div class="form-actions"><span class="field-hint">使用已保存的配置发起少量推理请求，会产生上游用量。</span><button class="button" type="submit">测试推理</button></div>
+          </form>` : ""}
         ` : `<div class="empty"><strong>未配置上游</strong></div>`}
       </section>
       <section class="suite-section" aria-labelledby="suite-models-title">
         <div class="suite-section-heading suite-models-heading">
-          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。</p></div>
+          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>${suite.target === "claude-code" ? "默认透传模型名；改名时填写 Claude Code 请求中的完整模型 ID。模型能力、上下文和压缩由客户端与上游决定。" : "默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。"}</p></div>
           <button class="button" type="button" data-action="add-suite-model">添加模型设置</button>
         </div>
         ${suite.target === "codex" ? codexCatalogStatus() : ""}
@@ -633,14 +664,15 @@ function renderSuiteDetail() {
               : `<div class="empty">已启用模型名直接透传，无需添加模型设置。</div>`}
           </div>
           <div class="suite-section-footer">
-            <span class="field-hint">按需展开模型能力与上下文设置。</span>
+            <span class="field-hint">${suite.target === "claude-code" ? "显示名称和说明用于模型发现。" : "按需展开模型能力与上下文设置。"}</span>
             <div class="form-actions">
               <button class="button" type="submit">保存模型设置</button>
-              ${suite.target === "codex" ? "" : `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>`}
+              ${suite.target === "generic-env" ? `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>` : ""}
             </div>
           </div>
         </form>
       </section>
+      ${suite.target === "claude-code" ? claudeClientForm(suite) : ""}
     </div>
     <section class="panel suite-connection" aria-labelledby="suite-connection-title">
       <div class="panel-header">
@@ -648,7 +680,8 @@ function renderSuiteDetail() {
         <div class="suite-connection-actions">
           <button class="button button-quiet" type="button" data-action="toggle-vp" data-id="${esc(provider.id)}">${provider.enabled === false ? "启动服务" : "暂停服务"}</button>
           <button class="button" type="button" data-action="preview-artifacts">预览配置</button>
-          ${binding.target === "codex" ? `<button class="button button-primary" type="button" data-action="apply-target">应用到 Codex</button>` : ""}
+          ${["codex", "claude-code"].includes(binding.target) ? `<button class="button button-primary" type="button" data-action="apply-target">应用到 ${esc(targetLabel(binding.target))}</button>` : ""}
+          ${binding.target === "claude-code" ? `<button class="button" type="button" data-action="restore-target">撤销接入</button>` : ""}
         </div>
       </div>
       <div class="panel-body">
@@ -662,6 +695,37 @@ function renderSuiteDetail() {
   `;
 }
 
+function upstreamAuthField(name, header = "x-api-key") {
+  const options = [
+    ["x-api-key", "API Key (x-api-key / ANTHROPIC_API_KEY)"],
+    ["authorization", "Bearer Token (Authorization / ANTHROPIC_AUTH_TOKEN)"],
+  ];
+  if (!options.some(([value]) => value === header)) options.push([header, `保留现有认证 (${header})`]);
+  return `<label class="field"><span>上游认证方式</span><select name="${esc(name)}">${options.map(([value, label]) => `<option value="${esc(value)}" ${value === header ? "selected" : ""}>${esc(label)}</option>`).join("")}</select><span class="field-hint">环境变量名用于对照 Claude 直连上游的配置；这里选择的是 CableTidy 访问上游的认证方式。</span></label>`;
+}
+
+function claudeDefaultModel(suite) {
+  if (suite.binding.claude?.setModel === false) return "";
+  const value = suite.binding.defaultModel || suite.virtualProvider.defaultModel || "";
+  return suite.models.find((model) => model.id === value)?.profile.clientModelId || value;
+}
+
+function claudeClientForm(suite) {
+  const options = suite.binding.claude || {};
+  return `<section class="suite-section">
+    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>全部可留空，沿用客户端选择。这里填写客户端模型名，上游改名在模型设置中配置。</p></div>
+    <form id="claude-client-form" data-suite-context="${esc(suite.bindingId)}">
+      <div class="form-grid">
+        ${field("启动模型（可选）", "defaultModel", claudeDefaultModel(suite), "留空保留已有模型选择")}
+        ${["opus", "sonnet", "haiku", "subagent"].map((family) => field(family === "subagent" ? "子代理模型（可选）" : `${family} 模型（可选）`, family, options.models?.[family] || "", "留空沿用客户端")).join("")}
+        ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
+      </div>
+      <p class="field-hint">模型发现只列出已配置模型，不限制其他模型请求。Claude Code 可能过滤不含 claude 或 anthropic 的模型 ID。保存后需重新应用客户端配置。</p>
+      <div class="form-actions"><button class="button" type="submit">保存客户端设置</button></div>
+    </form>
+  </section>`;
+}
+
 function renderSuiteCreate() {
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
@@ -670,7 +734,7 @@ function renderSuiteCreate() {
         <h2 id="config-basics">基本信息</h2>
         <div class="form-grid">
           ${field("配置名称（可选）", "suiteName", "", "例如 my-relay；留空自动生成")}
-          ${selectField("CLI", "target", "codex", ["codex"])}
+          ${selectField("CLI", "target", state.createTarget, ["codex", "claude-code"])}
         </div>
       </section>
       <section class="config-section" aria-labelledby="config-upstream">
@@ -678,6 +742,7 @@ function renderSuiteCreate() {
         <div class="form-grid">
           ${field("上游地址", "upstreamBaseUrl", "", "https://relay.example.com/v1", false, "url", false, true)}
           ${field("API Key", "upstreamSecret", "", "", false, "password", false, true)}
+          <div data-claude-create-auth ${state.createTarget === "claude-code" ? "" : "hidden"}>${upstreamAuthField("upstreamAuth")}</div>
         </div>
       </section>
       <section class="config-section" aria-labelledby="config-models">
@@ -685,8 +750,8 @@ function renderSuiteCreate() {
           <h2 id="config-models">模型设置（可选）</h2>
           <button class="mini-button" type="button" data-action="add-create-model">添加模型设置</button>
         </div>
-        <p class="field-hint">默认透传请求中的模型名。需要改名时添加设置，上下文等参数可在创建后调整。</p>
-        ${codexCatalogStatus()}
+        <p class="field-hint">默认透传请求中的模型名。需要改名时添加设置，客户端选项可在创建后调整。</p>
+        <div ${state.createTarget === "codex" ? "" : "hidden"} class="catalog-status-wrapper">${codexCatalogStatus()}</div>
         <div id="create-model-list" class="create-model-list"></div>
       </section>
       <div class="config-form-footer">
@@ -697,23 +762,23 @@ function renderSuiteCreate() {
   `;
 }
 
-function createModelRow(values = {}) {
+function createModelRow(values = {}, target = state.createTarget) {
   const model = {
     clientModelId: values.clientModelId || "",
     upstreamModelId: values.upstreamModelId || "",
   };
   return `
     <div class="create-model-row" data-create-model>
-      ${officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
+      ${target === "claude-code" ? `<label class="field"><span>客户端模型 ID</span><input data-create-field="clientModelId" value="${esc(model.clientModelId)}" placeholder="Claude 完整模型 ID" required /></label>` : officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
       <label class="field"><span>上游模型 ID（可选）</span><input data-create-field="upstreamModelId" value="${esc(model.upstreamModelId)}" placeholder="留空使用请求中的模型名" /></label>
       <button class="mini-button" type="button" data-action="remove-create-model" aria-label="移除模型映射">移除</button>
     </div>
   `;
 }
 
-function suiteDefaults() {
+function suiteDefaults(target = "codex") {
   const upstreamId = nextConfigId(state.candidate?.upstreams, "relay-main");
-  const bindingId = nextConfigId(state.candidate?.bindings, "codex-main");
+  const bindingId = nextConfigId(state.candidate?.bindings, target === "claude-code" ? "claude-main" : "codex-main");
   const routeId = nextConfigId(state.candidate?.routes, `${upstreamId}-route`);
   return { upstreamId, bindingId, routeId };
 }
@@ -862,7 +927,7 @@ function resolveResultPanel(result) {
 
 function artifactPanel(artifacts) {
   const title = artifacts.target === "claude-code"
-    ? "Claude Code environment preview"
+    ? "Claude Code 配置预览"
     : artifacts.target === "generic-env"
       ? "Generic environment preview"
       : "Codex local config.toml preview";
@@ -874,11 +939,16 @@ function artifactPanel(artifacts) {
       <div class="subsection-header"><h3>${title}</h3><span class="field-hint">${esc(artifacts.mode || "managed_proxy")}</span></div>
       ${artifacts.catalogSummary ? `<div class="field-hint">${esc(artifacts.catalogSummary.sourceVersion)} / ${artifacts.catalogSummary.mode === "managed" ? "生成模型目录" : "沿用当前 Codex 目录"}</div>` : ""}
       ${(artifacts.warnings || []).map((message) => `<div class="notice warning">${esc(message)}</div>`).join("")}
+      ${artifacts.settingsPath ? `<p>应用位置：<code>${esc(artifacts.settingsPath)}</code>，仅合并管理字段。</p>` : ""}
+      ${(artifacts.instructions || []).map((message) => `<p class="field-hint">${esc(message)}</p>`).join("")}
+      ${artifacts.changes?.length ? `<p class="field-hint">修改字段：${esc(artifacts.changes.join(", "))}</p>` : ""}
+      ${artifacts.conflicts?.length ? `<div class="notice warning">应用已阻止：这些字段在上次应用后被手工修改：${esc(artifacts.conflicts.join(", "))}</div>` : ""}
       ${(artifacts.files || []).map((file) => file.kind === "json"
         ? `<details class="subsection"><summary>${esc(file.path)}</summary><pre class="code-preview">${esc(file.contents)}</pre></details>`
         : `<div class="subsection"><div class="table-meta">${esc(file.path)}</div><pre class="code-preview">${esc(file.contents)}</pre></div>`).join("")}
       ${variables}
       ${artifacts.environment?.shell ? `<div class="subsection"><div class="table-meta">SETUP COMMAND</div><pre class="code-preview">${esc(artifacts.environment.shell)}</pre></div>` : ""}
+      ${artifacts.environment?.powershell ? `<details class="subsection"><summary>PowerShell</summary><pre class="code-preview">${esc(artifacts.environment.powershell)}</pre></details>` : ""}
     </div>
   `;
 }
@@ -911,6 +981,7 @@ async function handleAction(action, element) {
       if (!window.confirm("放弃此表单的本地修改并加载最新配置？")) return;
       render(captureEditedForms(element.closest("form")));
     } else if (action === "create-suite") {
+      state.createTarget = "codex";
       state.selected.suite = null;
       state.page = "suite-create";
       render();
@@ -937,7 +1008,7 @@ async function handleAction(action, element) {
       const upstreamId = suite?.upstreamId || null;
       wrapper.innerHTML = suiteModelEditor(suite || {}, "", {
         clientModelId: "",
-        ...(suite?.target === "codex" ? { codex: { metadataMode: "official" } } : { capabilities: ["streaming", "tools", "reasoning"] }),
+        ...(suite?.target === "codex" ? { codex: { metadataMode: "official" } } : suite?.target === "claude-code" ? {} : { capabilities: ["streaming", "tools", "reasoning"] }),
         upstreams: {},
       }, upstreamId);
       const row = wrapper.firstElementChild;
@@ -965,6 +1036,14 @@ async function handleAction(action, element) {
       await previewArtifacts();
     } else if (action === "apply-target") {
       await applyTarget();
+    } else if (action === "restore-target") {
+      if (hasUnsavedChanges()) throw new Error("请先保存当前编辑，再撤销接入。");
+      const suite = selectedSuite();
+      if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+      await api("/targets/restore", { method: "POST", body: JSON.stringify({ bindingId: suite.bindingId }) });
+      state.artifactPreview = null;
+      toast("Claude Code 原接入配置已恢复，请重启客户端。");
+      render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
       state.selected.model = selectedSuite()?.modelIds?.[0] || firstKey(state.candidate.models);
@@ -1040,6 +1119,15 @@ async function handleFormSubmit(event, form) {
   try {
     // Inputs named "id" shadow the form.id property in the browser.
     const formId = form.getAttribute("id");
+    if (formId === "claude-probe-form") {
+      const suite = selectedSuite();
+      const result = await api("/tests/upstream", { method: "POST", body: JSON.stringify({
+        id: suite.upstreamId, bindingId: suite.bindingId, model: String(data.get("model") || "").trim(), stream: data.get("stream") === "on",
+      }) });
+      if (!result.ok) throw new Error(result.message);
+      toast(`${result.message}，${result.latencyMs}ms`);
+      return;
+    }
     if (formId === "resolve-form") {
       if (submitButton) submitButton.textContent = "解析中...";
       await resolveModel(data);
@@ -1052,6 +1140,7 @@ async function handleFormSubmit(event, form) {
       "suite-create-form": () => saveSuiteCreate(data, form),
       "suite-upstream-form": () => saveSuiteUpstream(data),
       "suite-models-form": () => saveSuiteModels(form),
+      "claude-client-form": () => saveClaudeClient(data),
       "model-form": () => saveModel(data, form),
     };
     if (!handlers[formId]) throw new Error("无法保存此表单，请刷新页面后重试。");
@@ -1134,12 +1223,14 @@ function saveSuiteModels(form) {
     nextModels[profileId] = {
       ...existing,
       id: profileId,
-      name: clientModelId,
+      name: suite.target === "claude-code" ? row.querySelector("[data-claude-model-name]")?.value.trim() || clientModelId : clientModelId,
       clientModelId,
       aliases,
-      family: existing.family || "codex",
-      capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"],
-      ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : {
+      family: existing.family || (suite.target === "claude-code" ? "claude" : "codex"),
+      ...(suite.target === "claude-code" ? {
+        description: row.querySelector("[data-claude-model-description]")?.value.trim() || undefined,
+      } : { capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"] }),
+      ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : suite.target === "claude-code" ? {} : {
         contextWindow: Number(row.querySelector("[data-suite-model-context]")?.value || 1000000),
         compact: {
         strategy: row.querySelector("[data-suite-model-compact]")?.value || "auto",
@@ -1198,11 +1289,25 @@ function saveSuiteModels(form) {
 
 }
 
+function saveClaudeClient(data) {
+  const suite = selectedSuite();
+  if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+  const defaultModel = String(data.get("defaultModel") || "").trim();
+  const models = Object.fromEntries(["opus", "sonnet", "haiku", "subagent"].map((family) =>
+    [family, String(data.get(family) || "").trim()]).filter(([, value]) => value));
+  suite.binding.defaultModel = defaultModel || undefined;
+  suite.virtualProvider.defaultModel = defaultModel || undefined;
+  suite.binding.claude = { ...suite.binding.claude, setModel: Boolean(defaultModel), models, discoverModels: data.get("discoverModels") === "on" };
+}
+
 function saveSuiteCreate(data, form) {
-  const defaults = suiteDefaults();
   const upstreamBaseUrl = String(data.get("upstreamBaseUrl") || "").trim();
   const upstreamSecret = String(data.get("upstreamSecret") || "").trim();
   const target = String(data.get("target") || "codex").trim();
+  if (!["codex", "claude-code"].includes(target)) throw new Error("请选择 Codex 或 Claude Code");
+  const defaults = suiteDefaults(target);
+  const isClaude = target === "claude-code";
+  const protocol = isClaude ? "anthropic.messages" : "openai.responses";
   const suiteName = String(data.get("suiteName") || "").trim();
   const modelEntries = [...form.querySelectorAll("[data-create-model]")].map((row) => {
     const read = (key) =>
@@ -1229,7 +1334,7 @@ function saveSuiteCreate(data, form) {
   const upstreamId = defaults.upstreamId;
   const upstreamName = upstreamDisplayName(upstreamBaseUrl, upstreamId);
   const routeId = defaults.routeId;
-  const name = suiteName || `Codex / ${upstreamName}`;
+  const name = suiteName || `${targetLabel(target)} / ${upstreamName}`;
   const bindingId = configurationId(name, defaults.bindingId);
   const virtualProviderId = providerIdForConfiguration(bindingId);
   if (Object.hasOwn(state.candidate.bindings, bindingId) || Object.hasOwn(state.candidate.virtualProviders, virtualProviderId)) {
@@ -1250,8 +1355,8 @@ function saveSuiteCreate(data, form) {
           name: model.clientModelId,
           clientModelId: model.clientModelId,
           aliases: [model.clientModelId],
-          family: "codex",
-          ...codexModelFields(model.clientModelId),
+          family: isClaude ? "claude" : "codex",
+          ...(isClaude ? {} : codexModelFields(model.clientModelId)),
           upstreams: {
             [upstreamId]: {
               ...(model.upstreamModelId ? { upstreamModelId: model.upstreamModelId } : {}),
@@ -1266,8 +1371,8 @@ function saveSuiteCreate(data, form) {
   state.candidate.upstreams[upstreamId] = {
     id: upstreamId,
     name: upstreamName,
-    integration: "codex-native-provider",
-    protocol: "openai.responses",
+    ...(isClaude ? { auth: { header: data.get("upstreamAuth") || "x-api-key" } } : { integration: "codex-native-provider" }),
+    protocol,
     baseUrl: upstreamBaseUrl,
     secretRef: `secret://upstreams/${upstreamId}`,
     enabled: true,
@@ -1287,8 +1392,8 @@ function saveSuiteCreate(data, form) {
   };
   state.candidate.virtualProviders[virtualProviderId] = {
     id: virtualProviderId,
-    name: `Codex via ${upstreamName}`,
-    ingressProtocol: "openai.responses",
+    name: `${targetLabel(target)} via ${upstreamName}`,
+    ingressProtocol: protocol,
     route: routeId,
     allowedModels: modelIds,
     enabled: true,
@@ -1297,11 +1402,11 @@ function saveSuiteCreate(data, form) {
     id: bindingId,
     name,
     target,
-    integration: "codex-native-provider",
-    targetFormat: "codex.config.toml.v1",
+    ...(isClaude ? {} : { integration: "codex-native-provider" }),
+    targetFormat: isClaude ? "claude.settings.json.v1" : "codex.config.toml.v1",
     mode: "config",
     virtualProvider: virtualProviderId,
-    codex: {},
+    ...(isClaude ? { claude: {} } : { codex: {} }),
   };
 
   state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;
@@ -1331,6 +1436,14 @@ function saveSuiteUpstream(data) {
   };
   if (data.get("protocol") !== "openai.responses") {
     delete state.candidate.upstreams[id].integration;
+  }
+  if (data.get("protocol") === "anthropic.messages" && data.get("authHeader")) {
+    const header = String(data.get("authHeader"));
+    const previous = existing.auth?.header || existing.authHeader || "x-api-key";
+    if (header !== previous) {
+      state.candidate.upstreams[id].auth = { header, ...(header === "authorization" ? { scheme: "Bearer" } : {}) };
+      delete state.candidate.upstreams[id].authHeader;
+    }
   }
   const secret = String(data.get("secret") || "").trim();
   if (secret) {
@@ -1426,7 +1539,7 @@ async function previewArtifacts() {
   });
   state.artifactPreview = result.artifacts;
   const target = result.artifacts?.target;
-  toast(target === "codex" ? "已生成 Codex 本地 config.toml 预览。" : "已生成环境配置预览；请将这些变量注入对应客户端。");
+  toast(target === "codex" ? "已生成 Codex 本地 config.toml 预览。" : target === "claude-code" ? "已生成 Claude Code 配置预览；预览不会写入文件。" : "已生成环境配置预览；请将这些变量注入对应客户端。");
   render(preservedForms);
 }
 
@@ -1437,7 +1550,7 @@ async function applyTarget() {
   const suite = selectedSuite();
   if (!suite) throw new Error("请先选择一个配置套装。");
   const binding = suite.binding;
-  if (binding?.target !== "codex") {
+  if (!["codex", "claude-code"].includes(binding?.target)) {
     await previewArtifacts();
     return;
   }
@@ -1451,7 +1564,7 @@ async function applyTarget() {
     bindingId: suite.bindingId,
     mode: result.report.mode || "managed_proxy",
   } : null;
-  toast("Codex 配置已应用。");
+  toast(`${targetLabel(binding.target)} 配置已应用，请重启客户端。`);
   render();
 }
 

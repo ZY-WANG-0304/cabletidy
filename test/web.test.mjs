@@ -7,6 +7,7 @@ import { normalizeConfig } from "../src/config.mjs";
 import { publicCodexCatalog } from "../src/codex-catalog.mjs";
 import { validateConfig } from "../src/validation.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
 
 const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
@@ -88,7 +89,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         "/api/v1/events": { events: [] },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),
-        "/api/v1/targets/apply": { target: "codex" },
+        "/api/v1/targets/apply": { target: persisted.bindings[body?.bindingId]?.target },
+        "/api/v1/targets/restore": { target: "claude-code", report: { mode: "restored" } },
         "/api/v1/config/preview-target-artifacts": { artifacts: { target: persisted.bindings[body?.bindingId]?.target } },
       };
       assert.ok(url in responses, "Unexpected endpoint: " + url);
@@ -139,6 +141,85 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
 function clone(value) {
   return structuredClone(value);
 }
+
+test("Claude configurations can be created without a Codex catalog and retain native protocol and scoped models", async () => {
+  const app = await controller();
+  app.read('state.codexCatalog = { available: false, models: [] }; state.createTarget = "claude-code"');
+  const form = creationForm();
+  form.fields.target = "claude-code";
+  form.fields.upstreamAuth = "authorization";
+  form.fields.suiteName = "";
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "claude-sonnet-4-6" : "vendor-sonnet" }) }];
+  assert.match(app.read("renderSuiteCreate()"), /value="claude-code" selected/);
+  assert.doesNotMatch(app.read("createModelRow()"), /data-official-model/);
+  await app.submit(form);
+  const config = app.persisted();
+  const binding = config.bindings["claude-code-example-invalid"];
+  assert.equal(binding.target, "claude-code");
+  assert.equal(binding.targetFormat, "claude.settings.json.v1");
+  assert.equal(binding.defaultModel, undefined);
+  const provider = config.virtualProviders[binding.virtualProvider];
+  const backend = config.routes[provider.route].backends[0];
+  assert.equal(provider.ingressProtocol, "anthropic.messages");
+  assert.equal(config.upstreams[backend.upstream].protocol, "anthropic.messages");
+  assert.deepEqual(config.upstreams[backend.upstream].auth, { header: "authorization" });
+  assert.equal(config.upstreams[backend.upstream].integration, undefined);
+  const model = config.models[backend.models[0]];
+  assert.equal(model.clientModelId, "claude-sonnet-4-6");
+  assert.equal(model.capabilities, undefined);
+  assert.equal(model.contextWindow, undefined);
+  assert.ok(config.models.model);
+  assert.equal(validateConfig(config).ok, true);
+  const html = app.read("renderSuiteDetail()");
+  assert.match(html, /应用到 Claude Code/);
+  assert.match(html, /撤销接入/);
+  assert.doesNotMatch(html, /Compact strategy|850000|data-codex-metadata|open-advanced-models/);
+  assert.equal(app.read("suiteEndpoint(selectedSuite())"), "http://127.0.0.1:43100/claude-code-example-invalid");
+});
+
+test("Claude client selection saves optional family defaults, applies explicitly, and can restore", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  await app.submit(formNode("claude-client-form", { defaultModel: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-custom", subagent: "sonnet", discoverModels: "on" }));
+  const binding = app.persisted().bindings["claude-main"];
+  assert.equal(binding.defaultModel, "claude-sonnet-4-6");
+  assert.deepEqual(binding.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-custom", subagent: "sonnet" } });
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  await app.action("apply-target", {});
+  assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
+  assert.equal(app.requests.at(-1).body.bindingId, "claude-main");
+  await app.action("restore-target", {});
+  assert.equal(app.requests.at(-1).url, "/api/v1/targets/restore");
+  await app.submit(formNode("claude-client-form", {}));
+  assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+});
+
+test("Claude upstream authentication can switch without replacing its saved credential", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  await app.submit(formNode("suite-upstream-form", { id: "relay", name: "Relay", protocol: "anthropic.messages", baseUrl: "https://example.invalid/v1", authHeader: "authorization", secret: "" }));
+  assert.deepEqual(app.persisted().upstreams.relay.auth, { header: "authorization", scheme: "Bearer" });
+  assert.equal(app.persisted().upstreams.relay.secretRef, "secret://upstreams/relay");
+  const commit = app.requests.find(({ url }) => url.endsWith("config/commit"));
+  assert.deepEqual(commit.body.upstreamSecrets, {});
+});
+
+test("Claude mapping edits do not invent capability or compaction policies", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model",
+    "[data-claude-model-name]": "Sonnet for work", "[data-claude-model-description]": "Tools and code" };
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  const model = app.persisted().models.sonnet;
+  assert.equal(model.upstreams.relay.upstreamModelId, "new-model");
+  assert.equal(model.name, "Sonnet for work");
+  assert.equal(model.description, "Tools and code");
+  assert.equal(model.capabilities, undefined);
+  assert.equal(model.contextWindow, undefined);
+  assert.equal(model.compact, undefined);
+  assert.equal(validateConfig(app.persisted()).ok, true);
+});
 
 test("suite upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {
   const config = normalizeConfig(codexConfigFixture());
