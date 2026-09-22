@@ -35,6 +35,10 @@
     "prepublishOnly": "npm test && npm run test:package"
   },
   "dependencies": {
+    "proper-lockfile": "^4.1.2",
     "toml-eslint-parser": "^1.0.3"
+  },
+  "devDependencies": {
+    "cross-spawn": "^7.0.6"
   }
 }

@@ -212,7 +212,7 @@ Route 记录配置的唯一 upstream 及其可用模型。存储结构中的 `ba
 }
 ```
 
-backend 连接唯一 upstream，`models` 保存当前配置可选的 Model Profile 引用，不是请求白名单；可省略或为空。模型的公共 alias 和能力由 Model Registry 维护。配置不支持多上游、主备切换或故障转移；上游错误直接返回客户端，连接失败返回 502。旧配置中的 priority/weight 不影响单上游转发。
+backend 连接唯一 upstream，`models` 保存当前配置可选的 Model Profile 引用，不是请求白名单；可省略或为空。模型的公共 alias 和能力由 Model Registry 维护。配置不支持多上游、主备切换或故障转移；上游错误直接返回客户端，连接失败返回 502。旧配置中的 route `strategy`、backend `priority` / `weight` 只保留原值，不再校验或参与转发。
 
 ### 4.7 Virtual Provider
 
@@ -231,7 +231,8 @@ Virtual Provider 是 CableTidy 在本地暴露的一个面向客户端的服务�
 Virtual Provider 与管理台共用一个本机回环监听器，不生成或校验本地 API Key。
 监听地址由 `web.listenHost` / `web.port` 决定；旧配置中的 `localAuth`、独立
 `listenHost` / `listenPort` 和 `daemon.proxyPortRange` 在加载时移除。
-配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数：
+首次启动且没有配置文件时，优先绑定 `43100`，遇到 `EADDRINUSE` 则在同一个服务对象上绑定端口 `0`，由操作系统选择可用端口。监听器始终保持打开，实际端口保存到配置和运行状态中，所有入口和客户端配置均使用这个端口。已有配置的端口被占用时直接报错，需要手动修改后重启并重新应用客户端配置。
+配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数。以下示例假设最终端口为 `43100`：
 
 ```text
 127.0.0.1:43100/                       Web 管理台
@@ -270,7 +271,7 @@ Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如�
 
 ### 5.1 CableTidy 内部保存什么
 
-Web 向导会将以下信息保存到 CableTidy：
+Web 配置表单会将以下信息保存到 CableTidy：
 
 ```text
 上游地址 / API Key / wire protocol
@@ -475,7 +476,7 @@ anthropic.messages -> anthropic.messages
 
 跨协议转换必须单独注册 protocol pair，并声明支持、拒绝和降级的能力。不能把所有协议强行压成一个不完整的 OpenAI Chat JSON。
 
-## 7. Web 管理台与 MVP 向导
+## 7. Web 管理台与配置流程
 
 ### 7.1 页面职责
 
@@ -489,7 +490,7 @@ Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按�
 一级页面只保留：
 
 1. 配置套装：查看套装列表、创建套装、进入某套配置的详情页。
-2. 诊断：执行配置校验、模型解析测试、上游连通性测试和脱敏事件查看。
+2. 诊断：执行模型解析测试和脱敏事件查看。上游连通性测试位于套装详情页，配置校验由保存接口执行。
 
 套装详情页按上游连接、可选模型设置、客户端接入的顺序纵向排列。底部展示本地地址、
 Virtual Provider ID 以及服务启停、预览和应用操作。一个 Virtual Provider 只连接
@@ -513,34 +514,34 @@ CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Bi
 套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
 底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
 理解或点击的高级设置入口，也不再作为一级导航和首次配置的必经步骤。
+Claude Code 和 Generic CLI 的详情页仍保留高级模型编辑入口。
 
-### 7.2 首次配置向导
+### 7.2 创建配置
 
-空配置时 Overview 显示“创建配置套装”入口，点击后直接进入向导：
+首次使用与后续使用采用同一流程：从配置列表点击“新建配置”，进入单页表单：
 
 ```text
-Step 1  上游连接
-        base URL / API Key / protocol
+基本信息
+  配置名称（可选）/ CLI（当前新建入口为 Codex）
 
-Step 2  可选 CableTidy Model Profile（默认无设置，可全部删除）
-        官方模型 / upstream_model_id（可选）
-        能力和上下文默认沿用官方定义
+上游连接
+  base URL / API Key
 
-Step 3  本地 Codex 服务
-        Virtual Provider / configuration path
+模型设置（可选，默认不添加）
+  官方模型 / upstream_model_id（可选）
+  上下文等参数在创建后的详情页调整
 
-完成
-        自动创建 Route 和 Codex Target Binding
-        生成 CableTidy config.toml preview
+创建配置
+  自动创建 Route、Virtual Provider 和 Codex Target Binding
+  保存成功后进入详情页，再按需预览或应用客户端配置
 ```
 
-向导提交的是 CableTidy 草稿，提交前经过：
+表单直接提交草稿，服务端负责校验和应用：
 
 ```text
 browser draft
-  -> POST /api/v1/config/validate
-  -> effective diff + errors/warnings
   -> POST /api/v1/config/commit with baseRevision
+  -> revision check + validation + effective diff
   -> atomic store write
   -> runtime snapshot swap
 ```
@@ -561,27 +562,40 @@ GET  /api/v1/events
 POST /api/v1/config/validate
 POST /api/v1/config/commit
 POST /api/v1/config/preview-target-artifacts
-POST /api/v1/config/preview-codex-config
+POST /api/v1/targets/apply
 
 POST /api/v1/tests/upstream
 POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
 
-管理台是本地 daemon 的 loopback-only 控制面，默认监听 `127.0.0.1:43100`，不使用访问 token 或 session 有效期。远程使用应通过 SSH port forwarding 等方式完成。Web 不把上游 secret 明文返回给浏览器。Virtual Provider 同样仅监听本机回环地址，无需本地 API Key。
+`preview-codex-config` 和 `preview-provider-artifacts` 保留为 `preview-target-artifacts` 的兼容路径。旧 `/api/v1/targets/codex/apply` 与通用应用接口共用写入流程，但保留 Codex 专用的默认 binding 选择、响应字段、错误码和事件名。
+
+管理台是本地 daemon 的 loopback-only 控制面，首次启动优先监听 `127.0.0.1:43100`，占用时自动分配其他端口并保存，不使用访问 token 或 session 有效期。远程使用应通过 SSH port forwarding 等方式完成。Web 不把上游 secret 明文返回给浏览器。Virtual Provider 同样仅监听本机回环地址，无需本地 API Key。
 
 ## 9. 配置存储
 
-当前 MVP 使用 Node.js 内置模块和本地 JSON store：
+当前 MVP 使用 Node.js 和本地 JSON store，通过 `proper-lockfile` 管理实例锁：
 
 ```text
 ~/.cabletidy/config.json
 ~/.cabletidy/secrets.json
 ~/.cabletidy/runtime.json
+~/.cabletidy/daemon.lock/
 ~/.cabletidy/backups/
 ```
 
 `config.json` 保存非敏感的 CableTidy 配置图，`secrets.json` 只保存 secret reference 对应的本地 secret。后续可以替换为 Rust daemon、TOML 配置和 OS keyring，但不能改变领域对象边界。
+
+新配置不再生成 `web.enabled`。旧配置中的该字段以及顶层 `models.<id>.capabilityOverrides` 保留原值，但运行时忽略，不进行专用校验。套餐入口的启停由 `virtualProviders.<id>.enabled` 控制；实际生效的能力覆盖位于 `models.<id>.upstreams.<upstream>.capabilityOverrides`，继续校验和应用。
+
+配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
+
+`instance-lock.mjs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和 `process-identity.mjs` 查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 PowerShell `StartTime` UTC ticks。库每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
+
+身份检查明确区分存活、死亡和未知。存活或未过期返回 `ELOCKED`；过期但身份未知（旧格式缺字段、查询失败、其他主机）或缺少可安全删除的 owner 标记，返回 `ELOCKUNKNOWN` 和人工恢复步骤。旧 Linux start ticks 不含 boot ID，只能在数值不同时排除原持有者，不能凭数值相同确认存活。空的旧锁目录也需要人工确认和删除。暂停的实例不被 mtime 误回收，恢复后的心跳仍能正常更新。
+
+Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` 命令，兼容 `.exe` 和 npm `.cmd`。监督进程先加入带 `KILL_ON_JOB_CLOSE` 的 Windows Job Object，所有后代继承该归属；查询结束、超时或强制终止监督进程时一并清理后代，即使中间启动器已退出也不遗留持有管道的进程。监督进程忽略控制台 Ctrl+C，由 daemon 控制排空和终止；同时持有 daemon 的 Windows 进程句柄，daemon 被系统强制结束时关闭整个 Job Object，不受 PID 复用影响。Linux / macOS 使用进程组处理受控退出。
 
 新配置的最小结构：
 
@@ -627,7 +641,7 @@ src/cli.mjs
   start / status
 
 web/index.html + web/app.js + web/styles.css
-  local configuration console and first-run wizard
+  local configuration console and creation form
 ```
 
 Codex Native Provider Integration 的运行实现位于 `src/codex-native-provider.mjs`。
@@ -636,7 +650,7 @@ Codex Native Provider Integration 的运行实现位于 `src/codex-native-provid
 
 - Web 和数据面共用一个 loopback listener，管理接口保留 `/api/v1/...`，配置入口使用 `/<配置ID>/v1/...`。
 - 管理接口和配置入口都校验本地 Host / Origin，无需本地 API Key。
-- 上游 secret 和本地 secret 分离保存、分离注入。
+- 上游 secret 单独存入 `secrets.json`，仅在请求上游时注入；本地入口不生成或校验访问密钥。
 - 日志只记录路由、模型和状态元数据，不记录 prompt、完整响应或 key。
 - 上游 URL 可以在管理台展示，但不得写入 Codex 生成的 local provider block。
 - Codex 生成配置只包含 CableTidy local endpoint 和 client model。
@@ -648,7 +662,7 @@ Codex Native Provider Integration 的运行实现位于 `src/codex-native-provid
 
 MVP 至少覆盖：
 
-1. Web 向导可以直接完成首次配置，不依赖外部教程或 profile 文件。
+1. Web 单页表单可以直接完成首次配置，不依赖外部教程或 profile 文件。
 2. 每份配置与 Virtual Provider 一对一，并通过 Route 连接唯一的 upstream。
 3. 每个 Model Profile 只有一个上游映射；一份配置内所有模型均映射到该配置的 upstream。不同配置可使用相同客户端模型名。
 4. 客户端模型名在请求和响应中保持稳定。
@@ -666,7 +680,7 @@ MVP 至少覆盖：
 ### Phase 1：当前 MVP
 
 - Node daemon 和 loopback-only Web 管理台。
-- Web 首次配置向导。
+- Web 配置创建与详情编辑。
 - `openai.responses` 和 `anthropic.messages` 同协议 Virtual Provider。
 - Upstream、Model Profile、Upstream Model Binding、Route、Virtual Provider、Target Binding。
 - Codex Native Provider Integration 的 Web 配置和原生配置生成。
@@ -707,7 +721,7 @@ CableTidy 的 Codex 集成链路是：
 
 ```text
 Codex Native Provider Integration
-  -> Web 向导填写 CableTidy 配置
+  -> Web 表单填写 CableTidy 配置
   -> Upstream / Model Profile / Binding / Route
   -> local Virtual Provider
   -> ~/.codex/config.toml managed block

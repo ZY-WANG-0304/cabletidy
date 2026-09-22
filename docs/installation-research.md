@@ -8,7 +8,7 @@
 
 安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。主发布渠道为 npm 官方源 `https://registry.npmjs.org/`，包名为 `cabletidy`；本地 tarball 继续作为同一产物的安装方式。首版 `cabletidy@0.1.0` 已于 2026-09-21 公开发布，`latest` 指向 `0.1.0`。
 
-CLI 只提供 `start`、`status`、帮助和版本查询。`status` 汇总 daemon 状态、管理台 URL 和配置套装列表。配置校验仍在服务启动和管理台保存时执行；客户端配置预览和应用由管理台负责，不再提供单独的调试命令或临时客户端启动命令。
+CLI 只提供 `start`、`status`、帮助和版本查询。`status` 只读；尚无配置时仅报告未启动，不创建数据文件或生成 URL，已有配置时汇总 daemon 状态、管理台 URL 和配置套装列表。配置校验仍在服务启动和管理台保存时执行；客户端配置预览和应用由管理台负责，不再提供单独的调试命令或临时客户端启动命令。
 
 当前服务以前台方式运行。安装与后台常驻分开交付，npm 安装过程不会启动服务、注册系统服务或修改客户端配置。
 
@@ -18,7 +18,8 @@ CLI 只提供 `start`、`status`、帮助和版本查询。`status` 汇总 daemo
 - `files` 白名单包含 `bin/`、`src/`、`web/`；npm 自动纳入包元数据、README 和存在的许可文件。测试、研究文档和用户数据不进入发行包。
 - 服务根据模块位置定位 Web 资源，必须保留 `src/` 与 `web/` 的相对结构。`web/config-identity.js` 同时被服务端导入，不能只分发服务端源码。
 - 数据默认位于 `~/.cabletidy`，也可通过 `CABLETIDY_HOME` 指定。升级替换程序后需要重启；卸载保留数据及已应用的客户端配置。
-- `start` 首次收到 SIGINT / SIGTERM 时停止接受新连接，等待请求、子进程和配置写入完成，再清理运行状态；不设置退出倒计时。等待期间再次收到 SIGINT 则终止目录查询子进程并以退出码 130 强制退出。端口被占用时明确报错，不自动换端口，因为客户端接入地址必须稳定。
+- `start` 首次收到 SIGINT / SIGTERM 时停止接受新连接，等待请求、子进程和配置写入完成，再清理运行状态；不设置退出倒计时。等待期间再次收到 SIGINT 则终止目录查询子进程并以退出码 130 强制退出。
+- 首次启动且尚无配置时，优先使用 `127.0.0.1:43100`；占用则由系统分配可用端口，监听成功后保存。后续启动复用已保存端口，占用时明确报错，因为客户端接入地址必须稳定。同一数据目录通过带持有者 PID、主机名和跨平台启动标识的实例锁阻止重复启动；只有可识别锁代次、确认原进程已退出且至少 10 秒未更新时才回收，暂停中的旧进程不会被误接管。旧锁或身份查询失败返回 `ELOCKUNKNOWN`，按 README 确认实例退出后人工删除锁目录。
 - Codex 可选模型设置依赖本机 Codex CLI 及其 `PATH`。CableTidy 安装包不附带 Codex，也不以它作为纯透传配置的启动前提。
 - 当前是可执行应用，没有对外承诺 JavaScript 库接口，因此无需添加 `main` 或 `exports`。
 
@@ -54,7 +55,7 @@ Docker 不能只添加 Dockerfile 就宣称完整支持：容器回环地址与�
 
 2026-09-21 首版发布在 Linux / Node.js 25.6.0 上通过 136 项源码测试、安装冒烟测试与发布预演。正式发布后，确认官方源的版本、`latest` 标签和 tarball 校验值，并使用独立 npm 配置、全新缓存及临时安装目录，从官方源按包名安装 `cabletidy@0.1.0`。验证覆盖 CLI 版本与帮助、Web 资源、状态查询、端口冲突、SIGINT / SIGTERM、按包名运行 `npm exec`，以及卸载保留用户数据。
 
-Windows 的安装测试目前不会验证信号生命周期或直接执行 cmd shim；macOS、Windows、真实上游和系统服务仍需各自验收。Linux 检查通过不代表这些边界已经验证。
+CI 矩阵在 Linux、macOS、Windows 上分别运行 Node.js 22.13.0 和 24 的源码测试与安装冒烟测试，结果以对应提交的 Actions 为准。Windows 安装测试直接执行 npm `.cmd`，覆盖启动、端口、强制终止、旧锁恢复和稳定 URL；源码测试覆盖 `.cmd` Codex 查询和 Job Object 后代清理，并通过 IPC 触发退出处理逻辑。IPC 不模拟真实控制台事件，Windows 终端 Ctrl+C、真实上游和系统服务仍需交互或集成验收。Windows 需要系统 PowerShell；Codex 查询使用 `Add-Type` 调用 Job Object API，在禁用该功能的受限 PowerShell 环境下会明确失败。
 
 初始 HTTP 探测曾受环境代理影响；手工验证脚本对回环请求绕过代理后通过。部署验证应注意回环请求的代理配置，不据此改变应用的访问边界。
 
@@ -81,7 +82,7 @@ npm view cabletidy@0.1.0 version dist.integrity --registry=https://registry.npmj
 npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy@0.1.0 -- cabletidy --version
 ```
 
-首版为 `0.1.0`，后续发布必须递增版本号，并对应更新锁文件；同名同版本不能覆盖发布。当前平台验收范围仍为 Linux，不将 npm 发布成功视为 macOS 或 Windows 已验证。
+首版为 `0.1.0`，后续发布必须递增版本号，并对应更新锁文件；同名同版本不能覆盖发布。发布前检查该提交的三平台 CI，不将 npm 发布成功视为跨平台验收通过。
 
 ## 尚未实施的服务管理
 

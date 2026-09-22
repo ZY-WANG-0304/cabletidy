@@ -6,11 +6,14 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 import { randomBytes } from "node:crypto";
+import { acquireInstanceLock } from "./instance-lock.mjs";
 
 import {
   applySecretPayload,
   backupFile,
   computeConfigDiff,
+  defaultConfig,
+  ensureStore,
   getPaths,
   loadConfig,
   loadSecrets,
@@ -22,12 +25,12 @@ import {
   saveSecrets,
   secretRefForUpstream,
   stripSecretFields,
+  writeJsonAtomic,
   writeRuntimeInfo,
 } from "./config.mjs";
 import {
   applyCodexArtifacts,
   prepareCodexArtifacts,
-  publicArtifacts,
   CODEX_NATIVE_PROVIDER_INTEGRATION,
   CODEX_NATIVE_REQUIRED_ENDPOINTS,
   CODEX_TARGET_FORMAT,
@@ -64,7 +67,27 @@ const CODEX_NATIVE_RESPONSES_PATH = CODEX_NATIVE_REQUIRED_ENDPOINTS.find(
 export async function createApplication(options = {}) {
   const paths = options.paths || getPaths();
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
+  const { release, identity } = await acquireInstanceLock(paths);
+  try {
+    const app = await createLockedApplication(options, paths, identity);
+    let closing;
+    return {
+      ...app,
+      close() {
+        return closing ||= app.close().finally(release);
+      },
+    };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+async function createLockedApplication(options, paths, identity) {
+  await ensureStore(paths);
   let config = await loadConfig(paths);
+  const allocatePort = config === null;
+  config ||= defaultConfig();
   let secrets = await loadSecrets(paths);
   const startupValidation = validateConfig(config);
   if (!startupValidation.ok) {
@@ -76,6 +99,7 @@ export async function createApplication(options = {}) {
 
   const state = {
     paths,
+    identity,
     config,
     secrets,
     events: [],
@@ -90,7 +114,7 @@ export async function createApplication(options = {}) {
   let webServer = null;
   const requests = new Set();
   const host = config.web.listenHost || "127.0.0.1";
-  const port = Number(config.web.port || 43100);
+  let port = Number(config.web.port);
   try {
     webServer = http.createServer((request, response) => {
       const task = handleWebRequest(state, request, response).catch((error) => {
@@ -103,9 +127,24 @@ export async function createApplication(options = {}) {
       requests.add(task);
     });
     state.webServer = webServer;
-    await listen(webServer, host, port);
+    try {
+      await listen(webServer, host, port);
+    } catch (error) {
+      if (error.code !== "EADDRINUSE") throw error;
+      if (!allocatePort) {
+        throw Object.assign(new Error(
+          `端口 ${host}:${port} 已被占用 (EADDRINUSE)。请停止占用端口的服务，或修改 ${paths.config} 中的 web.port 后重启，并重新应用客户端配置。`,
+          { cause: error },
+        ), { code: error.code });
+      }
+      // Keep the OS-assigned listener open so nobody can claim the chosen port.
+      await listen(webServer, host, 0);
+    }
+    port = webServer.address().port;
+    config.web.port = port;
 
     await saveSecrets(secrets, paths);
+    if (allocatePort) await saveConfig(config, paths);
     await persistRuntimeInfo(state, host, port);
   } catch (error) {
     if (webServer) await closeServer(webServer).catch(() => {});
@@ -339,7 +378,7 @@ async function handleApiRequest(state, request, response, url) {
         upstreamModelId: result.upstreamModelId,
         routeId: result.routeId,
         capabilities: result.capabilities,
-        rejectedBackends: result.rejected,
+        rejectedBackends: [],
       });
     } catch (error) {
       sendJson(response, 422, {
@@ -359,29 +398,18 @@ async function handleApiRequest(state, request, response, url) {
     return;
   }
 
-  if (
-    (url.pathname === "/api/v1/config/preview-target-artifacts" ||
-      url.pathname === "/api/v1/config/preview-codex-config") &&
-    method === "POST"
-  ) {
+  // Prototype aliases share target preview behavior; none import reference files.
+  if (method === "POST" && [
+    "/api/v1/config/preview-target-artifacts",
+    "/api/v1/config/preview-codex-config",
+    "/api/v1/config/preview-provider-artifacts",
+  ].includes(url.pathname)) {
     await previewTargetArtifacts(state, body, response);
     return;
   }
 
-  // Compatibility alias for clients built against the first prototype. It
-  // previews target artifacts and does not inspect or import reference files.
-  if (url.pathname === "/api/v1/config/preview-provider-artifacts" && method === "POST") {
-    await previewTargetArtifacts(state, body, response);
-    return;
-  }
-
-  if (url.pathname === "/api/v1/targets/codex/apply" && method === "POST") {
-    await applyCodexTarget(state, body, response);
-    return;
-  }
-
-  if (url.pathname === "/api/v1/targets/apply" && method === "POST") {
-    await applyTarget(state, body, response);
+  if (method === "POST" && ["/api/v1/targets/apply", "/api/v1/targets/codex/apply"].includes(url.pathname)) {
+    await applyTarget(state, body, response, url.pathname === "/api/v1/targets/codex/apply");
     return;
   }
 
@@ -604,30 +632,11 @@ async function previewTargetArtifacts(state, body, response) {
   }
 }
 
-async function applyCodexTarget(state, body, response) {
+async function applyTarget(state, body, response, legacyCodex = false) {
   try {
-    const artifacts = await prepareCodexArtifacts(state.config, {
-      bindingId: body.bindingId,
-      loadCatalog: state.loadCodexCatalog,
-      codexHome: state.codexHome,
-    }, state.secrets);
-    const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
-    recordEvent(state, "target.codex.apply", { bindingId: body.bindingId || null, files: report.applied });
-    sendJson(response, 200, {
-      ok: true,
-      report: {
-        ...report,
-        environment: publicArtifacts({ ...artifacts, ...report }).environment,
-      },
-    });
-  } catch (error) {
-    sendJson(response, 422, { error: { code: "codex_apply_failed", message: error.message } });
-  }
-}
-
-async function applyTarget(state, body, response) {
-  try {
-    const artifacts = await prepareTargetArtifacts(state.config, {
+    // The old endpoint selects the first Codex binding and keeps its wire contract.
+    const prepare = legacyCodex ? prepareCodexArtifacts : prepareTargetArtifacts;
+    const artifacts = await prepare(state.config, {
       bindingId: body.bindingId,
       loadCatalog: state.loadCodexCatalog,
       codexHome: state.codexHome,
@@ -644,16 +653,15 @@ async function applyTarget(state, body, response) {
       });
       return;
     }
-    let report = { applied: [], mode: artifacts.mode };
-    report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
-    recordEvent(state, "target.apply", {
-      bindingId: artifacts.bindingId,
-      target: artifacts.target,
+    const report = await applyCodexArtifacts(artifacts, { paths: state.paths, codexHome: state.codexHome });
+    recordEvent(state, legacyCodex ? "target.codex.apply" : "target.apply", {
+      bindingId: legacyCodex ? body.bindingId || null : artifacts.bindingId,
+      ...(!legacyCodex ? { target: artifacts.target } : {}),
       files: report.applied,
     });
     sendJson(response, 200, {
       ok: true,
-      target: artifacts.target,
+      ...(!legacyCodex ? { target: artifacts.target } : {}),
       report: {
         ...report,
         environment: publicTargetArtifacts({ ...artifacts, ...report }).environment,
@@ -661,7 +669,7 @@ async function applyTarget(state, body, response) {
     });
   } catch (error) {
     sendJson(response, 422, {
-      error: { code: "target_apply_failed", message: error.message },
+      error: { code: legacyCodex ? "codex_apply_failed" : "target_apply_failed", message: error.message },
     });
   }
 }
@@ -1027,6 +1035,7 @@ async function persistRuntimeInfo(state, host, port) {
   await writeRuntimeInfo(
     {
       pid: process.pid,
+      pidStartTime: state.identity.startTime,
       startedAt: state.startedAt,
       web: {
         host,

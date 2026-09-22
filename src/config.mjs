@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeConfigurationIdentities } from "../web/config-identity.js";
@@ -27,6 +28,7 @@ export function getPaths(home = DEFAULT_HOME) {
     config: path.join(home, "config.json"),
     secrets: path.join(home, "secrets.json"),
     runtime: path.join(home, "runtime.json"),
+    lock: path.join(home, "daemon.lock"),
     backups: path.join(home, "backups"),
   };
 }
@@ -37,7 +39,6 @@ export function defaultConfig() {
     revision: 0,
     daemon: {},
     web: {
-      enabled: true,
       listenHost: "127.0.0.1",
       port: 43100,
     },
@@ -179,38 +180,50 @@ export function stripSecretFields(value) {
 export async function ensureStore(paths = getPaths()) {
   await fs.mkdir(paths.home, { recursive: true, mode: 0o700 });
   await fs.mkdir(paths.backups, { recursive: true, mode: 0o700 });
-  try {
-    await fs.access(paths.config);
-  } catch {
-    await writeJsonAtomic(paths.config, defaultConfig(), 0o600);
-  }
-  try {
-    await fs.access(paths.secrets);
-  } catch {
-    await writeJsonAtomic(paths.secrets, {}, 0o600);
-  }
 }
 
 export async function loadConfig(paths = getPaths()) {
-  await ensureStore(paths);
-  const raw = await fs.readFile(paths.config, "utf8");
-  return normalizeConfig(JSON.parse(raw));
+  try {
+    const raw = await fs.readFile(paths.config, "utf8");
+    return normalizeConfig(JSON.parse(raw));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 export async function loadSecrets(paths = getPaths()) {
-  await ensureStore(paths);
-  const raw = await fs.readFile(paths.secrets, "utf8");
-  const parsed = JSON.parse(raw);
-  return isRecord(parsed) ? parsed : {};
+  try {
+    const raw = await fs.readFile(paths.secrets, "utf8");
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : {};
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw error;
+  }
 }
 
 export async function writeJsonAtomic(file, value, mode = 0o600) {
   const directory = path.dirname(file);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${crypto.randomBytes(6).toString("hex")}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  await fs.chmod(temporary, mode);
-  await fs.rename(temporary, file);
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
+    await fs.chmod(temporary, mode);
+    const deadline = Date.now() + 1000;
+    while (true) {
+      try {
+        await fs.rename(temporary, file);
+        return;
+      } catch (error) {
+        // Windows readers and antivirus can briefly deny an atomic replacement.
+        if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || Date.now() >= deadline) throw error;
+        await delay(50);
+      }
+    }
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+  }
 }
 
 export async function saveConfig(config, paths = getPaths()) {
@@ -222,16 +235,17 @@ export async function saveSecrets(secrets, paths = getPaths()) {
 }
 
 export async function backupFile(file, backupsDirectory, label) {
+  let contents;
   try {
-    const contents = await fs.readFile(file);
-    const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-    const backup = path.join(backupsDirectory, `${stamp}-${label}`);
-    await fs.writeFile(backup, contents, { mode: 0o600 });
-    return backup;
+    contents = await fs.readFile(file);
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
+  const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+  const backup = path.join(backupsDirectory, `${stamp}-${label}`);
+  await fs.writeFile(backup, contents, { mode: 0o600 });
+  return backup;
 }
 
 export function secretRefForUpstream(id) {

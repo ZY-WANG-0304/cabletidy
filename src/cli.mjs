@@ -31,7 +31,12 @@ async function main() {
   const paths = getPaths();
 
   if (command === "status") {
-    const [config, runtime] = await Promise.all([loadConfig(paths), readRuntimeInfo(paths)]);
+    const config = await loadConfig(paths);
+    if (!config) {
+      print({ runtime: { status: "offline", liveness: "尚未启动，未找到配置；请执行 cabletidy start" } });
+      return;
+    }
+    const runtime = await readRuntimeInfo(paths);
     const daemon = runtime ? await probeDaemon(runtime) : { online: false, reason: "runtime.json 不存在" };
     const web = runtime?.web || {
       host: config.web.listenHost,

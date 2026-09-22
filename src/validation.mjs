@@ -13,7 +13,6 @@ const PROTOCOLS = new Set([
 const INTEGRATIONS = new Set(["codex-native-provider"]);
 const TARGET_FORMATS = new Set(["codex.config.toml.v1", "claude.env.v1", "generic.env.v1"]);
 const TARGETS = new Set(["codex", "claude-code", "generic-env"]);
-const ROUTE_STRATEGIES = new Set(["priority"]);
 const COMPACT_STRATEGIES = new Set(["auto", "manual", "disabled"]);
 const IMPLEMENTED_INGRESS_PROTOCOLS = new Set([
   "openai.responses",
@@ -137,13 +136,6 @@ export function validateConfig(input) {
     ) {
       add(errors, `models.${id}.compact.strategy`, "不支持的 compact strategy");
     }
-    if (
-      model.capabilityOverrides !== undefined &&
-      (!Array.isArray(model.capabilityOverrides) ||
-        model.capabilityOverrides.some((item) => typeof item !== "string" || !item.trim()))
-    ) {
-      add(errors, `models.${id}.capabilityOverrides`, "capabilityOverrides 必须是非空字符串数组");
-    }
     const aliases = new Set([
       id,
       ...(model.clientModelId ? [model.clientModelId] : []),
@@ -193,9 +185,6 @@ export function validateConfig(input) {
     const route = isRecord(rawRoute) ? rawRoute : {};
     if (!isRecord(rawRoute)) add(errors, `routes.${id}`, "route 必须是 object");
     if (!hasId(id)) add(errors, `routes.${id}`, "route ID 包含非法字符");
-    if (route.strategy && !ROUTE_STRATEGIES.has(route.strategy)) {
-      add(errors, `routes.${id}.strategy`, `不支持的 route strategy: ${route.strategy}`);
-    }
     if (!Array.isArray(route.backends) || route.backends.length === 0) {
       add(errors, `routes.${id}.backends`, "每份配置必须且只能连接一个 upstream（一个 backend）");
       continue;
@@ -224,12 +213,6 @@ export function validateConfig(input) {
             `Model Profile ${modelId} 没有 upstream ${backend.upstream} 的模型映射`,
           );
         }
-      }
-      if (backend.priority !== undefined && !isInteger(backend.priority)) {
-        add(errors, `${base}.priority`, "priority 必须是非负整数");
-      }
-      if (backend.weight !== undefined && !isNumber(backend.weight)) {
-        add(errors, `${base}.weight`, "weight 必须是非负数字");
       }
     }
   }

@@ -156,11 +156,9 @@ export function selectBackend(config, virtualProvider, modelResolution, request 
   return {
     routeId: virtualProvider.route,
     backend,
-    backendIndex: 0,
     upstream,
     upstreamModelId: modelBinding?.upstreamModelId || modelResolution.clientModelId,
     capabilities: [...capabilities],
-    rejected: [],
   };
 }
 

@@ -7,7 +7,7 @@ import path from "node:path";
 import { createApplication } from "../src/server.mjs";
 import { getPaths, normalizeConfig, saveConfig } from "../src/config.mjs";
 import { readCodexConfig } from "../src/codex-config-file.mjs";
-import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function freePort() {
   const server = http.createServer();
@@ -66,4 +66,64 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal((await call("/targets/apply", { bindingId: "relay" })).status, 422);
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), root);
   assert.equal((await call("/runtime")).status, 200);
+});
+
+test("legacy artifact endpoints preserve preview, binding selection, responses and events", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-legacy-api-test-"));
+  const paths = getPaths(home);
+  const client = path.join(home, "client");
+  const config = normalizeConfig(namedCodexConfigFixture({ generic: "generic", relay: "relay" }));
+  config.web.port = await freePort();
+  config.bindings.generic.target = "generic-env";
+  config.bindings.relay.enabled = false;
+  await saveConfig(config, paths);
+  const app = await createApplication({ paths, codexHome: client, loadCodexCatalog: async () => catalogFixture() });
+  t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
+  const call = async (url, body = {}) => {
+    const response = await fetch(`${app.url}api/v1${url}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  for (const body of [{ bindingId: "relay" }, {}]) {
+    const preview = await call("/config/preview-target-artifacts", body);
+    assert.equal(preview.status, 200);
+    for (const alias of ["preview-codex-config", "preview-provider-artifacts"]) {
+      assert.deepEqual(await call(`/config/${alias}`, body), preview);
+    }
+  }
+
+  const unsupported = await call("/targets/apply");
+  assert.equal(unsupported.status, 501);
+  assert.equal(unsupported.body.target, "generic-env");
+  assert.equal(unsupported.body.bindingId, "generic");
+  await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
+
+  const legacy = await call("/targets/codex/apply");
+  assert.equal(legacy.status, 200);
+  assert.deepEqual(Object.keys(legacy.body).sort(), ["ok", "report"]);
+  assert.equal(app.state.events.at(-1).type, "target.codex.apply");
+  assert.deepEqual(app.state.events.at(-1).data, { bindingId: null, files: legacy.body.report.applied });
+  const contents = await fs.readFile(path.join(client, "config.toml"), "utf8");
+  assert.match(contents, /cabletidy_relay/);
+
+  const current = await call("/targets/apply", { bindingId: "relay" });
+  assert.equal(current.status, 200);
+  assert.equal(current.body.target, "codex");
+  assert.deepEqual(current.body.report, legacy.body.report);
+  assert.equal(app.state.events.at(-1).type, "target.apply");
+  assert.deepEqual(app.state.events.at(-1).data, {
+    bindingId: "relay", target: "codex", files: current.body.report.applied,
+  });
+  assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), contents);
+
+  for (const [endpoint, code] of [["/targets/codex/apply", "codex_apply_failed"], ["/targets/apply", "target_apply_failed"]]) {
+    const failed = await call(endpoint, { bindingId: "missing" });
+    assert.equal(failed.status, 422);
+    assert.equal(failed.body.error.code, code);
+  }
+  const wrongTarget = await call("/targets/codex/apply", { bindingId: "generic" });
+  assert.equal(wrongTarget.status, 422);
+  assert.equal(wrongTarget.body.error.code, "codex_apply_failed");
+  assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), contents);
 });
