@@ -47,16 +47,27 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   candidate.models.model.clientModelId = "gpt-5.5";
   candidate.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
   candidate.models.model.contextWindow = 128000;
-  result = await call("/config/commit", { config: candidate, baseRevision: 0 });
+  result = await call("/config/commit", {
+    config: candidate, baseRevision: 0, upstreamSecrets: { relay: "upstream-key" },
+  });
   assert.equal(result.status, 200);
+  assert.equal(result.body.revision, 1);
+  assert.equal(result.body.runtime.counts.models, 1);
+  assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
+    "secret://upstreams/relay": "upstream-key",
+  });
   const preview = await call("/config/preview-target-artifacts", { bindingId: "relay" });
   assert.equal(preview.status, 200);
   assert.equal(preview.body.artifacts.files.length, 2);
   assert.equal(preview.body.artifacts.catalogPlan, undefined);
+  const previewToml = preview.body.artifacts.files.find((file) => file.path === "config.toml").contents;
+  assert.equal(readCodexConfig(previewToml).model_providers.cabletidy_relay.base_url, `${app.url}relay/v1`);
+  assert.doesNotMatch(previewToml, /upstream-key|profiles\./);
+  assert.equal(previewToml.includes(candidate.upstreams.relay.baseUrl), false);
   const applied = await call("/targets/apply", { bindingId: "relay" });
   assert.equal(applied.status, 200);
   const root = await fs.readFile(path.join(client, "config.toml"), "utf8");
-  assert.equal(root, preview.body.artifacts.files[0].contents);
+  assert.equal(root, previewToml);
   const settings = readCodexConfig(root);
   const generated = JSON.parse(await fs.readFile(settings.model_catalog_json, "utf8"));
   assert.equal(generated.models[0].context_window, 128000);
@@ -68,8 +79,8 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal((await call("/runtime")).status, 200);
 });
 
-test("legacy artifact endpoints preserve preview, binding selection, responses and events", async (t) => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-legacy-api-test-"));
+test("target APIs select bindings consistently and retired aliases return 404", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-target-api-test-"));
   const paths = getPaths(home);
   const client = path.join(home, "client");
   const config = normalizeConfig(namedCodexConfigFixture({ generic: "generic", relay: "relay" }));
@@ -85,13 +96,18 @@ test("legacy artifact endpoints preserve preview, binding selection, responses a
     });
     return { status: response.status, body: await response.json() };
   };
-  for (const body of [{ bindingId: "relay" }, {}]) {
+  for (const [body, bindingId, target] of [[{ bindingId: "relay" }, "relay", "codex"], [{}, "generic", "generic-env"]]) {
     const preview = await call("/config/preview-target-artifacts", body);
     assert.equal(preview.status, 200);
-    for (const alias of ["preview-codex-config", "preview-provider-artifacts"]) {
-      assert.deepEqual(await call(`/config/${alias}`, body), preview);
-    }
+    assert.equal(preview.body.artifacts.bindingId, bindingId);
+    assert.equal(preview.body.artifacts.target, target);
   }
+  for (const endpoint of ["/config/preview-codex-config", "/config/preview-provider-artifacts", "/targets/codex/apply"]) {
+    const retired = await call(endpoint, { bindingId: "relay" });
+    assert.equal(retired.status, 404);
+    assert.equal(retired.body.error.code, "not_found");
+  }
+  await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
 
   const unsupported = await call("/targets/apply");
   assert.equal(unsupported.status, 501);
@@ -99,31 +115,18 @@ test("legacy artifact endpoints preserve preview, binding selection, responses a
   assert.equal(unsupported.body.bindingId, "generic");
   await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
 
-  const legacy = await call("/targets/codex/apply");
-  assert.equal(legacy.status, 200);
-  assert.deepEqual(Object.keys(legacy.body).sort(), ["ok", "report"]);
-  assert.equal(app.state.events.at(-1).type, "target.codex.apply");
-  assert.deepEqual(app.state.events.at(-1).data, { bindingId: null, files: legacy.body.report.applied });
-  const contents = await fs.readFile(path.join(client, "config.toml"), "utf8");
-  assert.match(contents, /cabletidy_relay/);
-
   const current = await call("/targets/apply", { bindingId: "relay" });
   assert.equal(current.status, 200);
   assert.equal(current.body.target, "codex");
-  assert.deepEqual(current.body.report, legacy.body.report);
   assert.equal(app.state.events.at(-1).type, "target.apply");
   assert.deepEqual(app.state.events.at(-1).data, {
     bindingId: "relay", target: "codex", files: current.body.report.applied,
   });
-  assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), contents);
+  const contents = await fs.readFile(path.join(client, "config.toml"), "utf8");
+  assert.match(contents, /cabletidy_relay/);
 
-  for (const [endpoint, code] of [["/targets/codex/apply", "codex_apply_failed"], ["/targets/apply", "target_apply_failed"]]) {
-    const failed = await call(endpoint, { bindingId: "missing" });
-    assert.equal(failed.status, 422);
-    assert.equal(failed.body.error.code, code);
-  }
-  const wrongTarget = await call("/targets/codex/apply", { bindingId: "generic" });
-  assert.equal(wrongTarget.status, 422);
-  assert.equal(wrongTarget.body.error.code, "codex_apply_failed");
+  const failed = await call("/targets/apply", { bindingId: "missing" });
+  assert.equal(failed.status, 422);
+  assert.equal(failed.body.error.code, "target_apply_failed");
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), contents);
 });

@@ -77,7 +77,7 @@ export function normalizeConfig(input = {}) {
   // lifetime settings are no longer part of the effective configuration.
   delete config.web.sessionTtlSeconds;
   if (isRecord(config.daemon)) delete config.daemon.proxyPortRange;
-  migratePrototypeCodexFields(config);
+  discardObsoleteCodexFields(config);
   for (const provider of Object.values(config.virtualProviders)) {
     if (isRecord(provider)) {
       delete provider.localAuth;
@@ -93,17 +93,12 @@ export function normalizeConfig(input = {}) {
   return config;
 }
 
-function migratePrototypeCodexFields(config) {
-  // Read legacy prototype keys once, translate useful values, and discard
-  // profile-file metadata before the config reaches runtime or disk.
+function discardObsoleteCodexFields(config) {
   for (const upstream of Object.values(config.upstreams)) {
     if (!isRecord(upstream)) continue;
     // These policy placeholders never affected runtime behavior.
     for (const field of ["requestMaxRetries", "streamMaxRetries", "streamIdleTimeoutMs", "requiresOpenaiAuth", "supportsWebsockets"]) {
       delete upstream[field];
-    }
-    if (!upstream.integration && upstream.providerFormat === "codex.toml.v1") {
-      upstream.integration = "codex-native-provider";
     }
     delete upstream.envKey;
     delete upstream.codexNative;
@@ -113,30 +108,7 @@ function migratePrototypeCodexFields(config) {
 
   for (const model of Object.values(config.models)) {
     if (!isRecord(model)) continue;
-    const legacy = isRecord(model.targetOverrides?.codex)
-      ? model.targetOverrides.codex
-      : isRecord(model.legacyCodex)
-        ? model.legacyCodex
-        : null;
-    if (isRecord(legacy)) {
-      if (model.clientModelId === undefined && legacy.model) {
-        model.clientModelId = legacy.model;
-      }
-      if (model.contextWindow === undefined && legacy.modelContextWindow !== undefined) {
-        model.contextWindow = legacy.modelContextWindow;
-      }
-      if (model.compact === undefined && legacy.modelAutoCompactTokenLimit !== undefined) {
-        model.compact = {
-          strategy: "auto",
-          tokenLimit: legacy.modelAutoCompactTokenLimit,
-        };
-      }
-      if (model.personality === undefined && legacy.personality) {
-        model.personality = legacy.personality;
-      }
-    }
-    // Profile IDs, profile file paths, and other target-only fields belonged
-    // to the old prototype. They are migration input, not CableTidy state.
+    // Prototype metadata is discarded, never promoted into current fields.
     delete model.legacyCodex;
     if (isRecord(model.targetOverrides)) {
       delete model.targetOverrides.codex;
@@ -148,12 +120,6 @@ function migratePrototypeCodexFields(config) {
 
   for (const binding of Object.values(config.bindings)) {
     if (!isRecord(binding)) continue;
-    if (!binding.integration && binding.providerFormat === "codex.toml.v1") {
-      binding.integration = "codex-native-provider";
-    }
-    if (binding.targetFormat === "codex.toml.v1") {
-      binding.targetFormat = "codex.config.toml.v1";
-    }
     delete binding.providerFormat;
     if (isRecord(binding.codex)) {
       for (const key of ["profileFiles", "sourceUpstream", "sourceProviderId"]) {
@@ -166,7 +132,7 @@ function migratePrototypeCodexFields(config) {
 }
 
 export function publicConfig(config) {
-  const copy = structuredClone(normalizeConfig(config));
+  const copy = normalizeConfig(config);
   redactSecretFields(copy);
   return copy;
 }

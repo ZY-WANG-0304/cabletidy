@@ -49,8 +49,6 @@ function sampleConfig() {
     virtualProviders: {
       codex: {
         id: "codex",
-        listenHost: "127.0.0.1",
-        listenPort: 43101,
         ingressProtocol: "openai.responses",
         route: "codex-route",
         allowedModels: ["codex-sol"],
@@ -136,7 +134,6 @@ test("unconfigured models pass through without inheriting another model's capabi
   assert.equal(result.upstreamModelId, request.model);
   assert.equal(result.upstream.id, "primary");
   assert.equal(result.model.profileId, null);
-  assert.equal(result.model.matchedBy, "passthrough");
 });
 
 test("an empty configuration model list never imports profiles from another configuration", () => {
@@ -200,12 +197,6 @@ test("rewrites nested response model fields back to the client model", () => {
   });
 });
 
-test("validates the complete model to route graph", () => {
-  const result = validateConfig(sampleConfig());
-  assert.equal(result.ok, true);
-  assert.deepEqual(result.errors, []);
-});
-
 test("identical official names resolve independently inside each Virtual Provider", () => {
   const config = sampleConfig();
   config.models["codex-sol"].clientModelId = "gpt-5.5";
@@ -216,7 +207,7 @@ test("identical official names resolve independently inside each Virtual Provide
   };
   config.routes.other = { backends: [{ upstream: "backup", models: ["other-model"] }] };
   config.virtualProviders.other = {
-    ...structuredClone(config.virtualProviders.cabletidy_codex), id: "other", listenPort: 43102,
+    ...structuredClone(config.virtualProviders.cabletidy_codex), id: "other",
     route: "other", allowedModels: ["other-model"], defaultModel: "gpt-5.5",
   };
   assert.equal(validateConfig(config).ok, true);

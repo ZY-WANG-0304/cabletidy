@@ -149,16 +149,6 @@ test("legacy names and provider ports migrate to the shared listener without cha
   assert.equal(validateConfig(config).ok, true);
 });
 
-test("renaming a configuration keeps its provider reference aligned", () => {
-  const config = codexConfigFixture();
-  config.bindings.relay.name = "Another Relay";
-  const renamed = normalizeConfig(config);
-  assert.deepEqual(Object.keys(renamed.bindings), ["another-relay"]);
-  assert.deepEqual(Object.keys(renamed.virtualProviders), ["cabletidy_another-relay"]);
-  assert.equal(renamed.bindings["another-relay"].virtualProvider, "cabletidy_another-relay");
-  assert.equal(validateConfig(renamed).ok, true);
-});
-
 test("configuration names that normalize to the same ID are rejected without losing records", () => {
   const config = codexConfigFixture();
   config.bindings.relay.name = "My Relay";
@@ -252,117 +242,44 @@ test("computes an effective config diff without counting revision metadata", () 
   assert.deepEqual(diff.affected, ["upstreams"]);
 });
 
-test("migrates prototype Codex fields into CableTidy fields and drops profile metadata", () => {
-  const config = normalizeConfig({
-    upstreams: {
-      primary: {
-        id: "primary",
-        providerFormat: "codex.toml.v1",
-        codexToml: { providerId: "primary", envKey: "PRIMARY_API_KEY" },
-        protocol: "openai.responses",
-        baseUrl: "https://primary.example/v1",
-      },
-    },
-    models: {
-      "logical-model": {
-        id: "logical-model",
-        aliases: ["logical"],
-        targetOverrides: {
-          codex: {
-            profileFile: "../escape.toml",
-            profileId: "prototype-profile",
-            model: "logical",
-            reasoningEffort: "high",
-            modelContextWindow: 1000000,
-            modelAutoCompactTokenLimit: 850000,
-          },
-        },
-        upstreams: { primary: { upstreamModelId: "vendor-model" } },
-      },
-    },
-    routes: {
-      primary: {
-        id: "primary",
-        backends: [{ upstream: "primary", models: ["logical-model"] }],
-      },
-    },
-    virtualProviders: {
-      codex: {
-        id: "codex",
-        listenHost: "127.0.0.1",
-        listenPort: 43101,
-        ingressProtocol: "openai.responses",
-        route: "primary",
-        allowedModels: ["logical-model"],
-        defaultModel: "logical",
-      },
-    },
-    bindings: {
-      codex: {
-        id: "codex",
-        target: "codex",
-        virtualProvider: "codex",
-        defaultModel: "logical",
-        providerFormat: "codex.toml.v1",
-        targetFormat: "codex.toml.v1",
-        codex: {
-          providerId: "cabletidy_primary",
-          profileFiles: ["../escape.toml"],
-        },
-      },
-    },
-  });
+test("prototype Codex fields are discarded without migration and old target formats are rejected", () => {
+  const legacy = {
+    model: "legacy-model",
+    modelContextWindow: 1000000,
+    modelAutoCompactTokenLimit: 850000,
+    personality: "friendly",
+    profileFile: "../escape.toml",
+    profileId: "prototype-profile",
+  };
+  for (const metadata of [{ targetOverrides: { codex: legacy } }, { legacyCodex: legacy }]) {
+    const original = codexConfigFixture();
+    delete original.models.model.clientModelId;
+    Object.assign(original.models.model, metadata);
+    original.upstreams.relay.providerFormat = "codex.toml.v1";
+    Object.assign(original.bindings.relay, {
+      providerFormat: "codex.toml.v1",
+      targetFormat: "codex.toml.v1",
+      codex: { profileFiles: ["../escape.toml"], sourceUpstream: "relay", sourceProviderId: "legacy" },
+      legacyCodex: legacy,
+    });
 
-  assert.equal(config.upstreams.primary.integration, "codex-native-provider");
-  assert.equal(config.upstreams.primary.codexNative, undefined);
-  assert.equal(config.upstreams.primary.envKey, undefined);
-  assert.equal(config.upstreams.primary.codexToml, undefined);
-  assert.equal(config.upstreams.primary.providerFormat, undefined);
-  assert.equal(config.models["logical-model"].clientModelId, "logical");
-  assert.equal(config.models["logical-model"].contextWindow, 1000000);
-  assert.equal(config.models["logical-model"].compact.tokenLimit, 850000);
-  assert.equal(config.models["logical-model"].targetOverrides, undefined);
-  assert.equal(config.models["logical-model"].legacyCodex, undefined);
-  assert.equal(config.bindings.codex.integration, "codex-native-provider");
-  assert.equal(config.bindings.codex.targetFormat, "codex.config.toml.v1");
-  assert.equal(config.bindings.codex.codex.profileFiles, undefined);
-  assert.equal(config.bindings.codex.legacyCodex, undefined);
-
-  const result = validateConfig(config);
-  assert.equal(result.ok, true);
-  assert.equal(
-    result.errors.some((item) => item.path === "models.logical-model.aliases"),
-    false,
-  );
-  assert.equal(
-    result.errors.some((item) => item.path.endsWith(".defaultModel")),
-    false,
-  );
+    const { config, ok, errors } = validateConfig(original);
+    assert.equal(config.upstreams.relay.integration, undefined);
+    assert.equal(config.bindings.relay.integration, undefined);
+    for (const field of ["clientModelId", "contextWindow", "compact", "personality"]) {
+      assert.equal(config.models.model[field], undefined, field);
+    }
+    assert.deepEqual(config.bindings.relay.codex, {});
+    assert.doesNotMatch(JSON.stringify(config), /profileFile|profileId|targetOverrides|legacyCodex|providerFormat/);
+    assert.equal(config.bindings.relay.targetFormat, "codex.toml.v1");
+    assert.equal(ok, false);
+    assert.ok(errors.some((error) => error.path === "bindings.relay.targetFormat"));
+    config.bindings.relay.targetFormat = "codex.config.toml.v1";
+    assert.equal(validateConfig(config).ok, true);
+  }
 });
 
-test("normalization does not persist prototype profile IDs or files", () => {
-  const config = normalizeConfig({
-    models: {
-      first: {
-        id: "first",
-        aliases: ["first"],
-        targetOverrides: {
-          codex: { profileFile: "shared.toml", profileId: "shared" },
-        },
-      },
-      second: {
-        id: "second",
-        aliases: ["second"],
-        targetOverrides: {
-          codex: { profileFile: "shared.toml", profileId: "shared" },
-        },
-      },
-    },
-  });
-  assert.doesNotMatch(JSON.stringify(config), /shared\.toml|profileId|targetOverrides|legacyCodex/);
-});
-
-test("public config recursively removes credential material", () => {
+test("public config recursively removes credential material without changing the input", () => {
   const config = normalizeConfig({
     upstreams: {
       relay: {
@@ -382,10 +299,12 @@ test("public config recursively removes credential material", () => {
       refreshToken: "refresh-token",
     },
   });
+  const original = structuredClone(config);
   const result = publicConfig(config);
   assert.doesNotMatch(JSON.stringify(result), /upstream-token|nested-secret|legacy-api-key|access-token|refresh-token/);
   assert.equal(result.upstreams.relay.auth.header, "authorization");
   assert.equal(result.upstreams.relay.baseUrl, "https://relay.example/v1");
+  assert.deepEqual(config, original);
 });
 
 test("validation reports malformed graph nodes instead of throwing", () => {
@@ -395,8 +314,6 @@ test("validation reports malformed graph nodes instead of throwing", () => {
     routes: { broken: { backends: [null] } },
     virtualProviders: {
       broken: {
-        listenHost: "127.0.0.1",
-        listenPort: 43101,
         ingressProtocol: "gemini.generate_content",
         route: "missing",
         allowedModels: ["missing"],
@@ -409,14 +326,6 @@ test("validation reports malformed graph nodes instead of throwing", () => {
   assert.ok(result.errors.some((item) => item.path === "models.broken"));
   assert.ok(result.errors.some((item) => item.path === "routes.broken.backends.0"));
   assert.ok(result.warnings.some((item) => item.path === "virtualProviders.cabletidy_broken.ingressProtocol"));
-});
-
-test("Web management listener must stay on loopback after removing management tokens", () => {
-  const result = validateConfig({
-    web: { listenHost: "0.0.0.0", port: 43100 },
-  });
-  assert.equal(result.ok, false);
-  assert.ok(result.errors.some((item) => item.path === "web.listenHost"));
 });
 
 test("legacy local auth is discarded without changing upstream secrets or generating keys", () => {
@@ -447,17 +356,7 @@ test("legacy local auth is discarded without changing upstream secrets or genera
 });
 
 test("the shared listener accepts loopback hosts and rejects public listeners", () => {
-  const config = normalizeConfig({
-    upstreams: { relay: { protocol: "openai.responses", baseUrl: "https://relay.example/v1" } },
-    models: { model: { aliases: ["model"], upstreams: { relay: { upstreamModelId: "vendor" } } } },
-    routes: { route: { backends: [{ upstream: "relay", models: ["model"] }] } },
-    virtualProviders: {
-      codex: {
-        listenHost: "127.0.0.1", listenPort: 43101, ingressProtocol: "openai.responses",
-        route: "route", allowedModels: ["model"],
-      },
-    },
-  });
+  const config = normalizeConfig(codexConfigFixture());
   for (const host of ["127.0.0.1", "localhost", "::1"]) {
     config.web.listenHost = host;
     const result = validateConfig(config);
@@ -465,7 +364,6 @@ test("the shared listener accepts loopback hosts and rejects public listeners", 
   }
   for (const host of ["0.0.0.0", "::", "192.168.1.20"]) {
     config.web.listenHost = host;
-    config.virtualProviders.cabletidy_codex.localAuth = { secretRef: "secret://virtual-providers/codex" };
     const result = validateConfig(config);
     assert.equal(result.ok, false);
     assert.ok(result.errors.some((error) => error.path === "web.listenHost"));

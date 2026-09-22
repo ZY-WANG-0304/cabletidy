@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "../src/server.mjs";
 import { processStartTime } from "../src/process-identity.mjs";
-import { defaultConfig, getPaths, loadConfig, readRuntimeInfo, saveConfig } from "../src/config.mjs";
+import { getPaths, loadConfig, readRuntimeInfo, saveConfig } from "../src/config.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const execute = promisify(execFile);
@@ -131,14 +131,14 @@ test("new stores allocate distinct ports while status stays read-only and restar
   assert.equal((await status(paths)).configurations[0].url, `${app.url}relay/v1`);
 });
 
-test("an explicit occupied port fails without changing configuration and releases the startup lock", async t => {
+test("an occupied saved port fails without changing configuration, releases the lock and allows retry", async t => {
   const f = await fixture(t);
-  const blocker = await f.block();
+  await f.blockDefault();
   const paths = f.paths();
-  const config = defaultConfig();
-  config.web.port = blocker.address().port;
-  await saveConfig(config, paths);
+  const app = await f.start(paths);
   const saved = await fs.readFile(paths.config, "utf8");
+  await app.close();
+  const blocker = await f.block(app.state.config.web.port);
   await assert.rejects(f.start(paths), error => {
     assert.equal(error.code, "EADDRINUSE");
     assert.ok(error.message.includes(paths.config));
@@ -148,21 +148,6 @@ test("an explicit occupied port fails without changing configuration and release
   assert.equal(await fs.readFile(paths.config, "utf8"), saved);
   await assert.rejects(fs.access(paths.lock), { code: "ENOENT" });
   await assert.rejects(fs.access(paths.runtime), { code: "ENOENT" });
-  await new Promise(resolve => blocker.close(resolve));
-  const app = await f.start(paths);
-  assert.equal(app.state.config.web.port, config.web.port);
-});
-
-test("a previously allocated port is never silently replaced on restart", async t => {
-  const f = await fixture(t);
-  await f.blockDefault();
-  const paths = f.paths();
-  const app = await f.start(paths);
-  const saved = await fs.readFile(paths.config, "utf8");
-  await app.close();
-  const blocker = await f.block(app.state.config.web.port);
-  await assert.rejects(f.start(paths), { code: "EADDRINUSE" });
-  assert.equal(await fs.readFile(paths.config, "utf8"), saved);
   await new Promise(resolve => blocker.close(resolve));
   assert.equal((await f.start(paths)).url, app.url);
 });
