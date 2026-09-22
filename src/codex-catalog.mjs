@@ -29,7 +29,7 @@ async function executeCodex(args) {
     command.once("error", reject);
     command.once("exit", (code, signal) => {
       if (code !== 0) reject(Object.assign(new Error(`codex exited with ${signal || code}`),
-        windows && code === 9009 ? { code: "ENOENT" } : {}));
+        windows && code === 127 ? { code: "ENOENT" } : {}));
     });
     // Descendants may hold the pipes open after the launcher has exited.
     onTimeout = () => reject(timeout.reason);

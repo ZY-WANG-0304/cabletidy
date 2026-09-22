@@ -10,7 +10,7 @@ import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs"
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
 
 const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
-  .replace(/^import .* from "\.\/config-identity\.js";\n/, "");
+  .replace(/^import .* from "\.\/config-identity\.js";\r?\n/, "");
 
 function formNode(id, fields = {}, rows = []) {
   const form = {

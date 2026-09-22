@@ -1,5 +1,9 @@
 param([ValidateSet('version', 'models')][string]$Query)
 $ErrorActionPreference = 'Stop'
+if (-not (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue)) {
+    [Console]::Error.WriteLine('Cannot find codex in PATH')
+    exit 127
+}
 
 # A Job Object also owns descendants whose launcher has already exited.
 # Keep its non-inheritable handle open until this supervisor exits or is killed.
@@ -8,6 +12,7 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 public static class CableTidyCodexJob {
     [StructLayout(LayoutKind.Sequential)]
@@ -52,8 +57,15 @@ public static class CableTidyCodexJob {
             "/d /s /c \"codex " + command + "\"");
         start.UseShellExecute = false;
         start.CreateNoWindow = true;
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
         using (var child = Process.Start(start)) {
+            var stdout = child.StandardOutput.BaseStream.CopyToAsync(Console.OpenStandardOutput());
+            var stderr = child.StandardError.BaseStream.CopyToAsync(Console.OpenStandardError());
             child.WaitForExit();
+            // Drain successful output, including pipes still held by descendants.
+            // On failure, exiting this supervisor closes the job immediately.
+            if (child.ExitCode == 0) Task.WaitAll(stdout, stderr);
             return child.ExitCode;
         }
     }

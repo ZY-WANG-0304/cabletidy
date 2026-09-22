@@ -44,7 +44,7 @@ for (const [name, body, expected] of [
 
 for (const [name, exitCode, expected] of [
   ["timeout", null, /TimeoutError/],
-  ["successful launcher exit before timeout", 0, process.platform === "win32" ? /JSON/ : /TimeoutError/],
+  ["successful launcher exit before timeout", 0, /TimeoutError/],
   ["nonzero launcher exit", 7, /exited with 7/],
 ]) {
   test(`catalog ${name} terminates descendants holding pipes and allows retry`, {
@@ -57,6 +57,7 @@ for (const [name, exitCode, expected] of [
     const connections = new Set();
     const monitor = net.createServer(socket => {
       connections.add(socket);
+      socket.on("error", error => assert.equal(error.code, "ECONNRESET"));
       socket.on("close", () => connections.delete(socket));
     });
     t.after(async () => {

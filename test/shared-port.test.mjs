@@ -230,14 +230,17 @@ test("failed saves preserve active paths and concurrent commits still compare re
   const { app, paths, call, commit } = await fixture(t);
   const original = structuredClone(app.state.config);
   await fs.rmdir(paths.backups);
-  await fs.writeFile(paths.backups, "block backup directory creation");
   const rejected = structuredClone(original);
   rejected.bindings.relay.name = "Unpublished";
-  assert.equal((await commit(rejected)).status, 500);
-  assert.equal(app.state.config.revision, original.revision);
-  assert.equal((await call("relay/v1/models")).status, 200);
-  assert.equal((await call("unpublished/v1/models")).status, 404);
+  for (const blockedByFile of [false, true]) {
+    if (blockedByFile) await fs.writeFile(paths.backups, "block backup directory creation");
+    assert.equal((await commit(rejected)).status, 500);
+    assert.equal(app.state.config.revision, original.revision);
+    assert.equal((await call("relay/v1/models")).status, 200);
+    assert.equal((await call("unpublished/v1/models")).status, 404);
+  }
   await fs.unlink(paths.backups);
+  await fs.mkdir(paths.backups);
   const left = structuredClone(original);
   const right = structuredClone(original);
   left.bindings.relay.name = "First Save";

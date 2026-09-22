@@ -220,16 +220,17 @@ export async function saveSecrets(secrets, paths = getPaths()) {
 }
 
 export async function backupFile(file, backupsDirectory, label) {
+  let contents;
   try {
-    const contents = await fs.readFile(file);
-    const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
-    const backup = path.join(backupsDirectory, `${stamp}-${label}`);
-    await fs.writeFile(backup, contents, { mode: 0o600 });
-    return backup;
+    contents = await fs.readFile(file);
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
+  const stamp = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
+  const backup = path.join(backupsDirectory, `${stamp}-${label}`);
+  await fs.writeFile(backup, contents, { mode: 0o600 });
+  return backup;
 }
 
 export function secretRefForUpstream(id) {

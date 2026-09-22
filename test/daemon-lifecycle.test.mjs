@@ -70,6 +70,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   if (mockCatalog) {
     monitor = net.createServer(socket => {
       catalogConnections.add(socket);
+      socket.on("error", error => assert.equal(error.code, "ECONNRESET"));
       socket.on("close", () => catalogConnections.delete(socket));
     });
     await new Promise(resolve => monitor.listen(0, "127.0.0.1", resolve));
