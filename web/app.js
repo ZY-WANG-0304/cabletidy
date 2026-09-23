@@ -557,6 +557,9 @@ pageContent.addEventListener("change", (event) => {
     form.querySelector(".catalog-status-wrapper").hidden = state.createTarget !== "codex";
     form.querySelector("[data-claude-create-auth]").hidden = state.createTarget !== "claude-code";
     form.querySelector("[data-claude-model-suggestions]").hidden = state.createTarget !== "claude-code";
+    form.querySelectorAll("[data-claude-create-models]").forEach((section) => {
+      section.hidden = state.createTarget !== "claude-code";
+    });
     form.querySelectorAll("[data-create-model]").forEach((row) => {
       const wrapper = document.createElement("div");
       wrapper.innerHTML = createModelRow({
@@ -565,11 +568,18 @@ pageContent.addEventListener("change", (event) => {
       });
       row.replaceWith(wrapper.firstElementChild);
     });
+    syncClaudeCreateAliases(form);
   }
   const modelChanged = event.target.matches("[data-official-model]");
   if (modelChanged) updateOfficialModelHint(event.target);
   if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
     syncCodexMetadata(event.target.closest("[data-suite-model]"), modelChanged);
+  }
+});
+
+pageContent.addEventListener("input", (event) => {
+  if (event.target.matches('#suite-create-form [data-create-field="clientModelId"]')) {
+    syncClaudeCreateAliases(event.target.closest("form"));
   }
 });
 
@@ -711,24 +721,48 @@ function claudeModelSuggestions() {
 }
 
 function claudeAliasSelect(suite, family) {
-  const selected = suite.binding.claude?.models?.[family] || "";
-  const ids = suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
+  const selected = suite?.binding.claude?.models?.[family] || "";
+  const ids = (suite?.models || []).map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
   return `<label class="field"><span>${family[0].toUpperCase() + family.slice(1)} 别名指向</span><select name="${family}">
-    <option value="" ${selected ? "" : "selected"}>由 Claude 默认决定</option>
-    ${selected && !ids.includes(selected) ? `<option value="${esc(selected)}" selected disabled>${esc(selected)}（未配置，请重新选择）</option>` : ""}
-    ${optionList(ids, selected)}
+    ${claudeAliasOptions(ids, selected)}
   </select></label>`;
+}
+
+function claudeAliasOptions(ids, selected = "") {
+  return `<option value="" ${selected ? "" : "selected"}>由 Claude 默认决定</option>
+    ${selected && !ids.includes(selected) ? `<option value="${esc(selected)}" selected disabled>${esc(selected)}（未配置，请重新选择）</option>` : ""}
+    ${optionList(ids, selected)}`;
+}
+
+function syncClaudeCreateAliases(form) {
+  if (!form || state.createTarget !== "claude-code") return;
+  const ids = [...new Set([...form.querySelectorAll('[data-create-field="clientModelId"]')]
+    .map((input) => input.value.trim()).filter(Boolean))];
+  for (const select of form.querySelectorAll("[data-claude-create-models] select")) {
+    select.innerHTML = claudeAliasOptions(ids, ids.includes(select.value) ? select.value : "");
+  }
 }
 
 function claudeClientForm(suite) {
   const options = suite.binding.claude || {};
   return `<section class="suite-section">
-    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>家族别名可指向已保存的客户端模型 ID，也可由 Claude 默认决定。上游改名在模型设置中配置。</p></div>
+    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>设置模型别名和默认模型。上游改名在模型设置中配置。</p></div>
     <form id="claude-client-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id)]))}">
-      <div class="form-grid">
-        ${field("启动模型（可选）", "defaultModel", claudeDefaultModel(suite), "留空保留已有模型选择")}
-        ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(suite, family)).join("")}
-        ${field("子代理模型（可选）", "subagent", options.models?.subagent || "", "留空沿用客户端")}
+      <section class="subsection" aria-labelledby="claude-aliases-title">
+        <div class="subsection-header"><h3 id="claude-aliases-title">模型别名</h3></div>
+        <p class="field-hint">从当前配置已保存的客户端模型 ID 中选择，或由 Claude 默认决定。</p>
+        <div class="form-grid">
+          ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(suite, family)).join("")}
+        </div>
+      </section>
+      <section class="subsection" aria-labelledby="claude-defaults-title">
+        <div class="subsection-header"><h3 id="claude-defaults-title">默认模型</h3></div>
+        <div class="form-grid">
+          ${field("启动模型（可选）", "defaultModel", claudeDefaultModel(suite), "留空保留已有模型选择")}
+          ${field("子代理模型（可选）", "subagent", options.models?.subagent || "", "留空沿用客户端")}
+        </div>
+      </section>
+      <div class="form-actions">
         ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
       </div>
       <p class="field-hint">模型发现只列出已配置模型，不限制其他模型请求。Claude Code 可能过滤不含 claude 或 anthropic 的模型 ID。保存后需重新应用客户端配置。</p>
@@ -765,6 +799,21 @@ function renderSuiteCreate() {
         <div ${state.createTarget === "codex" ? "" : "hidden"} class="catalog-status-wrapper">${codexCatalogStatus()}</div>
         <div data-claude-model-suggestions ${state.createTarget === "claude-code" ? "" : "hidden"}>${claudeModelSuggestions()}</div>
         <div id="create-model-list" class="create-model-list"></div>
+      </section>
+      <section class="config-section" data-claude-create-models aria-labelledby="config-claude-aliases" ${state.createTarget === "claude-code" ? "" : "hidden"}>
+        <h2 id="config-claude-aliases">模型别名</h2>
+        <p class="field-hint">可选。从本次填写的客户端模型 ID 中选择，或由 Claude 默认决定。</p>
+        <div class="form-grid">
+          ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(null, family)).join("")}
+        </div>
+      </section>
+      <section class="config-section" data-claude-create-models aria-labelledby="config-claude-defaults" ${state.createTarget === "claude-code" ? "" : "hidden"}>
+        <h2 id="config-claude-defaults">默认模型</h2>
+        <p class="field-hint">可选。留空沿用客户端；创建后需应用到 Claude Code 才会写入客户端配置。</p>
+        <div class="form-grid">
+          ${field("启动模型（可选）", "defaultModel", "", "留空保留已有模型选择")}
+          ${field("子代理模型（可选）", "subagent", "", "留空沿用客户端")}
+        </div>
       </section>
       <div class="config-form-footer">
         <button class="button" type="button" data-action="back-overview">取消</button>
@@ -1044,7 +1093,9 @@ async function handleAction(action, element) {
       const row = wrapper.firstElementChild;
       list.appendChild(row);
     } else if (action === "remove-create-model") {
+      const form = element.closest("form");
       element.closest("[data-create-model]")?.remove();
+      syncClaudeCreateAliases(form);
     } else if (action === "delete-model") {
       if (!window.confirm("删除此配置项？删除后立即生效。")) return;
       await saveChanges(() => removeModel(element.dataset.id), element.closest("form"));
@@ -1357,6 +1408,14 @@ function saveSuiteCreate(data, form) {
   if (new Set(clientModelIds).size !== clientModelIds.length) {
     throw new Error("Client model ID 不能重复");
   }
+  const defaultModel = isClaude ? String(data.get("defaultModel") || "").trim() : "";
+  const claudeModels = isClaude ? Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"]
+    .map((family) => [family, String(data.get(family) || "").trim()]).filter(([, value]) => value)) : {};
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    if (claudeModels[family] && !clientModelIds.includes(claudeModels[family])) {
+      throw new Error(`${family} 别名请选择本次填写的客户端模型 ID`);
+    }
+  }
 
   const upstreamId = defaults.upstreamId;
   const upstreamName = upstreamDisplayName(upstreamBaseUrl, upstreamId);
@@ -1423,6 +1482,7 @@ function saveSuiteCreate(data, form) {
     ingressProtocol: protocol,
     route: routeId,
     allowedModels: modelIds,
+    ...(defaultModel ? { defaultModel } : {}),
     enabled: true,
   };
   state.candidate.bindings[bindingId] = {
@@ -1433,7 +1493,13 @@ function saveSuiteCreate(data, form) {
     targetFormat: isClaude ? "claude.settings.json.v1" : "codex.config.toml.v1",
     mode: "config",
     virtualProvider: virtualProviderId,
-    ...(isClaude ? { claude: {} } : { codex: {} }),
+    ...(isClaude ? {
+      ...(defaultModel ? { defaultModel } : {}),
+      claude: {
+        ...(defaultModel ? { setModel: true } : {}),
+        ...(Object.keys(claudeModels).length ? { models: claudeModels } : {}),
+      },
+    } : { codex: {} }),
   };
 
   state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;

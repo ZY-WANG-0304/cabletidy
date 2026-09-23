@@ -179,6 +179,77 @@ test("Claude configurations can be created without a Codex catalog and retain na
   assert.equal(app.read("suiteEndpoint(selectedSuite())"), "http://127.0.0.1:43100/claude-code-example-invalid");
 });
 
+test("Claude creation saves family aliases and manual defaults without applying or changing existing Codex configurations", async () => {
+  const app = await controller();
+  const before = app.persisted();
+  const form = creationForm();
+  Object.assign(form.fields, {
+    target: "claude-code", defaultModel: " startup-custom ", subagent: " worker-custom ",
+    opus: "custom-client", sonnet: "custom-client", fable: "custom-client", haiku: "custom-client",
+  });
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "custom-client" : "upstream-custom" }) }];
+  await app.submit(form);
+  const config = app.persisted();
+  const binding = config.bindings.development;
+  assert.equal(binding.defaultModel, "startup-custom");
+  assert.equal(config.virtualProviders[binding.virtualProvider].defaultModel, "startup-custom");
+  assert.deepEqual(binding.claude, {
+    setModel: true,
+    models: { opus: "custom-client", sonnet: "custom-client", fable: "custom-client", haiku: "custom-client", subagent: "worker-custom" },
+  });
+  assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "startup-custom");
+  assert.equal(validateConfig(config).ok, true);
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  for (const section of ["models", "upstreams", "routes", "virtualProviders", "bindings"]) {
+    for (const [id, value] of Object.entries(before[section])) assert.deepEqual(config[section][id], value);
+  }
+});
+
+test("Claude creation allows empty optional sections and manual defaults without any model mappings", async () => {
+  for (const defaultModel of ["", "unregistered-startup"]) {
+    const app = await controller();
+    const form = formNode("suite-create-form", {
+      ...creationForm().fields, target: "claude-code", defaultModel,
+      opus: "", sonnet: "", fable: "", haiku: "", subagent: defaultModel ? "unregistered-worker" : " ",
+    });
+    await app.submit(form);
+    const config = app.persisted();
+    const binding = config.bindings.development;
+    const provider = config.virtualProviders[binding.virtualProvider];
+    assert.deepEqual(provider.allowedModels, []);
+    assert.equal(binding.defaultModel, defaultModel || undefined);
+    assert.equal(provider.defaultModel, defaultModel || undefined);
+    assert.deepEqual(binding.claude, defaultModel ? { setModel: true, models: { subagent: "unregistered-worker" } } : {});
+    assert.equal(validateConfig(config).ok, true);
+  }
+});
+
+test("Claude creation rejects family aliases outside the draft client IDs before committing", async () => {
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    const app = await controller();
+    const before = app.persisted();
+    const form = creationForm();
+    Object.assign(form.fields, { target: "claude-code", [family]: "vendor-gpt" });
+    await app.submit(form);
+    assert.match(form.feedback.innerHTML, /本次填写的客户端模型 ID/);
+    assert.deepEqual(app.persisted(), before);
+    assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  }
+});
+
+test("Codex creation ignores values in the hidden Claude optional sections", async () => {
+  const baseline = await controller();
+  await baseline.submit(creationForm());
+  const app = await controller();
+  const form = creationForm();
+  Object.assign(form.fields, {
+    defaultModel: "claude-custom", subagent: "worker-custom",
+    opus: "claude-custom", sonnet: "claude-custom", fable: "claude-custom", haiku: "claude-custom",
+  });
+  await app.submit(form);
+  assert.deepEqual(app.persisted(), baseline.persisted());
+});
+
 test("Claude client selection saves optional family defaults, applies explicitly, and can restore", async () => {
   const app = await controller(claudeConfigFixture());
   await app.action("open-suite", { dataset: { id: "claude-main" } });
