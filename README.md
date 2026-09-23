@@ -275,7 +275,7 @@ claude --settings /absolute/path/cabletidy-claude.settings.json
 
 模型发现需在客户端开启 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`，可通过管理台复选框生成。纯透传配置返回空列表，不影响其他模型请求；模型列表不是白名单，也不自动发现上游模型。Claude 会按自身版本过滤发现条目，不含 `claude` 或 `anthropic` 的别名可能不显示。Token counting 为官方可选接口，上游不支持时 Claude 可退回上下文估算。
 
-“测试推理”使用已保存的配置和指定模型发起少量 Messages 请求，可以选择 SSE 测试，会产生上游用量。HTTP 可达、认证有效、模型可用及流式响应有效分别判断；返回 HTML 或仅能访问上游根地址不会被当作推理成功。
+“测试连通性”与 Codex 使用相同逻辑：使用已保存的连接向上游 Base URL 发起 GET 请求，检查 HTTP 可达性并展示耗时，不发起模型推理，也不判断认证、模型或流式推理是否可用。
 
 ### 验证与范围
 

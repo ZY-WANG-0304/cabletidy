@@ -295,7 +295,7 @@ function captureEditedForms(excludedForm) {
 }
 
 function hasUnsavedChanges() {
-  return captureEditedForms().some((form) => !["resolve-form", "claude-probe-form"].includes(form.getAttribute("id")));
+  return captureEditedForms().some((form) => form.getAttribute("id") !== "resolve-form");
 }
 
 function confirmPageLeave() {
@@ -639,16 +639,9 @@ function renderSuiteDetail() {
             </div>
             <div class="suite-section-footer">
               <span class="field-hint">保存后生效，测试使用已保存的连接。</span>
-              <div class="form-actions"><button class="button" type="submit">保存上游</button>${suite.target === "claude-code" ? "" : `<button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button>`}</div>
+              <div class="form-actions"><button class="button" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
             </div>
           </form>
-          ${suite.target === "claude-code" ? `<form id="claude-probe-form" class="subsection">
-            <div class="form-grid">
-              ${field("测试模型", "model", claudeDefaultModel(suite) || suite.models[0]?.profile.clientModelId || "", "填写客户端完整模型 ID", false, "text", false, true)}
-              ${checkboxField("测试 SSE 流式响应", "stream", true)}
-            </div>
-            <div class="form-actions"><span class="field-hint">使用已保存的配置发起少量推理请求，会产生上游用量。</span><button class="button" type="submit">测试推理</button></div>
-          </form>` : ""}
         ` : `<div class="empty"><strong>未配置上游</strong></div>`}
       </section>
       <section class="suite-section" aria-labelledby="suite-models-title">
@@ -1119,15 +1112,6 @@ async function handleFormSubmit(event, form) {
   try {
     // Inputs named "id" shadow the form.id property in the browser.
     const formId = form.getAttribute("id");
-    if (formId === "claude-probe-form") {
-      const suite = selectedSuite();
-      const result = await api("/tests/upstream", { method: "POST", body: JSON.stringify({
-        id: suite.upstreamId, bindingId: suite.bindingId, model: String(data.get("model") || "").trim(), stream: data.get("stream") === "on",
-      }) });
-      if (!result.ok) throw new Error(result.message);
-      toast(`${result.message}，${result.latencyMs}ms`);
-      return;
-    }
     if (formId === "resolve-form") {
       if (submitButton) submitButton.textContent = "解析中...";
       await resolveModel(data);

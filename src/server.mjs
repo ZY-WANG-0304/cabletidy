@@ -586,10 +586,6 @@ async function testUpstream(state, body, response) {
     sendJson(response, 404, { error: { code: "upstream_not_found", message: "upstream 不存在" } });
     return;
   }
-  if (upstream.protocol === "anthropic.messages") {
-    await testClaudeUpstream(state, config, secrets, upstream, body, response);
-    return;
-  }
   const started = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -623,71 +619,6 @@ async function testUpstream(state, body, response) {
   } finally {
     clearTimeout(timeout);
   }
-}
-
-async function testClaudeUpstream(state, config, secrets, upstream, body, response) {
-  const started = Date.now();
-  const secret = resolveUpstreamSecret(upstream, secrets);
-  const report = { ok: false, connected: false, authenticated: null, modelAvailable: null, streaming: null,
-    secretConfigured: Boolean(secret) };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
-  try {
-    if (typeof body.model !== "string" || !body.model.trim()) throw new Error("请填写要测试的客户端模型 ID");
-    if (upstream.enabled === false) throw new Error("上游已暂停");
-    let model = body.model.trim();
-    if (body.bindingId) {
-      const binding = config.bindings[body.bindingId];
-      const provider = config.virtualProviders[binding?.virtualProvider];
-      if (!provider || provider.enabled === false) throw new Error("配置入口不存在或已暂停");
-      const resolved = resolveRequest(config, provider, { model, stream: Boolean(body.stream) });
-      if (resolved.upstream.id !== upstream.id) throw new Error("测试上游与当前配置不一致");
-      model = resolved.upstreamModelId;
-    }
-    const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
-    applyUpstreamAuth(headers, upstream, upstream.protocol, secret);
-    const result = await fetch(joinUpstreamUrl(upstream.baseUrl, "/v1/messages"), {
-      method: "POST", headers, signal: controller.signal, redirect: "manual",
-      body: JSON.stringify({ model, max_tokens: 16, stream: Boolean(body.stream), messages: [{ role: "user", content: "." }] }),
-    });
-    report.connected = true;
-    report.status = result.status;
-    if ([401, 403].includes(result.status)) report.authenticated = false;
-    let text = "";
-    let bytes = 0;
-    const decoder = new StringDecoder("utf8");
-    for await (const chunk of result.body || []) {
-      bytes += chunk.length;
-      if (bytes > 256 * 1024) throw new Error("测试响应过大，无法确认协议兼容性");
-      text += decoder.write(Buffer.from(chunk));
-    }
-    text += decoder.end();
-    if (body.stream) {
-      const events = text.split(/\r?\n\r?\n/).map((event) => {
-        const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-        try { return JSON.parse(data); } catch { return null; }
-      });
-      report.streaming = Boolean(result.ok && result.headers.get("content-type")?.includes("text/event-stream") &&
-        events.some((event) => event?.type === "message_start") && events.some((event) => event?.type === "message_stop") &&
-        !events.some((event) => event?.type === "error"));
-      report.ok = report.streaming;
-    } else {
-      let message;
-      try { message = JSON.parse(text); } catch { /* A reachable HTML page is not a Messages endpoint. */ }
-      report.ok = Boolean(result.ok && message?.type === "message" && Array.isArray(message.content));
-    }
-    if (report.ok) report.authenticated = report.modelAvailable = true;
-    report.message = report.ok ? (body.stream ? "认证、模型和流式推理测试通过" : "认证与模型推理测试通过")
-      : report.authenticated === false ? "上游拒绝认证或访问权限"
-        : `上游已连接，但 Messages ${body.stream ? "流式" : "推理"}测试未通过 (HTTP ${result.status})`;
-    recordHealth(state, upstream.id, report.ok ? "success" : "failure", result.status);
-  } catch (error) {
-    report.message = error.name === "AbortError" ? "推理测试超时" : error.message;
-    recordHealth(state, upstream.id, "failure", report.status ?? null);
-  } finally {
-    clearTimeout(timeout);
-  }
-  sendJson(response, 200, { ...report, latencyMs: Date.now() - started });
 }
 
 async function previewTargetArtifacts(state, body, response) {

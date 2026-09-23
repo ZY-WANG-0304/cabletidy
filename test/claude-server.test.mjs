@@ -191,28 +191,28 @@ test("management applies and restores Claude settings without returning existing
   assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), original);
 });
 
-test("Claude diagnostics checks Messages rather than mistaking a reachable HTTP page for success", async (t) => {
+test("Claude connectivity checks the saved base URL without running inference or requiring a model", async (t) => {
+  let status = 200;
   const f = await fixture(t, (req, res, body) => {
-    if (body.model === "bad-key") { res.writeHead(401); res.end("denied"); }
-    else if (body.model === "html") res.end("<html>OK</html>");
-    else if (body.stream) {
-      res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end('event: message_start\ndata: {"type":"message_start","message":{"model":"vendor-sonnet"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n');
-    } else message(res, body);
+    assert.equal(req.method, "GET");
+    assert.equal(req.url, "/relay/v1?fixed=1");
+    assert.equal(req.headers["x-api-key"], "real-upstream-secret");
+    assert.equal(body, null);
+    res.writeHead(status, { "content-type": "text/html" });
+    res.end("<html>Upstream response</html>");
   });
-  for (const stream of [false, true]) {
-    const response = await f.call("api/v1/tests/upstream", { id: "relay", bindingId: "claude-main", model: "claude-sonnet-4-6", stream });
+  for (const [responseStatus, reachable] of [[200, true], [401, true], [404, true], [503, false]]) {
+    status = responseStatus;
+    const response = await f.call("api/v1/tests/upstream", { id: "relay" });
+    assert.equal(response.status, 200);
     const report = await response.json();
-    assert.equal(report.ok, true);
-    assert.equal(report.authenticated, true);
-    assert.equal(report.modelAvailable, true);
-    assert.equal(f.calls.at(-1).body.model, "vendor-sonnet");
-    assert.equal(f.calls.at(-1).body.max_tokens, 16);
+    assert.equal(report.ok, reachable);
+    assert.equal(report.status, status);
+    assert.equal(report.secretConfigured, true);
+    assert.equal(typeof report.latencyMs, "number");
+    assert.equal(report.authenticated, undefined);
+    assert.equal(report.modelAvailable, undefined);
+    assert.equal(report.streaming, undefined);
   }
-  for (const model of ["bad-key", "html"]) {
-    const report = await (await f.call("api/v1/tests/upstream", { id: "relay", model })).json();
-    assert.equal(report.ok, false);
-    assert.equal(report.connected, true);
-    assert.equal(report.authenticated, model === "bad-key" ? false : null);
-  }
+  assert.equal(f.calls.length, 4);
 });

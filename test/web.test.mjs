@@ -87,6 +87,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         "/api/v1/config": { config: clone(persisted) },
         "/api/v1/runtime": { virtualProviders: [], health: {} },
         "/api/v1/events": { events: [] },
+        "/api/v1/tests/upstream": { ok: true, message: "上游可连接", latencyMs: 1, secretConfigured: true },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/targets/apply": { target: persisted.bindings[body?.bindingId]?.target },
@@ -193,6 +194,18 @@ test("Claude client selection saves optional family defaults, applies explicitly
   await app.submit(formNode("claude-client-form", {}));
   assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
   assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+});
+
+test("Claude details use the simple connectivity action without inference controls or parameters", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const html = app.read("renderSuiteDetail()");
+  assert.match(html, /data-action="test-upstream" data-id="relay">测试连通性/);
+  assert.doesNotMatch(html, /claude-probe-form|测试模型|测试推理|测试 SSE/);
+  await app.action("test-upstream", { dataset: { id: "relay" } });
+  const requests = app.requests.filter(({ url }) => url === "/api/v1/tests/upstream");
+  assert.deepEqual(requests, [{ url: "/api/v1/tests/upstream", body: { id: "relay" } }]);
+  assert.ok(app.messages.some((message) => message.includes("上游可连接")));
 });
 
 test("Claude upstream authentication can switch without replacing its saved credential", async () => {

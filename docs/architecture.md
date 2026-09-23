@@ -531,8 +531,8 @@ CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Bi
 Claude Code 模型行只提供客户端模型名、上游模型名和可选的展示名称、描述，
 不套用 Codex 的模型能力和上下文元数据。客户端区域可设置启动模型、
 Opus / Sonnet / Haiku 与子代理模型，以及是否启用模型发现。
-Claude 上游诊断使用指定模型执行少量 Messages 推理，可选验证 SSE，
-分别报告连接、认证、模型与流式结果。Generic CLI 仍保留高级模型编辑入口。
+Claude 与 Codex 共用简单的上游连通性测试：向已保存的 Base URL 发起 GET 请求，
+报告 HTTP 可达性和耗时，不执行推理或判断模型可用性。Generic CLI 仍保留高级模型编辑入口。
 
 ### 7.2 创建配置
 
@@ -718,7 +718,7 @@ MVP 至少覆盖：
 - Upstream、Model Profile、Upstream Model Binding、Route、Virtual Provider、Target Binding。
 - Codex Native Provider Integration 的 Web 配置和原生配置生成。
 - Codex 只生成本地 `config.toml` managed block。
-- Claude Code 官方 Base URL 接入、四个本地接口、模型映射与 Messages / SSE 诊断。
+- Claude Code 官方 Base URL 接入、四个本地接口、模型映射与上游连通性测试。
 - Claude Code settings 预览、应用和恢复，以及独立文件、Bash / PowerShell artifact。
 - 配置校验、diff、原子 reload 和脱敏事件。
 
