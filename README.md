@@ -229,7 +229,11 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 
 默认透传客户端模型名，无需登记模型。按需添加“客户端完整模型 ID → 上游模型 ID”映射；仅改名不会限制工具、图片、thinking 等能力，具体能力由客户端和上游决定。已有配置中的显式能力限制仍然生效。Claude Code 的 `sonnet`、`opus` 等别名会在客户端解析，映射应填写实际发到 API 的完整模型 ID。
 
-“Claude Code 模型选择”可以配置启动模型、Opus/Sonnet/Haiku 家族模型、子代理模型，以及模型发现开关。全部留空时保留已有客户端选择。启动模型通过 `ANTHROPIC_MODEL` 设置，后续每次启动都会生效；只想临时选模型可用 Claude 自身的 `--model`。上下文、reasoning effort 和压缩策略仍由 Claude Code 管理，不生成没有实际效果的逐模型窗口或 compact 设置。
+模型映射只提供“客户端模型 ID”和“上游模型 ID”。客户端输入框支持搜索官方建议，也可直接填写自定义 ID；上游 ID 手动填写，留空时原样透传。建议目录内置于 `web/claude-models.js`，根据 [Anthropic 模型文档](https://platform.claude.com/docs/en/about-claude/models/overview) 整理，记录核对日期和来源，随 CableTidy 发版更新，无需额外 API Key。目录只辅助输入，不限制保存或请求中的模型名，也不会自动加入 `/v1/models`。
+
+“Claude Code 模型选择”可以配置启动模型、Opus/Sonnet/Fable/Haiku 别名指向、子代理模型和模型发现开关。四个家族别名从当前配置已保存的客户端 ID 中选择，也可选择“由 Claude 默认决定”；分别生成官方的 `ANTHROPIC_DEFAULT_<家族>_MODEL` 变量，Fable 使用 `ANTHROPIC_DEFAULT_FABLE_MODEL`。模型改名时同步更新引用它的家族别名，删除模型时相应别名回到默认；保存后需要重新应用客户端配置。已有别名值未登记时，页面提示重新选择，也可先把该 ID 加入模型映射。
+
+选择默认时 CableTidy 不指定该家族的模型；再次应用会恢复此前接管的对应环境变量原值，由 Claude 自身配置决定。启动模型和子代理模型仍可手动填写。启动模型通过 `ANTHROPIC_MODEL` 设置，后续每次启动都会生效；只想临时选模型可用 Claude 自身的 `--model`。上下文、reasoning effort 和压缩策略仍由 Claude Code 管理，不生成没有实际效果的逐模型窗口或 compact 设置。
 
 ### 预览、应用与撤销
 
@@ -264,7 +268,7 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 | --- | --- | --- |
 | POST | `/v1/messages` | 普通及 SSE 推理；保留查询参数、协议扩展字段和 `anthropic-*` 请求头 |
 | POST | `/v1/messages/count_tokens` | 使用相同上游和模型映射，返回上游计数；不要求 `max_tokens`，上游不支持时保留其错误 |
-| GET | `/v1/models` | 返回当前配置显式设置的客户端模型、显示名称和说明；支持 `limit=1..1000` 和 `after_id` |
+| GET | `/v1/models` | 只返回当前配置显式设置的客户端模型，协议字段 `display_name` 使用客户端 ID；支持 `limit=1..1000` 和 `after_id` |
 | HEAD | `/api/hello` | 本地返回 204、不请求上游，仅确认本地入口可达 |
 
 `/messages` 保留为旧版兼容路径。标准接口应使用 `/v1/messages`。SSE 保留 ping、工具参数增量和流内错误，客户端断开时取消上游请求；模型改名只修改 Messages 响应及 `message_start` 的模型字段，不改工具数据。上游错误保留原状态码和响应体，重试、请求 ID 和 Anthropic 限流头随响应转发。

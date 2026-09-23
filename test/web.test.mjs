@@ -8,10 +8,11 @@ import { publicCodexCatalog } from "../src/codex-catalog.mjs";
 import { validateConfig } from "../src/validation.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+import { CLAUDE_MODEL_CATALOG } from "../web/claude-models.js";
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
 
 const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
-  .replace(/^import .* from "\.\/config-identity\.js";\r?\n/, "");
+  .replace(/^import .* from "\.\/(?:config-identity|claude-models)\.js";\r?\n/gm, "");
 
 function formNode(id, fields = {}, rows = []) {
   const form = {
@@ -54,7 +55,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     append(item) { messages.push(item.textContent); },
   });
   const context = vm.createContext({
-    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl,
+    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl, CLAUDE_MODEL_CATALOG,
     window: {
       ...node(),
       confirm(message) { confirmations.push(message); return options.confirmLeave ?? true; },
@@ -181,10 +182,10 @@ test("Claude configurations can be created without a Codex catalog and retain na
 test("Claude client selection saves optional family defaults, applies explicitly, and can restore", async () => {
   const app = await controller(claudeConfigFixture());
   await app.action("open-suite", { dataset: { id: "claude-main" } });
-  await app.submit(formNode("claude-client-form", { defaultModel: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-custom", subagent: "sonnet", discoverModels: "on" }));
+  await app.submit(formNode("claude-client-form", { defaultModel: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet", discoverModels: "on" }));
   const binding = app.persisted().bindings["claude-main"];
   assert.equal(binding.defaultModel, "claude-sonnet-4-6");
-  assert.deepEqual(binding.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-custom", subagent: "sonnet" } });
+  assert.deepEqual(binding.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } });
   assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
   await app.action("apply-target", {});
   assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
@@ -221,17 +222,75 @@ test("Claude upstream authentication can switch without replacing its saved cred
 test("Claude mapping edits do not invent capability or compaction policies", async () => {
   const app = await controller(claudeConfigFixture());
   await app.action("open-suite", { dataset: { id: "claude-main" } });
-  const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model",
-    "[data-claude-model-name]": "Sonnet for work", "[data-claude-model-description]": "Tools and code" };
+  const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model" };
   await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
   const model = app.persisted().models.sonnet;
   assert.equal(model.upstreams.relay.upstreamModelId, "new-model");
-  assert.equal(model.name, "Sonnet for work");
-  assert.equal(model.description, "Tools and code");
+  assert.equal(model.name, "claude-sonnet-4-6");
+  assert.equal(model.description, undefined);
   assert.equal(model.capabilities, undefined);
   assert.equal(model.contextWindow, undefined);
   assert.equal(model.compact, undefined);
   assert.equal(validateConfig(app.persisted()).ok, true);
+});
+
+test("Claude model suggestions allow custom IDs and empty upstream mappings without changing Codex selection", async () => {
+  const app = await controller();
+  app.read('state.createTarget = "claude-code"');
+  assert.match(app.read("renderSuiteCreate()"), /datalist id="claude-model-suggestions"/);
+  assert.match(app.read("createModelRow()"), /list="claude-model-suggestions"/);
+  assert.match(app.read("claudeModelSuggestions()"), /claude-fable-5-1/);
+  const form = creationForm();
+  form.fields.target = "claude-code";
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "custom-client-model" : "" }) }];
+  await app.submit(form);
+  const config = app.persisted();
+  assert.equal(validateConfig(config).ok, true);
+  const model = Object.values(config.models).find((model) => model.clientModelId === "custom-client-model");
+  assert.deepEqual(Object.values(model.upstreams), [{}]);
+  assert.match(app.read('claudeAliasSelect(selectedSuite(), "fable")'), /value="custom-client-model"/);
+  const html = app.read("renderSuiteDetail()");
+  assert.doesNotMatch(html, /data-claude-model-name|data-claude-model-description|显示名称|模型列表显示/);
+  await app.action("open-suite", { dataset: { id: "relay" } });
+  const codexHtml = app.read("renderSuiteDetail()");
+  assert.match(codexHtml, /data-official-model/);
+  assert.doesNotMatch(codexHtml, /claude-model-suggestions|别名指向/);
+});
+
+test("Claude alias choices are scoped to saved client IDs and keep references through rename and removal", async () => {
+  const config = claudeConfigFixture();
+  config.models.other = { ...structuredClone(config.models.sonnet), id: "other", clientModelId: "other-configuration-model" };
+  const app = await controller(config);
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const choices = app.read('claudeAliasSelect(selectedSuite(), "opus")');
+  assert.match(choices, /由 Claude 默认决定/);
+  assert.doesNotMatch(choices, /other-configuration-model|vendor-sonnet/);
+  const invalid = formNode("claude-client-form", { opus: "not-configured" });
+  await app.submit(invalid);
+  assert.match(invalid.feedback.innerHTML, /已保存的客户端模型 ID/);
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  await app.submit(formNode("claude-client-form", { opus: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", haiku: "claude-sonnet-4-6" }));
+  const controls = { "[data-suite-model-client]": "my-claude", '[data-suite-model-upstream="relay"]': "" };
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, { opus: "my-claude", sonnet: "my-claude", fable: "my-claude", haiku: "my-claude" });
+  assert.equal(validateConfig(app.persisted()).ok, true);
+  await app.submit(formNode("suite-models-form"));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  assert.equal(validateConfig(app.persisted()).ok, true);
+});
+
+test("Claude legacy alias values stay visible until the user chooses a registered model or the default", async () => {
+  const config = claudeConfigFixture();
+  config.bindings["claude-main"].claude.models = { haiku: "legacy-unregistered-model" };
+  const app = await controller(config);
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  assert.match(app.read('claudeAliasSelect(selectedSuite(), "haiku")'), /legacy-unregistered-model.*selected disabled/);
+  const untouched = formNode("claude-client-form", {});
+  await app.submit(untouched);
+  assert.match(untouched.feedback.innerHTML, /未配置的模型/);
+  assert.equal(app.persisted().bindings["claude-main"].claude.models.haiku, "legacy-unregistered-model");
+  await app.submit(formNode("claude-client-form", { haiku: "" }));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
 });
 
 test("suite upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {

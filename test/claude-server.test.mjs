@@ -98,7 +98,7 @@ test("model discovery and startup HEAD stay local and all four endpoints honor p
   });
   const models = await f.call("claude-main/v1/models?limit=1");
   assert.equal(models.status, 200);
-  assert.deepEqual(await models.json(), { data: [{ id: "claude-sonnet-4-6", type: "model", display_name: "Sonnet via relay", description: "Coding model" }],
+  assert.deepEqual(await models.json(), { data: [{ id: "claude-sonnet-4-6", type: "model", display_name: "claude-sonnet-4-6" }],
     has_more: true, first_id: "claude-sonnet-4-6", last_id: "claude-sonnet-4-6" });
   const next = await f.call("claude-main/v1/models?limit=1000&after_id=claude-sonnet-4-6");
   assert.equal((await next.json()).data[0].id, "claude-opus-4-6");

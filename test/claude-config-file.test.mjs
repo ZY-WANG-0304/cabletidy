@@ -46,7 +46,7 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
     model: "user-choice", permissions: { allow: ["Read"] }, hooks: { Stop: [] }, apiKeyHelper: "my-helper" };
   const f = await fixture(t, original);
   f.config.bindings["claude-main"].defaultModel = "claude-sonnet-4-6";
-  f.config.bindings["claude-main"].claude = { discoverModels: true, models: { haiku: "claude-haiku-custom", subagent: "sonnet" } };
+  f.config.bindings["claude-main"].claude = { discoverModels: true, models: { haiku: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } };
   const preview = await prepareTargetArtifacts(f.config, { ...f.options, bindingId: "claude-main" });
   assert.doesNotMatch(JSON.stringify(preview), /old-secret|old-api-key|my-helper/);
   const report = await applyClaudeSettings(f.artifacts(), f.options);
@@ -54,7 +54,8 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
   const applied = await f.read();
   assert.equal(applied.env.ANTHROPIC_MODEL, "claude-sonnet-4-6");
   assert.equal(applied.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY, "1");
-  assert.equal(applied.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "claude-haiku-custom");
+  assert.equal(applied.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, "claude-sonnet-4-6");
+  assert.equal(applied.env.ANTHROPIC_DEFAULT_FABLE_MODEL, "claude-sonnet-4-6");
   assert.equal(applied.model, original.model);
   assert.deepEqual(applied.permissions, original.permissions);
   applied.newPreference = true;
@@ -65,9 +66,11 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
   second.environment.vars.ANTHROPIC_BASE_URL = "http://127.0.0.1:43100/another";
   delete second.environment.vars.ANTHROPIC_MODEL;
   delete second.environment.vars.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  delete second.environment.vars.ANTHROPIC_DEFAULT_FABLE_MODEL;
   await applyClaudeSettings(second, f.options);
   assert.equal((await f.read()).env.ANTHROPIC_MODEL, "old-model");
   assert.ok(!Object.hasOwn((await f.read()).env, "ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+  assert.ok(!Object.hasOwn((await f.read()).env, "ANTHROPIC_DEFAULT_FABLE_MODEL"));
   await assert.rejects(restoreClaudeSettings("claude-main", f.options), /another/);
   await restoreClaudeSettings("another", f.options);
   assert.deepEqual(await f.read(), { ...original, env: { ...original.env, UNRELATED: "new" }, newPreference: true });

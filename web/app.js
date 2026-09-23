@@ -1,4 +1,5 @@
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "./config-identity.js";
+import { CLAUDE_MODEL_CATALOG } from "./claude-models.js";
 
 const pageContent = document.querySelector("#page-content");
 const pageTitle = document.querySelector("#page-title");
@@ -443,21 +444,16 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
       <div class="suite-model-mapping">
         ${isCodex
           ? officialModelSelect("data-suite-model-client", model.clientModelId || model.aliases?.[0] || "")
-          : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(model.clientModelId || model.aliases?.[0] || modelId)}" placeholder="客户端模型 ID" required /></label>`}
+          : suite.target === "claude-code"
+            ? claudeModelInput("data-suite-model-client", model.clientModelId || model.aliases?.[0] || modelId)
+            : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(model.clientModelId || model.aliases?.[0] || modelId)}" placeholder="客户端模型 ID" required /></label>`}
         <span class="suite-mapping-arrow" aria-hidden="true">&rarr;</span>
         ${upstreamId
           ? `<label class="field"><span>上游模型 ID（可选）</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(binding.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
           : `<div class="notice warning">请先配置上游连接</div>`}
         <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(model.clientModelId || modelId || "映射")}">移除</button>
       </div>
-      ${suite.target === "claude-code" ? `
-      <details class="suite-model-settings">
-        <summary>模型列表显示（可选）</summary>
-        <div class="form-grid">
-          <label class="field"><span>显示名称</span><input data-claude-model-name value="${esc(model.name || "")}" placeholder="留空使用客户端模型 ID" /></label>
-          <label class="field"><span>说明</span><input data-claude-model-description value="${esc(model.description || "")}" /></label>
-        </div>
-      </details>` : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
+      ${suite.target === "claude-code" ? "" : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
         <summary><span>模型能力与上下文</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
         <div class="form-grid suite-model-policy">
           ${isCodex ? codexMetadataFields(model) : `
@@ -560,6 +556,7 @@ pageContent.addEventListener("change", (event) => {
     const form = event.target.closest("form");
     form.querySelector(".catalog-status-wrapper").hidden = state.createTarget !== "codex";
     form.querySelector("[data-claude-create-auth]").hidden = state.createTarget !== "claude-code";
+    form.querySelector("[data-claude-model-suggestions]").hidden = state.createTarget !== "claude-code";
     form.querySelectorAll("[data-create-model]").forEach((row) => {
       const wrapper = document.createElement("div");
       wrapper.innerHTML = createModelRow({
@@ -650,6 +647,7 @@ function renderSuiteDetail() {
           <button class="button" type="button" data-action="add-suite-model">添加模型设置</button>
         </div>
         ${suite.target === "codex" ? codexCatalogStatus() : ""}
+        ${suite.target === "claude-code" ? claudeModelSuggestions() : ""}
         <form id="suite-models-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.target, binding.virtualProvider, suite.route?.id, upstreamId]))}">
           <div id="suite-model-list" class="suite-model-list">
             ${suite.models.length
@@ -657,7 +655,7 @@ function renderSuiteDetail() {
               : `<div class="empty">已启用模型名直接透传，无需添加模型设置。</div>`}
           </div>
           <div class="suite-section-footer">
-            <span class="field-hint">${suite.target === "claude-code" ? "显示名称和说明用于模型发现。" : "按需展开模型能力与上下文设置。"}</span>
+            <span class="field-hint">${suite.target === "claude-code" ? "上游模型 ID 留空时原样透传。" : "按需展开模型能力与上下文设置。"}</span>
             <div class="form-actions">
               <button class="button" type="submit">保存模型设置</button>
               ${suite.target === "generic-env" ? `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>` : ""}
@@ -703,14 +701,34 @@ function claudeDefaultModel(suite) {
   return suite.models.find((model) => model.id === value)?.profile.clientModelId || value;
 }
 
+function claudeModelInput(attributes, value) {
+  return `<label class="field"><span>客户端模型 ID</span><input ${attributes} list="claude-model-suggestions" value="${esc(value)}" placeholder="搜索官方建议或手动填写" autocomplete="off" required /></label>`;
+}
+
+function claudeModelSuggestions() {
+  return `<p class="field-hint">官方建议来自 <a href="${esc(CLAUDE_MODEL_CATALOG.sources[0])}" target="_blank" rel="noreferrer">Anthropic 文档</a>（${esc(CLAUDE_MODEL_CATALOG.updatedAt)}），随 CableTidy 发版更新，无需额外 API Key；可手动填写其他模型 ID。</p>
+    <datalist id="claude-model-suggestions">${CLAUDE_MODEL_CATALOG.models.map((id) => `<option value="${esc(id)}"></option>`).join("")}</datalist>`;
+}
+
+function claudeAliasSelect(suite, family) {
+  const selected = suite.binding.claude?.models?.[family] || "";
+  const ids = suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
+  return `<label class="field"><span>${family[0].toUpperCase() + family.slice(1)} 别名指向</span><select name="${family}">
+    <option value="" ${selected ? "" : "selected"}>由 Claude 默认决定</option>
+    ${selected && !ids.includes(selected) ? `<option value="${esc(selected)}" selected disabled>${esc(selected)}（未配置，请重新选择）</option>` : ""}
+    ${optionList(ids, selected)}
+  </select></label>`;
+}
+
 function claudeClientForm(suite) {
   const options = suite.binding.claude || {};
   return `<section class="suite-section">
-    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>全部可留空，沿用客户端选择。这里填写客户端模型名，上游改名在模型设置中配置。</p></div>
-    <form id="claude-client-form" data-suite-context="${esc(suite.bindingId)}">
+    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>家族别名可指向已保存的客户端模型 ID，也可由 Claude 默认决定。上游改名在模型设置中配置。</p></div>
+    <form id="claude-client-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id)]))}">
       <div class="form-grid">
         ${field("启动模型（可选）", "defaultModel", claudeDefaultModel(suite), "留空保留已有模型选择")}
-        ${["opus", "sonnet", "haiku", "subagent"].map((family) => field(family === "subagent" ? "子代理模型（可选）" : `${family} 模型（可选）`, family, options.models?.[family] || "", "留空沿用客户端")).join("")}
+        ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(suite, family)).join("")}
+        ${field("子代理模型（可选）", "subagent", options.models?.subagent || "", "留空沿用客户端")}
         ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
       </div>
       <p class="field-hint">模型发现只列出已配置模型，不限制其他模型请求。Claude Code 可能过滤不含 claude 或 anthropic 的模型 ID。保存后需重新应用客户端配置。</p>
@@ -745,6 +763,7 @@ function renderSuiteCreate() {
         </div>
         <p class="field-hint">默认透传请求中的模型名。需要改名时添加设置，客户端选项可在创建后调整。</p>
         <div ${state.createTarget === "codex" ? "" : "hidden"} class="catalog-status-wrapper">${codexCatalogStatus()}</div>
+        <div data-claude-model-suggestions ${state.createTarget === "claude-code" ? "" : "hidden"}>${claudeModelSuggestions()}</div>
         <div id="create-model-list" class="create-model-list"></div>
       </section>
       <div class="config-form-footer">
@@ -762,7 +781,7 @@ function createModelRow(values = {}, target = state.createTarget) {
   };
   return `
     <div class="create-model-row" data-create-model>
-      ${target === "claude-code" ? `<label class="field"><span>客户端模型 ID</span><input data-create-field="clientModelId" value="${esc(model.clientModelId)}" placeholder="Claude 完整模型 ID" required /></label>` : officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
+      ${target === "claude-code" ? claudeModelInput('data-create-field="clientModelId"', model.clientModelId) : officialModelSelect('data-create-field="clientModelId"', model.clientModelId)}
       <label class="field"><span>上游模型 ID（可选）</span><input data-create-field="upstreamModelId" value="${esc(model.upstreamModelId)}" placeholder="留空使用请求中的模型名" /></label>
       <button class="mini-button" type="button" data-action="remove-create-model" aria-label="移除模型映射">移除</button>
     </div>
@@ -1215,12 +1234,12 @@ function saveSuiteModels(form) {
     nextModels[profileId] = {
       ...existing,
       id: profileId,
-      name: suite.target === "claude-code" ? row.querySelector("[data-claude-model-name]")?.value.trim() || clientModelId : clientModelId,
+      name: clientModelId,
       clientModelId,
       aliases,
       family: existing.family || (suite.target === "claude-code" ? "claude" : "codex"),
       ...(suite.target === "claude-code" ? {
-        description: row.querySelector("[data-claude-model-description]")?.value.trim() || undefined,
+        description: undefined,
       } : { capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"] }),
       ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : suite.target === "claude-code" ? {} : {
         contextWindow: Number(row.querySelector("[data-suite-model-context]")?.value || 1000000),
@@ -1277,6 +1296,16 @@ function saveSuiteModels(form) {
     defaultModel: oldModelIds.has(suite.binding.defaultModel) && !nextModelIds.has(suite.binding.defaultModel)
       ? undefined : suite.binding.defaultModel,
   };
+  if (suite.target === "claude-code" && suite.binding.claude?.models) {
+    // Keep family selections attached to their model row across renames.
+    const models = { ...suite.binding.claude.models };
+    for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+      const previous = suite.models.find(({ id, profile }) => (profile.clientModelId || profile.aliases?.[0] || id) === models[family]);
+      if (previous && nextModels[previous.id]) models[family] = nextModels[previous.id].clientModelId;
+      else if (!Object.values(nextModels).some((model) => model.clientModelId === models[family])) delete models[family];
+    }
+    state.candidate.bindings[suite.bindingId].claude = { ...suite.binding.claude, models };
+  }
   selectSuite(suite.bindingId);
 
 }
@@ -1285,8 +1314,14 @@ function saveClaudeClient(data) {
   const suite = selectedSuite();
   if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
   const defaultModel = String(data.get("defaultModel") || "").trim();
-  const models = Object.fromEntries(["opus", "sonnet", "haiku", "subagent"].map((family) =>
+  const models = Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"].map((family) =>
     [family, String(data.get(family) || "").trim()]).filter(([, value]) => value));
+  const ids = new Set(suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id));
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    const previous = suite.binding.claude?.models?.[family];
+    if (data.get(family) == null && previous && !ids.has(previous)) throw new Error(`${family} 别名指向未配置的模型，请重新选择`);
+    if (models[family] && !ids.has(models[family])) throw new Error(`${family} 别名请选择当前配置中已保存的客户端模型 ID`);
+  }
   suite.binding.defaultModel = defaultModel || undefined;
   suite.virtualProvider.defaultModel = defaultModel || undefined;
   suite.binding.claude = { ...suite.binding.claude, setModel: Boolean(defaultModel), models, discoverModels: data.get("discoverModels") === "on" };

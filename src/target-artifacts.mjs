@@ -103,7 +103,7 @@ function buildClaudeArtifacts(config, binding) {
     CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: binding.claude?.discoverModels ? "1" : "0",
     ...(binding.claude?.setModel === false || !clientModel ? {} : { ANTHROPIC_MODEL: clientModel }),
   };
-  for (const family of ["opus", "sonnet", "haiku"]) {
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
     const model = binding.claude?.models?.[family];
     if (model) vars[`ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`] = model;
   }

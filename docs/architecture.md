@@ -529,9 +529,15 @@ CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Bi
 套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
 底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
 理解或点击的高级设置入口，也不再作为一级导航和首次配置的必经步骤。
-Claude Code 模型行只提供客户端模型名、上游模型名和可选的展示名称、描述，
-不套用 Codex 的模型能力和上下文元数据。客户端区域可设置启动模型、
-Opus / Sonnet / Haiku 与子代理模型，以及是否启用模型发现。
+Claude Code 模型行只提供客户端模型 ID 和可选的上游模型 ID，不套用 Codex 的
+模型能力和上下文元数据。客户端 ID 使用可搜索、允许手动填写的输入框，
+`web/claude-models.js` 保存按 Anthropic 官方文档整理的建议目录、来源和核对日期，
+随版本更新，不请求 Models API、不需要额外 Key，也不参与校验白名单或推理路由。
+上游 ID 留空时原样透传。`/v1/models` 只列当前配置的客户端模型，`display_name`
+使用同一 ID，不返回自定义名称或说明；未登记模型继续透传。
+客户端区域可设置启动模型、子代理模型和模型发现开关；Opus / Sonnet / Fable / Haiku
+别名从当前配置已保存的客户端 ID 中选择，或由 Claude 默认决定。改名同步引用，
+移除模型清理对应家族引用；四个家族均生成官方 `ANTHROPIC_DEFAULT_*_MODEL` 变量。
 Claude 与 Codex 共用简单的上游连通性测试：向已保存的 Base URL 发起 GET 请求，
 报告 HTTP 可达性和耗时，不执行推理或判断模型可用性。Generic CLI 仍保留高级模型编辑入口。
 

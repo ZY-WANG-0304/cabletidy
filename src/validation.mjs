@@ -352,8 +352,8 @@ export function validateConfig(input) {
         if (binding.claude.models !== undefined) {
           if (!isRecord(binding.claude.models)) add(errors, `bindings.${id}.claude.models`, "模型选择必须是 object");
           else for (const [key, value] of Object.entries(binding.claude.models)) {
-            if (!["opus", "sonnet", "haiku", "subagent"].includes(key) || typeof value !== "string" || !value.trim()) {
-              add(errors, `bindings.${id}.claude.models.${key}`, "仅支持 opus、sonnet、haiku、subagent 的非空模型 ID");
+            if (!["opus", "sonnet", "fable", "haiku", "subagent"].includes(key) || typeof value !== "string" || !value.trim()) {
+              add(errors, `bindings.${id}.claude.models.${key}`, "仅支持 opus、sonnet、fable、haiku、subagent 的非空模型 ID");
             }
           }
         }

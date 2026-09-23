@@ -12,6 +12,25 @@ import {
 import { validateConfig } from "../src/validation.mjs";
 import { resolveRequest } from "../src/model-resolver.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+
+test("Claude family options support Fable and preserve existing custom values without an official whitelist", () => {
+  const config = claudeConfigFixture();
+  const binding = config.bindings["claude-main"];
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    binding.claude.models = { [family]: "custom-client-model" };
+    assert.equal(validateConfig(config).ok, true);
+    binding.claude.models = { [family]: "" };
+    assert.ok(validateConfig(config).errors.some(({ path }) => path === `bindings.claude-main.claude.models.${family}`));
+  }
+  binding.claude.models = { subagent: "sonnet" };
+  assert.equal(validateConfig(config).ok, true);
+  binding.claude.models = {};
+  config.models = {};
+  config.routes.route.backends[0].models = [];
+  config.virtualProviders["cabletidy_claude-main"].allowedModels = [];
+  assert.equal(validateConfig(config).ok, true);
+});
 
 test("upstream-only configurations allow empty or omitted model settings and optional defaults", () => {
   const config = codexConfigFixture();

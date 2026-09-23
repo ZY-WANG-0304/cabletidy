@@ -717,11 +717,9 @@ async function handleProxyRequest(state, config, secrets, virtualProviderId, pro
       sendProtocolError(response, protocol, 400, "invalid_request_error", "limit 必须是 1 到 1000 之间的整数");
       return;
     }
-    let models = listClientModels(config, provider).map((model) => {
-      const profile = config.models[model.profileId];
-      return { id: model.id, type: "model", display_name: profile.name || model.id,
-        ...(profile.description ? { description: profile.description } : {}) };
-    });
+    let models = listClientModels(config, provider).map((model) => ({
+      id: model.id, type: "model", display_name: model.id,
+    }));
     const after = url.searchParams.get("after_id");
     if (after) {
       const index = models.findIndex((model) => model.id === after);
