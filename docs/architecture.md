@@ -359,7 +359,8 @@ daemon 替换为已保存的上游凭据。消息和 token 计数使用相同的
 Anthropic 扩展字段、协议头和 SSE 事件，仅在消息的模型字段还原客户端模型名。
 
 目标配置生成 `claude.settings.json.v1`，同时提供独立 `--settings` 文件和
-Bash / PowerShell 环境变量。应用只合并用户 `settings.json` 的相关 `env` 字段，
+Bash / PowerShell 环境变量。管理台仅展示实际应用的 `settings.json` JSON 片段、
+目标路径和变更提示，不展示其他导出格式。应用只合并用户 `settings.json` 的相关 `env` 字段，
 通过独立 ownership 记录保留原值，支持重复应用、切换配置和撤销接入。写入使用
 文件锁、备份和原子替换；受管理字段在应用后被手动修改时拒绝覆盖，并提示冲突字段。
 项目设置和 managed policy 等更高优先级配置可能覆盖用户设置，预览会提示检查。

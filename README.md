@@ -254,11 +254,7 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 
 如果接管字段已被手工修改，预览列出冲突字段，应用和撤销均停止写入，不覆盖修改，也不显示冲突字段的秘密值。请先核对备份并保留自己的修改后处理冲突。无效 JSON、非普通文件和符号链接文件不会被替换。已有 `claude.env.v1` 配置继续兼容，新配置使用 `claude.settings.json.v1`。
 
-预览同时提供 Bash/Zsh 和 PowerShell 环境变量，以及独立 JSON 文件的内容。将预览文件保存为 `cabletidy-claude.settings.json` 后，也可用官方命令临时接入：
-
-```bash
-claude --settings /absolute/path/cabletidy-claude.settings.json
-```
+管理台仅展示实际应用到 `settings.json` 的 JSON 片段，包含将合并的 `env` 字段，并显示目标路径、变更字段和冲突提示。点击“应用到 Claude Code”后仍显示同一种内容，不展示独立文件、Shell 命令或 PowerShell 等其他接入方式。
 
 ### 本地接口
 

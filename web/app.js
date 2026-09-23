@@ -919,29 +919,37 @@ function resolveResultPanel(result) {
 }
 
 function artifactPanel(artifacts) {
-  const title = artifacts.target === "claude-code"
-    ? "Claude Code 配置预览"
+  const isClaude = artifacts.target === "claude-code";
+  const title = isClaude
+    ? "Claude Code settings.json 应用预览"
     : artifacts.target === "generic-env"
       ? "Generic environment preview"
       : "Codex local config.toml preview";
-  const variables = Object.keys(artifacts.environment?.vars || {}).length
+  const settingsPath = artifacts.settingsPath || (isClaude ? artifacts.applied?.[0] : null);
+  const instructions = isClaude
+    ? ["以下内容合并到 settings.json 的 env 中，保留其他设置；原值保存以便撤销接入。"]
+    : artifacts.instructions || [];
+  const files = isClaude
+    ? [{ path: "settings.json", contents: JSON.stringify({ env: artifacts.environment?.vars || {} }, null, 2) }]
+    : artifacts.files || [];
+  const variables = !isClaude && Object.keys(artifacts.environment?.vars || {}).length
     ? `<div class="subsection"><div class="table-meta">ENVIRONMENT</div><pre class="code-preview">${esc(Object.entries(artifacts.environment.vars).map(([key, value]) => `${key}=${value}`).join("\n"))}</pre></div>`
     : "";
   return `
     <div class="subsection">
-      <div class="subsection-header"><h3>${title}</h3><span class="field-hint">${esc(artifacts.mode || "managed_proxy")}</span></div>
+      <div class="subsection-header"><h3>${title}</h3>${isClaude ? "" : `<span class="field-hint">${esc(artifacts.mode || "managed_proxy")}</span>`}</div>
       ${artifacts.catalogSummary ? `<div class="field-hint">${esc(artifacts.catalogSummary.sourceVersion)} / ${artifacts.catalogSummary.mode === "managed" ? "生成模型目录" : "沿用当前 Codex 目录"}</div>` : ""}
       ${(artifacts.warnings || []).map((message) => `<div class="notice warning">${esc(message)}</div>`).join("")}
-      ${artifacts.settingsPath ? `<p>应用位置：<code>${esc(artifacts.settingsPath)}</code>，仅合并管理字段。</p>` : ""}
-      ${(artifacts.instructions || []).map((message) => `<p class="field-hint">${esc(message)}</p>`).join("")}
+      ${settingsPath ? `<p>应用位置：<code>${esc(settingsPath)}</code>，仅合并管理字段。</p>` : ""}
+      ${instructions.map((message) => `<p class="field-hint">${esc(message)}</p>`).join("")}
       ${artifacts.changes?.length ? `<p class="field-hint">修改字段：${esc(artifacts.changes.join(", "))}</p>` : ""}
       ${artifacts.conflicts?.length ? `<div class="notice warning">应用已阻止：这些字段在上次应用后被手工修改：${esc(artifacts.conflicts.join(", "))}</div>` : ""}
-      ${(artifacts.files || []).map((file) => file.kind === "json"
+      ${files.map((file) => file.kind === "json"
         ? `<details class="subsection"><summary>${esc(file.path)}</summary><pre class="code-preview">${esc(file.contents)}</pre></details>`
         : `<div class="subsection"><div class="table-meta">${esc(file.path)}</div><pre class="code-preview">${esc(file.contents)}</pre></div>`).join("")}
       ${variables}
-      ${artifacts.environment?.shell ? `<div class="subsection"><div class="table-meta">SETUP COMMAND</div><pre class="code-preview">${esc(artifacts.environment.shell)}</pre></div>` : ""}
-      ${artifacts.environment?.powershell ? `<details class="subsection"><summary>PowerShell</summary><pre class="code-preview">${esc(artifacts.environment.powershell)}</pre></details>` : ""}
+      ${!isClaude && artifacts.environment?.shell ? `<div class="subsection"><div class="table-meta">SETUP COMMAND</div><pre class="code-preview">${esc(artifacts.environment.shell)}</pre></div>` : ""}
+      ${!isClaude && artifacts.environment?.powershell ? `<details class="subsection"><summary>PowerShell</summary><pre class="code-preview">${esc(artifacts.environment.powershell)}</pre></details>` : ""}
     </div>
   `;
 }
