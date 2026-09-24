@@ -34,7 +34,7 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
     const body = JSON.parse(Buffer.concat(chunks).toString());
     calls.push({ path: request.url, body, headers: request.headers });
     if (request.url.includes("count_tokens")) { response.end('{"input_tokens":10}'); return; }
-    const message = { id: "msg_smoke", type: "message", role: "assistant", model: "vendor-sonnet", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };
+    const message = { id: "msg_smoke", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } };
     if (!body.stream) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ...message, content: [{ type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 8 } }));
@@ -59,6 +59,12 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
     await fs.rm(home, { recursive: true, force: true });
   });
   const config = claudeConfigFixture(`http://127.0.0.1:${upstream.address().port}/v1`, Number(new URL(app.url).port));
+  config.models.custom = { ...config.models.sonnet, id: "custom", clientModelId: "claude-custom-sonnet", aliases: ["claude-custom-sonnet"],
+    upstreams: { relay: { upstreamModelId: "vendor-custom-sonnet" } } };
+  config.routes.route.backends[0].models.push("custom");
+  config.virtualProviders["cabletidy_claude-main"].allowedModels.push("custom");
+  config.bindings["claude-main"].defaultModel = "sonnet";
+  config.bindings["claude-main"].claude = { setModel: true, models: { sonnet: "claude-custom-sonnet" } };
   const post = async (route, body) => {
     const response = await fetch(`${app.url}api/v1/${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     assert.equal(response.status, 200, await response.text());
@@ -71,7 +77,7 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
   const version = await runClaude(["--version"], { env, cwd: home });
   assert.equal(version.code, 0, version.stderr);
   t.diagnostic(version.stdout.trim());
-  const args = ["-p", "Return a short acknowledgement.", "--model", "claude-sonnet-4-6", "--output-format", "json",
+  const args = ["-p", "Return a short acknowledgement.", "--output-format", "json",
     "--no-session-persistence", "--setting-sources", "user", "--tools", "", "--strict-mcp-config"];
   for (const mode of ["applied", "standalone"]) {
     const extra = [];
@@ -81,14 +87,21 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
       await fs.writeFile(file, buildTargetArtifacts(config, { bindingId: "claude-main" }).files[0].contents);
       extra.push("--settings", file);
     }
-    const result = await runClaude([...args, ...extra], { env, cwd: home });
-    assert.equal(result.code, 0, `${mode}: ${result.stderr}\n${result.stdout}`);
-    assert.match(result.stdout, /CableTidy Claude smoke OK/);
-    t.diagnostic(`${mode}: CLI received the simulated stream`);
+    for (const selection of ["explicit", "startup-alias"]) {
+      const before = calls.length;
+      const selected = selection === "explicit" ? ["--model", "claude-sonnet-4-6"] : [];
+      const result = await runClaude([...args, ...extra, ...selected], { env, cwd: home });
+      assert.equal(result.code, 0, `${mode}/${selection}: ${result.stderr}\n${result.stdout}`);
+      assert.match(result.stdout, /CableTidy Claude smoke OK/);
+      assert.ok(calls.length > before);
+      for (const call of calls.slice(before)) {
+        assert.equal(call.body.model, selection === "explicit" ? "vendor-sonnet" : "vendor-custom-sonnet");
+      }
+      t.diagnostic(`${mode}/${selection}: CLI received the simulated stream with the expected model`);
+    }
   }
   assert.ok(calls.length >= 2);
   for (const call of calls) {
-    assert.equal(call.body.model, "vendor-sonnet");
     assert.equal(call.headers["x-api-key"], "smoke-upstream-key");
     assert.equal(call.headers.authorization, undefined);
   }

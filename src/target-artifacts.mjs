@@ -7,6 +7,7 @@ import { clientModelIdForProfile, resolveModelProfile } from "./model-resolver.m
 import { normalizeConfig } from "./config.mjs";
 import { configurationId, providerIdForConfiguration, configurationBaseUrl } from "../web/config-identity.js";
 import { prepareClaudeSettings } from "./claude-config-file.mjs";
+import { CLAUDE_MODEL_ALIASES } from "../web/claude-models.js";
 
 export const CLAUDE_TARGET_FORMAT = "claude.settings.json.v1";
 export const CLAUDE_ENDPOINTS = [
@@ -180,6 +181,10 @@ function getVirtualProvider(config, binding) {
 function defaultProfile(config, binding, virtualProvider) {
   const requested = binding.defaultModel || virtualProvider.defaultModel;
   if (!requested) return { profileId: null, profile: null, clientModelId: null };
+  // A Claude alias takes precedence over a same-named internal profile reference.
+  if (binding.target === "claude-code" && CLAUDE_MODEL_ALIASES.defaultModel.includes(requested)) {
+    return { profileId: null, profile: null, clientModelId: requested };
+  }
   const resolved = resolveModelProfile(config, virtualProvider, requested);
   return {
     profileId: resolved.profileId,

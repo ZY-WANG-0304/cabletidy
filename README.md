@@ -233,7 +233,7 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 
 模型映射只提供“客户端模型 ID”和“上游模型 ID”。客户端输入框支持搜索官方建议，也可直接填写自定义 ID；上游 ID 手动填写，留空时原样透传。建议目录内置于 `web/claude-models.js`，根据 [Anthropic 模型文档](https://platform.claude.com/docs/en/about-claude/models/overview) 整理，记录核对日期和来源，随 CableTidy 发版更新，无需额外 API Key。目录只辅助输入，不限制保存或请求中的模型名，也不会自动加入 `/v1/models`。
 
-“Claude Code 模型选择”分为“模型别名”和“默认模型”：前者包含 Opus/Sonnet/Fable/Haiku 的别名指向，后者包含下拉选择的启动模型和子代理模型。两类下拉都提供默认行为、对应的官方别名和当前配置客户端模型 ID；创建页使用本次填写的模型映射，详情页使用已保存的模型映射，不使用上游模型 ID 或其他配置的模型。模型发现开关保留在表单底部，不单独分组。四个家族别名分别生成官方的 `ANTHROPIC_DEFAULT_<家族>_MODEL` 变量，Fable 使用 `ANTHROPIC_DEFAULT_FABLE_MODEL`。模型改名时同步更新引用它的家族别名，删除模型时相应别名回到默认；保存后需要重新应用客户端配置。已不在候选列表中的旧默认值会在下一次正常保存时清空，页面不会自动写回配置。
+“Claude Code 模型选择”分为“模型别名”和“默认模型”：前者包含 Opus/Sonnet/Fable/Haiku 的别名指向，后者包含下拉选择的启动模型和子代理模型。启动模型和子代理模型的下拉都提供默认行为、对应的官方别名和当前配置客户端模型 ID；创建页使用本次填写的模型映射，详情页使用已保存的模型映射，不使用上游模型 ID 或其他配置的模型。模型发现开关保留在表单底部，不单独分组。四个家族别名分别生成官方的 `ANTHROPIC_DEFAULT_<家族>_MODEL` 变量，Fable 使用 `ANTHROPIC_DEFAULT_FABLE_MODEL`。模型改名时同步更新引用它的家族别名、启动模型和子代理模型；删除映射时，引用该客户端 ID 的选择回到默认。启动模型或子代理模型选择的官方别名始终保留原文，由 Claude 解析，即使与内部模型 ID 同名也不会提前展开。保存后需要重新应用客户端配置。已不在候选列表中的旧默认值会在下一次正常保存时清空，页面不会自动写回配置。
 
 选择默认行为时 CableTidy 不指定该字段对应的模型；再次应用会恢复此前接管的对应环境变量原值，由 Claude 自身配置决定。选择启动模型通过 `ANTHROPIC_MODEL` 设置，选择子代理模型通过 `CLAUDE_CODE_SUBAGENT_MODEL` 设置，后续每次启动都会生效。上下文、reasoning effort 和压缩策略仍由 Claude Code 管理，不生成没有实际效果的逐模型窗口或 compact 设置。
 

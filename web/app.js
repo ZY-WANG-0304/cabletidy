@@ -238,7 +238,8 @@ function restoreFormChanges(form, replacement) {
   const current = formSnapshot(form);
   const sameContext = form.getAttribute("data-suite-context") === replacement.getAttribute("data-suite-context");
   if (sameContext && current === latest) return;
-  if (sameContext && baseline === latest) {
+  // Creation drafts have no remote record to merge, even after switching CLI.
+  if (form.getAttribute("id") === "suite-create-form" || (sameContext && baseline === latest)) {
     if (formConflicts.has(form)) form.querySelector("[data-form-feedback]")?.remove();
     formConflicts.delete(form);
     replacement.replaceWith(form);
@@ -1363,15 +1364,28 @@ function saveSuiteModels(form) {
     defaultModel: oldModelIds.has(suite.binding.defaultModel) && !nextModelIds.has(suite.binding.defaultModel)
       ? undefined : suite.binding.defaultModel,
   };
-  if (suite.target === "claude-code" && suite.binding.claude?.models) {
-    // Keep family selections attached to their model row across renames.
-    const models = { ...suite.binding.claude.models };
+  if (suite.target === "claude-code") {
+    // Keep client-ID selections attached to their row; Claude resolves aliases itself.
+    const syncSelection = (value, aliases = []) => {
+      if (!value) return undefined;
+      if (aliases.includes(value)) return value;
+      const previous = suite.models.find(({ id, profile }) => (profile.clientModelId || profile.aliases?.[0] || id) === value);
+      if (previous && nextModels[previous.id]) return nextModels[previous.id].clientModelId;
+      return Object.values(nextModels).some((model) => model.clientModelId === value) ? value : undefined;
+    };
+    const models = { ...suite.binding.claude?.models };
     for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-      const previous = suite.models.find(({ id, profile }) => (profile.clientModelId || profile.aliases?.[0] || id) === models[family]);
-      if (previous && nextModels[previous.id]) models[family] = nextModels[previous.id].clientModelId;
-      else if (!Object.values(nextModels).some((model) => model.clientModelId === models[family])) delete models[family];
+      const value = syncSelection(models[family]);
+      if (value) models[family] = value;
+      else delete models[family];
     }
-    state.candidate.bindings[suite.bindingId].claude = { ...suite.binding.claude, models };
+    const subagent = syncSelection(models.subagent, CLAUDE_MODEL_ALIASES.subagent);
+    if (subagent) models.subagent = subagent;
+    else delete models.subagent;
+    const defaultModel = syncSelection(claudeDefaultModel(suite), CLAUDE_MODEL_ALIASES.defaultModel);
+    state.candidate.virtualProviders[suite.binding.virtualProvider].defaultModel = defaultModel;
+    state.candidate.bindings[suite.bindingId].defaultModel = defaultModel;
+    state.candidate.bindings[suite.bindingId].claude = { ...suite.binding.claude, models, setModel: Boolean(defaultModel) };
   }
   selectSuite(suite.bindingId);
 

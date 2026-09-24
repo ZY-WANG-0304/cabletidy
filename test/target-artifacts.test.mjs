@@ -6,6 +6,8 @@ import {
   publicTargetArtifacts,
 } from "../src/target-artifacts.mjs";
 import { normalizeConfig } from "../src/config.mjs";
+import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+import { validateConfig } from "../src/validation.mjs";
 
 function claudeConfig() {
   return normalizeConfig({
@@ -84,6 +86,34 @@ test("generic CLI environments need only a local URL and model", () => {
   });
   assert.doesNotMatch(JSON.stringify(artifacts), /API_KEY|legacy-local-key/);
   assert.deepEqual(publicTargetArtifacts(artifacts).environment.vars, artifacts.environment.vars);
+});
+
+test("Claude startup aliases remain literal when they collide with profile IDs or custom aliases", () => {
+  for (const alias of ["best", "opus", "sonnet", "fable", "haiku", "opusplan"]) {
+    for (const match of ["profileId", "customAlias"]) {
+      const config = claudeConfigFixture();
+      const profileId = match === "profileId" ? alias : "internal-model";
+      config.models = {
+        [profileId]: { ...config.models.sonnet, id: profileId, aliases: ["claude-sonnet-4-6", alias] },
+        custom: { ...config.models.sonnet, id: "custom", clientModelId: "claude-custom-sonnet", aliases: ["claude-custom-sonnet"] },
+      };
+      config.routes.route.backends[0].models = [profileId, "custom"];
+      const provider = config.virtualProviders["cabletidy_claude-main"];
+      provider.allowedModels = [profileId, "custom"];
+      provider.defaultModel = alias;
+      config.bindings["claude-main"].claude.models = { sonnet: "claude-custom-sonnet", subagent: "sonnet" };
+      assert.equal(validateConfig(config).ok, true);
+      for (const bindingDefault of [undefined, alias]) {
+        config.bindings["claude-main"].defaultModel = bindingDefault;
+        const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+        assert.equal(artifacts.clientModelId, alias);
+        assert.equal(artifacts.environment.vars.ANTHROPIC_MODEL, alias);
+        assert.equal(artifacts.environment.vars.ANTHROPIC_DEFAULT_SONNET_MODEL, "claude-custom-sonnet");
+        assert.equal(artifacts.environment.vars.CLAUDE_CODE_SUBAGENT_MODEL, "sonnet");
+        assert.equal(JSON.parse(artifacts.files[0].contents).env.ANTHROPIC_MODEL, alias);
+      }
+    }
+  }
 });
 
 test("passthrough leaves Claude and generic CLI model selection to the client", () => {
