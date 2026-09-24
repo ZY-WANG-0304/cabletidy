@@ -536,8 +536,11 @@ Claude Code 模型行只提供客户端模型 ID 和可选的上游模型 ID，�
 上游 ID 留空时原样透传。`/v1/models` 只列当前配置的客户端模型，`display_name`
 使用同一 ID，不返回自定义名称或说明；未登记模型继续透传。
 客户端区域分为“模型别名”和“默认模型”两组。“模型别名”包含 Opus / Sonnet / Fable / Haiku，
-从当前配置已保存的客户端 ID 中选择，或由 Claude 默认决定；“默认模型”包含可留空的
-启动模型和子代理模型。已有模型发现开关保留在表单底部，不新增分组。改名同步引用，
+从当前配置已保存的客户端 ID 中选择，或由 Claude 默认决定；“默认模型”包含两个下拉选择：
+启动模型提供 `best`、`opus`、`sonnet`、`fable`、`haiku`、`opus[1m]`、`sonnet[1m]`、
+`opusplan`、`opusplan[1m]`，子代理模型提供 `opus`、`sonnet`、`fable`、`haiku`，并分别提供
+默认行为和当前配置客户端 ID。创建页使用本次填写的 ID，详情页使用已保存的 ID；不使用上游
+模型 ID 或其他配置的模型。已有模型发现开关保留在表单底部，不新增分组。改名同步引用，
 移除模型清理对应家族引用；四个家族均生成官方 `ANTHROPIC_DEFAULT_*_MODEL` 变量。
 Claude 与 Codex 共用简单的上游连通性测试：向已保存的 Base URL 发起 GET 请求，
 报告 HTTP 可达性和耗时，不执行推理或判断模型可用性。Generic CLI 仍保留高级模型编辑入口。
@@ -557,11 +560,11 @@ Claude 与 Codex 共用简单的上游连通性测试：向已保存的 Base URL
   Codex 官方模型或 Claude 客户端模型 / upstream_model_id（可选）
   Codex 上下文等参数在创建后的详情页调整
 
-模型别名（仅 Claude Code，可选）
-  Opus / Sonnet / Fable / Haiku 从本次填写的客户端模型 ID 中选择，或由 Claude 默认决定
+Claude Code 模型选择（仅 Claude Code，可选）
+  模型别名：Opus / Sonnet / Fable / Haiku 从本次填写的客户端模型 ID 中选择，或由 Claude 默认决定
+  默认模型：启动模型、子代理模型分别从官方适用别名、默认行为和本次填写的客户端模型 ID 中选择
 
-默认模型（仅 Claude Code，可选）
-  启动模型 / 子代理模型手动填写，均可留空
+  选择保存别名本身；不在候选列表中的旧值在正常保存时清空，不自动回写配置
 
 创建配置
   自动创建 Route、Virtual Provider 和所选 CLI 的 Target Binding
