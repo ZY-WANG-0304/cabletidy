@@ -377,6 +377,7 @@ test("Claude default model selectors expose field-specific aliases and current c
   assert.match(html, /name="subagent" data-claude-default-model/);
   assert.match(html, /value="best"/);
   assert.match(html, /value="opusplan"/);
+  assert.doesNotMatch(html, /value="opus\[1m\]"|value="sonnet\[1m\]"|value="opusplan\[1m\]"/);
   assert.doesNotMatch(html, /value="other-configuration-model"/);
   assert.doesNotMatch(html, /value="legacy-startup"/);
   assert.doesNotMatch(html, /value="legacy-subagent"/);
@@ -384,6 +385,7 @@ test("Claude default model selectors expose field-specific aliases and current c
   const subagentOptions = app.read('claudeDefaultModelOptions("subagent", ["claude-sonnet-4-6"], "")');
   assert.match(defaultOptions, /value="best"/);
   assert.match(defaultOptions, /value="claude-sonnet-4-6"/);
+  assert.doesNotMatch(defaultOptions, /\[1m\]/);
   assert.doesNotMatch(defaultOptions, /value="inherit"/);
   assert.doesNotMatch(subagentOptions, /value="best"|value="opusplan"/);
   assert.match(subagentOptions, /value="opus"/);

@@ -141,7 +141,7 @@ Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示�
 - Claude Code 上游可选 `x-api-key` 或 `Authorization: Bearer` 认证。
 - 模型设置（可选）：Codex 选择官方模型，Claude Code 填写客户端请求中的完整模型 ID；上游模型 ID 留空时直接透传。
 - Claude Code 的“模型别名”（可选）：Opus / Sonnet / Fable / Haiku 从本次填写的客户端模型 ID 中选择，也可由 Claude 默认决定。
-- Claude Code 的“默认模型”（可选）：启动模型和子代理模型均以下拉选项选择。启动模型支持 Claude 官方的 `best`、`opus`、`sonnet`、`fable`、`haiku`、`opus[1m]`、`sonnet[1m]`、`opusplan` 和 `opusplan[1m]`；子代理模型支持 `opus`、`sonnet`、`fable`、`haiku`。两者都可选择对应的默认行为，或当前配置中的客户端模型 ID；保存别名本身，不提前转换为具体模型 ID。
+- Claude Code 的“默认模型”（可选）：启动模型和子代理模型均以下拉选项选择。启动模型支持 Claude 官方的 `best`、`opus`、`sonnet`、`fable`、`haiku`、`opusplan`；子代理模型支持 `opus`、`sonnet`、`fable`、`haiku`。两者都可选择对应的默认行为，或当前配置中的客户端模型 ID；保存别名本身，不提前转换为具体模型 ID。
 
 点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务入口和路由自动生成。配置 ID 按配置名称规范化生成，Virtual Provider ID 为 `cabletidy_<配置ID>`，并直接用作 Codex 的 `model_provider`；URL 路径使用不带此前缀的配置 ID。留空名称时，自动生成的名称也会参与 ID 规范化；如果多个配置使用同一上游主机且都留空名称，需要为后续配置填写不同名称。
 
@@ -236,6 +236,8 @@ Claude Code 适配器会自动注入固定的 `cabletidy-local` 占位值以满�
 “Claude Code 模型选择”分为“模型别名”和“默认模型”：前者包含 Opus/Sonnet/Fable/Haiku 的别名指向，后者包含下拉选择的启动模型和子代理模型。两类下拉都提供默认行为、对应的官方别名和当前配置客户端模型 ID；创建页使用本次填写的模型映射，详情页使用已保存的模型映射，不使用上游模型 ID 或其他配置的模型。模型发现开关保留在表单底部，不单独分组。四个家族别名分别生成官方的 `ANTHROPIC_DEFAULT_<家族>_MODEL` 变量，Fable 使用 `ANTHROPIC_DEFAULT_FABLE_MODEL`。模型改名时同步更新引用它的家族别名，删除模型时相应别名回到默认；保存后需要重新应用客户端配置。已不在候选列表中的旧默认值会在下一次正常保存时清空，页面不会自动写回配置。
 
 选择默认行为时 CableTidy 不指定该字段对应的模型；再次应用会恢复此前接管的对应环境变量原值，由 Claude 自身配置决定。选择启动模型通过 `ANTHROPIC_MODEL` 设置，选择子代理模型通过 `CLAUDE_CODE_SUBAGENT_MODEL` 设置，后续每次启动都会生效。上下文、reasoning effort 和压缩策略仍由 Claude Code 管理，不生成没有实际效果的逐模型窗口或 compact 设置。
+
+启动模型下拉不提供 `[1m]` 选项。`[1m]` 是 Claude Code 自身的上下文模式控制，Claude Code 会在发送上游请求前移除该后缀；CableTidy 无法通过 `/v1/models` 判断或保证上游支持 1M，也没有专门的 1M 能力验证，因此不在界面中暴露此配置。
 
 ### 预览、应用与撤销
 

@@ -34,6 +34,6 @@ export const CLAUDE_MODEL_CATALOG = {
 // https://code.claude.com/docs/en/sub-agents#choose-a-model
 // `default` is a reset, and subagent `inherit` equals unset; the UI uses an empty value.
 export const CLAUDE_MODEL_ALIASES = {
-  defaultModel: ["best", "opus", "sonnet", "fable", "haiku", "opus[1m]", "sonnet[1m]", "opusplan", "opusplan[1m]"],
+  defaultModel: ["best", "opus", "sonnet", "fable", "haiku", "opusplan"],
   subagent: ["opus", "sonnet", "fable", "haiku"],
 };
