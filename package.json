@@ -29,7 +29,8 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
-    "dev": "node --watch src/server.mjs",
+    "dev": "node --watch scripts/dev.mjs",
+    "dev:status": "node scripts/dev.mjs status",
     "test": "node --test test/*.test.mjs",
     "test:package": "node --test scripts/package-smoke.mjs",
     "test:claude": "node --test scripts/claude-smoke.mjs",

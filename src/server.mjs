@@ -53,6 +53,7 @@ import { forceStopCodexCatalog, loadCodexCatalog, publicCodexCatalog, validateCo
 
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const WEB_ROOT = path.join(PROJECT_ROOT, "web");
+const { version: APP_VERSION } = JSON.parse(await fs.readFile(path.join(PROJECT_ROOT, "package.json"), "utf8"));
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const IMPLEMENTED_INGRESS_PROTOCOLS = new Set([
   "openai.responses",
@@ -89,6 +90,7 @@ async function createLockedApplication(options, paths, identity) {
   let config = await loadConfig(paths);
   const allocatePort = config === null;
   config ||= defaultConfig();
+  if (allocatePort && options.preferredPort !== undefined) config.web.port = options.preferredPort;
   const secrets = await loadSecrets(paths);
   const startupValidation = validateConfig(config);
   if (!startupValidation.ok) {
@@ -1054,6 +1056,7 @@ function runtimeStatus(state) {
   const health = {};
   for (const [id, item] of state.health.entries()) health[id] = item;
   return {
+    version: APP_VERSION,
     pid: process.pid,
     startedAt: state.startedAt,
     revision: state.config.revision,
@@ -1294,8 +1297,8 @@ function closeServer(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-export async function startDaemon() {
-  const app = await createApplication();
+export async function startDaemon(options = {}) {
+  const app = await createApplication(options);
   let stopping = false;
   const stop = async (signal) => {
     if (stopping) {
@@ -1324,6 +1327,9 @@ export async function startDaemon() {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   console.log(`CableTidy Web 管理台: ${app.url}`);
+  console.log(`数据目录: ${app.state.paths.home}`);
+  if (options.codexHome) console.log(`Codex 配置目录: ${options.codexHome}`);
+  if (options.claudeHome) console.log(`Claude Code 配置目录: ${options.claudeHome}`);
   console.log("按 Ctrl+C 停止 daemon");
 }
 

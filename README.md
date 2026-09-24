@@ -102,6 +102,38 @@ npm pack
 
 `npm start` 与 `cabletidy start` 使用相同的启动和退出逻辑。源码用户也可以通过 `node bin/cabletidy.mjs --help` 调用完整 CLI。
 
+#### 开发与调试
+
+同机运行正式版和开发版时，使用独立的开发入口：
+
+```bash
+npm run dev
+
+# 在另一个终端查看开发实例状态和管理台地址。
+npm run dev:status
+
+# 需要 Node.js 断点调试时，使用相同的隔离入口。
+node --inspect --watch scripts/dev.mjs
+```
+
+| 项目 | 正式运行（`cabletidy start` / `npm start`） | 开发运行（`npm run dev`） |
+| --- | --- | --- |
+| 数据目录 | `CABLETIDY_HOME` 或 `~/.cabletidy` | 仓库内 `.cabletidy-debug/` |
+| 首次首选端口 | `43100` | `43101` |
+| Codex 配置目录 | `CODEX_HOME` 或 `~/.codex` | `.cabletidy-debug/codex/` |
+| Claude Code 配置目录 | `CLAUDE_CONFIG_DIR` 或 `~/.claude` | `.cabletidy-debug/claude/` |
+
+开发实例的配置、密钥、备份和实例锁全部保存在独立数据目录中，该目录已被 Git 忽略。开发入口以脚本所在的仓库为准，因此不同 clone / worktree 各自独立。开发启动和状态查询均使用 `CABLETIDY_DEV_HOME` 覆盖开发数据目录，不沿用环境中已有的 `CABLETIDY_HOME`；两个测试客户端目录也始终位于开发数据目录下，不沿用 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 指定的写入位置。例如：
+
+```bash
+CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev
+CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev:status
+```
+
+只有首次启动且开发目录中没有 `config.json` 时才尝试 `43101`，占用则由系统分配空闲端口并保存；后续启动、代码变更触发的重启均复用保存的端口。已保存端口被占用时明确报错，不会更换客户端地址。原有 `.cabletidy-debug/config.json` 会继续使用，包括其中的端口；如需调整，停止开发实例后修改该文件的 `web.port`，再重启并重新应用测试客户端配置。
+
+启动日志会显示实际管理台地址、数据目录和两个测试客户端配置目录。开发管理台中的“应用到 Codex / Claude Code”只写入对应测试目录；要验证真实客户端请求，需让测试客户端使用日志中的对应目录（Codex 的 `CODEX_HOME`、Claude Code 的 `CLAUDE_CONFIG_DIR`）。这些目录不会自动复制日常客户端的配置或登录信息。管理台查询本机 Codex 官方模型目录仍通过 `PATH` 中的 `codex debug models --bundled` 执行。
+
 验证源码和安装产物：
 
 ```bash
@@ -148,6 +180,8 @@ Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示�
 点击“创建配置”后，服务端自动校验、保存并使配置生效，成功后进入详情页。本地服务入口和路由自动生成。配置 ID 按配置名称规范化生成，Virtual Provider ID 为 `cabletidy_<配置ID>`，并直接用作 Codex 的 `model_provider`；URL 路径使用不带此前缀的配置 ID。留空名称时，自动生成的名称也会参与 ID 规范化；如果多个配置使用同一上游主机且都留空名称，需要为后续配置填写不同名称。
 
 列表显示 CLI、模型设置数量（无设置时显示“直接透传”）、本地地址和本地服务状态。列表与详情页的状态根据 Virtual Provider 的运行情况显示“已启动”“已暂停”或“未启动”，不受上游连通性测试结果影响。详情页依次展示唯一上游的连接设置、可选模型设置和客户端接入；每行模型设置包含客户端模型及可选的上游模型 ID，底部接入区域集中展示本地地址、Virtual Provider ID 和服务启停、预览、应用操作。“保存上游”和“保存模型设置”分别直接保存对应修改；模型设置可全部删除，恢复直接透传。失败时保留输入并在当前表单显示错误。“诊断”页面提供模型解析测试和事件记录，解析使用已保存的配置。
+
+左下角显示当前运行的 CableTidy 软件版本。配置修订号显示在“诊断”的对应事件条目中，例如 `配置修订 12`，代表该次配置保存或服务启停产生的修订，不随后续配置变更而改变。
 
 仅在存在实际未保存修改时，切换页面、返回列表或关闭页面会提示确认；改回原值后不再拦截。点击“刷新模型列表”同步更新沿用官方定义的元数据和最新限制，保留手动覆盖值与其他表单输入。
 
