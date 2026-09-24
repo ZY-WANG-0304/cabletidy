@@ -33,6 +33,8 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。CI 在 Linux、macOS 和 Windows 上执行源码测试与安装冒烟测试，平台验证结果以对应提交的 CI 为准。Windows 使用系统自带的 Windows PowerShell 查询进程身份；Codex 模型目录查询还需要允许 PowerShell `Add-Type` 调用 Windows Job Object API。
 
+`0.2.0` 的变更与升级注意事项见 [发布说明](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/releases/0.2.0.md)。
+
 ### 从 npm 官方源安装
 
 ```bash
@@ -52,7 +54,7 @@ npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cab
 拿到 `.tgz` 安装包后，无需 clone 仓库即可安装：
 
 ```bash
-npm install -g /absolute/path/cabletidy-0.1.0.tgz
+npm install -g /absolute/path/cabletidy-0.2.0.tgz
 cabletidy --version
 cabletidy start
 ```
@@ -60,7 +62,7 @@ cabletidy start
 也可以不做全局安装，直接运行同一个安装包：
 
 ```bash
-npm exec --yes --package=/absolute/path/cabletidy-0.1.0.tgz -- cabletidy start
+npm exec --yes --package=/absolute/path/cabletidy-0.2.0.tgz -- cabletidy start
 ```
 
 安装包仍依赖本机 Node.js；npm 会下载尚未缓存的运行时依赖，因此 `.tgz` 本身不代表完全离线安装。安装过程不会启动服务或修改客户端配置。
@@ -94,7 +96,7 @@ cabletidy start
 npm ci
 npm start
 
-# 生成可安装的 cabletidy-0.1.0.tgz。
+# 生成可安装的 cabletidy-0.2.0.tgz。
 npm pack
 ```
 
