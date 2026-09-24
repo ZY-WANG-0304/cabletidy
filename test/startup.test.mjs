@@ -27,8 +27,8 @@ async function fixture(t) {
   });
   return {
     paths: (name = "data") => getPaths(path.join(directory, name)),
-    async start(paths) {
-      const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture() });
+    async start(paths, options = {}) {
+      const app = await createApplication({ ...options, paths, loadCodexCatalog: async () => catalogFixture() });
       apps.push(app);
       return app;
     },
@@ -71,33 +71,51 @@ async function post(app, endpoint, body) {
   return result;
 }
 
-test("first startup persists the listening address when the preferred bind succeeds", async t => {
-  const f = await fixture(t);
-  const listen = net.Server.prototype.listen;
-  const attempts = [];
-  // Redirect the preferred bind so this success path works on shared CI hosts too.
-  t.mock.method(net.Server.prototype, "listen", function (port, ...args) {
-    attempts.push(port);
-    return listen.call(this, port === 43100 ? 0 : port, ...args);
+for (const preferredPort of [undefined, 43101]) {
+  test(`first startup persists the listening address with preferred port ${preferredPort ?? "default"}`, async t => {
+    const f = await fixture(t);
+    const listen = net.Server.prototype.listen;
+    const attempts = [];
+    // Redirect the preferred bind so this success path works on shared CI hosts too.
+    t.mock.method(net.Server.prototype, "listen", function (port, ...args) {
+      attempts.push(port);
+      return listen.call(this, port === (preferredPort ?? 43100) ? 0 : port, ...args);
+    });
+    const paths = f.paths();
+    const app = await f.start(paths, { preferredPort });
+    assert.deepEqual(attempts, [preferredPort ?? 43100]);
+    const port = app.state.webServer.address().port;
+    assert.equal(app.url, `http://127.0.0.1:${port}/`);
+    assert.equal((await loadConfig(paths)).web.port, port);
   });
+}
+
+test("development port fallback is saved and takes precedence over the preferred port on restart", async t => {
+  const f = await fixture(t);
+  const blocker = await f.block();
+  const preferredPort = blocker.address().port;
   const paths = f.paths();
-  const app = await f.start(paths);
-  assert.deepEqual(attempts, [43100]);
-  const port = app.state.webServer.address().port;
-  assert.equal(app.url, `http://127.0.0.1:${port}/`);
-  assert.equal((await loadConfig(paths)).web.port, port);
+  const app = await f.start(paths, { preferredPort });
+  assert.notEqual(app.state.config.web.port, preferredPort);
+  assert.equal((await loadConfig(paths)).web.port, app.state.config.web.port);
+  await app.close();
+  assert.equal((await f.start(paths, { preferredPort })).url, app.url);
 });
 
 test("new stores allocate distinct ports while status stays read-only and restart keeps client URLs", async t => {
   const f = await fixture(t);
-  await f.blockDefault();
+  const blocker = await f.block();
+  const preferredPort = blocker.address().port;
   const paths = f.paths();
   assert.equal((await status(paths)).runtime.web, undefined);
   await assert.rejects(fs.access(paths.home), { code: "ENOENT" });
-  const [app, other] = await Promise.all([f.start(paths), f.start(f.paths("other"))]);
+  const [app, other] = await Promise.all([
+    f.start(paths, { preferredPort }),
+    f.start(f.paths("other"), { preferredPort }),
+  ]);
   const port = app.state.config.web.port;
   assert.ok(Number.isInteger(port) && port > 0);
-  assert.notEqual(port, 43100);
+  assert.notEqual(port, preferredPort);
   assert.notEqual(app.url, other.url);
   for (const instance of [app, other]) {
     const saved = await loadConfig(instance.state.paths);
@@ -256,7 +274,9 @@ test("concurrent stale-lock reclaimers preserve the new owner after a killed dae
   const results = await Promise.allSettled(Array.from({ length: 4 }, () => f.start(paths)));
   const started = results.filter(result => result.status === "fulfilled");
   assert.equal(started.length, 1);
-  for (const result of results.filter(result => result.status === "rejected")) assert.equal(result.reason.code, "ELOCKED");
+  for (const result of results.filter(result => result.status === "rejected")) {
+    assert.equal(result.reason.code, "ELOCKED", result.reason.stack);
+  }
   await delay(2500);
   assert.equal((await status(paths)).runtime.web.url, started[0].value.url);
   assert.equal((await fetch(started[0].value.url)).status, 200);

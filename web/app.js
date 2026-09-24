@@ -4,7 +4,7 @@ import { CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES } from "./claude-models.js";
 const pageContent = document.querySelector("#page-content");
 const pageTitle = document.querySelector("#page-title");
 const railStatus = document.querySelector("#rail-status");
-const revisionLabel = document.querySelector("#revision-label");
+const versionLabel = document.querySelector("#version-label");
 const toastRegion = document.querySelector("#toast-region");
 const formBaselines = new WeakMap();
 const formConflicts = new WeakSet();
@@ -147,7 +147,7 @@ function render(preservedForms = []) {
   pageTitle.textContent = state.page === "suite-detail"
     ? selectedSuite()?.name || PAGE_META["suite-detail"]
     : pageMeta();
-  revisionLabel.textContent = `版本 ${state.config?.revision ?? 0}`;
+  versionLabel.textContent = state.runtime?.version ? `v${state.runtime.version}` : "版本未知";
   document.querySelectorAll(".nav-item").forEach((item) => {
     const active = item.dataset.page === (state.page === "diagnostics" ? "diagnostics" : "overview");
     item.classList.toggle("is-active", active);
@@ -979,7 +979,11 @@ function modelRow(id, item, active = false) {
 }
 
 function eventRow(event) {
-  return `<div class="list-row"><div><h3>${esc(event.type)}</h3><p>${esc(new Date(event.at).toLocaleString())} · ${esc(event.data?.upstreamId || event.data?.revision || "control")}</p></div><span class="table-meta">${esc(event.id)}</span></div>`;
+  const details = [new Date(event.at).toLocaleString()];
+  const target = event.data?.upstreamId || event.data?.virtualProviderId || event.data?.bindingId;
+  if (target) details.push(target);
+  if (event.data?.revision != null) details.push(`配置修订 ${event.data.revision}`);
+  return `<div class="list-row"><div><h3>${esc(event.type)}</h3><p>${details.map(esc).join(" · ")}</p></div><span class="table-meta">${esc(event.id)}</span></div>`;
 }
 
 function field(label, name, value, placeholder = "", full = false, type = "text", readonly = false, required = false) {

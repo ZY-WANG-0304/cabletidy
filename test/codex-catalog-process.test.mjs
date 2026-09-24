@@ -36,7 +36,8 @@ for (const [name, body, expected] of [
     }
     const result = await execute(process.execPath, ["--input-type=module", "-e", script], {
       env: commandEnvironment(directory),
-      timeout: 15000,
+      // Allow the command's own 15s deadline and process-tree cleanup to finish.
+      timeout: 35000,
     });
     assert.match(result.stdout, expected);
   });
