@@ -6,7 +6,7 @@
 
 采用 Node.js CLI 的 npm 包，同时支持同一产物的 `.tgz` 安装。现有应用由 Node.js HTTP 服务和静态管理台组成，没有前端构建步骤；用户数据独立于安装目录，因此无需引入 Electron、打包器或重写服务。
 
-安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。主发布渠道为 npm 官方源 `https://registry.npmjs.org/`，包名为 `cabletidy`；本地 tarball 继续作为同一产物的安装方式。首版 `cabletidy@0.1.0` 已于 2026-09-21 公开发布，`latest` 指向 `0.1.0`。
+安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。主发布渠道为 npm 官方源 `https://registry.npmjs.org/`，包名为 `cabletidy`；本地 tarball 继续作为同一产物的安装方式。首版 `cabletidy@0.1.0` 已于 2026-09-21 公开发布。当前准备发布 `0.2.0`，变更与升级注意事项见 [0.2.0 发布说明](releases/0.2.0.md)；实际已发布版本与 `latest` 以官方源查询结果为准。
 
 CLI 只提供 `start`、`status`、帮助和版本查询。`status` 只读；尚无配置时仅报告未启动，不创建数据文件或生成 URL，已有配置时汇总 daemon 状态、管理台 URL 和配置套装列表。配置校验仍在服务启动和管理台保存时执行；客户端配置预览和应用由管理台负责，不再提供单独的调试命令或临时客户端启动命令。
 
@@ -78,8 +78,9 @@ npm publish --registry=https://registry.npmjs.org/
 发布成功后，确认官方源记录与 CLI 版本：
 
 ```bash
-npm view cabletidy@0.1.0 version dist.integrity --registry=https://registry.npmjs.org/
-npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy@0.1.0 -- cabletidy --version
+npm view cabletidy@0.2.0 version dist.integrity --registry=https://registry.npmjs.org/
+npm view cabletidy dist-tags.latest --registry=https://registry.npmjs.org/
+npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy@0.2.0 -- cabletidy --version
 ```
 
 首版为 `0.1.0`，后续发布必须递增版本号，并对应更新锁文件；同名同版本不能覆盖发布。发布前检查该提交的三平台 CI，不将 npm 发布成功视为跨平台验收通过。
