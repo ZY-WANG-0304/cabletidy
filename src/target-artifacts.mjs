@@ -6,6 +6,16 @@ import {
 import { clientModelIdForProfile, resolveModelProfile } from "./model-resolver.mjs";
 import { normalizeConfig } from "./config.mjs";
 import { configurationId, providerIdForConfiguration, configurationBaseUrl } from "../web/config-identity.js";
+import { prepareClaudeSettings } from "./claude-config-file.mjs";
+import { CLAUDE_MODEL_ALIASES } from "../web/claude-models.js";
+
+export const CLAUDE_TARGET_FORMAT = "claude.settings.json.v1";
+export const CLAUDE_ENDPOINTS = [
+  { method: "POST", path: "/v1/messages", purpose: "messages", required: true },
+  { method: "POST", path: "/v1/messages/count_tokens", purpose: "token_counting", required: false },
+  { method: "GET", path: "/v1/models", purpose: "model_discovery", required: false },
+  { method: "HEAD", path: "/api/hello", purpose: "connection_probe", required: false },
+];
 
 export async function prepareTargetArtifacts(config, options = {}, secrets = {}) {
   const requested = findBinding(config, options.bindingId);
@@ -14,6 +24,9 @@ export async function prepareTargetArtifacts(config, options = {}, secrets = {})
   if (!binding) throw new Error("找不到 Target binding");
   if (binding.target === "codex") {
     return prepareCodexArtifacts(config, { ...options, bindingId: binding.id }, secrets);
+  }
+  if (binding.target === "claude-code") {
+    return prepareClaudeSettings(buildClaudeArtifacts(config, binding), options);
   }
   return buildTargetArtifacts(config, { ...options, bindingId: binding.id }, secrets);
 }
@@ -80,23 +93,42 @@ function buildClaudeArtifacts(config, binding) {
     // Satisfy Claude Code's client-side credential check; the local service
     // ignores this public placeholder and authenticates only to the upstream.
     ANTHROPIC_AUTH_TOKEN: "cabletidy-local",
+    ANTHROPIC_API_KEY: "",
+    CLAUDE_CODE_OAUTH_TOKEN: "",
+    ANTHROPIC_CUSTOM_HEADERS: "",
+    CLAUDE_CODE_USE_BEDROCK: "0",
+    CLAUDE_CODE_USE_VERTEX: "0",
+    CLAUDE_CODE_USE_FOUNDRY: "0",
+    CLAUDE_CODE_USE_ANTHROPIC_AWS: "0",
+    CLAUDE_CODE_USE_MANTLE: "0",
+    CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: binding.claude?.discoverModels ? "1" : "0",
     ...(binding.claude?.setModel === false || !clientModel ? {} : { ANTHROPIC_MODEL: clientModel }),
   };
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    const model = binding.claude?.models?.[family];
+    if (model) vars[`ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`] = model;
+  }
+  if (binding.claude?.models?.subagent) vars.CLAUDE_CODE_SUBAGENT_MODEL = binding.claude.models.subagent;
+  const contents = `${JSON.stringify({ env: vars }, null, 2)}\n`;
 
   return {
-    format: "claude.env.v1",
+    format: CLAUDE_TARGET_FORMAT,
     target: "claude-code",
     mode: "managed_proxy",
     bindingId: binding.id,
     virtualProviderId: virtualProvider.id,
     clientModelId: clientModel,
-    files: [],
+    files: [{ path: "cabletidy-claude.settings.json", kind: "json", contents }],
+    requiredEndpoints: CLAUDE_ENDPOINTS,
     environment: {
       vars,
       shell: shellExports(vars),
+      powershell: Object.entries(vars).map(([key, value]) => `$env:${key} = '${String(value).replaceAll("'", "''")}'`).join("\n"),
     },
     instructions: [
-      "将以下环境变量注入 Claude Code 进程即可，不需要修改上游 provider 配置。",
+      "应用时只合并到用户 settings.json 的 env，保留其他设置；原值保存以便撤销接入。",
+      "预览文件也可另存为独立文件，通过 claude --settings cabletidy-claude.settings.json 临时接入。",
+      "本地入口无需 Key；cabletidy-local 仅满足客户端认证检查，真实凭据只由 CableTidy 发给上游。",
       `ANTHROPIC_BASE_URL 指向本地 Virtual Provider: ${baseUrl}`,
       clientModel ? `Claude 客户端模型名: ${clientModel}` : "模型由 Claude Code 选择，默认透传请求中的模型名。",
     ],
@@ -149,6 +181,10 @@ function getVirtualProvider(config, binding) {
 function defaultProfile(config, binding, virtualProvider) {
   const requested = binding.defaultModel || virtualProvider.defaultModel;
   if (!requested) return { profileId: null, profile: null, clientModelId: null };
+  // A Claude alias takes precedence over a same-named internal profile reference.
+  if (binding.target === "claude-code" && CLAUDE_MODEL_ALIASES.defaultModel.includes(requested)) {
+    return { profileId: null, profile: null, clientModelId: requested };
+  }
   const resolved = resolveModelProfile(config, virtualProvider, requested);
   return {
     profileId: resolved.profileId,
@@ -173,5 +209,6 @@ function publicEnvironment(environment = {}) {
   return {
     vars: environment.vars || {},
     shell: environment.shell || "",
+    ...(environment.powershell ? { powershell: environment.powershell } : {}),
   };
 }

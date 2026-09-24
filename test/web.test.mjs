@@ -6,11 +6,14 @@ import { setImmediate } from "node:timers/promises";
 import { normalizeConfig } from "../src/config.mjs";
 import { publicCodexCatalog } from "../src/codex-catalog.mjs";
 import { validateConfig } from "../src/validation.mjs";
+import { buildTargetArtifacts } from "../src/target-artifacts.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+import { CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES } from "../web/claude-models.js";
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
 
 const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
-  .replace(/^import .* from "\.\/config-identity\.js";\r?\n/, "");
+  .replace(/^import .* from "\.\/(?:config-identity|claude-models)\.js";\r?\n/gm, "");
 
 function formNode(id, fields = {}, rows = []) {
   const form = {
@@ -53,7 +56,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     append(item) { messages.push(item.textContent); },
   });
   const context = vm.createContext({
-    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl,
+    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl, CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES,
     window: {
       ...node(),
       confirm(message) { confirmations.push(message); return options.confirmLeave ?? true; },
@@ -86,9 +89,11 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         "/api/v1/config": { config: clone(persisted) },
         "/api/v1/runtime": { virtualProviders: [], health: {} },
         "/api/v1/events": { events: [] },
+        "/api/v1/tests/upstream": { ok: true, message: "上游可连接", latencyMs: 1, secretConfigured: true },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),
-        "/api/v1/targets/apply": { target: "codex" },
+        "/api/v1/targets/apply": { target: persisted.bindings[body?.bindingId]?.target },
+        "/api/v1/targets/restore": { target: "claude-code", report: { mode: "restored" } },
         "/api/v1/config/preview-target-artifacts": { artifacts: { target: persisted.bindings[body?.bindingId]?.target } },
       };
       assert.ok(url in responses, "Unexpected endpoint: " + url);
@@ -139,6 +144,308 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
 function clone(value) {
   return structuredClone(value);
 }
+
+test("Claude configurations can be created without a Codex catalog and retain native protocol and scoped models", async () => {
+  const app = await controller();
+  app.read('state.codexCatalog = { available: false, models: [] }; state.createTarget = "claude-code"');
+  const form = creationForm();
+  form.fields.target = "claude-code";
+  form.fields.upstreamAuth = "authorization";
+  form.fields.suiteName = "";
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "claude-sonnet-4-6" : "vendor-sonnet" }) }];
+  assert.match(app.read("renderSuiteCreate()"), /value="claude-code" selected/);
+  assert.doesNotMatch(app.read("createModelRow()"), /data-official-model/);
+  await app.submit(form);
+  const config = app.persisted();
+  const binding = config.bindings["claude-code-example-invalid"];
+  assert.equal(binding.target, "claude-code");
+  assert.equal(binding.targetFormat, "claude.settings.json.v1");
+  assert.equal(binding.defaultModel, undefined);
+  const provider = config.virtualProviders[binding.virtualProvider];
+  const backend = config.routes[provider.route].backends[0];
+  assert.equal(provider.ingressProtocol, "anthropic.messages");
+  assert.equal(config.upstreams[backend.upstream].protocol, "anthropic.messages");
+  assert.deepEqual(config.upstreams[backend.upstream].auth, { header: "authorization" });
+  assert.equal(config.upstreams[backend.upstream].integration, undefined);
+  const model = config.models[backend.models[0]];
+  assert.equal(model.clientModelId, "claude-sonnet-4-6");
+  assert.equal(model.capabilities, undefined);
+  assert.equal(model.contextWindow, undefined);
+  assert.ok(config.models.model);
+  assert.equal(validateConfig(config).ok, true);
+  const html = app.read("renderSuiteDetail()");
+  assert.match(html, /应用到 Claude Code/);
+  assert.match(html, /撤销接入/);
+  assert.doesNotMatch(html, /Compact strategy|850000|data-codex-metadata|open-advanced-models/);
+  assert.equal(app.read("suiteEndpoint(selectedSuite())"), "http://127.0.0.1:43100/claude-code-example-invalid");
+});
+
+test("Claude creation saves family aliases and selectable defaults without applying or changing existing Codex configurations", async () => {
+  const app = await controller();
+  const before = app.persisted();
+  const form = creationForm();
+  Object.assign(form.fields, {
+    target: "claude-code", defaultModel: " opus ", subagent: " haiku ",
+    opus: "custom-client", sonnet: "custom-client", fable: "custom-client", haiku: "custom-client",
+  });
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "custom-client" : "upstream-custom" }) }];
+  await app.submit(form);
+  const config = app.persisted();
+  const binding = config.bindings.development;
+  assert.equal(binding.defaultModel, "opus");
+  assert.equal(config.virtualProviders[binding.virtualProvider].defaultModel, "opus");
+  assert.deepEqual(binding.claude, {
+    setModel: true,
+    models: { opus: "custom-client", sonnet: "custom-client", fable: "custom-client", haiku: "custom-client", subagent: "haiku" },
+  });
+  assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "opus");
+  assert.equal(validateConfig(config).ok, true);
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  for (const section of ["models", "upstreams", "routes", "virtualProviders", "bindings"]) {
+    for (const [id, value] of Object.entries(before[section])) assert.deepEqual(config[section][id], value);
+  }
+});
+
+test("Claude creation allows empty optional sections and clears values outside the selectable candidates", async () => {
+  for (const defaultModel of ["", "unregistered-startup"]) {
+    const app = await controller();
+    const form = formNode("suite-create-form", {
+      ...creationForm().fields, target: "claude-code", defaultModel,
+      opus: "", sonnet: "", fable: "", haiku: "", subagent: defaultModel ? "unregistered-worker" : " ",
+    });
+    await app.submit(form);
+    const config = app.persisted();
+    const binding = config.bindings.development;
+    const provider = config.virtualProviders[binding.virtualProvider];
+    assert.deepEqual(provider.allowedModels, []);
+    assert.equal(binding.defaultModel, undefined);
+    assert.equal(provider.defaultModel, undefined);
+    assert.deepEqual(binding.claude, {});
+    assert.equal(validateConfig(config).ok, true);
+  }
+});
+
+test("Claude creation rejects family aliases outside the draft client IDs before committing", async () => {
+  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
+    const app = await controller();
+    const before = app.persisted();
+    const form = creationForm();
+    Object.assign(form.fields, { target: "claude-code", [family]: "vendor-gpt" });
+    await app.submit(form);
+    assert.match(form.feedback.innerHTML, /本次填写的客户端模型 ID/);
+    assert.deepEqual(app.persisted(), before);
+    assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  }
+});
+
+test("Codex creation ignores values in the hidden Claude optional sections", async () => {
+  const baseline = await controller();
+  await baseline.submit(creationForm());
+  const app = await controller();
+  const form = creationForm();
+  Object.assign(form.fields, {
+    defaultModel: "claude-custom", subagent: "worker-custom",
+    opus: "claude-custom", sonnet: "claude-custom", fable: "claude-custom", haiku: "claude-custom",
+  });
+  await app.submit(form);
+  assert.deepEqual(app.persisted(), baseline.persisted());
+});
+
+test("Claude client selection saves optional family defaults, applies explicitly, and can restore", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  await app.submit(formNode("claude-client-form", { defaultModel: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet", discoverModels: "on" }));
+  const binding = app.persisted().bindings["claude-main"];
+  assert.equal(binding.defaultModel, "claude-sonnet-4-6");
+  assert.deepEqual(binding.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } });
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  await app.action("apply-target", {});
+  assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
+  assert.equal(app.requests.at(-1).body.bindingId, "claude-main");
+  await app.action("restore-target", {});
+  assert.equal(app.requests.at(-1).url, "/api/v1/targets/restore");
+  await app.submit(formNode("claude-client-form", {}));
+  assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+});
+
+test("Claude details use the simple connectivity action without inference controls or parameters", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const html = app.read("renderSuiteDetail()");
+  assert.match(html, /data-action="test-upstream" data-id="relay">测试连通性/);
+  assert.doesNotMatch(html, /claude-probe-form|测试模型|测试推理|测试 SSE/);
+  await app.action("test-upstream", { dataset: { id: "relay" } });
+  const requests = app.requests.filter(({ url }) => url === "/api/v1/tests/upstream");
+  assert.deepEqual(requests, [{ url: "/api/v1/tests/upstream", body: { id: "relay" } }]);
+  assert.ok(app.messages.some((message) => message.includes("上游可连接")));
+});
+
+test("Claude upstream authentication can switch without replacing its saved credential", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  await app.submit(formNode("suite-upstream-form", { id: "relay", name: "Relay", protocol: "anthropic.messages", baseUrl: "https://example.invalid/v1", authHeader: "authorization", secret: "" }));
+  assert.deepEqual(app.persisted().upstreams.relay.auth, { header: "authorization", scheme: "Bearer" });
+  assert.equal(app.persisted().upstreams.relay.secretRef, "secret://upstreams/relay");
+  const commit = app.requests.find(({ url }) => url.endsWith("config/commit"));
+  assert.deepEqual(commit.body.upstreamSecrets, {});
+});
+
+test("Claude mapping edits do not invent capability or compaction policies", async () => {
+  const app = await controller(claudeConfigFixture());
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model" };
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  const model = app.persisted().models.sonnet;
+  assert.equal(model.upstreams.relay.upstreamModelId, "new-model");
+  assert.equal(model.name, "claude-sonnet-4-6");
+  assert.equal(model.description, undefined);
+  assert.equal(model.capabilities, undefined);
+  assert.equal(model.contextWindow, undefined);
+  assert.equal(model.compact, undefined);
+  assert.equal(validateConfig(app.persisted()).ok, true);
+});
+
+test("Claude model suggestions allow custom IDs and empty upstream mappings without changing Codex selection", async () => {
+  const app = await controller();
+  app.read('state.createTarget = "claude-code"');
+  assert.match(app.read("renderSuiteCreate()"), /datalist id="claude-model-suggestions"/);
+  assert.match(app.read("createModelRow()"), /list="claude-model-suggestions"/);
+  assert.match(app.read("claudeModelSuggestions()"), /claude-fable-5-1/);
+  const form = creationForm();
+  form.fields.target = "claude-code";
+  form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "custom-client-model" : "" }) }];
+  await app.submit(form);
+  const config = app.persisted();
+  assert.equal(validateConfig(config).ok, true);
+  const model = Object.values(config.models).find((model) => model.clientModelId === "custom-client-model");
+  assert.deepEqual(Object.values(model.upstreams), [{}]);
+  assert.match(app.read('claudeAliasSelect(selectedSuite(), "fable")'), /value="custom-client-model"/);
+  const html = app.read("renderSuiteDetail()");
+  assert.doesNotMatch(html, /data-claude-model-name|data-claude-model-description|显示名称|模型列表显示/);
+  await app.action("open-suite", { dataset: { id: "relay" } });
+  const codexHtml = app.read("renderSuiteDetail()");
+  assert.match(codexHtml, /data-official-model/);
+  assert.doesNotMatch(codexHtml, /claude-model-suggestions|别名指向/);
+});
+
+test("Claude alias choices are scoped to saved client IDs and keep references through rename and removal", async () => {
+  const config = claudeConfigFixture();
+  config.models.other = { ...structuredClone(config.models.sonnet), id: "other", clientModelId: "other-configuration-model" };
+  const app = await controller(config);
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const choices = app.read('claudeAliasSelect(selectedSuite(), "opus")');
+  assert.match(choices, /由 Claude 默认决定/);
+  assert.doesNotMatch(choices, /other-configuration-model|vendor-sonnet/);
+  const invalid = formNode("claude-client-form", { opus: "not-configured" });
+  await app.submit(invalid);
+  assert.match(invalid.feedback.innerHTML, /已保存的客户端模型 ID/);
+  assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  await app.submit(formNode("claude-client-form", { opus: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", haiku: "claude-sonnet-4-6" }));
+  const controls = { "[data-suite-model-client]": "my-claude", '[data-suite-model-upstream="relay"]': "" };
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, { opus: "my-claude", sonnet: "my-claude", fable: "my-claude", haiku: "my-claude" });
+  assert.equal(validateConfig(app.persisted()).ok, true);
+  await app.submit(formNode("suite-models-form"));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  assert.equal(validateConfig(app.persisted()).ok, true);
+});
+
+test("Claude legacy alias values stay visible until the user chooses a registered model or the default", async () => {
+  const config = claudeConfigFixture();
+  config.bindings["claude-main"].claude.models = { haiku: "legacy-unregistered-model" };
+  const app = await controller(config);
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  assert.match(app.read('claudeAliasSelect(selectedSuite(), "haiku")'), /legacy-unregistered-model.*selected disabled/);
+  const untouched = formNode("claude-client-form", {});
+  await app.submit(untouched);
+  assert.match(untouched.feedback.innerHTML, /未配置的模型/);
+  assert.equal(app.persisted().bindings["claude-main"].claude.models.haiku, "legacy-unregistered-model");
+  await app.submit(formNode("claude-client-form", { haiku: "" }));
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+});
+
+test("Claude default client IDs follow mapping renames and removals in saved settings and artifacts", async () => {
+  for (const useProviderDefault of [false, true]) {
+    const config = claudeConfigFixture();
+    config.virtualProviders["cabletidy_claude-main"].defaultModel = "claude-sonnet-4-6";
+    if (!useProviderDefault) config.bindings["claude-main"].defaultModel = "claude-sonnet-4-6";
+    config.bindings["claude-main"].claude = { discoverModels: true, models: { sonnet: "claude-sonnet-4-6", subagent: "claude-sonnet-4-6" } };
+    const app = await controller(config);
+    await app.action("open-suite", { dataset: { id: "claude-main" } });
+    const controls = { "[data-suite-model-client]": "renamed-client", '[data-suite-model-upstream="relay"]': "vendor-sonnet" };
+    await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+    let saved = app.persisted();
+    assert.equal(saved.bindings["claude-main"].defaultModel, "renamed-client");
+    assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, "renamed-client");
+    assert.deepEqual(saved.bindings["claude-main"].claude, { setModel: true, discoverModels: true, models: { sonnet: "renamed-client", subagent: "renamed-client" } });
+    let env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.equal(env.ANTHROPIC_MODEL, "renamed-client");
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, "renamed-client");
+    assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "renamed-client");
+    await app.submit(formNode("suite-models-form"));
+    saved = app.persisted();
+    assert.equal(saved.bindings["claude-main"].defaultModel, undefined);
+    assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, undefined);
+    assert.deepEqual(saved.bindings["claude-main"].claude, { setModel: false, discoverModels: true, models: {} });
+    assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "");
+    env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.equal(env.ANTHROPIC_MODEL, undefined);
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+    assert.equal(validateConfig(saved).ok, true);
+    assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
+  }
+});
+
+test("Claude default aliases survive removal of a same-named model profile or client ID", async () => {
+  for (const clientModelId of ["claude-sonnet-4-6", "sonnet"]) {
+    const config = claudeConfigFixture();
+    config.models.sonnet.clientModelId = clientModelId;
+    const app = await controller(config);
+    await app.action("open-suite", { dataset: { id: "claude-main" } });
+    await app.submit(formNode("claude-client-form", { defaultModel: "sonnet", subagent: "sonnet", sonnet: clientModelId }));
+    await app.submit(formNode("suite-models-form"));
+    const saved = app.persisted();
+    assert.equal(saved.bindings["claude-main"].defaultModel, "sonnet");
+    assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, "sonnet");
+    assert.deepEqual(saved.bindings["claude-main"].claude.models, { subagent: "sonnet" });
+    const env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.equal(env.ANTHROPIC_MODEL, "sonnet");
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, "sonnet");
+    assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
+  }
+});
+
+test("Claude default model selectors expose field-specific aliases and current client IDs only", async () => {
+  const config = claudeConfigFixture();
+  config.models.other = { ...structuredClone(config.models.sonnet), id: "other", clientModelId: "other-configuration-model" };
+  config.bindings["claude-main"].defaultModel = "legacy-startup";
+  config.bindings["claude-main"].claude.models = { subagent: "legacy-subagent" };
+  const app = await controller(config);
+  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  const html = app.read("renderSuiteDetail()");
+  assert.match(html, /<h3 id="claude-defaults-title">默认模型/);
+  assert.match(html, /name="defaultModel" data-claude-default-model/);
+  assert.match(html, /name="subagent" data-claude-default-model/);
+  assert.match(html, /value="best"/);
+  assert.match(html, /value="opusplan"/);
+  assert.doesNotMatch(html, /value="opus\[1m\]"|value="sonnet\[1m\]"|value="opusplan\[1m\]"/);
+  assert.doesNotMatch(html, /value="other-configuration-model"/);
+  assert.doesNotMatch(html, /value="legacy-startup"/);
+  assert.doesNotMatch(html, /value="legacy-subagent"/);
+  const defaultOptions = app.read('claudeDefaultModelOptions("defaultModel", ["claude-sonnet-4-6"], "")');
+  const subagentOptions = app.read('claudeDefaultModelOptions("subagent", ["claude-sonnet-4-6"], "")');
+  assert.match(defaultOptions, /value="best"/);
+  assert.match(defaultOptions, /value="claude-sonnet-4-6"/);
+  assert.doesNotMatch(defaultOptions, /\[1m\]/);
+  assert.doesNotMatch(defaultOptions, /value="inherit"/);
+  assert.doesNotMatch(subagentOptions, /value="best"|value="opusplan"/);
+  assert.match(subagentOptions, /value="opus"/);
+  assert.match(subagentOptions, /value="claude-sonnet-4-6"/);
+  await app.submit(formNode("claude-client-form", { defaultModel: "", subagent: "", opus: "", sonnet: "", fable: "", haiku: "" }));
+  assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
+  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+});
 
 test("suite upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {
   const config = normalizeConfig(codexConfigFixture());
@@ -536,6 +843,63 @@ function mountTrackedForm(app, id, inputs) {
   app.node("#page-content").querySelectorAll = (selector) => selector === "form" ? [form] : [];
   app.track(form);
   return form;
+}
+
+for (const target of ["claude-code", "codex"]) {
+  test(`${target} creation retains a switched CLI, model rows and settings across refresh before submission`, async () => {
+    const app = await controller();
+    const page = app.node("#page-content");
+    let current;
+    const makeForm = () => {
+      const form = formNode("suite-create-form");
+      const inputs = Object.entries({ ...creationForm().fields, target: app.read("state.createTarget"), defaultModel: "", subagent: "" })
+        .map(([name, value]) => inputNode(name, value, { type: name === "target" ? "select-one" : "text" }));
+      form.rows = [];
+      form.input = (name) => inputs.find(input => input.name === name);
+      Object.defineProperty(form, "fields", { get: () => Object.fromEntries(inputs.map(input => [input.name, input.value])) });
+      form.replaceWith = (replacement) => { current = replacement; };
+      form.querySelector = (selector) => selector === "[data-form-feedback]" ? form.feedback : { hidden: false };
+      form.querySelectorAll = (selector) => selector === "input, select, textarea" ? [...inputs, ...form.rows.flatMap(row => row.inputs)]
+        : selector === "[data-create-model]" ? form.rows
+        : selector === '[data-create-field="clientModelId"]' ? form.rows.map(row => row.inputs[0]) : [];
+      const cli = form.input("target");
+      cli.closest = (selector) => selector === "form" ? form : null;
+      cli.matches = (selector) => selector === '#suite-create-form [name="target"]';
+      return form;
+    };
+    Object.defineProperty(page, "innerHTML", { configurable: true, set: () => { current = makeForm(); } });
+    page.querySelectorAll = (selector) => selector === "form" ? [current] : [];
+    page.querySelector = (selector) => selector === "#suite-create-form" ? current : null;
+    await app.action("create-suite");
+    const draft = current;
+    for (const cli of ["claude-code", target]) {
+      draft.input("target").value = cli;
+      app.change(draft.input("target"));
+    }
+    draft.input("defaultModel").value = "opus";
+    draft.input("subagent").value = "haiku";
+    const client = target === "claude-code" ? "custom-claude-client" : "gpt-5.5";
+    const inputs = [inputNode("", client, { dataset: { createField: "clientModelId" } }), inputNode("", "vendor-custom", { dataset: { createField: "upstreamModelId" } })];
+    draft.rows.push({ inputs, querySelector: (selector) => selector.includes("clientModelId") ? inputs[0] : inputs[1] });
+    assert.equal(app.edited(draft), true, app.messages.join("; "));
+    app.externalUpdate(config => { config.upstreams.relay.name = "Other window update"; });
+    for (let i = 0; i < 2; i++) {
+      await app.action("refresh");
+      assert.equal(current, draft, app.messages.join("; "));
+      assert.equal(draft.feedback, null);
+      assert.equal(app.edited(draft), true);
+      assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+    }
+    await app.submit(draft);
+    const config = app.persisted();
+    assert.equal(config.bindings.development.target, target);
+    assert.equal(config.bindings.development.defaultModel, target === "claude-code" ? "opus" : undefined);
+    assert.equal(config.bindings.development.claude?.models?.subagent, target === "claude-code" ? "haiku" : undefined);
+    assert.equal(config.upstreams.relay.name, "Other window update");
+    assert.equal(validateConfig(config).ok, true);
+    const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
+    assert.deepEqual(Object.values(commit.body.upstreamSecrets), ["test-key"]);
+  });
 }
 
 test("dirty state follows current text, select, checkbox and secret values rather than past input events", async () => {

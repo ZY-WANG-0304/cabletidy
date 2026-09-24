@@ -45,6 +45,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   const files = packed.files.map(file => file.path);
   assert.ok(files.includes("bin/cabletidy.mjs"));
   assert.ok(files.includes("web/config-identity.js"));
+  assert.ok(files.includes("web/claude-models.js"));
   assert.ok(files.every(file => /^(bin\/|src\/|web\/|package\.json$|README\.md$|LICENSE(?:\..*)?$)/.test(file)));
   const tarball = path.join(directory, packed.filename);
   await npm(["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball]);
@@ -110,7 +111,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.equal(runtime.web.url, url);
       assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
     }
-    for (const asset of ["", "app.js", "styles.css", "config-identity.js"]) {
+    for (const asset of ["", "app.js", "styles.css", "config-identity.js", "claude-models.js"]) {
       const response = await fetch(`${url}${asset}`, { signal: AbortSignal.timeout(3000) });
       assert.equal(response.status, 200);
       const body = await response.text();

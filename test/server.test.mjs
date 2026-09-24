@@ -298,7 +298,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       );
       response.end(
         'event: message_stop\n' +
-        'data: {"type":"message_stop","model":"vendor-sonnet"}\n\n',
+        'data: {"type":"message_stop"}\n\n',
       );
       return;
     }
@@ -368,7 +368,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
   await saveConfig(config, paths);
   await saveSecrets({ "secret://upstreams/anthropic": "upstream-key" }, paths);
 
-  const app = await createApplication({ paths });
+  const app = await createApplication({ paths, claudeHome: path.join(home, "claude") });
   try {
     const previewResponse = await fetch(
       `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
@@ -392,8 +392,10 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       },
     );
     const applyBody = await applyResponse.json();
-    assert.equal(applyResponse.status, 501);
-    assert.equal(applyBody.error.code, "target_apply_not_supported");
+    assert.equal(applyResponse.status, 200);
+    assert.equal(applyBody.target, "claude-code");
+    const settings = JSON.parse(await fs.readFile(path.join(home, "claude", "settings.json"), "utf8"));
+    assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
 
     const response = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
       method: "POST",
