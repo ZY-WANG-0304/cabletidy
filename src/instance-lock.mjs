@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { readRuntimeInfo } from "./config.mjs";
 import { inspectProcess, processStartTime } from "./process-identity.mjs";
@@ -42,7 +43,7 @@ export async function acquireInstanceLock(paths) {
       return { release, identity };
     } catch (error) {
       if (error.code !== "ELOCKED") throw error;
-      const inspection = await inspectLock(paths);
+      const inspection = await retrySharingViolation(() => inspectLock(paths));
       if (!inspection) continue;
       if (inspection.state === "alive" || !inspection.stale) {
         throw Object.assign(new Error(
@@ -90,10 +91,24 @@ async function removeOwner(directory, marker) {
   try {
     // Only remove the inspected generation. A losing reclaimer cannot remove
     // the new owner's unique marker, and rmdir refuses a populated directory.
-    await fs.unlink(path.join(directory, marker));
-    await fs.rmdir(directory);
+    await retrySharingViolation(() => fs.unlink(path.join(directory, marker)));
+    await retrySharingViolation(() => fs.rmdir(directory));
   } catch (error) {
     if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) throw error;
+  }
+}
+
+async function retrySharingViolation(operation) {
+  const deadline = Date.now() + 1000;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      // Windows readers can briefly block deletion. Retry each operation so a
+      // removed marker does not leave an empty lock when rmdir needs a retry.
+      if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || Date.now() >= deadline) throw error;
+      await delay(50);
+    }
   }
 }
 

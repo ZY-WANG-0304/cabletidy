@@ -274,7 +274,9 @@ test("concurrent stale-lock reclaimers preserve the new owner after a killed dae
   const results = await Promise.allSettled(Array.from({ length: 4 }, () => f.start(paths)));
   const started = results.filter(result => result.status === "fulfilled");
   assert.equal(started.length, 1);
-  for (const result of results.filter(result => result.status === "rejected")) assert.equal(result.reason.code, "ELOCKED");
+  for (const result of results.filter(result => result.status === "rejected")) {
+    assert.equal(result.reason.code, "ELOCKED", result.reason.stack);
+  }
   await delay(2500);
   assert.equal((await status(paths)).runtime.web.url, started[0].value.url);
   assert.equal((await fetch(started[0].value.url)).status, 200);
