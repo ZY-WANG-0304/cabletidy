@@ -21,24 +21,24 @@
   },
   "files": [
     "bin/",
-    "src/",
-    "web/"
+    "native/"
   ],
   "engines": {
     "node": "^22.13.0 || >=24"
   },
   "scripts": {
-    "start": "node src/server.mjs",
-    "dev": "node --watch scripts/dev.mjs",
+    "start": "node bin/cabletidy.mjs start",
+    "build": "node scripts/build-native.mjs",
+    "build:debug": "node scripts/build-native.mjs --debug",
+    "dev": "npm run build:debug && node scripts/dev.mjs --watch",
     "dev:status": "node scripts/dev.mjs status",
-    "test": "node --test test/*.test.mjs",
-    "test:package": "node --test scripts/package-smoke.mjs",
-    "test:claude": "node --test scripts/claude-smoke.mjs",
-    "prepublishOnly": "npm test && npm run test:package"
-  },
-  "dependencies": {
-    "proper-lockfile": "^4.1.2",
-    "toml-eslint-parser": "^1.0.3"
+    "test": "node scripts/test.mjs",
+    "test:package": "npm run build && node --test scripts/package-smoke.mjs",
+    "test:claude": "node scripts/build-native.mjs --debug --test && node --test scripts/claude-smoke.mjs",
+    "prepack": "npm run build",
+    "check:release": "node scripts/check-release.mjs",
+    "prepublishOnly": "npm run check:release && npm test && npm run test:package",
+    "test:package:built": "node --test scripts/package-smoke.mjs"
   },
   "devDependencies": {
     "cross-spawn": "^7.0.6"

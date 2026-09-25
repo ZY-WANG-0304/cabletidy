@@ -5,8 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createApplication } from "../src/server.mjs";
-import { getPaths } from "../src/config.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { getPaths } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 
 async function fixture(t, handler, configure = () => {}) {

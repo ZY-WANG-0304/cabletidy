@@ -4,8 +4,8 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createApplication } from "../src/server.mjs";
-import { getPaths, saveSecrets } from "../src/config.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { getPaths, saveSecrets } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function fixture(t, configure = () => {}) {

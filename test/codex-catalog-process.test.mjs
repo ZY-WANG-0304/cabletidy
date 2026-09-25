@@ -11,20 +11,21 @@ import { catalogFixture } from "./helpers/codex-fixture.mjs";
 import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
 const execute = promisify(execFile);
-const catalogUrl = new URL("../src/codex-catalog.mjs", import.meta.url).href;
+const catalogUrl = new URL("./helpers/native.mjs", import.meta.url).href;
 const script = `
-  import { loadCodexCatalog } from ${JSON.stringify(catalogUrl)};
+  import { createCatalogClient } from ${JSON.stringify(catalogUrl)};
+  const client = createCatalogClient();
   try {
-    await loadCodexCatalog();
+    await client.load();
     process.exitCode = 1;
   } catch (error) {
-    console.log(JSON.stringify({ cause: error.cause?.message, code: error.cause?.code }));
-  }
+    console.log(JSON.stringify({ cause: error.cause?.message }));
+  } finally { await client.close(); }
 `;
 
 for (const [name, body, expected] of [
-  ["missing executable", null, /ENOENT/],
-  ["nonzero exit", "process.exit(7);", /exited with 7/],
+  ["missing executable", null, /No such file|cannot find|not recognized|os error 2/i],
+  ["nonzero exit", "process.exit(7);", /exit.*7/],
   ["invalid catalog", 'console.log("invalid-json");', /JSON/],
   ["excessive output", 'process.stdout.write("x".repeat(17 * 1024 * 1024));', /16 MiB/],
 ]) {
@@ -44,11 +45,11 @@ for (const [name, body, expected] of [
 }
 
 for (const [name, exitCode, expected] of [
-  ["timeout", null, /TimeoutError/],
+  ["timeout", null, /timed out/],
   // Windows may close the redirected pipes at launcher exit; the Job Object
   // then kills the remaining worker and the empty catalog fails JSON parsing.
-  ["successful launcher exit", 0, process.platform === "win32" ? /JSON/ : /TimeoutError/],
-  ["nonzero launcher exit", 7, /exited with 7/],
+  ["successful launcher exit", 0, process.platform === "win32" ? /JSON/ : /timed out/],
+  ["nonzero launcher exit", 7, /exit.*7/],
 ]) {
   test(`catalog ${name} terminates descendants holding pipes and allows retry`, {
     timeout: 40000,
@@ -95,18 +96,20 @@ for (const [name, exitCode, expected] of [
     const retryScript = `
       import fs from "node:fs/promises";
       import assert from "node:assert/strict";
-      import { loadCodexCatalog } from ${JSON.stringify(catalogUrl)};
+      import { createCatalogClient } from ${JSON.stringify(catalogUrl)};
+  const client = createCatalogClient();
       const started = Date.now();
-      const results = await Promise.allSettled([loadCodexCatalog(), loadCodexCatalog()]);
-      assert.ok(results.every(result => result.status === "rejected"));
+      const results = await client.concurrent();
+      assert.ok(results.every(result => result.error));
       const elapsed = Date.now() - started;
       assert.ok(elapsed < ${exitCode === 7 ? 10000 : 20000});
-      const cause = results[0].reason.cause;
+      const cause = results[0].error.cause;
       await fs.writeFile(${JSON.stringify(retryFile)}, "ready");
-      const snapshot = await loadCodexCatalog();
+      const snapshot = await client.load();
       assert.equal(snapshot.version, "codex-cli test");
       assert.ok(snapshot.catalog.models.length);
-      console.log(JSON.stringify({ cause: cause.name + ": " + cause.message, elapsed, retry: "ok" }));
+      console.log(JSON.stringify({ cause: cause.message, elapsed, retry: "ok" }));
+      await client.close();
     `;
     const result = await execute(process.execPath, ["--input-type=module", "-e", retryScript], {
       env: commandEnvironment(directory),

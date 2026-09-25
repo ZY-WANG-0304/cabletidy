@@ -4,10 +4,10 @@ import assert from "node:assert/strict";
 import {
   buildTargetArtifacts,
   publicTargetArtifacts,
-} from "../src/target-artifacts.mjs";
-import { normalizeConfig } from "../src/config.mjs";
+} from "./helpers/native.mjs";
+import { normalizeConfig } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
-import { validateConfig } from "../src/validation.mjs";
+import { validateConfig } from "./helpers/native.mjs";
 
 function claudeConfig() {
   return normalizeConfig({

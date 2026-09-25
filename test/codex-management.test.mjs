@@ -4,9 +4,9 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { createApplication } from "../src/server.mjs";
-import { getPaths, normalizeConfig, saveConfig } from "../src/config.mjs";
-import { readCodexConfig } from "../src/codex-config-file.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { getPaths, normalizeConfig, saveConfig } from "./helpers/native.mjs";
+import { readCodexConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function freePort() {
@@ -73,7 +73,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal(generated.models[0].context_window, 128000);
   assert.equal(generated.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
   unavailable = true;
-  assert.equal((await call("/codex/models")).body.available, false);
+  assert.equal((await call("/codex/models?refresh=1")).body.available, false);
   assert.equal((await call("/targets/apply", { bindingId: "relay" })).status, 422);
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), root);
   assert.equal((await call("/runtime")).status, 200);
@@ -118,8 +118,9 @@ test("target APIs select bindings consistently and retired aliases return 404", 
   const current = await call("/targets/apply", { bindingId: "relay" });
   assert.equal(current.status, 200);
   assert.equal(current.body.target, "codex");
-  assert.equal(app.state.events.at(-1).type, "target.apply");
-  assert.deepEqual(app.state.events.at(-1).data, {
+  const events = (await (await fetch(`${app.url}api/v1/events`)).json()).events;
+  assert.equal(events[0].type, "target.apply");
+  assert.deepEqual(events[0].data, {
     bindingId: "relay", target: "codex", files: current.body.report.applied,
   });
   const contents = await fs.readFile(path.join(client, "config.toml"), "utf8");

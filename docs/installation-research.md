@@ -1,98 +1,84 @@
 # CableTidy 安装与分发决策
 
-决策日期：2026-09-21。初始研究基于提交 `9256804`，在 `research/installable-package` 分支实施。
+更新日期：2026-09-25。2026-09-21 的初始方案为 Node.js CLI npm 包；本次 Rust 重构沿用 npm 命令体验，服务端改为原生程序。
 
-## 决策与当前状态
+## 当前决策
 
-采用 Node.js CLI 的 npm 包，同时支持同一产物的 `.tgz` 安装。现有应用由 Node.js HTTP 服务和静态管理台组成，没有前端构建步骤；用户数据独立于安装目录，因此无需引入 Electron、打包器或重写服务。
+主要分发产物仍是 npm 包及同结构的 `.tgz`。包内包含 Node.js 薄启动器和预编译的 Rust 程序，没有 npm 运行时依赖，也没有安装时下载或编译步骤。独立 Rust 二进制同样可运行，不需要 Node.js。
 
-安装、运行、升级、卸载及验证命令统一以 [README](../README.md#安装与运行) 为准。主发布渠道为 npm 官方源 `https://registry.npmjs.org/`，包名为 `cabletidy`；本地 tarball 继续作为同一产物的安装方式。首版 `cabletidy@0.1.0` 已于 2026-09-21 公开发布，`0.2.0` 已于 2026-09-24 公开发布。变更与升级注意事项见 [0.2.0 发布说明](releases/0.2.0.md)；实际已发布版本与 `latest` 以官方源查询结果为准。
+npm 上已发布的 `0.1.0` / `0.2.0` 仍对应原 Node 实现；本次迁移不覆盖既有版本，也不自动发布。下一次发布前需要同步递增 `Cargo.toml`、`Cargo.lock`、`package.json` 和 `package-lock.json` 的应用版本。
 
-CLI 只提供 `start`、`status`、帮助和版本查询。`status` 只读；尚无配置时仅报告未启动，不创建数据文件或生成 URL，已有配置时汇总 daemon 状态、管理台 URL 和配置套装列表。配置校验仍在服务启动和管理台保存时执行；客户端配置预览和应用由管理台负责，不再提供单独的调试命令或临时客户端启动命令。
+CLI 继续提供 `start`、`status`、帮助和版本查询。安装不启动服务、不注册系统服务、不修改客户端配置。用户数据独立于安装目录，继续使用 `config.json`、`secrets.json`、`runtime.json` 和 `daemon.lock/`；升级不要求转换为 TOML 或 OS keyring。
 
-当前服务以前台方式运行。安装与后台常驻分开交付，npm 安装过程不会启动服务、注册系统服务或修改客户端配置。
+安装与使用命令以 [README](../README.md#安装与运行) 为准。
 
-## 包边界与运行约束
+## 包边界
 
-- `bin/cabletidy.mjs` 是 npm 命令入口；源码启动入口和 CLI 均调用 `startDaemon()`，共用启动和信号退出逻辑。
-- `files` 白名单包含 `bin/`、`src/`、`web/`；npm 自动纳入包元数据、README 和存在的许可文件。测试、研究文档和用户数据不进入发行包。
-- 服务根据模块位置定位 Web 资源，必须保留 `src/` 与 `web/` 的相对结构。`web/config-identity.js` 同时被服务端导入，不能只分发服务端源码。
-- 数据默认位于 `~/.cabletidy`，也可通过 `CABLETIDY_HOME` 指定。升级替换程序后需要重启；卸载保留数据及已应用的客户端配置。
-- `start` 首次收到 SIGINT / SIGTERM 时停止接受新连接，等待请求、子进程和配置写入完成，再清理运行状态；不设置退出倒计时。等待期间再次收到 SIGINT 则终止目录查询子进程并以退出码 130 强制退出。
-- 首次启动且尚无配置时，优先使用 `127.0.0.1:43100`；占用则由系统分配可用端口，监听成功后保存。后续启动复用已保存端口，占用时明确报错，因为客户端接入地址必须稳定。同一数据目录通过带持有者 PID、主机名和跨平台启动标识的实例锁阻止重复启动；只有可识别锁代次、确认原进程已退出且至少 10 秒未更新时才回收，暂停中的旧进程不会被误接管。旧锁或身份查询失败返回 `ELOCKUNKNOWN`，按 README 确认实例退出后人工删除锁目录。
-- Codex 可选模型设置依赖本机 Codex CLI 及其 `PATH`。CableTidy 安装包不附带 Codex，也不以它作为纯透传配置的启动前提。
-- 当前是可执行应用，没有对外承诺 JavaScript 库接口，因此无需添加 `main` 或 `exports`。
+- `bin/cabletidy.mjs` / `bin/native.mjs` 选取当前 OS / CPU 的原生程序，并通过私有标准输入管道传递退出信号。启动器退出后，原生子进程停止，避免留下失去管理的 daemon。
+- npm 的 `files` 白名单只包含 `bin/`、`native/`，以及 npm 自动纳入的元数据、README 和许可证。源码、测试桥接程序、用户数据不进入发行包。
+- Web 资源通过 Rust `include_bytes!` 在编译时嵌入，运行时无需查找源码或 Web 目录。
+- `native/<平台>/build.json` 记录应用版本、编译目标和二进制 SHA-256，用于打包检查。
+- npm 启动器沿用 `^22.13.0 || >=24` 的 Node.js 版本范围。用户安装 npm 包不需要 Rust；源码开发和维护者构建需要稳定版 Rust 及系统链接器。
 
-推荐 Node.js 24，版本约束为 `^22.13.0 || >=24`。锁文件中的 TOML 解析依赖要求 `^20.19.0 || ^22.13.0 || >=24`，因此不能宣称支持 Node 18 或 Node 22.0；首版主动不纳入 Node 20，以控制维护范围。
+| 平台目录 | 完整发行包编译目标 |
+| --- | --- |
+| `linux-x64` | `x86_64-unknown-linux-musl` |
+| `linux-arm64` | `aarch64-unknown-linux-musl` |
+| `darwin-x64` | `x86_64-apple-darwin` |
+| `darwin-arm64` | `aarch64-apple-darwin` |
+| `win32-x64` | `x86_64-pc-windows-msvc` |
 
-`package-lock.json` 用于仓库内 `npm ci`，不会自动锁定消费者的传递依赖。当前沿用正常依赖范围，并测试实际 tarball 安装。只有完全固定消费者依赖成为明确需求时，再考虑 `npm-shrinkwrap.json`。
+Linux 完整发行产物使用 musl，减少宿主 glibc 版本差异。本地构建使用当前 Rust host target，也允许 Linux GNU target 显式构建。未提供的平台会明确报错，用户可自行从源码构建。
 
-`.tgz` 不等于完全离线安装：仍需要本机 Node.js，以及未缓存的 npm 依赖。完全离线交付需要另行包含依赖和运行时。
+当前将各平台二进制放入同一包，优点是安装无需下载脚本、单一 tarball 可分发；代价是包包含当前机器用不到的二进制。暂不引入多个平台 npm 包、Homebrew / Scoop 或系统服务注册。
 
-## 分发方式的取舍
+## 运行与升级语义
 
-| 方式 | 适用情况 | 决策与重新评估条件 |
-| --- | --- | --- |
-| npm 官方 registry | 已有 Node.js 的 CLI 用户 | 主要发布渠道；已发布 `0.2.0`，采用 MIT 许可 |
-| npm tarball | 内测、固定版本、未发布 registry | 已支持，与 registry 共用包结构 |
-| Git URL / 固定提交 | 开发者试用 | 依赖 Git 和仓库权限，不作为普通用户主路径 |
-| Node 运行时与应用压缩包 | 不希望预装 Node.js、需要离线交付 | 出现明确需求时优先评估；需维护 OS/CPU 产物和依赖 |
-| Node SEA / Bun 单文件 | 下载单个可执行程序 | 后续独立验证 ESM、静态资源、依赖和子进程行为，当前不承诺可用 |
-| Homebrew / Scoop | 系统包管理器用户 | 有需求后包装既有产物，另行维护版本和校验和 |
-| Docker | 隔离服务部署 | 不作为本地 CLI 集成首选；需要解决回环监听、本机 Codex、配置路径和 PID 边界 |
+`start` 前台运行。首次 SIGINT / SIGTERM 停止接受新连接，等待流式请求、客户端断连后仍需完成的管理任务和配置写入，然后清理运行状态、释放实例锁；再次 SIGINT 清理 Codex 子进程并以 130 退出。
 
-Docker 不能只添加 Dockerfile 就宣称完整支持：容器回环地址与宿主机不同，普通端口映射无法直接暴露容器内的 loopback 监听；容器也无法直接使用宿主机 Codex 和默认配置目录。改变监听范围属于独立设计，需要保留现有本地访问边界并重新验证。
+首次启动优先绑定 `127.0.0.1:43100`，占用则直接绑定系统分配的端口并保存；已有配置必须使用保存的端口。实例锁记录主机、PID 和平台启动标识，仅在锁超过 10 秒且确认原持有者死亡 / PID 复用时回收。未知归属给出人工恢复提示，不能只按 mtime 接管暂停的实例。
 
-## 验证证据与边界
+升级前停止服务，替换程序后重新启动。卸载保留用户数据及已应用的客户端配置，彻底停用前由用户切换客户端接入。Codex CLI 不随包分发，只在配置可选模型元数据时需要；纯透传配置不依赖它。
 
-初始研究用临时源码副本生成 tarball，在隔离前缀安装后删除该副本，再从无关目录运行，验证了应用不依赖源码工作目录。原型同时验证了静态资源、状态查询、退出清理、npm exec 和卸载保留数据。其临时路径、包大小和一次性命令输出不作为长期验收依据。
+Windows 需要系统 Windows PowerShell。Codex 查询使用 `Add-Type` 和 Job Object 监督后代；在禁用该能力的 PowerShell 环境中会明确失败。
 
-初次封装曾在 Linux 的 Node 22.13.0、24.21.0、25.6.0 验证源码测试和安装流程；这些结果仅对应当时的实现。后续 CLI 收敛后，以当前源码执行以下检查作为验收：
-
-- `npm test`：配置、路由、客户端配置生成和应用、管理台及 CLI 的回归测试；Linux 上覆盖长请求收尾、客户端断开后的任务、再次 Ctrl+C 强制退出及目录查询子进程清理。
-- `npm run test:package`：实际 tarball 的隔离安装、跨工作目录运行、Web 资源内容、状态与 URL、端口冲突、SIGINT / SIGTERM、npm exec、卸载保留数据。
-- 安装测试保留独立 `CODEX_HOME` 并检查它未被创建，以隔离真实客户端目录并验证服务启动不会应用客户端配置。
-
-2026-09-21 首版发布在 Linux / Node.js 25.6.0 上通过 136 项源码测试、安装冒烟测试与发布预演。正式发布后，确认官方源的版本、`latest` 标签和 tarball 校验值，并使用独立 npm 配置、全新缓存及临时安装目录，从官方源按包名安装 `cabletidy@0.1.0`。验证覆盖 CLI 版本与帮助、Web 资源、状态查询、端口冲突、SIGINT / SIGTERM、按包名运行 `npm exec`，以及卸载保留用户数据。
-
-CI 矩阵在 Linux、macOS、Windows 上分别运行 Node.js 22.13.0 和 24 的源码测试与安装冒烟测试，结果以对应提交的 Actions 为准。Windows 安装测试直接执行 npm `.cmd`，覆盖启动、端口、强制终止、旧锁恢复和稳定 URL；源码测试覆盖 `.cmd` Codex 查询和 Job Object 后代清理，并通过 IPC 触发退出处理逻辑。IPC 不模拟真实控制台事件，Windows 终端 Ctrl+C、真实上游和系统服务仍需交互或集成验收。Windows 需要系统 PowerShell；Codex 查询使用 `Add-Type` 调用 Job Object API，在禁用该功能的受限 PowerShell 环境下会明确失败。
-
-初始 HTTP 探测曾受环境代理影响；手工验证脚本对回环请求绕过代理后通过。部署验证应注意回环请求的代理配置，不据此改变应用的访问边界。
-
-## npm 官方源发布流程
-
-`package.json` 的 `publishConfig` 将发布目标设为 npm 官方源，并将访问级别设为 `public`。仓库地址取自 Git origin：`https://github.com/ZY-WANG-0304/cabletidy`。经维护者确认采用 MIT 许可，根目录 `LICENSE` 随包分发。交互式发布前，应在 npm 账号设置中启用双因素验证（2FA），并在 npm 提示时完成本次发布的浏览器身份验证；登录成功本身不代表满足发布认证要求。
-
-从仓库根目录执行：
+## 构建与验证
 
 ```bash
 npm ci
-npm publish --dry-run --registry=https://registry.npmjs.org/
-npm login --registry=https://registry.npmjs.org/
-npm whoami --registry=https://registry.npmjs.org/
-npm publish --registry=https://registry.npmjs.org/
+npm run build:debug
+cargo fmt --check
+cargo clippy --locked --all-targets --features test-support -- -D warnings
+npm test
+npm run test:package
 ```
 
-`prepublishOnly` 在发布及发布预演时自动运行源码测试与安装冒烟测试；任一失败会阻止发布。预演成功只验证本地检查和打包流程，不验证账号发布权限或包名可用性。实际发布需要完成 npm 要求的身份验证。此钩子不会在用户安装包时执行。
+`npm test` 构建 feature-gated 测试程序，运行 Rust 单元测试，以及直接调用 Rust 的 JavaScript 契约、HTTP、CLI、生命周期和管理页测试。旧 Node 服务端不作为测试实现或发行依赖。原先模拟 Node 文件系统方法的故障测试已迁移为 Rust 文件系统重试、原子写入、进程身份和锁代次测试。
 
-发布成功后，确认官方源记录与 CLI 版本：
+`npm run test:package` 构建 release 二进制，在临时前缀执行实际 tarball 安装，从无关工作目录验证 CLI、内嵌 Web 文件、状态、端口冲突、重启地址、退出和卸载保留数据。测试使用临时数据目录，不操作日常 Codex / Claude 配置。
+
+CI 的 `Test` 工作流在 Linux、macOS、Windows 上运行 Node.js 22.13.0 / 24 的测试及打包冒烟。`Build Native Package` 工作流额外构建五个平台产物；macOS 两种架构由 Xcode SDK 编译，测试在工作流实际宿主架构上运行。Windows 自动化覆盖私有管道触发的退出处理、npm `.cmd` 入口和 Job Object 后代清理；真实控制台 Ctrl+C 仍需交互验收。平台结果以该提交的 Actions 为准，Linux 本地测试不能替代这些结果。
+
+安装了 Claude Code 时，`npm run test:claude` 用本地模拟上游验证真实 CLI 与 Rust daemon 的 JSON / SSE 接入，不调用真实模型服务。
+
+## 发行包组装
+
+本地 `npm pack` 的 `prepack` 只构建当前平台，适合同平台测试，不作为跨平台正式发行物。
+
+完整包由 `.github/workflows/native-package.yml` 在手动触发或版本 tag 后组装：各 runner 测试并构建目标二进制，汇总到 `native/`，校验版本和摘要，在 Linux 上对汇总包执行安装冒烟，最后上传 npm tarball。工作流没有 npm 发布步骤。
+
+维护者下载各平台产物到 `native/` 后，也可以本地验证和打包：
 
 ```bash
-npm view cabletidy@0.2.0 version dist.integrity --registry=https://registry.npmjs.org/
-npm view cabletidy dist-tags.latest --registry=https://registry.npmjs.org/
-npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy@0.2.0 -- cabletidy --version
+npm run check:release
+npm run test:package:built
+npm pack --ignore-scripts
 ```
 
-首版为 `0.1.0`，后续发布必须递增版本号，并对应更新锁文件；同名同版本不能覆盖发布。发布前检查该提交的三平台 CI，不将 npm 发布成功视为跨平台验收通过。
+`check:release` 缺少任一平台、版本不一致或摘要不匹配时失败。`prepublishOnly` 先检查完整平台集合，再运行源码与安装测试，防止把只有当前机器二进制的包作为通用包发布。手动跳过 npm 生命周期钩子也会跳过该保护，维护者应发布已验证的完整产物。
 
-## 尚未实施的服务管理
+实际发布继续使用 npm 官方源和 MIT 许可，需维护者完成 npm 登录与发布认证；同版本不能覆盖发布。发布成功后确认 registry 的版本、`latest` 和 `dist.integrity`，再使用全新缓存执行按包名安装验证。
 
-后台常驻优先使用平台原有的用户级进程管理：Linux systemd user service、macOS LaunchAgent，Windows 另行评估任务计划程序或服务。若增加服务管理命令，应仅在用户主动执行时注册，并解决：
+## 后续服务管理
 
-- Node 和包入口的稳定路径，以及版本管理器升级带来的路径变化。
-- 服务的 `CABLETIDY_HOME` 和包含 Codex 的 `PATH`，不假设继承交互 shell 环境。
-- 重复启动、崩溃重启、日志轮转，以及升级后的重启。
-- 流式请求收尾、手动强制退出、原子写入与实例归属判断。
-- 登录启动与开机启动的区别，以及服务卸载后的状态。
-
-简单的 nohup、PID 文件和 kill 不足以构成跨平台服务管理。`runtime.json` 用于发现和探测实例，不能作为长期有效的进程身份凭证。
+后台常驻优先评估平台用户级进程管理：Linux systemd user service、macOS LaunchAgent，以及 Windows 任务计划程序或服务。独立设计须处理原生程序稳定路径、数据目录与 Codex PATH、重复启动、崩溃恢复、升级重启、请求排空和卸载行为。`runtime.json` 用于发现与在线探测，不是可长期信任的进程身份凭据。

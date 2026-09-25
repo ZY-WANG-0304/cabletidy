@@ -10,7 +10,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 - 由内部 Route 把一个本地 Virtual Provider 连接到对应的上游和模型绑定。
 - 让 Codex 或 Claude Code 连接本地 endpoint，并保留客户端选择的模型名。
 
-项目使用 Node.js 实现，使用 `toml-eslint-parser` 按语法树增量修改 Codex 配置。
+服务端使用 Rust 实现：Tokio / Axum 提供本地 HTTP 服务，reqwest 负责上游转发，`toml_edit` 按语法树增量修改 Codex 配置。Web 管理台资源嵌入二进制，原生程序不依赖 Node.js；npm 安装保留一个 Node.js 薄启动器。CableTidy 继续使用 `config.json` 和 `secrets.json`，不引入 TOML 应用配置或 OS keyring。
 
 ## 模型透传与可选设置
 
@@ -31,9 +31,9 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 ## 安装与运行
 
-推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。CI 在 Linux、macOS 和 Windows 上执行源码测试与安装冒烟测试，平台验证结果以对应提交的 CI 为准。Windows 使用系统自带的 Windows PowerShell 查询进程身份；Codex 模型目录查询还需要允许 PowerShell `Add-Type` 调用 Windows Job Object API。
+npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用系统 Windows PowerShell 查询进程身份；Codex 目录查询还需要允许 PowerShell `Add-Type` 调用 Windows Job Object API。
 
-`0.2.0` 的变更与升级注意事项见 [发布说明](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/releases/0.2.0.md)。
+本次 Rust 重构尚未发布，不会改变 npm 上既有的 `0.2.0` 包。`0.2.0` 的变更与升级注意事项见 [发布说明](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/releases/0.2.0.md)。
 
 ### 从 npm 官方源安装
 
@@ -65,7 +65,7 @@ cabletidy start
 npm exec --yes --package=/absolute/path/cabletidy-0.2.0.tgz -- cabletidy start
 ```
 
-安装包仍依赖本机 Node.js；npm 会下载尚未缓存的运行时依赖，因此 `.tgz` 本身不代表完全离线安装。安装过程不会启动服务或修改客户端配置。
+npm 启动器需要本机 Node.js；发行包自带对应平台的原生二进制，没有 npm 运行时依赖，安装时不下载二进制、不编译 Rust。也可直接运行 `native/<平台>/cabletidy`（Windows 为 `.exe`）。安装过程不会启动服务或修改客户端配置。
 
 ### 启动、升级与卸载
 
@@ -94,26 +94,30 @@ cabletidy start
 
 ```bash
 npm ci
+npm run build:debug
 npm start
 
-# 生成可安装的 cabletidy-0.2.0.tgz。
+# 不使用 Node.js，直接运行 Rust CLI。
+cargo run --bin cabletidy -- start
+cargo run --bin cabletidy -- status
+
+# 生成包含当前平台二进制的本地测试包。
 npm pack
 ```
 
-`npm start` 与 `cabletidy start` 使用相同的启动和退出逻辑。源码用户也可以通过 `node bin/cabletidy.mjs --help` 调用完整 CLI。
+`npm start` 与 `cabletidy start` 使用相同的 Rust CLI。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
+
+本地 `npm pack` 默认只构建当前平台，适用于同平台试用。完整发行包由 `Build Native Package` 工作流汇总五个平台的产物，Linux 使用 musl 构建；工作流只生成可下载的 npm tarball，不自动发布。`npm run check:release` 校验各平台二进制、版本和摘要，缺少平台时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。
 
 #### 开发与调试
 
-同机运行正式版和开发版时，使用独立的开发入口：
+同机运行正式版和开发版时，使用独立的开发入口。它会构建 Rust 程序，并在 Rust / Web 文件变更后排空旧实例、重新编译和启动：
 
 ```bash
 npm run dev
 
 # 在另一个终端查看开发实例状态和管理台地址。
 npm run dev:status
-
-# 需要 Node.js 断点调试时，使用相同的隔离入口。
-node --inspect --watch scripts/dev.mjs
 ```
 
 | 项目 | 正式运行（`cabletidy start` / `npm start`） | 开发运行（`npm run dev`） |
@@ -134,16 +138,20 @@ CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev:status
 
 启动日志会显示实际管理台地址、数据目录和两个测试客户端配置目录。开发管理台中的“应用到 Codex / Claude Code”只写入对应测试目录；要验证真实客户端请求，需让测试客户端使用日志中的对应目录（Codex 的 `CODEX_HOME`、Claude Code 的 `CLAUDE_CONFIG_DIR`）。这些目录不会自动复制日常客户端的配置或登录信息。管理台查询本机 Codex 官方模型目录仍通过 `PATH` 中的 `codex debug models --bundled` 执行。
 
+调试服务端时使用 Rust 调试器或 CodeLLDB，目标为 `target/debug/cabletidy`，并将三个数据 / 客户端目录环境变量设为开发目录；Node.js 调试器只覆盖 npm 启动脚本。
+
 验证源码和安装产物：
 
 ```bash
+cargo fmt --check
+cargo clippy --locked --all-targets --features test-support -- -D warnings
 npm test
 npm run test:package
 ```
 
-安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的 CLI、Web 资源、重复启动、重启地址及用户数据保留；需要能够获取 npm 依赖。Linux / macOS 验证 SIGINT / SIGTERM；Windows 直接执行 npm 的 `.cmd` 入口，验证强制终止后的旧锁恢复。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
+`npm test` 先构建测试二进制、运行 Rust 单元测试，再运行直接调用 Rust 的 JavaScript 契约 / HTTP / 管理页测试；发行包不包含测试桥接程序。安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的原生 CLI、内嵌 Web 资源、重复启动、重启地址及用户数据保留。Linux / macOS 验证 SIGINT / SIGTERM；Windows 直接执行 npm 的 `.cmd` 入口，验证强制终止后的旧锁恢复。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
 
-使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。已在 Codex 0.154.0 验证目录加载和实际请求。
+使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。Rust 版本的目录、配置生成与代理行为由本地契约和模拟上游测试覆盖，真实上游兼容性需按具体接入验证。
 
 管理台默认只监听本机回环地址。启动后可从 `cabletidy status` 输出中取得地址。
 
@@ -337,7 +345,7 @@ CABLETIDY_CLAUDE_BIN=/absolute/path/claude npm run test:claude
 ## CLI
 
 ```bash
-node src/cli.mjs status
+node bin/cabletidy.mjs status
 npm test
 ```
 

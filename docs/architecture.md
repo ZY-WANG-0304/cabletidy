@@ -619,7 +619,7 @@ GET  /api/v1/integrations
 
 ## 9. 配置存储
 
-当前 MVP 使用 Node.js 和本地 JSON store，通过 `proper-lockfile` 管理实例锁：
+当前 daemon 使用 Rust 和本地 JSON store。Tokio 驱动异步任务，Axum 提供共用 HTTP 监听器，reqwest 转发上游请求；实例锁由 Rust 文件系统与进程身份检查实现：
 
 ```text
 ~/.cabletidy/config.json
@@ -629,7 +629,7 @@ GET  /api/v1/integrations
 ~/.cabletidy/backups/
 ```
 
-`config.json` 保存非敏感的 CableTidy 配置图，`secrets.json` 只保存 secret reference 对应的本地 secret。后续可以替换为 Rust daemon、TOML 配置和 OS keyring，但不能改变领域对象边界。
+`config.json` 保存非敏感的 CableTidy 配置图，`secrets.json` 只保存 secret reference 对应的本地 secret。Rust 重构继续读取这两份文件及已有的 runtime / lock / 客户端归属记录，不引入 TOML 应用配置或 OS keyring。`Cargo.toml` 仅用于 Rust 构建；Codex 的 `config.toml` 仍由客户端适配器维护。
 
 原型 Codex 配置不再自动迁移。`providerFormat`、`targetOverrides.codex`、`legacyCodex` 和原型 profile 文件元数据在规范化时被丢弃，保存时不再保留，也不会填充当前字段。仍使用原型格式的配置应在升级前备份并手动转换：
 
@@ -644,7 +644,7 @@ GET  /api/v1/integrations
 
 配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
 
-`instance-lock.mjs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和 `process-identity.mjs` 查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 PowerShell `StartTime` UTC ticks。库每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
+`src/lifecycle.rs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和 同一模块查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 PowerShell `StartTime` UTC ticks。Tokio 任务每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
 
 身份检查明确区分存活、死亡和未知。存活或未过期返回 `ELOCKED`；过期但身份未知（旧格式缺字段、查询失败、其他主机）或缺少可安全删除的 owner 标记，返回 `ELOCKUNKNOWN` 和人工恢复步骤。旧 Linux start ticks 不含 boot ID，只能在数值不同时排除原持有者，不能凭数值相同确认存活。空的旧锁目录也需要人工确认和删除。暂停的实例不被 mtime 误回收，恢复后的心跳仍能正常更新。
 
@@ -667,40 +667,35 @@ Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` �
 
 ## 10. 代码模块边界
 
-当前 Node MVP 对应关系：
+当前 Rust 实现对应关系：
 
 ```text
-src/config.mjs
-  store / secret references / normalize / diff
-
-src/validation.mjs
-  schema-like validation / references / reserved configuration paths
-
-src/model-resolver.mjs
-  alias / profile / upstream_model_id / capability routing
-
-src/codex-native-provider.mjs
-  Codex Native Provider Integration
-  local config.toml artifact renderer
-  model catalog staging and application
-
-src/target-artifacts.mjs
-  Codex / Claude Code / generic target artifacts
-
-src/claude-config-file.mjs
-  Claude settings preview / merge / ownership / restore
-
-src/server.mjs
-  shared listener / Web control API / configuration path dispatch
-
-src/cli.mjs
-  start / status
-
-web/index.html + web/app.js + web/styles.css
-  local configuration console and creation form
+src/main.rs                       CLI: start / status / help / version
+src/config.rs                     JSON store / normalization / secrets / diff
+src/validation.rs                 graph validation / references / local listener limits
+src/model.rs                      provider-scoped model resolution / capabilities / rewrites
+src/catalog.rs                    Codex subprocess supervision / cache / official metadata
+src/targets/mod.rs                shared artifact selection and rendering
+src/targets/codex.rs               TOML editing / catalog staging / application
+src/targets/claude.rs              settings merge / ownership ledger / restore
+src/lifecycle.rs                  process identities / instance lock / runtime status
+src/fsutil.rs                     bounded retries for filesystem sharing violations
+src/server.rs                     shared listener / management APIs / native JSON and SSE proxy
+bin/cabletidy.mjs + bin/native.mjs npm executable selection / signal forwarding
+web/                              existing management UI, embedded at compile time
 ```
 
-Codex Native Provider Integration 的运行实现位于 `src/codex-native-provider.mjs`。
+配置与模型图继续保留未知 JSON 字段，保证现有配置的往返兼容；具体操作在边界校验。
+运行配置采用 `Arc<Snapshot>`，请求进入时捕获快照。提交与 provider 启停共用异步互斥锁，
+客户端配置应用单独串行化；管理客户端断连不会中断已开始的配置写入或探测。
+
+SSE 按事件边界增量处理，未发生模型改名的事件保持原始字节。数据面断连取消上游读取，
+管理面后台任务则在退出前排空。第一次退出信号停止接受新连接，等请求与管理任务结束后
+删除 runtime 并释放实例锁；再次 Ctrl+C 清理 Codex 子进程并以 130 退出。
+
+Web 文件通过 `include_bytes!` 嵌入原生程序。npm 包只包含薄启动器和各平台二进制，
+不分发或执行旧 Node 服务端；独立二进制无需 Node.js。开发和测试使用 Node.js 驱动既有
+管理页与协议契约测试，`test-support` 特性下的测试程序不进入发行包。
 
 ## 11. 安全与可靠性原则
 
@@ -733,9 +728,11 @@ MVP 至少覆盖：
 
 ## 13. 演进路线
 
+本次先完成 Rust 重构并保持现有行为。原 agent security 风险监测与审计设计已撤回；后续在 Rust 基础上重新设计，不属于此次实现范围。
+
 ### Phase 1：当前 MVP
 
-- Node daemon 和 loopback-only Web 管理台。
+- Rust daemon 和内嵌的 loopback-only Web 管理台。
 - Web 配置创建与详情编辑。
 - `openai.responses` 和 `anthropic.messages` 同协议 Virtual Provider。
 - Upstream、Model Profile、Upstream Model Binding、Route、Virtual Provider、Target Binding。
@@ -750,7 +747,7 @@ MVP 至少覆盖：
 - health-aware / weighted routing。
 - circuit breaker、主动健康检查和 metrics。
 - Gemini、OpenCode 等 native Target Adapter。
-- OS keyring、OAuth、credential pool。
+- OAuth、credential pool（独立设计，当前继续使用本地 secrets.json）。
 
 ### Phase 3：显式协议转换
 

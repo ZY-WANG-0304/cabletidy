@@ -8,9 +8,9 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createApplication } from "../src/server.mjs";
-import { getPaths, loadConfig, readRuntimeInfo } from "../src/config.mjs";
-import { readCodexConfig } from "../src/codex-config-file.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { getPaths, loadConfig, readRuntimeInfo } from "./helpers/native.mjs";
+import { readCodexConfig } from "./helpers/native.mjs";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -44,8 +44,11 @@ async function fixture(t) {
       const entry = path.join(repository, "scripts", "dev.mjs");
       await fs.mkdir(path.dirname(entry), { recursive: true });
       await fs.copyFile(path.join(root, "scripts", "dev.mjs"), entry);
+      await fs.copyFile(path.join(root, "scripts", "build-native.mjs"), path.join(repository, "scripts", "build-native.mjs"));
       // Reuse real modules while testing checkout-relative defaults from another cwd.
       await fs.symlink(path.join(root, "src"), path.join(repository, "src"),
+        process.platform === "win32" ? "junction" : "dir");
+      await fs.symlink(path.join(root, "bin"), path.join(repository, "bin"),
         process.platform === "win32" ? "junction" : "dir");
       const env = {
         ...process.env,
@@ -68,7 +71,7 @@ async function fixture(t) {
             process.on("message", signal => process.emit(signal, signal));
             process.channel.unref();
             await import(${JSON.stringify(pathToFileURL(entry).href)});
-          `] : [...(watch ? ["--watch"] : []), entry];
+          `] : [entry, ...(watch ? ["--watch"] : [])];
           const child = spawn(process.execPath, args, {
             cwd: directory, env, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
           });

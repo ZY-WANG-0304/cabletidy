@@ -8,13 +8,13 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { createApplication } from "../src/server.mjs";
-import { processStartTime } from "../src/process-identity.mjs";
-import { getPaths, loadConfig, readRuntimeInfo, saveConfig } from "../src/config.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { processStartTime, nativeBinary } from "./helpers/native.mjs";
+import { getPaths, loadConfig, readRuntimeInfo, saveConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const execute = promisify(execFile);
-const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+const cli = fileURLToPath(new URL("../bin/cabletidy.mjs", import.meta.url));
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-startup-"));
@@ -74,16 +74,8 @@ async function post(app, endpoint, body) {
 for (const preferredPort of [undefined, 43101]) {
   test(`first startup persists the listening address with preferred port ${preferredPort ?? "default"}`, async t => {
     const f = await fixture(t);
-    const listen = net.Server.prototype.listen;
-    const attempts = [];
-    // Redirect the preferred bind so this success path works on shared CI hosts too.
-    t.mock.method(net.Server.prototype, "listen", function (port, ...args) {
-      attempts.push(port);
-      return listen.call(this, port === (preferredPort ?? 43100) ? 0 : port, ...args);
-    });
     const paths = f.paths();
     const app = await f.start(paths, { preferredPort });
-    assert.deepEqual(attempts, [preferredPort ?? 43100]);
     const port = app.state.webServer.address().port;
     assert.equal(app.url, `http://127.0.0.1:${port}/`);
     assert.equal((await loadConfig(paths)).web.port, port);
@@ -100,6 +92,16 @@ test("development port fallback is saved and takes precedence over the preferred
   assert.equal((await loadConfig(paths)).web.port, app.state.config.web.port);
   await app.close();
   assert.equal((await f.start(paths, { preferredPort })).url, app.url);
+});
+
+test("a new store selects the preferred port when it is available", async t => {
+  const f = await fixture(t);
+  const reserved = await f.block();
+  const preferredPort = reserved.address().port;
+  await new Promise(resolve => reserved.close(resolve));
+  const app = await f.start(f.paths(), { preferredPort });
+  assert.equal(app.state.config.web.port, preferredPort);
+  assert.equal(new URL(app.url).port, String(preferredPort));
 });
 
 test("new stores allocate distinct ports while status stays read-only and restart keeps client URLs", async t => {
@@ -234,7 +236,7 @@ test("a stale lock is recovered when its PID belongs to a different process gene
 });
 
 async function startChild(t, paths) {
-  const child = spawn(process.execPath, [cli, "start"], {
+  const child = spawn(nativeBinary, ["start"], {
     env: { ...process.env, CABLETIDY_HOME: paths.home },
     stdio: "ignore",
   });

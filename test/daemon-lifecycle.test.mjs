@@ -9,7 +9,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { defaultConfig } from "../src/config.mjs";
+import { defaultConfig, nativeBinary } from "./helpers/native.mjs";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
 import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
@@ -98,7 +98,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
     env = { ...commandEnvironment(`${bin}${path.delimiter}${process.env.PATH || process.env.Path || ""}`),
       CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
   }
-  const entry = direct ? "src/server.mjs" : "bin/cabletidy.mjs";
+  const entry = "bin/cabletidy.mjs";
   const windows = process.platform === "win32";
   // Windows kill(SIGINT) terminates the process. Exercise the same handlers via
   // IPC there; actual console Ctrl+C delivery remains an interactive check.
@@ -108,7 +108,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
     process.channel.unref();
     await import(${JSON.stringify(new URL(`../${entry}`, import.meta.url).href)});
   `] : [entry, ...(direct ? [] : ["start"])];
-  child = spawn(process.execPath, args, {
+  child = spawn(direct && !windows ? nativeBinary : process.execPath, direct && !windows ? ["start"] : args, {
     cwd: root, env, stdio: windows ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
   });
   const signalChild = signal => windows ? child.send(signal) : child.kill(signal);
@@ -159,6 +159,20 @@ async function startStream(app) {
   text.catch(() => {});
   return { upstream, text };
 }
+
+test("disconnecting before upstream headers cancels the pending inference request", signalTest, async t => {
+  const app = await fixture(t, { direct: true });
+  const request = http.request(`${app.url}relay/v1/responses`, { method: "POST" });
+  request.on("error", () => {});
+  request.end(JSON.stringify({ model: "gpt-test", stream: true }));
+  await waitFor(() => app.calls.length === 1);
+  let cancelled = false;
+  app.calls[0].response.on("close", () => { cancelled = true; });
+  request.destroy();
+  await waitFor(() => cancelled);
+  await app.stop("SIGTERM");
+  await app.expectExit(0);
+});
 
 test("SIGINT drains a stream beyond five seconds and cleans runtime after completion", signalTest, async t => {
   const app = await fixture(t);
