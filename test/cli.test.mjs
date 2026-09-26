@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { defaultConfig } from "../src/config.mjs";
+import { defaultConfig } from "./helpers/native.mjs";
 
 const execFileAsync = promisify(execFile);
-const cli = path.join(process.cwd(), "src", "cli.mjs");
+const cli = path.join(process.cwd(), "bin", "cabletidy.mjs");
 
 test("help, version and invalid commands do not initialize user data", async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-cli-help-"));
@@ -99,7 +99,7 @@ test("status reports malformed configuration without overwriting it", async (t) 
     env: { ...process.env, CABLETIDY_HOME: home },
   }), error => {
     assert.equal(error.code, 1);
-    assert.match(error.stderr, /SyntaxError/);
+    assert.match(error.stderr, /Invalid JSON/);
     return true;
   });
   assert.deepEqual(await fs.readdir(home), ["config.json"]);

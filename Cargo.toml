@@ -1,0 +1,47 @@
+[package]
+name = "cabletidy"
+version = "0.2.0"
+edition = "2021"
+description = "A local multi-target coding CLI gateway and provider manager."
+license = "MIT"
+repository = "https://github.com/ZY-WANG-0304/cabletidy"
+
+[features]
+test-support = []
+
+[[bin]]
+name = "cabletidy-test-daemon"
+path = "test/support/daemon.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "cabletidy-test-bridge"
+path = "test/support/bridge.rs"
+required-features = ["test-support"]
+
+[dependencies]
+anyhow = "1"
+async-stream = "0.3"
+axum = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "6"
+filetime = "0.2"
+futures-util = "0.3"
+hostname = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "brotli", "deflate"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+toml_edit = { version = "0.22", features = ["serde"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

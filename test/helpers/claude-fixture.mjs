@@ -1,4 +1,4 @@
-import { normalizeConfig } from "../../src/config.mjs";
+import { normalizeConfig } from "./native.mjs";
 
 export function claudeConfigFixture(baseUrl = "https://example.invalid/v1", port = 43100) {
   return normalizeConfig({

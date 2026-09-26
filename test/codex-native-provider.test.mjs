@@ -8,8 +8,8 @@ import {
   applyCodexArtifacts,
   buildCodexArtifacts,
   prepareCodexArtifacts,
-} from "../src/codex-native-provider.mjs";
-import { normalizeConfig } from "../src/config.mjs";
+} from "./helpers/native.mjs";
+import { normalizeConfig } from "./helpers/native.mjs";
 import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 function nativeConfig() {

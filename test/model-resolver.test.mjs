@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { normalizeConfig } from "../src/config.mjs";
+import { normalizeConfig } from "./helpers/native.mjs";
 import {
   ModelResolveError,
   listClientModels,
   resolveRequest,
   rewriteModelFields,
-} from "../src/model-resolver.mjs";
-import { validateConfig } from "../src/validation.mjs";
+} from "./helpers/native.mjs";
+import { validateConfig } from "./helpers/native.mjs";
 
 function sampleConfig() {
   return normalizeConfig({

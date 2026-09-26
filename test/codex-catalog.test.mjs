@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { normalizeConfig } from "../src/config.mjs";
-import { publicCodexCatalog, planCodexCatalog, validateCodexChanges, catalogEntryForProfile } from "../src/codex-catalog.mjs";
-import { prepareCodexArtifacts, applyCodexArtifacts, publicArtifacts } from "../src/codex-native-provider.mjs";
-import { readCodexConfig } from "../src/codex-config-file.mjs";
+import { normalizeConfig } from "./helpers/native.mjs";
+import { publicCodexCatalog, planCodexCatalog, validateCodexChanges, catalogEntryForProfile } from "./helpers/native.mjs";
+import { prepareCodexArtifacts, applyCodexArtifacts, publicArtifacts } from "./helpers/native.mjs";
+import { readCodexConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function fixture(t) {

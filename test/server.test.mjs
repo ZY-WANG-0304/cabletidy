@@ -5,8 +5,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createApplication } from "../src/server.mjs";
-import { getPaths, normalizeConfig, saveConfig, saveSecrets } from "../src/config.mjs";
+import { createApplication } from "./helpers/native-app.mjs";
+import { getPaths, normalizeConfig, saveConfig, saveSecrets } from "./helpers/native.mjs";
 import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function freePort() {

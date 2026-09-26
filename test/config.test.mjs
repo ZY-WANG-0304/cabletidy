@@ -8,9 +8,9 @@ import {
   normalizeConfig,
   publicConfig,
   resolveUpstreamSecret,
-} from "../src/config.mjs";
-import { validateConfig } from "../src/validation.mjs";
-import { resolveRequest } from "../src/model-resolver.mjs";
+} from "./helpers/native.mjs";
+import { validateConfig } from "./helpers/native.mjs";
+import { resolveRequest } from "./helpers/native.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 

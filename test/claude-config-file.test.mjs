@@ -4,8 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { applyClaudeSettings, restoreClaudeSettings, claudeConfigHome } from "../src/claude-config-file.mjs";
-import { buildTargetArtifacts, prepareTargetArtifacts, publicTargetArtifacts } from "../src/target-artifacts.mjs";
+import { applyClaudeSettings, restoreClaudeSettings, claudeConfigHome } from "./helpers/native.mjs";
+import { buildTargetArtifacts, prepareTargetArtifacts, publicTargetArtifacts } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 
 async function fixture(t, settings) {

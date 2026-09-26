@@ -5,9 +5,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import spawn from "cross-spawn";
-import { createApplication } from "../src/server.mjs";
-import { getPaths } from "../src/config.mjs";
-import { buildTargetArtifacts } from "../src/target-artifacts.mjs";
+import { createApplication } from "../test/helpers/native-app.mjs";
+import { getPaths, buildTargetArtifacts } from "../test/helpers/native.mjs";
 import { claudeConfigFixture } from "../test/helpers/claude-fixture.mjs";
 
 function runClaude(args, options) {

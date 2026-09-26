@@ -44,9 +44,8 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   ], { cwd: root })).stdout)[0];
   const files = packed.files.map(file => file.path);
   assert.ok(files.includes("bin/cabletidy.mjs"));
-  assert.ok(files.includes("web/config-identity.js"));
-  assert.ok(files.includes("web/claude-models.js"));
-  assert.ok(files.every(file => /^(bin\/|src\/|web\/|package\.json$|README\.md$|LICENSE(?:\..*)?$)/.test(file)));
+  assert.ok(files.includes(`native/${process.platform}-${process.arch}/cabletidy${process.platform === "win32" ? ".exe" : ""}`));
+  assert.ok(files.every(file => /^(bin\/|native\/|package\.json$|README\.md$|LICENSE(?:\..*)?$)/.test(file)));
   const tarball = path.join(directory, packed.filename);
   await npm(["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball]);
   const packageRoot = process.platform === "win32"
@@ -115,7 +114,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       const response = await fetch(`${url}${asset}`, { signal: AbortSignal.timeout(3000) });
       assert.equal(response.status, 200);
       const body = await response.text();
-      assert.equal(body, await fs.readFile(path.join(packageRoot, "web", asset || "index.html"), "utf8"));
+      assert.equal(body, await fs.readFile(path.join(root, "web", asset || "index.html"), "utf8"));
     }
     assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.status, "online");
     assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.web.url, url);
