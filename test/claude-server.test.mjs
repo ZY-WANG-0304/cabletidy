@@ -172,6 +172,87 @@ test("SSE is delivered before completion, preserves ping, tool fragments and err
   const cancelled = await f.call("claude-main/v1/messages", { model: "claude-sonnet-4-6", stream: true, messages: [], cancel: true });
   await cancelled.body.cancel();
   await Promise.race([closed, delay(3000).then(() => assert.fail("Upstream did not close after cancellation"))]);
+  const health = (await (await f.call("api/v1/runtime")).json()).health.relay;
+  assert.equal(health.outcome, "success");
+  assert.equal(health.failures, 0);
+});
+
+for (const [name, delimiter] of [["LF", "\n\n"], ["CRLF", "\r\n\r\n"], ["LF/CRLF", "\n\r\n"], ["CRLF/LF", "\r\n\n"]]) {
+  test(`SSE rewrites mixed data lines and flushes a split ${name} delimiter before upstream completion`, async t => {
+    let upstreamResponse;
+    const event = 'id: 42\r\nevent: message_start\ndata: {"type":"message_start",\r\ndata: "message":{"model":"vendor-sonnet"}}';
+    const f = await fixture(t, async (req, res) => {
+      upstreamResponse = res;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(event + delimiter.slice(0, -1));
+      await delay(20);
+      res.write(delimiter.slice(-1));
+    });
+    const response = await fetch(`${f.app.url}claude-main/v1/messages`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    let text = "";
+    while (!text.endsWith(delimiter)) {
+      const chunk = await reader.read();
+      assert.equal(chunk.done, false);
+      text += Buffer.from(chunk.value).toString();
+    }
+    assert.equal(upstreamResponse.writableEnded, false);
+    assert.match(text, /id: 42\r?\nevent: message_start/);
+    const data = text.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5)).join("\n");
+    assert.equal(JSON.parse(data).message.model, "claude-sonnet-4-6");
+    upstreamResponse.end();
+    assert.equal((await reader.read()).done, true);
+  });
+}
+
+for (const [name, model, endpoint, status] of [
+  ["rewritten SSE", "claude-sonnet-4-6", "messages", 200],
+  ["unchanged SSE", "claude-custom", "messages", 200],
+  ["token count", "claude-sonnet-4-6", "messages/count_tokens", 200],
+  ["HTTP error", "claude-sonnet-4-6", "messages", 503],
+]) {
+  test(`an interrupted ${name} response records one upstream failure`, async t => {
+    let interrupt;
+    const f = await fixture(t, (req, res) => {
+      res.writeHead(status, { "content-type": "text/event-stream" });
+      res.write('event: message_start\ndata: {"type":"message_start","message":{"model":"vendor-sonnet"}}\n\n');
+      interrupt = () => res.destroy();
+    });
+    const response = await f.call(`claude-main/v1/${endpoint}`, { model, stream: true, messages: [] });
+    assert.equal(response.status, status);
+    const reader = response.body.getReader();
+    assert.equal((await reader.read()).done, false);
+    interrupt();
+    await assert.rejects(async () => { while (!(await reader.read()).done) {} });
+    const health = (await (await f.call("api/v1/runtime")).json()).health.relay;
+    assert.equal(health.outcome, "failure");
+    assert.equal(health.failures, 1);
+  });
+}
+
+test("an interrupted buffered JSON response updates upstream health before returning an error", async t => {
+  let interrupt;
+  const f = await fixture(t, (req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"model":"vendor-sonnet","content":[');
+    interrupt = () => res.destroy();
+  });
+  const pending = f.call("claude-main/v1/messages", { model: "claude-sonnet-4-6", messages: [] });
+  const deadline = Date.now() + 3000;
+  while ((await (await f.call("api/v1/runtime")).json()).health.relay?.outcome !== "success") {
+    assert.ok(Date.now() < deadline, "Gateway did not receive the successful upstream headers");
+    await delay(10);
+  }
+  interrupt();
+  assert.ok((await pending).status >= 500);
+  const health = (await (await f.call("api/v1/runtime")).json()).health.relay;
+  assert.equal(health.outcome, "failure");
+  assert.equal(health.failures, 1);
 });
 
 test("management applies and restores Claude settings without returning existing secrets", async (t) => {

@@ -11,6 +11,9 @@ const platforms = [...new Set(Object.values(targets))];
 for (const platform of platforms) {
   const directory = new URL(`native/${platform}/`, root);
   const build = JSON.parse(await fs.readFile(new URL("build.json", directory), "utf8"));
+  if (targets[build.target] !== platform || (platform.startsWith("linux-") && !build.target.endsWith("-linux-musl"))) {
+    throw new Error(`Invalid release target for ${platform}: ${build.target}; Linux releases require musl`);
+  }
   const name = platform.startsWith("win32-") ? "cabletidy.exe" : "cabletidy";
   const digest = createHash("sha256").update(await fs.readFile(new URL(name, directory))).digest("hex");
   if (build.version !== version || build.platform !== platform || build.sha256 !== digest) {

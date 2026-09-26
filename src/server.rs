@@ -12,7 +12,7 @@ use axum::{
     routing::any,
     Router,
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -1088,6 +1088,8 @@ async fn proxy(
         &selected.model,
         claude,
         count_tokens,
+        state,
+        text(&u["id"]),
     )
     .await
 }
@@ -1097,6 +1099,8 @@ async fn relay(
     mapped: &str,
     claude: bool,
     count_tokens: bool,
+    state: Arc<AppState>,
+    upstream_id: &str,
 ) -> Result<Response> {
     let status = upstream.status();
     let mut headers = HeaderMap::new();
@@ -1131,10 +1135,21 @@ async fn relay(
             headers.insert(key.clone(), value.clone());
         }
     }
+    let upstream_id = upstream_id.to_owned();
+    let mut stream = upstream.bytes_stream().inspect(move |chunk| {
+        if chunk.is_err() && status.is_success() {
+            state.health(&upstream_id, "failure", None);
+        }
+    });
     let body = if !status.is_success() || count_tokens || client == mapped {
-        Body::from_stream(upstream.bytes_stream())
+        Body::from_stream(stream)
     } else if !sse {
-        let bytes = upstream.bytes().await?;
+        let bytes = stream
+            .try_fold(Vec::new(), |mut bytes, chunk| async move {
+                bytes.extend_from_slice(&chunk);
+                Ok(bytes)
+            })
+            .await?;
         let rewritten = serde_json::from_slice::<Value>(&bytes).ok().map(|mut v| {
             model::rewrite(&mut v, client, mapped, claude);
             v.to_string()
@@ -1145,7 +1160,6 @@ async fn relay(
             Body::from(bytes)
         }
     } else {
-        let mut stream = upstream.bytes_stream();
         let client = client.to_owned();
         let mapped = mapped.to_owned();
         let stream: std::pin::Pin<
@@ -1174,11 +1188,10 @@ async fn relay(
 }
 fn sse_delimiter(bytes: &[u8]) -> Option<(usize, usize)> {
     for i in 0..bytes.len() {
-        if bytes[i..].starts_with(b"\n\n") {
-            return Some((i, 2));
-        }
-        if bytes[i..].starts_with(b"\r\n\r\n") {
-            return Some((i, 4));
+        for delimiter in [b"\r\n\r\n".as_slice(), b"\r\n\n", b"\n\r\n", b"\n\n"] {
+            if bytes[i..].starts_with(delimiter) {
+                return Some((i, delimiter.len()));
+            }
         }
     }
     None
@@ -1188,7 +1201,10 @@ pub fn rewrite_event(bytes: &[u8], client: &str, mapped: &str, claude: bool) -> 
         return bytes.to_vec();
     };
     let separator = if event.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = event.split(separator).map(str::to_owned).collect();
+    let mut lines: Vec<String> = event
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+        .collect();
     let data: Vec<_> = lines
         .iter()
         .enumerate()
@@ -1252,6 +1268,7 @@ mod tests {
             b"data: [DONE]\n\n",
             b"event: error\ndata: {\"error\":\"upstream\"}\n\n",
             b"data: {bad json}\n\n",
+            b": ping\r\nevent: ping\ndata: {\"type\":\"ping\"}\n\r\n",
         ] {
             assert_eq!(rewrite_event(event, "client", "vendor", true), event);
         }
@@ -1263,5 +1280,20 @@ mod tests {
         assert!(result.contains("\"extra\":{\"model\":\"vendor\"}"));
         assert_eq!(sse_delimiter(b"partial\r\n\r"), None);
         assert_eq!(sse_delimiter(b"partial\r\n\r\n"), Some((7, 4)));
+    }
+
+    #[test]
+    fn sse_delimiters_wait_for_complete_lf_and_crlf_pairs() {
+        for delimiter in [b"\n\n".as_slice(), b"\r\n\r\n", b"\n\r\n", b"\r\n\n"] {
+            let event = [b"data: {}".as_slice(), delimiter].concat();
+            for end in 0..event.len() {
+                assert_eq!(sse_delimiter(&event[..end]), None);
+            }
+            assert_eq!(sse_delimiter(&event), Some((8, delimiter.len())));
+            assert_eq!(
+                sse_delimiter(&[event, b"data: {}\n\n".to_vec()].concat()),
+                Some((8, delimiter.len()))
+            );
+        }
     }
 }

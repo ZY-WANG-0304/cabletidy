@@ -24,7 +24,10 @@ const script = `
 `;
 
 for (const [name, body, expected] of [
-  ["missing executable", null, /No such file|cannot find|not recognized|os error 2/i],
+  // PowerShell reports a missing command with its explicit 127 exit status.
+  ["missing executable", null, process.platform === "win32"
+    ? /codex exited with exit code: 127/
+    : /No such file|cannot find|not recognized|os error 2/i],
   ["nonzero exit", "process.exit(7);", /exit.*7/],
   ["invalid catalog", 'console.log("invalid-json");', /JSON/],
   ["excessive output", 'process.stdout.write("x".repeat(17 * 1024 * 1024));', /16 MiB/],
@@ -40,7 +43,7 @@ for (const [name, body, expected] of [
       // Allow the command's own 15s deadline and process-tree cleanup to finish.
       timeout: 35000,
     });
-    assert.match(result.stdout, expected);
+    assert.match(JSON.parse(result.stdout).cause, expected);
   });
 }
 

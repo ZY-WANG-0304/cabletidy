@@ -1,6 +1,6 @@
 # CableTidy 安装与分发决策
 
-更新日期：2026-09-25。2026-09-21 的初始方案为 Node.js CLI npm 包；本次 Rust 重构沿用 npm 命令体验，服务端改为原生程序。
+更新日期：2026-09-26。2026-09-21 的初始方案为 Node.js CLI npm 包；本次 Rust 重构沿用 npm 命令体验，服务端改为原生程序。
 
 ## 当前决策
 
@@ -63,7 +63,7 @@ CI 的 `Test` 工作流在 Linux、macOS、Windows 上运行 Node.js 22.13.0 / 2
 
 ## 发行包组装
 
-本地 `npm pack` 的 `prepack` 只构建当前平台，适合同平台测试，不作为跨平台正式发行物。
+本地先运行 `npm run build`，再运行 `npm pack`，生成当前平台测试包。`npm pack` 不执行构建，打包和发布钩子不会重新生成或覆盖已经组装的 `native/` 产物。
 
 完整包由 `.github/workflows/native-package.yml` 在手动触发或版本 tag 后组装：各 runner 测试并构建目标二进制，汇总到 `native/`，校验版本和摘要，在 Linux 上对汇总包执行安装冒烟，最后上传 npm tarball。工作流没有 npm 发布步骤。
 
@@ -75,7 +75,7 @@ npm run test:package:built
 npm pack --ignore-scripts
 ```
 
-`check:release` 缺少任一平台、版本不一致或摘要不匹配时失败。`prepublishOnly` 先检查完整平台集合，再运行源码与安装测试，防止把只有当前机器二进制的包作为通用包发布。手动跳过 npm 生命周期钩子也会跳过该保护，维护者应发布已验证的完整产物。
+`check:release` 缺少任一平台、编译目标不匹配、版本不一致或摘要不匹配时失败；Linux 发行产物必须声明 musl 目标，宿主 GNU 构建不能通过校验。`prepublishOnly` 运行源码测试、完整平台校验和 `test:package:built`，安装冒烟直接使用已组装的二进制，不调用会覆盖当前平台产物的 `test:package`。手动跳过 npm 生命周期钩子也会跳过该保护，维护者应发布已验证的完整产物。
 
 实际发布继续使用 npm 官方源和 MIT 许可，需维护者完成 npm 登录与发布认证；同版本不能覆盖发布。发布成功后确认 registry 的版本、`latest` 和 `dist.integrity`，再使用全新缓存执行按包名安装验证。
 

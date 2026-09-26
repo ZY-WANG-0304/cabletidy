@@ -102,12 +102,13 @@ cargo run --bin cabletidy -- start
 cargo run --bin cabletidy -- status
 
 # 生成包含当前平台二进制的本地测试包。
+npm run build
 npm pack
 ```
 
 `npm start` 与 `cabletidy start` 使用相同的 Rust CLI。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
 
-本地 `npm pack` 默认只构建当前平台，适用于同平台试用。完整发行包由 `Build Native Package` 工作流汇总五个平台的产物，Linux 使用 musl 构建；工作流只生成可下载的 npm tarball，不自动发布。`npm run check:release` 校验各平台二进制、版本和摘要，缺少平台时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。
+本地先运行 `npm run build` 构建当前平台，再运行 `npm pack` 打包，适用于同平台试用。打包和发布钩子不会重新构建或覆盖 `native/` 中的产物。完整发行包由 `Build Native Package` 工作流汇总五个平台的产物，Linux 使用 musl 构建；工作流只生成可下载的 npm tarball，不自动发布。`npm run check:release` 校验各平台二进制、编译目标、版本和摘要，缺少平台或 Linux 目标不是 musl 时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。
 
 #### 开发与调试
 
