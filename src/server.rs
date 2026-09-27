@@ -1,7 +1,9 @@
 use crate::{
     catalog::{self, Catalog},
     config::{self, array, entries, text, Paths},
-    lifecycle, model, targets, validation,
+    lifecycle, model, security,
+    streaming::{self, Edits, Node, Reservation, Spool, PAGE},
+    targets, validation,
 };
 use anyhow::{bail, Context, Result};
 use axum::{
@@ -12,10 +14,11 @@ use axum::{
     routing::any,
     Router,
 };
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
+    io::{Read, Write},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex, RwLock,
@@ -24,7 +27,6 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
-const MAX_BODY: usize = 8 * 1024 * 1024;
 #[derive(Clone)]
 pub struct Snapshot {
     pub config: Value,
@@ -41,6 +43,7 @@ pub struct AppState {
     config_operation: AsyncMutex<()>,
     target_operation: AsyncMutex<()>,
     pub catalog: Catalog,
+    pub security: security::Security,
     client: reqwest::Client,
     claude_client: reqwest::Client,
     jobs: AtomicUsize,
@@ -100,7 +103,8 @@ impl AppState {
             "web": {"host": config["web"]["listenHost"], "port": config["web"]["port"], "status": "listening"},
             "virtualProviders": providers,
             "health": *self.health.lock().unwrap(),
-            "counts": counts
+            "counts": counts,
+            "security": self.security.status()
         })
     }
 }
@@ -150,6 +154,7 @@ pub async fn create(
             config_operation: AsyncMutex::new(()),
             target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
+            security: security::Security::new(&paths.home),
             client: reqwest::Client::builder().no_proxy().build()?,
             claude_client: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?,
             jobs: AtomicUsize::new(0),
@@ -251,6 +256,7 @@ pub async fn serve_controlled(
     while state.jobs.load(Ordering::SeqCst) > 0 {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    state.security.flush().await;
     if let Ok(Some(runtime)) = config::read_json(&state.paths.runtime).await {
         if runtime["pid"] == std::process::id() && runtime["startedAt"] == state.started {
             let _ = tokio::fs::remove_file(&state.paths.runtime).await;
@@ -355,14 +361,109 @@ fn allowed(c: &Value, headers: &HeaderMap) -> bool {
     }
     true
 }
-async fn read_body(body: Body) -> std::result::Result<Value, (u16, &'static str, &'static str)> {
-    let bytes = to_bytes(body, MAX_BODY)
-        .await
-        .map_err(|_| (413, "payload_too_large", "request body too large"))?;
-    if bytes.is_empty() {
-        return Ok(json!({}));
+type BodyError = (u16, &'static str, &'static str);
+const RESOURCE_ERROR: BodyError = (
+    503,
+    "resource_budget_exhausted",
+    "共享资源预算不足，无法暂存或解析请求",
+);
+async fn read_raw(
+    body: Body,
+    audit: Option<&Arc<security::Audit>>,
+) -> std::result::Result<Arc<Spool>, BodyError> {
+    let mut spool = Spool::new().map_err(|_| {
+        if let Some(a) = audit {
+            a.set("captureGap", json!("shared_encrypted_spool_budget"));
+        }
+        RESOURCE_ERROR
+    })?;
+    let mut observed = 0u64;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            if let Ok(spool) = spool.seal() {
+                if let Some(a) = audit {
+                    a.request_spool(spool, false);
+                }
+            }
+            return Err((400, "body_read_failed", "请求正文接收中断"));
+        };
+        observed += chunk.len() as u64;
+        if spool.write_all(&chunk).is_err() {
+            if let Some(a) = audit {
+                a.set("captureGap", json!("shared_encrypted_spool_budget"));
+                a.set("requestObservedBytes", json!(observed));
+            }
+            if let Ok(spool) = spool.seal() {
+                if let Some(a) = audit {
+                    a.request_spool(spool, false);
+                }
+            }
+            return Err(RESOURCE_ERROR);
+        }
     }
-    serde_json::from_slice(&bytes).map_err(|_| (400, "invalid_json", "请求 body 不是合法 JSON"))
+    let spool = spool.seal().map_err(|_| RESOURCE_ERROR)?;
+    if let Some(a) = audit {
+        let a = a.clone();
+        let captured = spool.clone();
+        tokio::task::spawn_blocking(move || a.request_spool(captured, true))
+            .await
+            .map_err(|_| RESOURCE_ERROR)?;
+    }
+    Ok(spool)
+}
+async fn read_body(
+    body: Body,
+    audit: Option<&Arc<security::Audit>>,
+) -> std::result::Result<(Value, Reservation), BodyError> {
+    let spool = read_raw(body, audit).await?;
+    tokio::task::spawn_blocking(move || {
+        let mut memory = Reservation::memory();
+        if spool.len == 0 {
+            return Ok((json!({}), memory));
+        }
+        let node = Node {
+            start: 0,
+            end: spool.len,
+            kind: b'{',
+        };
+        let value = node.read(&spool, &mut memory).map_err(|e| {
+            if e.to_string().contains("shared_resource_budget") {
+                RESOURCE_ERROR
+            } else {
+                (400, "invalid_json", "请求 body 不是合法 JSON")
+            }
+        })?;
+        Ok((value, memory))
+    })
+    .await
+    .map_err(|_| RESOURCE_ERROR)?
+}
+fn reader_stream(
+    mut reader: impl Read + Send + 'static,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> + Send {
+    async_stream::try_stream! {let mut bytes=vec![0;PAGE];loop {let n=reader.read(&mut bytes)?;if n==0{break;}yield Bytes::copy_from_slice(&bytes[..n]);}}
+}
+
+async fn audited_local_result(
+    result: Result<Response>,
+    audit: Option<&Arc<security::Audit>>,
+) -> Result<Response> {
+    let Some(audit) = audit else {
+        return result;
+    };
+    if audit.is_response_attached() {
+        return result;
+    }
+    let response = match result {
+        Ok(response) => response,
+        Err(err) => error(500, "internal_error", &err.to_string()),
+    };
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, usize::MAX).await?;
+    audit.local_body(&bytes, &parts.headers);
+    audit.finish_local(parts.status.as_u16());
+    Ok(Response::from_parts(parts, Body::from(bytes)))
 }
 async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Response> {
     let (parts, body) = request.into_parts();
@@ -393,15 +494,67 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
             );
             return Ok(r);
         }
-        let body = if parts.method == Method::POST || parts.method == Method::PATCH {
-            match read_body(body).await {
+        let audit = if parts.method == Method::POST {
+            security::management_action(path).map(|action| state.security.audit(
+                json!({"kind":"management","action":action,"providerId":"","revision":snapshot.config["revision"]}),
+                &snapshot.secrets,
+            ))
+        } else {
+            None
+        };
+        if let Some(audit) = &audit {
+            audit.request_headers(&parts.headers);
+        }
+        let _audit_guard = security::RequestGuard(audit.clone());
+        let (body, _body_memory) = if parts.method == Method::POST || parts.method == Method::PATCH
+        {
+            match read_body(body, audit.as_ref()).await {
                 Ok(v) => v,
-                Err((s, c, m)) => return Ok(error(s, c, m)),
+                Err((s, c, m)) => {
+                    return audited_local_result(Ok(error(s, c, m)), audit.as_ref()).await;
+                }
             }
         } else {
-            json!({})
+            (json!({}), Reservation::memory())
         };
-        return api(state, &parts.method, &parts.uri, body).await;
+        if let Some(audit) = &audit {
+            if let Some(id) = body["bindingId"].as_str() {
+                audit.set("bindingId", json!(id));
+            }
+            if let Some(rest) = path.strip_prefix("/api/v1/virtual-providers/") {
+                if let Some((id, _)) = rest.rsplit_once('/') {
+                    audit.set("providerId", json!(id));
+                }
+            }
+            if path == "/api/v1/config/commit" {
+                let changed: Vec<_> = [
+                    "upstreams",
+                    "models",
+                    "routes",
+                    "virtualProviders",
+                    "bindings",
+                    "web",
+                ]
+                .into_iter()
+                .filter(|k| body["config"][k] != snapshot.config[k])
+                .collect();
+                audit.set("changedSections", json!(changed));
+                audit.set(
+                    "credentialsSubmitted",
+                    json!(body["upstreamSecrets"]
+                        .as_object()
+                        .is_some_and(|secrets| !secrets.is_empty())),
+                );
+            }
+        }
+        let result = api(state.clone(), &parts.method, &parts.uri, body).await;
+        if let Some(audit) = &audit {
+            audit.set(
+                "resultRevision",
+                state.snapshot().config["revision"].clone(),
+            );
+        }
+        return audited_local_result(result, audit.as_ref()).await;
     }
     let mut split = path.trim_start_matches('/').splitn(2, '/');
     let id = split.next().unwrap_or("");
@@ -439,15 +592,39 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
             &format!("配置入口不存在: {id}"),
         ));
     }
-    if !config::enabled(provider) {
-        return Ok(protocol_error(
-            protocol,
-            503,
-            "provider_paused",
-            "此配置的服务已暂停",
-        ));
+    let audit = if parts.method == Method::POST
+        && [
+            "/v1/responses",
+            "/responses",
+            "/v1/messages",
+            "/messages",
+            "/v1/messages/count_tokens",
+        ]
+        .contains(&remainder.as_str())
+    {
+        Some(state.security.audit(json!({"kind":"request","action":if remainder.ends_with("count_tokens") {"tokens.count"} else {"model.request"},
+            "providerId":pid,"configurationId":id,"protocol":protocol,"path":remainder,"revision":snapshot.config["revision"],
+            "target":if protocol == "anthropic.messages" {"claude-code"} else {"codex"}}), &snapshot.secrets))
+    } else {
+        None
+    };
+    if let Some(audit) = &audit {
+        audit.request_headers(&parts.headers);
     }
-    proxy(
+    let _audit_guard = security::RequestGuard(audit.clone());
+    if !config::enabled(provider) {
+        return audited_local_result(
+            Ok(protocol_error(
+                protocol,
+                503,
+                "provider_paused",
+                "此配置的服务已暂停",
+            )),
+            audit.as_ref(),
+        )
+        .await;
+    }
+    let result = proxy(
         state,
         snapshot.clone(),
         &pid,
@@ -456,8 +633,10 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
         &parts.method,
         &parts.headers,
         body,
+        audit.clone(),
     )
-    .await
+    .await;
+    audited_local_result(result, audit.as_ref()).await
 }
 fn static_file(path: &str) -> Response {
     let (body, kind): (&'static [u8], &str) = match path {
@@ -498,6 +677,56 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     let path = uri.path();
     let snapshot = state.snapshot();
     let c = &snapshot.config;
+    if method == Method::GET && path.starts_with("/api/v1/security/") {
+        if path == "/api/v1/security/status" {
+            return Ok(json_response(200, state.security.status()));
+        }
+        let query = if let Some(rest) = path.strip_prefix("/api/v1/security/audit/") {
+            let (id, body_page) = rest
+                .strip_suffix("/body")
+                .map_or((rest, false), |id| (id, true));
+            if uuid::Uuid::parse_str(id).is_err() {
+                return Ok(error(400, "invalid_audit_id", "审计 ID 无效"));
+            }
+            let mut query = security::store::Query::default();
+            query.detail = Some(id.into());
+            if body_page {
+                let mut snapshot = None;
+                let mut offset = 0;
+                for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
+                    match k.as_ref() {
+                        "snapshot" if !v.is_empty() && v.len() <= 200 => {
+                            snapshot = Some(v.into_owned())
+                        }
+                        "offset" => match v.parse::<u64>() {
+                            Ok(n) if n <= i64::MAX as u64 => offset = n,
+                            _ => return Ok(error(400, "invalid_body_query", "正文偏移无效")),
+                        },
+                        _ => return Ok(error(400, "invalid_body_query", "正文查询参数无效")),
+                    }
+                }
+                let Some(snapshot) = snapshot else {
+                    return Ok(error(400, "invalid_body_query", "缺少 snapshot"));
+                };
+                query.body = Some((snapshot, offset));
+            }
+            query
+        } else if path == "/api/v1/security/audit" {
+            match security::store::Query::parse(uri.query().unwrap_or("")) {
+                Ok(q) => q,
+                Err(_) => return Ok(error(400, "invalid_audit_query", "审计筛选参数无效")),
+            }
+        } else {
+            return Ok(error(404, "not_found", "安全接口不存在"));
+        };
+        return Ok(match state.security.store.query(query).await {
+            Ok(value) if value.is_null() => {
+                error(404, "audit_not_found", "记录不存在或已超出保留范围")
+            }
+            Ok(value) => json_response(200, value),
+            Err(_) => error(503, "audit_unavailable", "审计存储暂不可用，代理继续运行"),
+        });
+    }
     if method == Method::GET {
         return Ok(match path {
             "/api/v1/config" => {
@@ -908,6 +1137,7 @@ async fn proxy(
     method: &Method,
     headers: &HeaderMap,
     body: Body,
+    audit: Option<Arc<security::Audit>>,
 ) -> Result<Response> {
     let c = &snapshot.config;
     let p = &c["virtualProviders"][pid];
@@ -994,17 +1224,41 @@ async fn proxy(
     if method != Method::POST || !supported {
         return Ok(protocol_error(protocol, 404, "not_found", "接口不存在"));
     }
-    let mut body = match read_body(body).await {
+    let spool = match read_raw(body, audit.as_ref()).await {
         Ok(v) => v,
         Err((s, code, msg)) => return Ok(protocol_error(protocol, s, code, msg)),
     };
-    if !body.is_object() {
+    let spool = if spool.len == 0 {
+        let mut empty = Spool::new()?;
+        empty.write_all(b"{}")?;
+        empty.seal()?
+    } else {
+        spool
+    };
+    let source = spool.clone();
+    let info = match tokio::task::spawn_blocking(move || streaming::request_info(&source)).await? {
+        Ok(v) => v,
+        Err(e) => {
+            let (s, code, msg) = if e.to_string().contains("shared_resource_budget") {
+                RESOURCE_ERROR
+            } else {
+                (400, "invalid_json", "请求 body 不是合法 JSON")
+            };
+            return Ok(protocol_error(protocol, s, code, msg));
+        }
+    };
+    if info.root.kind != b'{' {
         return Ok(protocol_error(
             protocol,
             400,
             "invalid_request_error",
             "请求 body 必须是 JSON object",
         ));
+    }
+    let body = &info.value;
+    if let Some(a) = &audit {
+        a.set("clientModelId", json!(text(&body["model"])));
+        a.set("stream", json!(body["stream"] == true));
     }
     let resolution = match model::resolve(c, p, body.get("model")) {
         Ok(r) => r,
@@ -1014,13 +1268,34 @@ async fn proxy(
         c,
         p,
         &resolution,
-        if count_tokens { &Value::Null } else { &body },
+        if count_tokens { &Value::Null } else { body },
     ) {
         Ok(b) => b,
         Err(e) => return Ok(protocol_error(protocol, 503, e.code, &e.message)),
     };
-    body["model"] = json!(selected.model);
+    let mut edits = Edits::new();
+    let replacement = serde_json::to_vec(&selected.model)?;
+    for node in &info.models {
+        edits.add(node.start, node.end, replacement.clone())?;
+    }
+    if info.models.is_empty() {
+        let mut insert = b"\"model\":".to_vec();
+        insert.extend_from_slice(&replacement);
+        if info.root.end - info.root.start > 2 {
+            let root = streaming::index(&spool, None)?;
+            if !root.nodes.is_empty() {
+                insert.push(b',');
+            }
+        }
+        edits.add(info.root.start + 1, info.root.start + 1, insert)?;
+    }
+
     let u = &selected.upstream;
+    if let Some(audit) = &audit {
+        audit.set("clientModelId", json!(resolution.client));
+        audit.set("upstreamModelId", json!(selected.model));
+        audit.set("upstreamId", u["id"].clone());
+    }
     let url = upstream_url(text(&u["baseUrl"]), path, query)?;
     let mut outbound = HeaderMap::new();
     outbound.insert("content-type", HeaderValue::from_static("application/json"));
@@ -1056,13 +1331,19 @@ async fn proxy(
     let upstream = match client
         .post(url)
         .headers(outbound)
-        .body(body.to_string())
+        .body(reqwest::Body::wrap_stream(reader_stream(
+            edits.reader(&spool),
+        )))
         .send()
         .await
     {
         Ok(r) => r,
         Err(e) => {
             state.health(text(&u["id"]), "failure", None);
+            if let Some(audit) = &audit {
+                audit.set("httpStatus", json!(502));
+                audit.finish("connection_error");
+            }
             return Ok(protocol_error(
                 protocol,
                 502,
@@ -1081,7 +1362,11 @@ async fn proxy(
         },
         Some(status.as_u16()),
     );
-    state.event("proxy.request",json!({"virtualProviderId":pid,"upstreamId":u["id"],"clientModelId":resolution.client,"upstreamModelId":selected.model,"path":path,"status":status.as_u16(),"latencyMs":started.elapsed().as_millis()}));
+    let mut event = json!({"virtualProviderId":pid,"upstreamId":u["id"],"clientModelId":resolution.client,"upstreamModelId":selected.model,"path":path,"status":status.as_u16(),"latencyMs":started.elapsed().as_millis()});
+    if let Some(audit) = &audit {
+        audit.redact(&mut event);
+    }
+    state.event("proxy.request", event);
     relay(
         upstream,
         &resolution.client,
@@ -1090,9 +1375,11 @@ async fn proxy(
         count_tokens,
         state,
         text(&u["id"]),
+        audit,
     )
     .await
 }
+#[allow(clippy::too_many_arguments)]
 async fn relay(
     upstream: reqwest::Response,
     client: &str,
@@ -1101,6 +1388,7 @@ async fn relay(
     count_tokens: bool,
     state: Arc<AppState>,
     upstream_id: &str,
+    audit: Option<Arc<security::Audit>>,
 ) -> Result<Response> {
     let status = upstream.status();
     let mut headers = HeaderMap::new();
@@ -1136,57 +1424,134 @@ async fn relay(
         }
     }
     let upstream_id = upstream_id.to_owned();
-    let mut stream = upstream.bytes_stream().inspect(move |chunk| {
+    if let Some(audit) = &audit {
+        audit.response(status.as_u16(), sse, upstream.headers());
+    }
+    let guard = security::ResponseGuard(audit.clone());
+    let mut source = upstream.bytes_stream().inspect(move |chunk| {
         if chunk.is_err() && status.is_success() {
             state.health(&upstream_id, "failure", None);
         }
     });
+    let mut stream: std::pin::Pin<
+        Box<dyn futures_util::Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>,
+    > = Box::pin(async_stream::stream! {
+        let _guard = guard;
+        while let Some(chunk) = source.next().await {
+            match &chunk {
+                Ok(bytes) => if let Some(audit) = &audit { audit.feed(bytes); },
+                Err(_) => if let Some(audit) = &audit { audit.finish("stream_error"); },
+            }
+            yield chunk;
+        }
+        if let Some(audit) = &audit { audit.eof(); }
+    });
     let body = if !status.is_success() || count_tokens || client == mapped {
         Body::from_stream(stream)
     } else if !sse {
-        let bytes = stream
-            .try_fold(Vec::new(), |mut bytes, chunk| async move {
-                bytes.extend_from_slice(&chunk);
-                Ok(bytes)
-            })
-            .await?;
-        let rewritten = serde_json::from_slice::<Value>(&bytes).ok().map(|mut v| {
-            model::rewrite(&mut v, client, mapped, claude);
-            v.to_string()
-        });
-        if let Some(s) = rewritten {
-            Body::from(s)
-        } else {
-            Body::from(bytes)
+        let mut spool = Spool::new()?;
+        while let Some(chunk) = stream.next().await {
+            spool.write_all(&chunk?)?;
         }
+        let spool = spool.seal()?;
+        let source = spool.clone();
+        let client = client.to_owned();
+        let mapped = mapped.to_owned();
+        let edits = tokio::task::spawn_blocking(move || {
+            streaming::response_edits(&source, &client, &mapped, claude)
+        })
+        .await?
+        .unwrap_or_else(|_| Edits::new());
+        Body::from_stream(reader_stream(edits.reader(&spool)))
     } else {
         let client = client.to_owned();
         let mapped = mapped.to_owned();
-        let stream: std::pin::Pin<
-            Box<dyn futures_util::Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send>,
+        let output: std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = std::io::Result<Bytes>> + Send>,
         > = Box::pin(async_stream::try_stream! {
-            let mut pending = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                pending.extend_from_slice(&chunk?);
-                while let Some((at, len)) = sse_delimiter(&pending) {
-                    let event = pending.drain(..at + len).collect::<Vec<_>>();
-                    let mut output = rewrite_event(&event[..at], &client, &mapped, claude);
-                    output.extend_from_slice(&event[at..]);
-                    yield Bytes::from(output);
+            let mut framer=streaming::EventFramer::new();
+            while let Some(chunk)=stream.next().await {
+                let chunk=chunk.map_err(std::io::Error::other)?;
+                for &byte in &chunk {
+                    if let Some(event)=framer.byte(byte)? {
+                        let c=client.clone();let m=mapped.clone();
+                        let event=tokio::task::spawn_blocking(move||rewrite_spooled_event(event,&c,&m,claude)).await.map_err(std::io::Error::other)?.map_err(std::io::Error::other)?;
+                        let mut reader=event.reader();let mut bytes=vec![0;PAGE];loop{let n=reader.read(&mut bytes)?;if n==0{break;}yield Bytes::copy_from_slice(&bytes[..n]);}
+                    }
                 }
             }
-            if !pending.is_empty() {
-                yield Bytes::from(rewrite_event(&pending, &client, &mapped, claude));
+            if let Some(event)=framer.finish()? {
+                let event=tokio::task::spawn_blocking(move||rewrite_spooled_event(event,&client,&mapped,claude)).await.map_err(std::io::Error::other)?.map_err(std::io::Error::other)?;
+                let mut reader=event.reader();let mut bytes=vec![0;PAGE];
+                loop{let n=reader.read(&mut bytes)?;if n==0{break;}yield Bytes::copy_from_slice(&bytes[..n]);}
             }
         });
-        Body::from_stream(stream)
+        Body::from_stream(output)
     };
     let mut response = Response::new(body);
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     Ok(response)
 }
-fn sse_delimiter(bytes: &[u8]) -> Option<(usize, usize)> {
+fn rewrite_spooled_event(
+    event: Arc<Spool>,
+    client: &str,
+    mapped: &str,
+    claude: bool,
+) -> Result<Arc<Spool>> {
+    use std::io::{Seek, SeekFrom};
+    let data = streaming::event_data(&event)?;
+    let Ok(edits) = streaming::response_edits(&data.payload, client, mapped, claude) else {
+        return Ok(event);
+    };
+    if edits.ranges.is_empty() {
+        return Ok(event);
+    }
+    let mut ending = vec![0; event.len.min(4) as usize];
+    let mut wire = event.reader();
+    wire.seek(SeekFrom::End(-(ending.len() as i64)))?;
+    wire.read_exact(&mut ending)?;
+    let delimiter = [b"\r\n\r\n".as_slice(), b"\r\n\n", b"\n\r\n", b"\n\n"]
+        .into_iter()
+        .find(|d| ending.ends_with(d))
+        .unwrap_or(b"");
+    let mut output = std::io::BufWriter::with_capacity(PAGE, Spool::new()?);
+    let mut end = data.fields.len;
+    let mut reader = data.fields.reader();
+    let mut byte = [0];
+    while end > 0 {
+        reader.seek(SeekFrom::Start(end - 1))?;
+        reader.read_exact(&mut byte)?;
+        if !matches!(byte[0], b'\r' | b'\n') {
+            break;
+        }
+        end -= 1;
+    }
+    reader.seek(SeekFrom::Start(0))?;
+    std::io::copy(&mut reader.take(end), &mut output)?;
+    if end > 0 {
+        output.write_all(b"\n")?;
+    }
+    output.write_all(b"data: ")?;
+    let mut reader = edits.reader(&data.payload);
+    let mut buffer = vec![0; PAGE];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        for part in buffer[..n].split_inclusive(|b| *b == b'\n') {
+            output.write_all(part)?;
+            if part.last() == Some(&b'\n') {
+                output.write_all(b"data: ")?;
+            }
+        }
+    }
+    output.write_all(delimiter)?;
+    Ok(output.into_inner().map_err(|e| e.into_error())?.seal()?)
+}
+#[cfg(test)]
+pub(crate) fn sse_delimiter(bytes: &[u8]) -> Option<(usize, usize)> {
     for i in 0..bytes.len() {
         for delimiter in [b"\r\n\r\n".as_slice(), b"\r\n\n", b"\n\r\n", b"\n\n"] {
             if bytes[i..].starts_with(delimiter) {
@@ -1239,6 +1604,52 @@ pub fn rewrite_event(bytes: &[u8], client: &str, mapped: &str, claude: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn internal_local_errors_retain_the_returned_body_with_credential_redaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let security = security::Security::new(dir.path());
+        let audit = security.audit(
+            json!({"kind":"management","action":"config.commit"}),
+            &json!({"relay":"test-error-credential"}),
+        );
+        let response = audited_local_result(
+            Err(anyhow::anyhow!("write failed: test-error-credential")),
+            Some(&audit),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), 500);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            body["error"]["message"],
+            "write failed: test-error-credential"
+        );
+        security.flush().await;
+        let list = security
+            .store
+            .query(security::store::Query::parse("").unwrap())
+            .await
+            .unwrap();
+        let mut query = security::store::Query::default();
+        query.detail = Some(text(&list["items"][0]["id"]).to_owned());
+        let detail = security.store.query(query).await.unwrap();
+        assert_eq!(detail["record"]["outcome"], "local_error");
+        let snapshot = array(&detail["record"]["bodySnapshots"])
+            .iter()
+            .find(|v| v["id"] == "response")
+            .unwrap();
+        assert_eq!(snapshot["source"], "gateway_response");
+        let mut query = security::store::Query::default();
+        query.detail = Some(text(&list["items"][0]["id"]).into());
+        query.body = Some(("response".into(), 0));
+        let page = security.store.query(query).await.unwrap();
+        let retained: Value = serde_json::from_str(text(&page["chunks"][0]["content"])).unwrap();
+        assert_eq!(retained["error"]["code"], "internal_error");
+        assert_eq!(retained["error"]["message"], "write failed: [REDACTED]");
+    }
 
     #[test]
     fn upstream_queries_keep_base_parameters_and_replace_in_place() {

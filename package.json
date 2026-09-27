@@ -33,6 +33,7 @@
     "dev": "npm run build:debug && node scripts/dev.mjs --watch",
     "dev:status": "node scripts/dev.mjs status",
     "test": "node scripts/test.mjs",
+    "test:security:browser": "node scripts/build-native.mjs --debug --test && node scripts/security-browser.mjs",
     "test:package": "npm run build && node --test scripts/package-smoke.mjs",
     "test:claude": "node scripts/build-native.mjs --debug --test && node --test scripts/claude-smoke.mjs",
     "check:release": "node scripts/check-release.mjs",
@@ -40,6 +41,7 @@
     "test:package:built": "node --test scripts/package-smoke.mjs"
   },
   "devDependencies": {
-    "cross-spawn": "^7.0.6"
+    "cross-spawn": "^7.0.6",
+    "playwright": "^1.63.0"
   }
 }

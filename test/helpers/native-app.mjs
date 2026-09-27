@@ -12,7 +12,7 @@ const executable = fileURLToPath(new URL(`../../target/debug/cabletidy-test-daem
 
 export async function createApplication(options = {}) {
   const paths = options.paths;
-  const env = { ...process.env, CABLETIDY_HOME: paths.home,
+  const env = { ...process.env, ...options.env, CABLETIDY_HOME: paths.home,
     CODEX_HOME: options.codexHome || path.join(paths.home, "codex-client"),
     CLAUDE_CONFIG_DIR: options.claudeHome || path.join(paths.home, "claude-client"),
     CABLETIDY_PREFERRED_PORT: String(options.preferredPort || 43100),

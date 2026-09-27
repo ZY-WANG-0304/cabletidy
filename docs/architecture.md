@@ -505,6 +505,7 @@ Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按�
 
 1. 配置套装：查看套装列表、创建套装、进入某套配置的详情页。
 2. 诊断：执行模型解析测试和脱敏事件查看。上游连通性测试位于套装详情页，配置校验由保存接口执行。
+3. 安全：统一审计列表与风险筛选，详情复核关联风险、正文和检测快照。
 
 套装详情页按上游连接、可选模型设置、客户端接入的顺序纵向排列。底部展示本地地址、
 Virtual Provider ID 以及服务启停、预览和应用操作。一个 Virtual Provider 只连接
@@ -681,6 +682,13 @@ src/targets/claude.rs              settings merge / ownership ledger / restore
 src/lifecycle.rs                  process identities / instance lock / runtime status
 src/fsutil.rs                     bounded retries for filesystem sharing violations
 src/server.rs                     shared listener / management APIs / native JSON and SSE proxy
+src/security/mod.rs               request and management audit lifecycle / bounded inspections
+src/streaming.rs                  encrypted paged spools / streaming JSON / transport model rewriting
+src/security/pipeline.rs           asynchronous redaction / complete retained-content inspection
+src/security/sse.rs                Responses and Messages fragment reconstruction / immutable evidence
+src/security/capture.rs           incremental credential redaction / cross-segment matching / positions
+src/security/rules.rs             local risk rules / structured evidence / redacted metadata
+src/security/store.rs             SQLite worker / retention / keyset queries / storage health
 bin/cabletidy.mjs + bin/native.mjs npm executable selection / signal forwarding
 web/                              existing management UI, embedded at compile time
 ```
@@ -702,7 +710,12 @@ Web 文件通过 `include_bytes!` 嵌入原生程序。npm 包只包含薄启动
 - Web 和数据面共用一个 loopback listener，管理接口保留 `/api/v1/...`，配置入口使用 `/<配置ID>/v1/...`。
 - 管理接口和配置入口都校验本地 Host / Origin，无需本地 API Key。
 - 上游 secret 单独存入 `secrets.json`，仅在请求上游时注入；本地入口不生成或校验访问密钥。
-- 日志只记录路由、模型和状态元数据，不记录 prompt、完整响应或 key。
+- 普通诊断日志只记录路由、模型和状态元数据；安全审计按下述约定保留定向脱敏正文，任何持久化日志都不保存原始凭据。
+- 风险监测固定为仅记录模式，区分调用提议、历史调用和客户端报告；不推断真实工具执行，不触发通知、阻断或人工授权。
+- 安全审计与风险发现保持一对多；列表按审计记录分页和筛选，详情加载关联风险与正文快照。风险记录数与发现数分别统计。
+- 请求、响应不设单条固定长度上限；网关路由和模型改写使用 32 KiB 页的临时加密文件，密钥仅在内存中。正文处理共享 256 MiB 工作区、512 MiB 加密暂存预算。资源不足导致无法路由请求时返回基础设施 503；审计捕获或存储失败不会基于风险阻断转发。
+- 4 个后台检测工作槽在请求结束或中断后重放保留内容：先学习并识别凭据，再把脱敏正文逐段提交到 SQLite；流式工具参数与文本先跨事件重组，原始分片由内容快照引用替换。完整扫描保留的可检测内容，局部结构、未知语义、存储与工作区缺口明确记录。
+- 审计库 schema 3 的 audit / findings 保持一对多；audit_snapshots 保存不可覆盖的完成清单或检测范围，audit_body_chunks 保存连续、不可改写的正文段。详情返回清单，独立 /security/audit/<id>/body 接口每页返回最多 4 段。进度、失败和覆盖原因独立于请求结果与风险等级。
 - 上游 URL 可以在管理台展示，但不得写入 Codex 生成的 local provider block。
 - Codex 生成配置只包含 CableTidy local endpoint 和 client model。
 - 每份配置只连接一个 upstream，不支持主备或多上游切换。多 backend、同一 Model Profile 的多上游映射以及配置内模型与上游不一致都必须校验失败。
@@ -728,7 +741,7 @@ MVP 至少覆盖：
 
 ## 13. 演进路线
 
-本次先完成 Rust 重构并保持现有行为。原 agent security 风险监测与审计设计已撤回；后续在 Rust 基础上重新设计，不属于此次实现范围。
+当前运行时以 Rust 重构后的实现为基础。代理安全 V1 已实现本地规则检测、请求与管理操作审计、SQLite 持久化和“安全”管理页；分类依据、规则边界和接口契约见 [代理安全 V1 设计与实现](agent-security-v1.md)。第一版仅记录并展示，不包含通知、阻断或人工授权。
 
 ### Phase 1：当前 MVP
 
@@ -741,6 +754,7 @@ MVP 至少覆盖：
 - Claude Code 官方 Base URL 接入、四个本地接口、模型映射与上游连通性测试。
 - Claude Code settings 预览、应用和恢复，以及独立文件、Bash / PowerShell artifact。
 - 配置校验、diff、原子 reload 和脱敏事件。
+- Responses / Messages 的风险监测、统一审计列表、脱敏正文与检测快照、风险定位复核、筛选分页和存储退化状态。
 
 ### Phase 2：可靠性与更多目标
 
