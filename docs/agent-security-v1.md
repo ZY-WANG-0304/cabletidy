@@ -296,7 +296,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 支持 Bash / shell / exec_command 等常见名称、Read/Write/Edit 类工具，以及 apply_patch。shell 检查只解析有限的字面量参数、分隔符和直接管道；变量展开、重定向、未知包装和动态脚本不做效果推断。构建或包管理命令不直接产生风险，其脚本行为标记为未覆盖。规则是有限的结构匹配，不等价于完整 shell / PowerShell 解释器或漏洞扫描器。
 
-请求中的工具定义仅作为内容检查，历史调用标记为 `tool_call_replayed`；工具结果标记为客户端报告。Responses 的 function/custom tool call 和 Messages 的 tool_use 按输出索引拼接，done 与最终完整对象在单请求内去重。不同请求中的历史调用保留为独立观察，不跨请求猜测会话或执行次数。
+请求中的工具定义仅作为内容检查，历史调用标记为 `tool_call_replayed`；工具结果标记为客户端报告。Responses 的 function/custom tool call 和 Messages 的 tool_use 按输出索引拼接。同一位置的工具风险按完整参数内容指纹和工具名区分版本，只有内容相同的 done / 最终对象合并风险发现；参数或上下文改变后分别保留命中依据与快照，记录最高等级取所有版本中的最高值。去重状态只保留增量计算的内存指纹，正文和证据仍仅保存脱敏内容。不同请求中的历史调用保留为独立观察，不跨请求猜测会话或执行次数。
 
 请求的额外 JSON 字段也纳入有界凭据检查。响应检查聚焦支持的文本与工具输出项，错误文本只作凭据检查；推理内容、图片、加密数据、未知工具和超限情况保留覆盖不足原因。`previous_response_id` 引用的未见上下文也明确标记。
 
@@ -311,7 +311,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 | 后台检测并发 | 4 个工作槽；排队中的正文仍占用共享暂存预算 |
 | 段大小 / 正文查询页 | UTF-8 安全边界的约 32 KiB / 最多 4 段；页面不拼装完整正文 |
 | 写入队列 / 元数据更新 | 256 项 / 64 KiB；后台分批提交风险，正文逐段等待存储确认；HTTP 生命周期元数据队列满时累计缺口 |
-| 审计持久存储 | 保留 30 天，主库 / WAL / SHM 合计目标 128 MiB；主库约 96 MiB，正文在已使用主库页面超过 80 MiB 时停止追加，为终态、风险与缺口预留空间 |
+| 审计持久存储 | 保留 30 天，主库 / WAL / SHM 合计目标 128 MiB；主库约 96 MiB。正文使用 80 MiB 的已用页面预算，写入前计入待写段及页面开销；接近预算先清理已完成旧记录并重试，无可回收空间时记录缺口，为终态、风险与缺口保留余量 |
 | 结构与语义工作量 | JSON 递归栈最多 512 层、凭据内嵌 JSON 学习最多 32 层；shell 只解析支持的字面量语法，嵌套包装、动态代码和未知工具显式标记未覆盖 |
 
 预算是整个 daemon 中正文处理子系统的额度，不是每请求额度，也不是整个进程 RSS 上限。HTTP、TLS、配置、SQLite 缓存等仍有各自的内存开销。预算不足时不能推断为“无风险”；状态、覆盖原因、保留字节与缺口范围一起展示。管理 JSON 等需要构造完整值的操作，先按预计解析开销申请共享工作区；普通代理请求通过流式索引读取路由所需字段，长工具参数先选择规则需要的语义字段，避免大段 description 挤占命令检查资源。
@@ -327,7 +327,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 数据库位于 `CABLETIDY_HOME/audit.sqlite3`，Unix 主库权限 `0600`，Windows 使用用户目录 ACL。`user_version = 3`，事务迁移版本 1 / 2，保留旧记录和快照。`audit` 与 `findings` 一对多；`audit_snapshots` 保存正文清单、语义参数快照或固定范围；`audit_body_chunks` 以 `(audit_id, snapshot_id, start)` 唯一键保存连续段。完成后的清单、段和检测范围不能覆盖，后续 done / 最终输出写入新的快照。删除父审计记录时级联清理关联内容。
 
-到期或接近容量时清理较旧的已完成记录，不清理仍在接收 / 检测的记录来伪装完整覆盖，实际保留期可能短于 30 天。数据库损坏或版本过新时保留原文件，不自动删除重建。`failedWrites`、`droppedWrites`、最近成功写入时间及后续 `audit.gap` 摘要记录存储缺口；计数是写入次数，不是请求数。
+到期或接近容量时清理较旧的已完成记录，不清理仍在接收 / 检测的记录来伪装完整覆盖，实际保留期可能短于 30 天。启动维护与正文追加使用同一已用页面阈值；回收后空闲页可立即复用，不必等数据库 / WAL 文件达到另一个阈值。写入当前记录始终受保护；若仅有活跃记录占用预算，则保留失败状态和缺口。数据库损坏或版本过新时保留原文件，不自动删除重建。`failedWrites`、`droppedWrites`、最近成功写入时间及后续 `audit.gap` 摘要记录存储缺口；计数是写入次数，不是请求数。
 
 审计存储或检测失败不产生通知、阻断或授权动作。代理路由或改写本身无法取得必要暂存资源时属于基础设施失败；例如请求暂存预算耗尽返回 `503 resource_budget_exhausted`，不再返回基于 8 MiB 的 `413`。这与风险等级无关。
 
@@ -372,6 +372,8 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 流式事件的 `data` 中，原始参数 / 文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。这是网关观察片段到重组快照的关联；观察片段偏移不是脱敏正文偏移，不能用于正文高亮。重组快照保存完整脱敏参数 / 文本，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件内容隐藏并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已安全脱敏的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；中断的尾部可能隐藏以避免落盘半个凭据。
 
+`response.reasoning_summary_text.delta/done` 和 `response.reasoning_text.delta/done` 同样先重组再脱敏，分别按输出索引与摘要 / 内容索引隔离，交错分片不会混入其他条目。推理文本仍执行凭据检查与精确定位，但推理语义标记 `reasoning_content_not_inspected`。未知事件或未知 Messages delta 的 payload 整体隐藏为 `[REDACTED]`，正文页以 `unsupported_stream_fragment` 标注位置，记录带 `unsupported_response_event`；隐藏本身不产生凭据风险发现，也不改变转发给客户端的内容。
+
 `complete` 表示对应内容完成保留，不表示检测语义完整。检查进度、失败和覆盖原因独立于正文状态。`coverageGaps` 可含 `snapshotId`、`reason`、`observedBytes`、`retainedBytes` 或 `retainedForProcessingBytes`，分别说明脱敏持久内容和加密捕获的缺口。未读取请求、缺失正文和写入失败不从后来流量重建。
 
 版本 2 的既有完整快照不在详情里直接返回，按页端点以 `legacySnapshot` 兼容读取旧的有界对象，旧序数路径仍可高亮；版本 1 没有正文时明确提示无法复核。主列表始终不加载正文，详情的全部关联风险不受列表分类筛选裁剪。
@@ -390,6 +392,8 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 - 旧库迁移、正文快照不可覆盖、后续最终内容改变仍可复核命中时参数、正文级联清理，以及详情关闭和筛选后的过期响应防覆盖。
 
 补充验证覆盖超过 8 MiB 请求、1 MiB 之后的风险、超长工具参数与 SSE 事件、9,000 多个节点、超过 32 个 finding、密文暂存及认证校验、跨页 / 跨事件凭据、资源预算耗尽仍转发可转发的响应、按页加载和过期正文请求防覆盖。
+
+Review 回归覆盖交错的推理摘要 / 推理文本分片、未知片段与中断尾部不写入明文凭据、正文定位对应真实脱敏标记、约 84 MiB 已用页面且磁盘文件未到 96 MiB 时的在线 / 重启容量回收、活跃记录保护，以及同一调用从中风险升级为严重风险后所有参数版本的独立证据和最高等级。
 
 `cargo fmt --check` 与严格 Clippy 检查为配套验证。自动化使用隔离临时目录与模拟上游，不访问真实客户端配置或真实账户；生产上游的扩展事件和平台差异仍需按实际接入验证。
 

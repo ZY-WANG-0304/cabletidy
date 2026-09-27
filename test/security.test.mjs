@@ -462,6 +462,136 @@ test("large SSE deltas are reconstructed before credential redaction and tool in
   assert.match(JSON.stringify(record), /ordinary/);
 });
 
+test("reasoning SSE text redacts credentials across interleaved summary and content deltas", async t => {
+  const halves = [secret.slice(0, 13), secret.slice(13)];
+  const f = await fixture(t, (req, res, body) => {
+    const events = [];
+    for (const type of ["reasoning_summary_text", "reasoning_text"]) {
+      const index = type === "reasoning_summary_text" ? "summary_index" : "content_index";
+      for (const [i, delta] of halves.entries()) {
+        for (const output_index of [0, 1]) for (const part of [0, 1]) {
+          events.push({ type: `response.${type}.delta`, output_index, [index]: part,
+            delta: i === 0 ? `context ${type}/${output_index}/${part}: ${delta}` : `${delta} retained tail` });
+        }
+      }
+      for (const output_index of [0, 1]) {
+        events.push({ type: `response.${type}.done`, output_index, [index]: 1,
+          text: `context ${type}/${output_index}/1: ${secret} retained tail` });
+      }
+    }
+    events.push({ type: "response.completed", response: { model: body.model, output: [] } });
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  assert.match(await (await f.request({ stream: true })).text(), /known-securit/);
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  for (const forbidden of [secret, ...halves]) assert.equal(JSON.stringify(record).includes(forbidden), false, forbidden);
+  assert.ok(record.findings.some(f => f.ruleId === "SEC-SECRET-001"));
+  assert.equal(record.inspectionStatus, "partial");
+  assert.ok(record.coverageReasons.includes("reasoning_content_not_inspected"));
+  for (const type of ["reasoning_summary_text", "reasoning_text"]) {
+    for (const output of [0, 1]) for (const part of [0, 1]) {
+      const snapshots = record.bodySnapshots.filter(s => s.body?.text === `context ${type}/${output}/${part}: [REDACTED] retained tail`);
+      assert.ok(snapshots.length > 0);
+      assert.ok(record.findings.some(f => snapshots.some(s => s.id === f.evidence.bodyRef.sourceSnapshotId)));
+    }
+  }
+  for (const finding of record.findings) {
+    const ref = finding.evidence.bodyRef;
+    const snapshot = record.bodySnapshots.find(s => s.id === ref.sourceSnapshotId);
+    assert.equal(Buffer.from(snapshot.text).subarray(ref.start, ref.end).toString(), "[REDACTED]");
+  }
+  for (const name of await fs.readdir(f.home)) if (name.startsWith("audit.sqlite3")) {
+    const bytes = await fs.readFile(path.join(f.home, name));
+    for (const forbidden of [secret, ...halves]) assert.equal(bytes.includes(Buffer.from(forbidden)), false, `${name}: ${forbidden}`);
+  }
+});
+
+test("unknown SSE fragments are hidden with an explicit coverage gap instead of retaining credential pieces", async t => {
+  const halves = [secret.slice(0, 13), secret.slice(13)];
+  const f = await fixture(t, (req, res, body) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end([
+      ...halves.map(delta => ({ type: "response.future_text.delta", delta })),
+      ...halves.map(text => ({ type: "content_block_delta", index: 0, delta: { type: "future_text_delta", text } })),
+      { type: "response.completed", response: { model: body.model, output: [] } },
+    ].map(event).join(""));
+  }, { passthrough: true });
+  const wire = await (await f.request({ stream: true })).text();
+  for (const half of halves) assert.ok(wire.includes(half));
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  assert.equal(record.inspectionStatus, "partial");
+  assert.ok(record.coverageReasons.includes("unsupported_response_event"));
+  assert.equal(record.findings.length, 0, "hidden unknown fragments do not imply a confirmed credential");
+  for (const half of halves) assert.equal(JSON.stringify(record).includes(half), false);
+  const snapshot = record.bodySnapshots.find(s => s.id === "response");
+  assert.equal(snapshot.redactions.filter(m => m.reason === "unsupported_stream_fragment").length, 4);
+  for (const mark of snapshot.redactions) assert.equal(Buffer.from(snapshot.text).subarray(mark.start, mark.end).toString(), "[REDACTED]");
+  for (const name of await fs.readdir(f.home)) if (name.startsWith("audit.sqlite3")) {
+    const bytes = await fs.readFile(path.join(f.home, name));
+    for (const half of halves) assert.equal(bytes.includes(Buffer.from(half)), false, name);
+  }
+});
+
+test("changed streamed tool arguments retain every risk version and deduplicate only identical repetitions", async t => {
+  const versions = [{ cmd: "rm -rf tmp" }, { cmd: dangerous }, { cmd: "rm -rf cache" }, { cmd: dangerous, description: "updated context" }];
+  const f = await fixture(t, (req, res, body) => {
+    const item = args => ({ type: "function_call", name: "exec_command", arguments: JSON.stringify(args) });
+    const events = [{ type: "response.output_item.added", output_index: 0, item: item(versions[0]) }];
+    for (const args of [...versions, versions[1]]) {
+      events.push({ type: "response.function_call_arguments.done", output_index: 0, arguments: item(args).arguments });
+      events.push({ type: "response.output_item.done", output_index: 0, item: item(args) });
+    }
+    events.push({ type: "response.completed", response: { model: body.model, output: [item(versions[1])] } });
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  await (await f.request({ stream: true })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  assert.equal(audit.severity, "critical");
+  assert.equal(audit.inspectionStatus, "complete");
+  const record = (await review(f, audit.id)).record;
+  const findings = record.findings.filter(f => f.ruleId === "SEC-DELETE-001");
+  assert.equal(findings.length, 4, "same-severity and context changes also preserve their own evidence");
+  assert.deepEqual(findings.map(f => f.severity), ["medium", "critical", "medium", "critical"]);
+  assert.equal(new Set(findings.map(f => f.evidence.bodyRef.snapshotId)).size, 4);
+  assert.deepEqual(findings.map(f => record.bodySnapshots.find(s => s.id === f.evidence.bodyRef.snapshotId).body.cmd), versions.map(v => v.cmd));
+  assert.deepEqual(findings.map(f => JSON.parse(record.bodySnapshots.find(s => s.id === f.evidence.bodyRef.sourceSnapshotId).body.arguments)), versions);
+  assert.ok(findings.every(f => f.executionStatus === "unknown"));
+  const filtered = await f.list("audit", "severity=critical&category=destructive_action");
+  assert.equal(filtered.riskRecordCount, 1);
+  assert.equal(filtered.findingCount, 4);
+  await f.restart();
+  assert.deepEqual((await review(f, audit.id)).record.findings, record.findings);
+});
+
+test("body capacity reclaims completed history after restart and during subsequent requests", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  await (await f.request({ input: "older retained context ".repeat(30000) })).text();
+  const old = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  assert.equal(old.inspectionStatus, "complete");
+  await f.restart({ CABLETIDY_TEST_AUDIT_BODY_BYTES: String(512 * 1024) });
+  const ids = [];
+  for (let i = 0; i < 4; i++) {
+    const input = `request ${i}: ` + "retained content ".repeat(12000);
+    const response = await f.request({ input });
+    assert.equal(response.status, 200); await response.text();
+    const audit = (await f.waitFor(r => r.items[0] && r.items[0].id !== old.id && !ids.includes(r.items[0].id))).items[0];
+    ids.push(audit.id);
+    assert.equal(audit.inspectionStatus, "complete", JSON.stringify(audit));
+    const record = (await review(f, audit.id)).record;
+    assert.equal(record.bodySnapshots.find(s => s.id === "request").body.input, input);
+    assert.equal(record.requestBodyState, "complete");
+    assert.equal(record.responseBodyState, "complete");
+  }
+  assert.equal((await f.call(`api/v1/security/audit/${old.id}`)).status, 404);
+  assert.equal((await f.call(`api/v1/security/audit/${ids[0]}`)).status, 404, "live writes also reclaim completed history");
+  const status = await (await f.call("api/v1/security/status")).json();
+  assert.equal(status.storage.failedWrites, 0);
+});
+
 test("shared capture and storage budgets report gaps without blocking forwarded responses", async t => {
   const output = "ordinary response ".repeat(250000);
   const f = await fixture(t, (req, res, body) => respond(res, body, [{ type: "output_text", text: output }]), { passthrough: true });
@@ -473,20 +603,21 @@ test("shared capture and storage budgets report gaps without blocking forwarded 
   assert.ok(audit.coverageReasons.includes("shared_encrypted_spool_budget"));
   assert.ok(audit.inspectionProgress.processedBytes < audit.inspectionProgress.observedBytes);
   assert.ok(audit.coverageGaps.some(g => g.snapshotId === "response" && g.observedBytes > g.retainedForProcessingBytes));
+  const firstId = audit.id;
   await f.restart({ CABLETIDY_TEST_AUDIT_BODY_BYTES: String(512 * 1024) });
   const again = await f.request(); assert.equal((await again.json()).output[0].text, output);
-  audit = (await f.waitFor(r => r.total === 2 && r.items[0]?.outcome === "completed")).items[0];
+  audit = (await f.waitFor(r => r.items[0]?.id !== firstId && r.items[0]?.outcome === "completed")).items[0];
   assert.equal(audit.inspectionStatus, "failed");
   assert.ok(audit.coverageReasons.includes("body_storage_or_processing_failure"));
   const status = await (await f.call("api/v1/security/status")).json();
   assert.ok(status.storage.failedWrites > 0);
 });
 
-test("incomplete streamed text hides partial credentials and reports incomplete coverage", async t => {
+for (const type of ["output_text", "reasoning_summary_text", "reasoning_text"]) test(`incomplete streamed ${type} hides partial credentials and reports incomplete coverage`, async t => {
   const partial = secret.slice(0, 13);
   const f = await fixture(t, (req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end(event({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: partial }));
+    res.end(event({ type: `response.${type}.delta`, output_index: 0, content_index: 0, summary_index: 0, delta: partial }));
   }, { passthrough: true });
   await (await f.request({ stream: true })).text();
   const audit = (await f.waitFor(r => r.items[0]?.outcome === "unknown")).items[0];

@@ -194,6 +194,7 @@ impl Streams {
             self.terminal = true;
         }
         let mut edits = Edits::new();
+        let mut hidden_payload = false;
         if let Ok(info) = streaming::index(&data.payload, None) {
             let kind = text(&info.values["type"]);
             let key = format!(
@@ -242,10 +243,33 @@ impl Streams {
                         self.finish(p, &key, true)?;
                     }
                 }
-                "response.output_text.delta" | "response.output_text.done" => {
+                "response.output_text.delta"
+                | "response.output_text.done"
+                | "response.reasoning_summary_text.delta"
+                | "response.reasoning_summary_text.done"
+                | "response.reasoning_text.delta"
+                | "response.reasoning_text.done" => {
+                    let reasoning = kind.starts_with("response.reasoning");
+                    let summary = kind.starts_with("response.reasoning_summary_text");
+                    if reasoning {
+                        p.rules.reasons.insert("reasoning_content_not_inspected");
+                    }
+                    let channel = if summary {
+                        "summary"
+                    } else if reasoning {
+                        "reasoning"
+                    } else {
+                        "text"
+                    };
                     let key = format!(
-                        "{key}/text/{}",
-                        info.values["content_index"].as_u64().unwrap_or(0)
+                        "{key}/{channel}/{}",
+                        info.values[if summary {
+                            "summary_index"
+                        } else {
+                            "content_index"
+                        }]
+                        .as_u64()
+                        .unwrap_or(0)
                     );
                     if kind.ends_with("done") {
                         self.finish(p, &key, true)?;
@@ -285,6 +309,7 @@ impl Streams {
                             "signature_delta" => "signature",
                             _ => {
                                 p.rules.reasons.insert("unsupported_response_event");
+                                hidden_payload = true;
                                 ""
                             }
                         };
@@ -331,6 +356,7 @@ impl Streams {
                 | "ping" => {}
                 _ => {
                     p.rules.reasons.insert("unsupported_response_event");
+                    hidden_payload = true;
                 }
             }
         } else if data.payload.len > 0 && &prefix[..n] != b"[DONE]" {
@@ -352,7 +378,13 @@ impl Streams {
             p.render_text(writer, data.fields, "response", true, true)?;
         }
         writer.push("data: ")?;
-        if learn_credentials(&safe_source, &mut p.redactor) {
+        if hidden_payload {
+            // Unknown event schemas may carry credential fragments that cannot be
+            // safely redacted one event at a time.
+            let start = writer.position() + 1;
+            writer.mark("unsupported_stream_fragment", start, start + 10);
+            writer.push("\"[REDACTED]\"")?;
+        } else if learn_credentials(&safe_source, &mut p.redactor) {
             p.render_json(writer, safe_source, "response", true)?;
         } else {
             p.render_text(writer, safe_source, "response", true, true)?;

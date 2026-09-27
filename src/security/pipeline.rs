@@ -644,7 +644,7 @@ impl Visitor for BodyVisitor<'_> {
                     &mut memory,
                 );
                 match parsed {
-                    Ok(parsed) => {
+                    Ok((parsed, version)) => {
                         let before = self.pipeline.rules.findings.len();
                         self.pipeline.rules.tool(
                             text(&frame.meta["name"]),
@@ -654,6 +654,7 @@ impl Visitor for BodyVisitor<'_> {
                                 .tool_location
                                 .as_deref()
                                 .unwrap_or(&frame.path),
+                            version,
                         );
                         if before < self.pipeline.rules.findings.len() {
                             let id = format!("evidence/{}", uuid::Uuid::new_v4());
@@ -748,7 +749,7 @@ fn tool_input(
     node: &Node,
     encoded: bool,
     memory: &mut Reservation,
-) -> Result<Value> {
+) -> Result<(Value, [u8; 32])> {
     let decoded = if encoded {
         Some(crate::streaming::decoded(source, node)?)
     } else {
@@ -774,8 +775,24 @@ fn tool_input(
     } else {
         node.clone()
     };
+    // Fingerprint the full observed arguments, including fields that semantic
+    // rules do not read. Repeated final events share a version; edits do not.
+    let mut digest = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut reader = source.reader();
+    reader.seek(SeekFrom::Start(root.start))?;
+    let mut reader = reader.take(root.end - root.start);
+    let mut buffer = [0; PAGE];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        digest.update(&buffer[..n]);
+    }
+    let mut version = [0; 32];
+    version.copy_from_slice(digest.finish().as_ref());
     if root.kind != b'{' {
-        return root.read(source, memory);
+        return Ok((root.read(source, memory)?, version));
     }
     let index = crate::streaming::index(source, if encoded { None } else { Some(&root) })?;
     let mut result = json!({});
@@ -787,7 +804,7 @@ fn tool_input(
             result[field] = node.read(source, memory)?;
         }
     }
-    Ok(result)
+    Ok((result, version))
 }
 
 struct Credentials<'a> {

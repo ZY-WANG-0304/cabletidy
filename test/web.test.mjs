@@ -306,6 +306,7 @@ test("a direct audit detail URL loads independently and failed reads retain list
 });
 
 test("old credential windows locate the annotated hit across pages without highlighting context", async () => {
+  const preceding = "x".repeat(90000) + "[REDACTED]" + "x".repeat(41062);
   const prefix = "普通上下文 ".repeat(4000);
   const start = 131072 + Buffer.byteLength(prefix);
   const content = prefix + "[REDACTED] retained context";
@@ -314,7 +315,7 @@ test("old credential windows locate the annotated hit across pages without highl
     if (url.includes("/body?")) {
       const offset = Number(new URL(url, "http://test").searchParams.get("offset"));
       return { body: offset < 131072
-        ? { chunks: [{ start: 0, end: 131072, content: "preceding page", redactions: [] }], offset: 0, nextOffset: 131072 }
+        ? { chunks: [{ start: 0, end: 131072, content: preceding, redactions: [{ start: 90000, end: 90010, reason: "unsupported_stream_fragment" }] }], offset: 0, nextOffset: 131072 }
         : { chunks: [{ start: 131072, end: 131072 + Buffer.byteLength(content), content, redactions: [{ start, end: start + 10, reason: "known_credential" }] }], offset: 131072, nextOffset: null } };
     }
     if (url.includes("/audit/one")) return { body: { record: { id: "one", bodySnapshots: [{ id: "request" }], findings: [{ id: "secret", ruleId: "SEC-SECRET-001", evidence: { bodyRef: ref } }] } } };

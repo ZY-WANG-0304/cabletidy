@@ -350,16 +350,44 @@ fn disk_bytes(path: &Path) -> u64 {
     .sum()
 }
 
+fn body_budget() -> u64 {
+    crate::streaming::budget("CABLETIDY_TEST_AUDIT_BODY_BYTES", 80 * 1024 * 1024)
+}
+
+fn used_bytes(db: &Connection) -> Result<u64> {
+    Ok(db.query_row(
+        "SELECT (page_count-freelist_count)*page_size FROM pragma_page_count(),pragma_freelist_count(),pragma_page_size()",
+        [], |r| r.get(0),
+    )?)
+}
+
+fn prune_completed(db: &Connection, protected: Option<&str>) -> Result<usize> {
+    Ok(db.execute(
+        "DELETE FROM audit WHERE seq IN (SELECT seq FROM audit WHERE outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND (?1 IS NULL OR id != ?1) ORDER BY seq LIMIT 10)",
+        [protected],
+    )?)
+}
+
+fn reclaim_body_pages(db: &Connection, protected: Option<&str>, additional: u64) -> Result<bool> {
+    // Use the same live-page budget for maintenance and body writes. Free pages
+    // can be reused immediately without waiting for database or WAL truncation.
+    while used_bytes(db)?.saturating_add(additional) > body_budget() {
+        if prune_completed(db, protected)? == 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn maintain(db: &Connection, path: &Path) -> Result<()> {
     let cutoff = chrono::Utc::now().timestamp_millis() - RETENTION_DAYS * 86_400_000;
-    db.execute("DELETE FROM audit WHERE at < ?", [cutoff])?;
-    if disk_bytes(path) > BUDGET * 3 / 4 {
-        db.execute(
-            "DELETE FROM audit WHERE seq IN (SELECT seq FROM audit WHERE outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') ORDER BY seq LIMIT 10)",
-            [],
-        )?;
-    }
+    db.execute("DELETE FROM audit WHERE at < ? AND outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running')", [cutoff])?;
+    reclaim_body_pages(db, None, 0)?;
     db.execute_batch("PRAGMA incremental_vacuum(2048); PRAGMA wal_checkpoint(TRUNCATE);")?;
+    if disk_bytes(path) > BUDGET * 3 / 4 {
+        prune_completed(db, None)?;
+        db.execute_batch("PRAGMA incremental_vacuum(2048); PRAGMA wal_checkpoint(TRUNCATE);")?;
+    }
     Ok(())
 }
 
@@ -398,17 +426,17 @@ fn persist(db: &mut Connection, mut record: Value) -> Result<()> {
 fn persist_body(db: &Connection, audit: &str, value: &Value) -> Result<()> {
     let id = config::text(&value["id"]);
     if let Some(content) = value["content"].as_str() {
-        let used:i64=db.query_row("SELECT (page_count-freelist_count)*page_size FROM pragma_page_count(),pragma_freelist_count(),pragma_page_size()",[],|r|r.get(0))?;
+        let redactions = value["redactions"].to_string();
+        let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         // Leave database pages available for terminal states, findings and gap records.
-        if used as u64
-            > crate::streaming::budget("CABLETIDY_TEST_AUDIT_BODY_BYTES", 80 * 1024 * 1024)
-        {
+        let additional = (content.len() + redactions.len()) as u64 + 4 * page_size;
+        if !reclaim_body_pages(db, Some(audit), additional)? {
             bail!("audit_body_budget");
         }
         let changed=db.execute("INSERT OR IGNORE INTO audit_body_chunks(audit_id,snapshot_id,start,end,content,redactions)
             SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM audit_snapshots WHERE audit_id=? AND id=? AND json_extract(data,'$.state')='receiving')
             AND ?=(SELECT coalesce(max(end),0) FROM audit_body_chunks WHERE audit_id=? AND snapshot_id=?)",
-            params![audit,id,value["start"].as_u64(),value["end"].as_u64(),content,value["redactions"].to_string(),audit,id,value["start"].as_u64(),audit,id])?;
+            params![audit,id,value["start"].as_u64(),value["end"].as_u64(),content,redactions,audit,id,value["start"].as_u64(),audit,id])?;
         if changed == 0 {
             bail!("immutable_or_noncontiguous_body_chunk");
         }
@@ -847,6 +875,98 @@ mod tests {
             "inspectionStatus":"complete","severity":"high","findingCount":1,
             "findings":[{"id":format!("f-{id}"),"requestId":id,"atMs":chrono::Utc::now().timestamp_millis(),
                 "category":"destructive_action","severity":"high","confidence":"high","evidenceStage":"tool_call_proposed"}]})
+    }
+
+    #[test]
+    fn body_budget_reclaims_completed_records_before_disk_maintenance_threshold() {
+        for restart in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("audit.sqlite3");
+            let mut db = open(&path, true).unwrap();
+            persist(&mut db, record("old", "completed")).unwrap();
+            persist_body(&db, "old", &json!({"id":"request","state":"receiving"})).unwrap();
+            // Reproduce an existing database between the old 80 MiB write limit
+            // and the 96 MiB disk-maintenance threshold, using normal-size pages.
+            let tx = db.transaction().unwrap();
+            let mut offset = 0;
+            {
+                let content = "x".repeat(crate::streaming::PAGE);
+                let mut insert = tx.prepare("INSERT INTO audit_body_chunks(audit_id,snapshot_id,start,end,content,redactions) VALUES('old','request',?,?,?,'[]')").unwrap();
+                while used_bytes(&tx).unwrap() < 84 * 1024 * 1024 {
+                    insert
+                        .execute(params![offset, offset + content.len(), content])
+                        .unwrap();
+                    offset += content.len();
+                }
+            }
+            tx.commit().unwrap();
+            persist_body(
+                &db,
+                "old",
+                &json!({"id":"request","state":"complete","byteLength":offset}),
+            )
+            .unwrap();
+            db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+            assert!(used_bytes(&db).unwrap() > body_budget());
+            assert!(disk_bytes(&path) < BUDGET * 3 / 4);
+            if restart {
+                drop(db);
+                db = open(&path, true).unwrap();
+            }
+            persist(&mut db, record("streaming", "streaming")).unwrap();
+            let mut pending = record("pending", "completed");
+            pending["inspectionStatus"] = json!("pending");
+            persist(&mut db, pending).unwrap();
+            for i in 0..3 {
+                let id = format!("new-{i}");
+                let mut current = record(&id, "completed");
+                current["inspectionStatus"] = json!("running");
+                persist(&mut db, current).unwrap();
+                persist_body(&db, &id, &json!({"id":"request","state":"receiving"})).unwrap();
+                persist_body(
+                    &db,
+                    &id,
+                    &json!({"id":"request","start":0,"end":5,"content":"hello","redactions":[]}),
+                )
+                .unwrap();
+                persist_body(
+                    &db,
+                    &id,
+                    &json!({"id":"request","state":"complete","byteLength":5}),
+                )
+                .unwrap();
+                persist(&mut db, record(&id, "completed")).unwrap();
+                assert_eq!(
+                    read_body_page(&db, &id, "request", 0).unwrap()["chunks"][0]["content"],
+                    "hello"
+                );
+            }
+            assert!(used_bytes(&db).unwrap() < body_budget());
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM audit_body_chunks WHERE audit_id='old'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM audit WHERE id IN ('streaming','pending')",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                2
+            );
+        }
     }
 
     #[test]
