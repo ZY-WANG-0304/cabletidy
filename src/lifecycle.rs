@@ -237,16 +237,21 @@ impl InstanceLock {
         let marker = format!("owner-{}.json", uuid::Uuid::new_v4());
         loop {
             if fs::symlink_metadata(&paths.lock).await.is_ok() {
-                let mut read =
-                    match crate::fsutil::retry_sharing(|| fs::read_dir(&paths.lock)).await {
-                        Ok(read) => read,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(e.into()),
-                    };
-                let mut names = Vec::new();
-                while let Some(e) = read.next_entry().await? {
-                    names.push(e.file_name().to_string_lossy().into_owned());
-                }
+                // Windows keeps removed directories pending while enumeration handles are open.
+                let names = match crate::fsutil::retry_sharing(|| async {
+                    let mut read = fs::read_dir(&paths.lock).await?;
+                    let mut names = Vec::new();
+                    while let Some(entry) = read.next_entry().await? {
+                        names.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                    Ok(names)
+                })
+                .await
+                {
+                    Ok(names) => names,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e).context("read daemon lock"),
+                };
                 let generation = names.first().filter(|n| {
                     names.len() == 1
                         && (n.as_str() == "owner.json"
@@ -266,11 +271,12 @@ impl InstanceLock {
                     Value::Null
                 };
                 let state = inspect(&owner).await;
-                let metadata = match fs::metadata(&paths.lock).await {
-                    Ok(m) => m,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e.into()),
-                };
+                let metadata =
+                    match crate::fsutil::retry_sharing(|| fs::metadata(&paths.lock)).await {
+                        Ok(m) => m,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e).context("stat daemon lock"),
+                    };
                 let stale = SystemTime::now()
                     .duration_since(metadata.modified()?)
                     .unwrap_or_default()
