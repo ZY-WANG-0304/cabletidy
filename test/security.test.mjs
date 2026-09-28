@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
-import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const secret = "known-security-secret-value";
 const dangerous = "rm -rf --no-preserve-root /";
@@ -26,8 +26,15 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
   await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-security-"));
   const paths = getPaths(home);
+  let app;
+  t.after(async () => {
+    upstream.closeAllConnections();
+    await Promise.all([app?.close(), new Promise(resolve => upstream.close(resolve))]);
+    await fs.rm(home, { recursive: true, force: true });
+  });
   if (unavailable) await fs.mkdir(path.join(home, "audit.sqlite3"));
-  let app = await createApplication({ paths });
+  const applicationOptions = { paths, loadCodexCatalog: async () => catalogFixture() };
+  app = await createApplication(applicationOptions);
   const model = claude ? "claude-sonnet-4-6" : "gpt-5.5";
   const provider = claude ? "cabletidy_claude-main" : "cabletidy_relay";
   const endpoint = claude ? "claude-main/v1/messages" : "relay/v1/responses";
@@ -41,11 +48,6 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
   });
   const commit = await call("api/v1/config/commit", { baseRevision: 0, config, upstreamSecrets: { relay: secret } });
   assert.equal(commit.status, 200, await commit.text());
-  t.after(async () => {
-    upstream.closeAllConnections();
-    await Promise.all([app.close(), new Promise(resolve => upstream.close(resolve))]);
-    await fs.rm(home, { recursive: true, force: true });
-  });
   return {
     call, calls, home, provider, model, endpoint, upstream,
     request: (body = {}, options) => call(endpoint, { model, max_tokens: 100, ...body }, options),
@@ -62,7 +64,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
       }
       assert.fail("Audit state did not settle");
     },
-    async restart(env) { await app.close(); app = await createApplication({ paths, env }); },
+    async restart(env) { await app.close(); app = await createApplication({ ...applicationOptions, env }); },
   };
 }
 
