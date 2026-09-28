@@ -981,6 +981,10 @@ const SECURITY_LABELS = {
 
 function securityLabel(group, value) { return SECURITY_LABELS[group]?.[value] || value || "未知"; }
 function securityTime(value) { return value ? new Date(value).toLocaleString(undefined, { hourCycle: "h23", timeZoneName: "short" }) : "尚无记录"; }
+function securityInspectionLabel(record, state = record.inspectionStatus) {
+  return state === "failed" && record.inspectionProgress?.active
+    ? "部分步骤失败，仍在检测" : securityLabel("inspection", state);
+}
 function securityBadge(value) {
   const level = Object.hasOwn(SECURITY_LABELS.severity, value) ? value : "informational";
   return `<span class="security-badge severity-${level}">${esc(securityLabel("severity", value))}</span>`;
@@ -1103,7 +1107,7 @@ function renderSecurity() {
 function securityRow(item) {
   return `<tr><td data-label="配置 / 时间"><div>${esc(item.providerId || "本地管理")}</div><span class="table-meta">${esc(securityTime(item.at))}</span></td>
     <td data-label="操作 / 模型"><div>${esc(securityLabel("action", item.action))}</div><span class="table-meta">${esc(item.clientModelId || securityLabel("kind", item.kind))}</span></td>
-    <td data-label="最高风险">${securityBadge(item.severity)}</td><td data-label="风险发现"><span>${esc(item.findingCount || 0)} 项</span></td><td data-label="结果 / 检查"><div>${esc(securityLabel("outcome", item.outcome))}</div><span class="table-meta">${esc(securityLabel("inspection", item.inspectionStatus))}</span></td>
+    <td data-label="最高风险">${securityBadge(item.severity)}</td><td data-label="风险发现"><span>${esc(item.findingCount || 0)} 项</span></td><td data-label="结果 / 检查"><div>${esc(securityLabel("outcome", item.outcome))}</div><span class="table-meta">${esc(securityInspectionLabel(item))}</span></td>
     <td data-label="详情"><button class="mini-button" data-action="security-detail" data-id="${esc(item.id)}">查看详情</button></td></tr>`;
 }
 
@@ -1232,8 +1236,8 @@ function renderSecurityDetail(record) {
   }
   return `<section class="panel security-detail" aria-label="审计详情"><div class="panel-header"><h2>请求与操作记录</h2>${securityBadge(record.severity)}</div><div class="panel-body">
     <dl class="security-facts">${facts.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
-    <p>${esc(securityLabel("inspection", record.inspectionStatus))}。${record.kind === "request" ? "工具真实执行状态：未知；工具结果来自客户端报告。" : "记录 CableTidy 观察到的本地操作结果。"}</p>
-    ${record.inspectionProgress ? `<p role="status">检测进度：${esc(record.inspectionProgress.processedBytes || 0)} / ${esc(record.inspectionProgress.observedBytes || record.observedBytes || 0)} 字节 · ${esc(securityLabel("inspection", record.inspectionProgress.state))}${record.inspectionProgress.phase === "receiving" ? "（正文接收中）" : record.inspectionProgress.phase === "queued" ? "（等待检测资源）" : ""}</p>` : ""}
+    <p>${esc(securityInspectionLabel(record))}。${record.kind === "request" ? "工具真实执行状态：未知；工具结果来自客户端报告。" : "记录 CableTidy 观察到的本地操作结果。"}</p>
+    ${record.inspectionProgress ? `<p role="status">检测进度：${esc(record.inspectionProgress.processedBytes || 0)} / ${esc(record.inspectionProgress.observedBytes || record.observedBytes || 0)} 字节 · ${esc(securityInspectionLabel(record, record.inspectionProgress.state))}${record.inspectionProgress.phase === "receiving" ? "（正文接收中）" : record.inspectionProgress.phase === "queued" ? "（等待检测资源）" : ""}</p>` : ""}
     ${record.coverageReasons?.length ? `<div class="notice warning">覆盖不足：${record.coverageReasons.map(reason => esc(securityLabel("reason", reason))).join("；")}</div>` : ""}
     ${record.coverageGaps?.length ? `<details><summary>正文缺口范围</summary><pre class="code-preview">${esc(JSON.stringify(record.coverageGaps, null, 2))}</pre></details>` : ""}
     ${record.lostWrites ? `<p>记录到 ${esc(record.lostWrites)} 次审计写入缺口。</p>` : ""}

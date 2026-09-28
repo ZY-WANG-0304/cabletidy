@@ -62,8 +62,7 @@ impl Security {
         metadata["severity"] = json!("informational");
         metadata["findingCount"] = json!(0);
         metadata["findings"] = json!([]);
-        metadata["inspectionProgress"] =
-            json!({"state":"pending","phase":"receiving","processedBytes":0,"observedBytes":0});
+        metadata["inspectionProgress"] = json!({"state":"pending","phase":"receiving","active":true,"processedBytes":0,"observedBytes":0});
         let audit = Arc::new(Audit {
             store: self.store.clone(),
             workers: self.workers.clone(),
@@ -329,6 +328,8 @@ impl Audit {
                 failed_record["inspectionStatus"] = json!("failed");
                 failed_record["coverageReasons"] = json!(["inspection_worker_failed"]);
                 failed_record["inspectionProgress"]["state"] = json!("failed");
+                failed_record["inspectionProgress"]["active"] = json!(false);
+                failed_record["inspectionProgress"]["phase"] = json!("finished");
                 failed_store.write(failed_record);
             }
             jobs.fetch_sub(1, Ordering::AcqRel);

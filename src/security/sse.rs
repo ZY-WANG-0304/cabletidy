@@ -138,12 +138,12 @@ impl Streams {
         item: &Node,
         edits: &mut Edits,
         finalized: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let info = streaming::index(source, Some(item))?;
         let kind = text(&info.values["type"]);
         if matches!(kind, "function_call" | "custom_tool_call" | "tool_use") {
             if self.groups.contains_key(key) {
-                self.finish(p, key, true)?;
+                self.finish(p, key, finalized)?;
             }
             self.start(key, kind, text(&info.values["name"]))?;
             let field = if kind == "function_call" {
@@ -164,7 +164,6 @@ impl Streams {
             if kind == "thinking" {
                 p.rules.reasons.insert("reasoning_content_not_inspected");
             }
-            self.start(key, "text", "")?;
             if let Some(part) = node(
                 &info,
                 if kind == "thinking" {
@@ -173,13 +172,79 @@ impl Streams {
                     "text"
                 },
             ) {
-                self.append(key, source, part, edits)?;
+                self.text_item(p, key, source, part, edits, finalized)?;
             }
-            if finalized {
-                self.finish(p, key, true)?;
+        } else if matches!(kind, "message" | "reasoning") {
+            if kind == "reasoning" {
+                p.rules.reasons.insert("reasoning_content_not_inspected");
             }
+            for field in ["content", "summary"] {
+                if let Some(parts) = node(&info, field) {
+                    let parts = streaming::index(source, Some(parts))?;
+                    for (i, (_, _, part)) in parts.nodes.iter().enumerate() {
+                        if !self.response_part(p, key, i as u64, source, part, edits, finalized)? {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+    fn text_item(
+        &mut self,
+        p: &mut Pipeline,
+        key: &str,
+        source: &Arc<Spool>,
+        part: &Node,
+        edits: &mut Edits,
+        finalized: bool,
+    ) -> Result<()> {
+        // A new initial value must not flush an unfinished credential as complete.
+        // Final values are separate snapshots of the same logical text channel.
+        self.finish(p, key, finalized)?;
+        self.start(key, "text", "")?;
+        self.append(key, source, part, edits)?;
+        if finalized {
+            self.finish(p, key, true)?;
         }
         Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn response_part(
+        &mut self,
+        p: &mut Pipeline,
+        output: &str,
+        index: u64,
+        source: &Arc<Spool>,
+        part: &Node,
+        edits: &mut Edits,
+        finalized: bool,
+    ) -> Result<bool> {
+        let info = streaming::index(source, Some(part))?;
+        let channel = match text(&info.values["type"]) {
+            "text" | "output_text" => "text",
+            "summary_text" => "summary",
+            "reasoning_text" => "reasoning",
+            _ => return Ok(false),
+        };
+        if channel != "text" {
+            p.rules.reasons.insert("reasoning_content_not_inspected");
+        }
+        let Some(text) = node(&info, "text").filter(|n| n.kind == b'"') else {
+            return Ok(false);
+        };
+        self.text_item(
+            p,
+            &format!("{output}/{channel}/{index}"),
+            source,
+            text,
+            edits,
+            finalized,
+        )?;
+        Ok(true)
     }
     fn event(
         &mut self,
@@ -205,14 +270,44 @@ impl Streams {
             match kind {
                 "response.output_item.added" | "response.output_item.done" => {
                     if let Some(item) = node(&info, "item") {
-                        self.item(
+                        if !self.item(
                             p,
                             &key,
                             &data.payload,
                             item,
                             &mut edits,
                             kind.ends_with("done"),
-                        )?;
+                        )? {
+                            p.rules.reasons.insert("unsupported_response_item");
+                            hidden_payload = !kind.ends_with("done");
+                        }
+                    }
+                }
+                "response.content_part.added"
+                | "response.content_part.done"
+                | "response.reasoning_summary_part.added"
+                | "response.reasoning_summary_part.done" => {
+                    let index = if kind.starts_with("response.reasoning_summary_part") {
+                        "summary_index"
+                    } else {
+                        "content_index"
+                    };
+                    let supported = if let Some(part) = node(&info, "part") {
+                        self.response_part(
+                            p,
+                            &key,
+                            info.values[index].as_u64().unwrap_or(0),
+                            &data.payload,
+                            part,
+                            &mut edits,
+                            kind.ends_with("done"),
+                        )?
+                    } else {
+                        false
+                    };
+                    if !supported {
+                        p.rules.reasons.insert("unsupported_response_item");
+                        hidden_payload = true;
                     }
                 }
                 "response.function_call_arguments.delta"
@@ -293,7 +388,10 @@ impl Streams {
                 }
                 "content_block_start" => {
                     if let Some(item) = node(&info, "content_block") {
-                        self.item(p, &content, &data.payload, item, &mut edits, false)?;
+                        if !self.item(p, &content, &data.payload, item, &mut edits, false)? {
+                            p.rules.reasons.insert("unsupported_response_item");
+                            hidden_payload = true;
+                        }
                     }
                 }
                 "content_block_delta" => {
@@ -322,22 +420,32 @@ impl Streams {
                     }
                 }
                 "content_block_stop" => self.finish(p, &content, true)?,
-                "response.completed" | "response.failed" | "response.incomplete" => {
-                    self.terminal = true;
-                    self.error = kind != "response.completed";
+                "response.created"
+                | "response.in_progress"
+                | "response.completed"
+                | "response.failed"
+                | "response.incomplete" => {
+                    let terminal = !matches!(kind, "response.created" | "response.in_progress");
+                    if terminal {
+                        self.terminal = true;
+                        self.error = kind != "response.completed";
+                    }
                     if let Some(response) = node(&info, "response") {
                         let response = streaming::index(&data.payload, Some(response))?;
                         if let Some(output) = node(&response, "output") {
                             let output = streaming::index(&data.payload, Some(output))?;
                             for (i, (_, _, item)) in output.nodes.iter().enumerate() {
-                                self.item(
+                                if !self.item(
                                     p,
                                     &format!("output/{i}"),
                                     &data.payload,
                                     item,
                                     &mut edits,
-                                    true,
-                                )?;
+                                    kind == "response.completed",
+                                )? {
+                                    p.rules.reasons.insert("unsupported_response_item");
+                                    hidden_payload = kind != "response.completed";
+                                }
                             }
                         }
                     }
@@ -347,13 +455,7 @@ impl Streams {
                     self.terminal = true;
                     self.error = true;
                 }
-                "message_start"
-                | "message_delta"
-                | "response.created"
-                | "response.in_progress"
-                | "response.content_part.added"
-                | "response.content_part.done"
-                | "ping" => {}
+                "message_start" | "message_delta" | "ping" => {}
                 _ => {
                     p.rules.reasons.insert("unsupported_response_event");
                     hidden_payload = true;
@@ -439,7 +541,7 @@ pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, complete: bool) -> R
             p.rules.reasons.insert("incomplete_stream_fragment");
         }
         for key in streams.groups.keys().cloned().collect::<Vec<_>>() {
-            streams.finish(p, &key, complete && streams.terminal)?;
+            streams.finish(p, &key, complete && streams.terminal && !streams.error)?;
         }
         Ok(())
     })();

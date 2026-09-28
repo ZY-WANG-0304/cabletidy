@@ -63,7 +63,7 @@ impl Pipeline {
         } else {
             state
         });
-        self.record["inspectionProgress"] = json!({"state":self.record["inspectionStatus"],"processedBytes":self.inspected.min(self.record["observedBytes"].as_u64().unwrap_or(self.inspected)),"observedBytes":self.record["observedBytes"],"phase":"detecting","updatedAt":crate::config::now()});
+        self.record["inspectionProgress"] = json!({"state":self.record["inspectionStatus"],"active":true,"processedBytes":self.inspected.min(self.record["observedBytes"].as_u64().unwrap_or(self.inspected)),"observedBytes":self.record["observedBytes"],"phase":"detecting","updatedAt":crate::config::now()});
         for batch in findings.chunks(16) {
             let mut record = self.record.clone();
             record["findings"] = json!(batch);
@@ -89,6 +89,12 @@ impl Pipeline {
             self.record["inspectionProgress"]["state"] = json!("failed");
         }
         self.record["coverageReasons"] = json!(self.rules.reasons);
+        // Failed stages can be followed by more body work. Release retention
+        // protection only after all final finding batches have been queued.
+        if matches!(state, "complete" | "skipped") {
+            self.record["inspectionProgress"]["active"] = json!(false);
+            self.record["inspectionProgress"]["phase"] = json!("finished");
+        }
         self.store.write_analysis(self.record.clone());
     }
     pub(super) fn findings(

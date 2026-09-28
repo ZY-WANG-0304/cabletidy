@@ -310,7 +310,7 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
     if recover {
         // Only records left by a previous process are recovered as unknown.
         let mut stmt =
-            db.prepare("SELECT id, data FROM audit WHERE outcome IN ('started','streaming') OR inspection IN ('pending','running')")?;
+            db.prepare("SELECT id, data FROM audit WHERE outcome IN ('started','streaming') OR inspection IN ('pending','running') OR json_extract(data,'$.inspectionProgress.active')=1")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -321,15 +321,24 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
                 record["outcome"] = json!("unknown");
             }
             record["inspectionProgress"]["state"] = json!("failed");
-            record["inspectionStatus"] = json!("partial");
+            record["inspectionProgress"]["active"] = json!(false);
+            record["inspectionProgress"]["phase"] = json!("finished");
+            if record["inspectionStatus"] != "failed" {
+                record["inspectionStatus"] = json!("partial");
+            }
             let mut reasons = config::array(&record["coverageReasons"]).to_vec();
             if !reasons.contains(&json!("daemon_restarted")) {
                 reasons.push(json!("daemon_restarted"));
             }
             record["coverageReasons"] = json!(reasons);
             db.execute(
-                "UPDATE audit SET outcome=?, inspection='partial', data=? WHERE id=?",
-                params![record["outcome"].as_str(), record.to_string(), id],
+                "UPDATE audit SET outcome=?, inspection=?, data=? WHERE id=?",
+                params![
+                    record["outcome"].as_str(),
+                    record["inspectionStatus"].as_str(),
+                    record.to_string(),
+                    id
+                ],
             )?;
         }
         db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.state','gap','$.gapReason','daemon_restarted') WHERE json_extract(data,'$.state')='receiving'",[])?;
@@ -363,7 +372,7 @@ fn used_bytes(db: &Connection) -> Result<u64> {
 
 fn prune_completed(db: &Connection, protected: Option<&str>) -> Result<usize> {
     Ok(db.execute(
-        "DELETE FROM audit WHERE seq IN (SELECT seq FROM audit WHERE outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND (?1 IS NULL OR id != ?1) ORDER BY seq LIMIT 10)",
+        "DELETE FROM audit WHERE seq IN (SELECT seq FROM audit WHERE outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND coalesce(json_extract(data,'$.inspectionProgress.active'),0)=0 AND (?1 IS NULL OR id != ?1) ORDER BY seq LIMIT 10)",
         [protected],
     )?)
 }
@@ -381,7 +390,7 @@ fn reclaim_body_pages(db: &Connection, protected: Option<&str>, additional: u64)
 
 fn maintain(db: &Connection, path: &Path) -> Result<()> {
     let cutoff = chrono::Utc::now().timestamp_millis() - RETENTION_DAYS * 86_400_000;
-    db.execute("DELETE FROM audit WHERE at < ? AND outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running')", [cutoff])?;
+    db.execute("DELETE FROM audit WHERE at < ? AND outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND coalesce(json_extract(data,'$.inspectionProgress.active'),0)=0", [cutoff])?;
     reclaim_body_pages(db, None, 0)?;
     db.execute_batch("PRAGMA incremental_vacuum(2048); PRAGMA wal_checkpoint(TRUNCATE);")?;
     if disk_bytes(path) > BUDGET * 3 / 4 {
@@ -967,6 +976,86 @@ mod tests {
                 2
             );
         }
+    }
+
+    #[test]
+    fn failed_but_active_inspections_keep_findings_and_bodies_during_all_retention_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let mut db = open(&path, true).unwrap();
+        let mut failed = record("active", "completed");
+        failed["atMs"] = json!(chrono::Utc::now().timestamp_millis() - 31 * 86_400_000);
+        failed["inspectionStatus"] = json!("failed");
+        failed["inspectionProgress"] = json!({"state":"failed","phase":"detecting","active":true});
+        persist(&mut db, failed.clone()).unwrap();
+        persist_body(&db, "active", &json!({"id":"request","state":"receiving"})).unwrap();
+        persist_body(
+            &db,
+            "active",
+            &json!({"id":"request","start":0,"end":8,"content":"evidence","redactions":[]}),
+        )
+        .unwrap();
+        assert_eq!(prune_completed(&db, Some("another-request")).unwrap(), 0);
+        maintain(&db, &path).unwrap();
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("active".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(detail["record"]["findingCount"], 1);
+        assert_eq!(
+            read_body_page(&db, "active", "request", 0).unwrap()["chunks"][0]["content"],
+            "evidence"
+        );
+        failed["inspectionProgress"]["active"] = json!(false);
+        persist(&mut db, failed).unwrap();
+        assert_eq!(prune_completed(&db, Some("another-request")).unwrap(), 1);
+        assert_eq!(
+            read_body_page(&db, "active", "request", 0).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn restart_ends_failed_active_inspections_without_losing_prior_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let mut db = open(&path, true).unwrap();
+        let mut failed = record("failed-active", "completed");
+        failed["inspectionStatus"] = json!("failed");
+        failed["inspectionProgress"] = json!({"state":"failed","phase":"detecting","active":true});
+        failed["coverageReasons"] = json!(["body_storage_or_processing_failure"]);
+        persist(&mut db, failed).unwrap();
+        persist_body(
+            &db,
+            "failed-active",
+            &json!({"id":"response","state":"receiving"}),
+        )
+        .unwrap();
+        drop(db);
+        let db = open(&path, true).unwrap();
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("failed-active".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(detail["record"]["outcome"], "completed");
+        assert_eq!(detail["record"]["inspectionStatus"], "failed");
+        assert_eq!(detail["record"]["inspectionProgress"]["active"], false);
+        assert_eq!(detail["record"]["inspectionProgress"]["phase"], "finished");
+        assert_eq!(
+            detail["record"]["coverageReasons"],
+            json!(["body_storage_or_processing_failure", "daemon_restarted"])
+        );
+        assert_eq!(detail["record"]["findingCount"], 1);
+        assert_eq!(detail["record"]["bodySnapshots"][0]["state"], "gap");
+        assert_eq!(prune_completed(&db, None).unwrap(), 1);
     }
 
     #[test]

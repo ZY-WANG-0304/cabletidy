@@ -57,7 +57,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
     async waitFor(predicate) {
       for (let i = 0; i < 1500; i++) {
         const result = await this.list("audit", "kind=request");
-        if (predicate(result) && result.items.every(item => !["pending", "running"].includes(item.inspectionStatus))) return result;
+        if (predicate(result) && result.items.every(item => item.inspectionProgress?.active !== true && !["pending", "running"].includes(item.inspectionStatus))) return result;
         await delay(20);
       }
       assert.fail("Audit state did not settle");
@@ -508,6 +508,70 @@ test("reasoning SSE text redacts credentials across interleaved summary and cont
   }
 });
 
+for (const initial of ["content_part", "output_item", "summary_part", "reasoning_item", "response_created", "response_in_progress"]) for (const ending of ["completed", "disconnected", "error", "incomplete"]) {
+  test(`SSE ${initial} initial text joins credential redaction when ${ending}`, async t => {
+    const interrupted = ending !== "completed";
+    const halves = [secret.slice(0, 13), secret.slice(13)];
+    const summary = ["summary_part", "reasoning_item"].includes(initial);
+    const part = text => ({ type: summary ? "summary_text" : "output_text", text });
+    const item = text => summary ? { type: "reasoning", summary: [part(text)] } : { type: "message", content: [part(text)] };
+    const initialText = "visible start " + halves[0];
+    const fullText = initialText + halves[1] + " retained tail";
+    const indices = { output_index: 0, [summary ? "summary_index" : "content_index"]: 0 };
+    const family = summary ? "reasoning_summary_text" : "output_text";
+    const partFamily = summary ? "reasoning_summary_part" : "content_part";
+    const f = await fixture(t, (req, res, body) => {
+      const events = initial.startsWith("response_")
+        ? [{ type: initial === "response_created" ? "response.created" : "response.in_progress", response: { model: body.model, output: [item(initialText)] } }]
+        : ["output_item", "reasoning_item"].includes(initial)
+        ? [{ type: "response.output_item.added", output_index: 0, item: item(initialText) }]
+        : [{ type: `response.${partFamily}.added`, ...indices, part: part(initialText) }];
+      if (!interrupted) events.push(
+        { type: `response.${family}.delta`, ...indices, delta: halves[1] + " retained tail" },
+        { type: `response.${family}.done`, ...indices, text: fullText },
+        { type: `response.${partFamily}.done`, ...indices, part: part(fullText) },
+        { type: "response.output_item.done", output_index: 0, item: item(fullText) },
+        { type: "response.completed", response: { model: body.model, output: [item(fullText)] } },
+      );
+      if (ending === "error") events.push({ type: "error", error: { type: "upstream_error" } });
+      if (ending === "incomplete") events.push({ type: "response.incomplete", response: { model: body.model, output: [item(initialText)] } });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(events.map(event).join(""));
+    }, { passthrough: true });
+    const wire = await (await f.request({ stream: true })).text();
+    assert.ok(wire.includes(halves[0]), "forwarding retains the original content");
+    const outcome = ending === "disconnected" ? "unknown" : interrupted ? "stream_error" : "completed";
+    const audit = (await f.waitFor(r => r.items[0]?.outcome === outcome)).items[0];
+    const record = (await review(f, audit.id)).record;
+    for (const fragment of halves) assert.equal(JSON.stringify(record).includes(fragment), false, fragment);
+    const response = record.bodySnapshots.find(s => s.id === "response");
+    const events = response.text.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => JSON.parse(line.slice(5).trim()));
+    const initialItem = initial.startsWith("response_") ? events[0].response.output[0] : events[0].item;
+    const initialRef = initialItem ? initialItem[summary ? "summary" : "content"][0].text : events[0].part.text;
+    assert.ok(initialRef.contentSnapshotId);
+    const snapshot = record.bodySnapshots.find(s => s.id === initialRef.contentSnapshotId);
+    assert.ok(snapshot, "the initial event points to a retained snapshot");
+    if (interrupted) {
+      assert.equal(record.inspectionStatus, "partial");
+      assert.equal(snapshot.state, "interrupted");
+      assert.ok(record.coverageReasons.includes("incomplete_stream_fragment"));
+    } else {
+      assert.equal(events[1].delta.contentSnapshotId, initialRef.contentSnapshotId);
+      assert.equal(events[1].delta.observedFragmentStart, Buffer.byteLength(initialText));
+      assert.equal(snapshot.body.text, "visible start [REDACTED] retained tail");
+      assert.equal(record.inspectionStatus, summary ? "partial" : "complete");
+      const finding = record.findings.find(f => f.evidence.bodyRef.sourceSnapshotId === snapshot.id);
+      assert.ok(finding);
+      const ref = finding.evidence.bodyRef;
+      assert.equal(Buffer.from(snapshot.text).subarray(ref.start, ref.end).toString(), "[REDACTED]");
+    }
+    for (const name of await fs.readdir(f.home)) if (name.startsWith("audit.sqlite3")) {
+      const bytes = await fs.readFile(path.join(f.home, name));
+      for (const fragment of halves) assert.equal(bytes.includes(Buffer.from(fragment)), false, `${name}: ${fragment}`);
+    }
+  });
+}
+
 test("unknown SSE fragments are hidden with an explicit coverage gap instead of retaining credential pieces", async t => {
   const halves = [secret.slice(0, 13), secret.slice(13)];
   const f = await fixture(t, (req, res, body) => {
@@ -590,6 +654,57 @@ test("body capacity reclaims completed history after restart and during subseque
   assert.equal((await f.call(`api/v1/security/audit/${ids[0]}`)).status, 404, "live writes also reclaim completed history");
   const status = await (await f.call("api/v1/security/status")).json();
   assert.equal(status.storage.failedWrites, 0);
+});
+
+test("capacity reclamation preserves failed inspections and critical evidence while later bodies are still processing", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body, Array.isArray(body.input)
+    ? [{ type: "output_text", text: "response context ".repeat(1700000) }] : []), { passthrough: true });
+  await f.restart({ CABLETIDY_TEST_AUDIT_BODY_BYTES: String(512 * 1024) });
+  await (await f.request({ input: [
+    { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd: dangerous }) },
+    "request context ".repeat(50000),
+  ] })).text();
+  let first;
+  for (let i = 0; i < 3000; i++) {
+    const list = await f.list("audit", "kind=request");
+    const candidate = list.items[0];
+    const status = await (await f.call("api/v1/security/status")).json();
+    if (candidate?.inspectionStatus === "failed" && candidate.findingCount > 0 && status.pendingInspections === 1) {
+      first = candidate; break;
+    }
+    await delay(10);
+  }
+  assert.ok(first, "observe the first failure while the response is still being processed");
+  const before = (await review(f, first.id)).record;
+  assert.equal(before.severity, "critical");
+  const evidenceId = before.findings[0].evidence.bodyRef.snapshotId;
+  const evidence = before.bodySnapshots.find(s => s.id === evidenceId);
+  assert.ok(evidence);
+  const response = await f.request({ input: "second request ".repeat(14000) });
+  assert.equal(response.status, 200); await response.text();
+  let second;
+  for (let i = 0; i < 3000; i++) {
+    const records = await f.list("audit", "kind=request");
+    second = records.items.find(r => r.id !== first.id);
+    if (second && second.inspectionProgress?.active !== true && !["pending", "running"].includes(second.inspectionStatus)) break;
+    await delay(10);
+  }
+  assert.ok(second);
+  const status = await (await f.call("api/v1/security/status")).json();
+  assert.equal(status.pendingInspections, 1, "the second inspection finishes before the first response pass");
+  const during = await f.call(`api/v1/security/audit/${first.id}`);
+  assert.equal(during.status, 200, "another request cannot evict an unfinished failed inspection");
+  const active = (await during.json()).record;
+  assert.equal(active.inspectionProgress.active, true);
+  assert.equal(active.severity, "critical");
+  assert.deepEqual(active.findings, before.findings);
+  await f.waitFor(r => r.items.some(item => item.id === first.id));
+  const after = (await review(f, first.id)).record;
+  assert.equal(after.inspectionProgress.active, false);
+  assert.equal(after.inspectionStatus, "failed");
+  assert.equal(after.severity, "critical");
+  assert.deepEqual(after.findings, before.findings);
+  assert.deepEqual(after.bodySnapshots.find(s => s.id === evidenceId), evidence);
 });
 
 test("shared capture and storage budgets report gaps without blocking forwarded responses", async t => {

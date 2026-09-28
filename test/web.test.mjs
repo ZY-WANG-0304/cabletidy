@@ -245,6 +245,29 @@ test("security reads distinguish empty results from failures and refresh visible
   assert.equal(app.read("state.security.result"), null);
 });
 
+test("failed audit stages remain visibly active until the inspection task finishes", async () => {
+  let active = true;
+  const app = await controller(undefined, { onSecurity(url) {
+    const record = { id: "one", kind: "request", outcome: "completed", severity: "critical", inspectionStatus: "failed", findings: [],
+      inspectionProgress: { state: "failed", active, phase: active ? "detecting" : "finished", processedBytes: 128, observedBytes: 4096 } };
+    if (url.includes("/audit/one")) return { body: { record } };
+    if (url.includes("/audit?")) return { body: { items: [record], total: 1 } };
+  } });
+  app.read('state.page = "security"');
+  await app.read("loadSecurity()");
+  assert.match(app.read("renderSecurity()"), /部分步骤失败，仍在检测/);
+  await app.action("security-detail", { dataset: { id: "one" } });
+  assert.match(app.read("renderSecurityDetailPage()"), /检测进度：128 \/ 4096 字节 · 部分步骤失败，仍在检测/);
+  active = false;
+  await app.action("refresh", {});
+  assert.match(app.read("renderSecurityDetailPage()"), /检测失败/);
+  assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /仍在检测/);
+  await app.action("security-back", {});
+  await app.action("refresh", {});
+  assert.match(app.read("renderSecurity()"), /检测失败/);
+  assert.doesNotMatch(app.read("renderSecurity()"), /仍在检测/);
+});
+
 test("late security responses cannot replace a newer filter result", async () => {
   let release;
   const app = await controller(undefined, { onSecurity(url) {

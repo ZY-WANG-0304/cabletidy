@@ -320,14 +320,14 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 1. 接收时以固定页写入匿名临时文件，内容由每文件随机密钥以 ChaCha20-Poly1305 加密，每页使用独立 nonce；密钥只在内存中。请求路由、模型名改写、流式事件重组均从加密暂存读取，不建立完整明文正文缓冲，不把原始凭据写进临时文件。
 2. 请求结束或中断后进入后台队列。先学习结构化 / 内嵌凭据，再逐段执行原始内容检测与脱敏，只把脱敏文本、判断依据和偏移交给 SQLite worker。跨页模式使用重叠窗口及连续凭据状态；跨 SSE delta 的内容按条目重组后处理。
-3. 规则结果随检查进度分批保存。`inspectionStatus` 为 `pending`、`running`、`complete`、`partial`、`failed` 或管理操作的 `skipped`；`inspectionProgress` 提供 `state`、`phase`、`processedBytes`、`observedBytes`、`updatedAt`。接收阶段总量继续增长；检查结束后已扫描字节与捕获字节对齐，语义覆盖不足仍可为 `partial`。这是经过正文扫描的进度，不能解释为所有语义均被识别。
+3. 规则结果随检查进度分批保存。`inspectionStatus` 为 `pending`、`running`、`complete`、`partial`、`failed` 或管理操作的 `skipped`；`inspectionProgress` 提供 `state`、`phase`、`active`、`processedBytes`、`observedBytes`、`updatedAt`。`active` 从正文接收、排队到全部检测与风险批次完成前均为 `true`，最终更新才设为 `false`、`phase: finished`。某阶段失败后可能继续检测其余正文，因此 `failed` 不代表任务已结束；页面对 `failed + active` 显示“部分步骤失败，仍在检测”。接收阶段总量继续增长；检查结束后已扫描字节与捕获字节对齐，语义覆盖不足仍可为 `partial`。这是经过正文扫描的进度，不能解释为所有语义均被识别。
 4. 保存失败或不可解析内容标明缺口，释放临时文件和预算。完整扫描已保留内容不等于支持所有工具、编码、脚本或模型内部语义。长 URL 认证区或令牌前缀无法在脱敏工作区中确认时保守隐藏，明确记录原因。
 
-临时文件只保存密文，退出后删除；进程重启不能恢复内存中的密钥，因此不能重启续扫未完成的原始正文。正常退出等待后台检测和持久写入完成。强制退出后，未结束请求恢复为 `unknown`；已结束 HTTP 请求保留原结果，未完成的检测标为 `partial`，进度标为失败并增加 `daemon_restarted`；未封口的正文清单标为 `gap`。
+临时文件只保存密文，退出后删除；进程重启不能恢复内存中的密钥，因此不能重启续扫未完成的原始正文。正常退出等待后台检测和持久写入完成。强制退出后，未结束请求恢复为 `unknown`；已结束 HTTP 请求保留原结果，未完成的检测标为 `partial`（已失败的检测保留 `failed`），进度标为失败、`active: false` 并增加 `daemon_restarted`；未封口的正文清单标为 `gap`。已经保存的风险与证据继续保留，任务异常退出也会结束活跃状态。
 
 数据库位于 `CABLETIDY_HOME/audit.sqlite3`，Unix 主库权限 `0600`，Windows 使用用户目录 ACL。`user_version = 3`，事务迁移版本 1 / 2，保留旧记录和快照。`audit` 与 `findings` 一对多；`audit_snapshots` 保存正文清单、语义参数快照或固定范围；`audit_body_chunks` 以 `(audit_id, snapshot_id, start)` 唯一键保存连续段。完成后的清单、段和检测范围不能覆盖，后续 done / 最终输出写入新的快照。删除父审计记录时级联清理关联内容。
 
-到期或接近容量时清理较旧的已完成记录，不清理仍在接收 / 检测的记录来伪装完整覆盖，实际保留期可能短于 30 天。启动维护与正文追加使用同一已用页面阈值；回收后空闲页可立即复用，不必等数据库 / WAL 文件达到另一个阈值。写入当前记录始终受保护；若仅有活跃记录占用预算，则保留失败状态和缺口。数据库损坏或版本过新时保留原文件，不自动删除重建。`failedWrites`、`droppedWrites`、最近成功写入时间及后续 `audit.gap` 摘要记录存储缺口；计数是写入次数，不是请求数。
+到期或接近容量时清理较旧的已完成记录，不清理仍在接收 / 检测的记录来伪装完整覆盖，实际保留期可能短于 30 天。启动维护与正文追加使用同一已用页面阈值；回收后空闲页可立即复用，不必等数据库 / WAL 文件达到另一个阈值。过期和容量清理均独立检查持久化的 `inspectionProgress.active`；即使 HTTP 已完成、某阶段为 `failed`，任务尚未结束的记录仍不可回收，不限于当前写入的记录。若仅有活跃记录占用预算，则保留失败状态和缺口。旧记录没有该字段时沿用请求结果与检查状态判断。数据库损坏或版本过新时保留原文件，不自动删除重建。`failedWrites`、`droppedWrites`、最近成功写入时间及后续 `audit.gap` 摘要记录存储缺口；计数是写入次数，不是请求数。
 
 审计存储或检测失败不产生通知、阻断或授权动作。代理路由或改写本身无法取得必要暂存资源时属于基础设施失败；例如请求暂存预算耗尽返回 `503 resource_budget_exhausted`，不再返回基于 8 MiB 的 `413`。这与风险等级无关。
 
@@ -370,7 +370,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 `finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向脱敏标记，并附 `matchKind: redaction`，检测快照仍保留其周围上下文。其他风险的高亮可表示检测窗口或语义参数，凭据只能看到脱敏证据，无法还原秘密值。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
 
-流式事件的 `data` 中，原始参数 / 文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。这是网关观察片段到重组快照的关联；观察片段偏移不是脱敏正文偏移，不能用于正文高亮。重组快照保存完整脱敏参数 / 文本，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件内容隐藏并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已安全脱敏的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；中断的尾部可能隐藏以避免落盘半个凭据。
+流式事件的 `data` 中，原始参数、初始文本和后续文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。`response.content_part.added`、`response.reasoning_summary_part.added`、初始输出项及响应对象中的文本，按同一输出 / 内容索引加入后续 delta 的重组通道；非空初始文本不能逐事件提前落盘。done / 最终对象保留为独立快照，初始文本后中断则隐藏无法确认完整性的末尾；若新初始值替换了尚未结束的旧通道，旧通道按不完整内容封口。这是网关观察片段到重组快照的关联；观察片段偏移不是脱敏正文偏移，不能用于正文高亮。重组快照保存完整脱敏参数 / 文本，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件内容隐藏并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已安全脱敏的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；中断的尾部可能隐藏以避免落盘半个凭据。
 
 `response.reasoning_summary_text.delta/done` 和 `response.reasoning_text.delta/done` 同样先重组再脱敏，分别按输出索引与摘要 / 内容索引隔离，交错分片不会混入其他条目。推理文本仍执行凭据检查与精确定位，但推理语义标记 `reasoning_content_not_inspected`。未知事件或未知 Messages delta 的 payload 整体隐藏为 `[REDACTED]`，正文页以 `unsupported_stream_fragment` 标注位置，记录带 `unsupported_response_event`；隐藏本身不产生凭据风险发现，也不改变转发给客户端的内容。
 
@@ -394,6 +394,8 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 补充验证覆盖超过 8 MiB 请求、1 MiB 之后的风险、超长工具参数与 SSE 事件、9,000 多个节点、超过 32 个 finding、密文暂存及认证校验、跨页 / 跨事件凭据、资源预算耗尽仍转发可转发的响应、按页加载和过期正文请求防覆盖。
 
 Review 回归覆盖交错的推理摘要 / 推理文本分片、未知片段与中断尾部不写入明文凭据、正文定位对应真实脱敏标记、约 84 MiB 已用页面且磁盘文件未到 96 MiB 时的在线 / 重启容量回收、活跃记录保护，以及同一调用从中风险升级为严重风险后所有参数版本的独立证据和最高等级。
+
+另覆盖非空初始文本与后续 delta 跨边界的凭据、初始文本后断连或收到 error / incomplete 终止事件、初始输出项内嵌文本，以及请求 A 已保存严重风险并出现阶段失败、仍在处理长响应时，请求 B 触发容量回收的并发场景。验证 A 的风险与证据在检测期间和最终失败后均保持，重启能结束遗留活跃状态，页面区分阶段失败与任务结束。
 
 `cargo fmt --check` 与严格 Clippy 检查为配套验证。自动化使用隔离临时目录与模拟上游，不访问真实客户端配置或真实账户；生产上游的扩展事件和平台差异仍需按实际接入验证。
 
