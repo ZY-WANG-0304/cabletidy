@@ -290,7 +290,8 @@ impl InstanceLock {
             ensure_dir(&staged).await?;
             let result = async {
                 crate::config::write_json(&staged.join(&marker), &identity).await?;
-                fs::rename(&staged, &paths.lock)
+                // Windows can deny a directory rename until competing handles close.
+                crate::fsutil::retry_sharing(|| fs::rename(&staged, &paths.lock))
                     .await
                     .context("publish daemon lock")?;
                 Ok::<_, anyhow::Error>(())
