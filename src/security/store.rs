@@ -231,7 +231,9 @@ impl Store {
         let mut h = self.health.lock().unwrap();
         h["droppedWrites"] = json!(h["droppedWrites"].as_u64().unwrap_or(0) + 1);
         h["lastError"] = json!("audit_queue_limit");
-        h["state"] = json!("degraded");
+        if h["state"] != "unavailable" {
+            h["state"] = json!("degraded");
+        }
     }
 
     pub async fn query(&self, query: Query) -> Result<Value> {
@@ -706,7 +708,11 @@ fn worker(
                 if result.is_err() {
                     let mut h = health.lock().unwrap();
                     h["failedWrites"] = json!(h["failedWrites"].as_u64().unwrap_or(0) + 1);
-                    h["state"] = json!("degraded");
+                    h["state"] = json!(if db.is_some() {
+                        "degraded"
+                    } else {
+                        "unavailable"
+                    });
                     h["lastError"] = json!("body_write_failed");
                 }
                 let _ = done.send(result.is_ok());
@@ -1154,6 +1160,12 @@ mod tests {
         assert!(store.query(Query::parse("").unwrap()).await.is_err());
         assert_eq!(store.status()["state"], "unavailable");
         assert_eq!(store.status()["failedWrites"], 1);
+        assert!(!store.body("lost", json!({"id":"request","state":"receiving"})));
+        assert_eq!(store.status()["state"], "unavailable");
+        assert_eq!(store.status()["failedWrites"], 2);
+        store.write(json!({"oversize":"x".repeat(MAX_RECORD)}));
+        assert_eq!(store.status()["state"], "unavailable");
+        assert_eq!(store.status()["droppedWrites"], 1);
         std::fs::remove_dir(path).unwrap();
         store.write(record("retained", "completed"));
         store.flush().await;
@@ -1162,7 +1174,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["items"][0]["action"], "audit.gap");
-        assert_eq!(result["items"][0]["lostWrites"], 1);
+        assert_eq!(result["items"][0]["lostWrites"], 3);
         assert_eq!(result["storage"]["state"], "degraded");
     }
 

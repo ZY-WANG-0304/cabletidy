@@ -296,12 +296,19 @@ impl InstanceLock {
                 Ok::<_, anyhow::Error>(())
             }
             .await;
-            if result.is_err() {
+            if let Err(error) = result {
+                // The competing owner may release its lock before the metadata check.
+                let contended = error.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+                    )
+                });
                 let _ = fs::remove_dir_all(&staged).await;
-                if fs::metadata(&paths.lock).await.is_ok() {
+                if contended || fs::metadata(&paths.lock).await.is_ok() {
                     continue;
                 }
-                result?;
+                return Err(error);
             }
             let path = paths.lock.clone();
             let heart_path = path.clone();
@@ -508,6 +515,40 @@ mod tests {
         );
         new.release().await.unwrap();
         assert!(!paths.lock.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_short_lived_owners_only_report_lock_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+        let tasks = (0..8).map(|_| {
+            let paths = Paths::new(dir.path().to_owned());
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                let mut errors = Vec::new();
+                for _ in 0..20 {
+                    barrier.wait().await;
+                    match InstanceLock::acquire(&paths).await {
+                        Ok(lock) => {
+                            tokio::task::yield_now().await;
+                            if let Err(error) = lock.release().await {
+                                errors.push(error.to_string());
+                            }
+                        }
+                        Err(error) if error.to_string().starts_with("ELOCKED:") => {}
+                        Err(error) => errors.push(format!("{error:#}")),
+                    }
+                }
+                errors
+            })
+        });
+        for result in futures_util::future::join_all(tasks).await {
+            assert!(
+                result.as_ref().is_ok_and(|errors| errors.is_empty()),
+                "{result:?}"
+            );
+        }
+        assert!(!dir.path().join("daemon.lock").exists());
     }
 
     #[tokio::test]
