@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::fs;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 pub async fn start_time(pid: u32) -> Option<String> {
@@ -48,33 +48,61 @@ pub async fn start_time(pid: u32) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        let script=format!("$ErrorActionPreference='Stop'; (Get-Process -Id {pid}).StartTime.ToUniversalTime().Ticks.ToString()");
-        let out = tokio::time::timeout(
-            Duration::from_secs(5),
-            Command::new(powershell())
-                .creation_flags(0x08000000)
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &script,
-                ])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .ok()?
-        .ok()?;
-        let s = String::from_utf8(out.stdout).ok()?;
-        return out
-            .status
-            .success()
-            .then(|| parse_start_time("win32", &s, ""))
-            .flatten();
+        return windows_start_time(pid).ok().flatten();
     }
     #[allow(unreachable_code)]
     None
+}
+
+#[cfg(windows)]
+fn windows_start_time(pid: u32) -> std::io::Result<Option<String>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INVALID_PARAMETER, FILETIME, STILL_ACTIVE},
+        System::Threading::{
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    };
+
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    // Own the handle so all query and error paths close it without launching a shell.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut exit_code = 0;
+    if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if exit_code != STILL_ACTIVE as u32 {
+        return Ok(None);
+    }
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    // FILETIME starts in 1601; preserve the .NET tick epoch used by existing lock files.
+    Ok(ticks
+        .checked_add(504_911_232_000_000_000)
+        .and_then(|ticks| parse_start_time("win32", &ticks.to_string(), "")))
 }
 
 fn parse_start_time(platform: &str, output: &str, boot: &str) -> Option<String> {
@@ -141,28 +169,19 @@ pub async fn inspect(identity: &Value) -> &'static str {
     }
     #[cfg(windows)]
     {
-        let script = format!(
-            "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{exit 0}} else {{exit 3}}"
-        );
-        if let Ok(Ok(out)) = tokio::time::timeout(
-            Duration::from_secs(5),
-            Command::new(powershell())
-                .creation_flags(0x08000000)
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        {
-            if out.status.code() == Some(3) {
-                return "dead";
-            }
+        match windows_start_time(pid) {
+            Ok(Some(current)) => compare_start_time(&identity["startTime"], &current),
+            Ok(None) => "dead",
+            Err(_) => "unknown",
         }
     }
-    let Some(current) = start_time(pid).await else {
-        return "unknown";
-    };
-    compare_start_time(&identity["startTime"], &current)
+    #[cfg(not(windows))]
+    {
+        let Some(current) = start_time(pid).await else {
+            return "unknown";
+        };
+        compare_start_time(&identity["startTime"], &current)
+    }
 }
 fn compare_start_time(previous: &Value, current: &str) -> &'static str {
     let previous = text(previous);
@@ -459,6 +478,19 @@ mod tests {
         ] {
             assert_eq!(inspect(&json!({"pid":pid})).await, "unknown");
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exited_process_is_dead_while_its_child_handle_is_retained() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(inspect(&json!({"pid":pid})).await, "dead");
+        drop(child);
     }
 
     #[tokio::test]
