@@ -3,7 +3,8 @@ param(
     [ValidateRange(1, 2147483647)][int]$DaemonPid
 )
 $ErrorActionPreference = 'Stop'
-if (-not (Get-Command codex -CommandType Application -ErrorAction SilentlyContinue)) {
+# Missing executables must not trigger a scan of every installed PowerShell module.
+if (-not (Get-Command codex -CommandType Application -ListImported -ErrorAction SilentlyContinue)) {
     [Console]::Error.WriteLine('Cannot find codex in PATH')
     exit 127
 }

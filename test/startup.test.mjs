@@ -236,8 +236,13 @@ test("a stale lock is recovered when its PID belongs to a different process gene
 });
 
 async function startChild(t, paths) {
+  // Restart tests need a port that parallel fixtures will not claim as their default.
+  const reservation = net.createServer();
+  await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
+  const preferredPort = reservation.address().port;
+  await new Promise(resolve => reservation.close(resolve));
   const child = spawn(nativeBinary, ["start"], {
-    env: { ...process.env, CABLETIDY_HOME: paths.home },
+    env: { ...process.env, CABLETIDY_HOME: paths.home, CABLETIDY_PREFERRED_PORT: String(preferredPort) },
     stdio: "ignore",
   });
   const closed = new Promise((resolve, reject) => {
@@ -275,7 +280,7 @@ test("concurrent stale-lock reclaimers preserve the new owner after a killed dae
   await fs.utimes(paths.lock, stale, stale);
   const results = await Promise.allSettled(Array.from({ length: 4 }, () => f.start(paths)));
   const started = results.filter(result => result.status === "fulfilled");
-  assert.equal(started.length, 1);
+  assert.equal(started.length, 1, results.filter(result => result.status === "rejected").map(result => result.reason.stack).join("\n"));
   for (const result of results.filter(result => result.status === "rejected")) {
     assert.equal(result.reason.code, "ELOCKED", result.reason.stack);
   }

@@ -43,6 +43,29 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
   const nodes = new Map();
   let controls = [];
   let persisted = clone(config);
+  const location = new URL(options.url || "http://test/");
+  const historyEntries = [{ url: location.href, state: null }];
+  let historyIndex = 0;
+  let navigation = Promise.resolve();
+  const browserHistory = {
+    get state() { return historyEntries[historyIndex].state; },
+    replaceState(state, unused, url) {
+      if (url !== undefined) location.href = new URL(url, location).href;
+      historyEntries[historyIndex] = { url: location.href, state: clone(state) };
+    },
+    pushState(state, unused, url) {
+      location.href = new URL(url, location).href;
+      historyEntries.splice(++historyIndex, Infinity, { url: location.href, state: clone(state) });
+    },
+    go(delta) {
+      if (!historyEntries[historyIndex + delta]) return;
+      historyIndex += delta;
+      location.href = historyEntries[historyIndex].url;
+      navigation = Promise.all((context.window.listeners.get("popstate") || []).map(handler => handler({ state: this.state })));
+    },
+    back() { this.go(-1); },
+    forward() { this.go(1); },
+  };
   const node = () => ({
     textContent: "", innerHTML: "", hidden: false, disabled: false, dataset: {},
     listeners: new Map(),
@@ -56,9 +79,12 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     append(item) { messages.push(item.textContent); },
   });
   const context = vm.createContext({
+    TextEncoder, TextDecoder,
     configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl, CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES,
     window: {
       ...node(),
+      location, history: browserHistory, scrollX: 0, scrollY: 0,
+      scrollTo({ left = 0, top = 0 }) { this.scrollX = left; this.scrollY = top; },
       confirm(message) { confirmations.push(message); return options.confirmLeave ?? true; },
     },
     document: {
@@ -72,6 +98,12 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     fetch: async (url, request = {}) => {
       const body = request.body ? JSON.parse(request.body) : null;
       requests.push({ url, body });
+      if (url.startsWith("/api/v1/security/")) {
+        const result = await options.onSecurity?.(url) || { body: url.endsWith("/status")
+          ? { mode: "record_only", storage: { state: "ready", retentionDays: 30 } }
+          : { items: [], total: 0, riskRecordCount: 0, findingCount: 0, counts: {}, nextCursor: null, providers: [] } };
+        return { ok: (result.status || 200) < 400, status: result.status || 200, json: async () => result.body };
+      }
       if (url === "/api/v1/config/commit") {
         if (body.baseRevision !== persisted.revision) return {
           ok: false, status: 409, json: async () => ({ error: { message: "配置已在其他窗口变更" } }),
@@ -102,7 +134,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     FormData: class {
       constructor(form) { return new Map(Object.entries(form.fields)); }
     },
-    URL,
+    URL, URLSearchParams,
     CSS: { escape: (value) => value },
     structuredClone,
     setTimeout() {},
@@ -111,6 +143,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
   await setImmediate();
   return {
     messages, requests, confirmations,
+    async back() { browserHistory.back(); await navigation; },
+    async forward() { browserHistory.forward(); await navigation; },
     controls: (items) => { controls = items; },
     node: (selector) => nodes.get(selector),
     persisted: () => clone(persisted),
@@ -144,6 +178,273 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
 function clone(value) {
   return structuredClone(value);
 }
+
+test("security page filters, paginates and renders evidence as text without control actions", async () => {
+  const finding = { id: "finding-one", requestId: "request-one", severity: "high", category: "sensitive_data", ruleId: "SEC-SECRET-001", ruleVersion: "1", evidenceStage: "tool_call_proposed", confidence: "low", inspectionStatus: "partial", outcome: "completed", at: "2026-09-26T10:00:00Z", evidence: { location: '<script>alert("x")</script>' } };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", kind: "request", inspectionStatus: "partial", coverageReasons: ["unsupported_tool"], findings: [finding] } } };
+    if (url.includes("/audit?")) return { body: { items: [{ id: "request-one", severity: "high", kind: "request", action: "model.request", findingCount: 6 }], total: 60, riskRecordCount: 10, findingCount: 60, counts: { high: 60 }, providers: ["retired_provider"], nextCursor: url.includes("cursor=") ? null : "12", storage: { state: "degraded", droppedWrites: 3 } } };
+  } });
+  app.read('navigatePage("security")');
+  await setImmediate();
+  assert.equal(app.read("state.page"), "security");
+  let html = app.read("renderSecurity()");
+  assert.match(html, /仅记录|本轮调用提议/);
+  assert.match(html, /低置信度/);
+  assert.match(html, /审计有记录缺口/);
+  assert.match(html, /retired_provider/);
+  assert.doesNotMatch(html, /data-action="(?:block|approve|notify)/);
+  const form = formNode("security-filter-form", { hours: "168", severity: "high", stage: "tool_call_proposed" });
+  await app.submit(form);
+  assert.ok(app.requests.some(r => r.url === "/api/v1/security/audit?hours=168&severity=high&stage=tool_call_proposed"));
+  await app.action("security-next", { dataset: {} });
+  assert.equal(app.read("state.security.cursor"), "12");
+  await app.action("security-prev", { dataset: {} });
+  assert.equal(app.read("state.security.cursor"), "");
+  await app.action("security-detail", { dataset: { id: "request-one" } });
+  assert.equal(app.read("state.page"), "security-detail");
+  html = app.read("renderSecurityDetailPage()");
+  assert.doesNotMatch(html, /security-filter-form|security-table|security-summary/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /工具真实执行状态：未知/);
+  assert.match(html, /工具语义暂不支持/);
+  await app.action("security-back", {});
+  assert.equal(app.read("state.security.filters.hours"), "168");
+  await app.action("security-reset", { dataset: {} });
+  html = app.read("renderSecurity()");
+  assert.match(html, /审计日志/);
+  assert.match(html, /name="confidence"/);
+  assert.doesNotMatch(html, /security-view|data-view="findings"/);
+  assert.equal(app.read("state.security.filters.hours"), "24");
+});
+
+test("security reads distinguish empty results from failures and refresh visible details", async () => {
+  let fail = false;
+  let outcome = "streaming";
+  const app = await controller(undefined, { onSecurity(url) {
+    if (fail) return { status: 503, body: { error: { message: "审计存储暂不可用" } } };
+    if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", outcome, findings: [] } } };
+  } });
+  app.read('state.page = "security"');
+  await app.read("loadSecurity()");
+  assert.match(app.read("renderSecurity()"), /当前筛选范围内没有审计记录/);
+  await app.action("security-detail", { dataset: { id: "request-one" } });
+  outcome = "completed";
+  await app.action("refresh", {});
+  assert.equal(app.read("state.security.detail.outcome"), "completed");
+  fail = true;
+  await app.action("refresh", {});
+  assert.match(app.read("renderSecurityDetailPage()"), /审计存储暂不可用|返回审计日志/);
+  await app.action("security-back", {});
+  await app.action("refresh", {});
+  const html = app.read("renderSecurity()");
+  assert.match(html, /暂时无法读取记录/);
+  assert.match(html, /最近成功读取/);
+  assert.doesNotMatch(html, /当前筛选范围内没有审计记录|审计存储正常/);
+  assert.equal(app.read("state.security.result"), null);
+});
+
+test("failed audit stages remain visibly active until the inspection task finishes", async () => {
+  let active = true;
+  const app = await controller(undefined, { onSecurity(url) {
+    const record = { id: "one", kind: "request", outcome: "completed", severity: "critical", inspectionStatus: "failed", findings: [],
+      inspectionProgress: { state: "failed", active, phase: active ? "detecting" : "finished", processedBytes: 128, observedBytes: 4096 } };
+    if (url.includes("/audit/one")) return { body: { record } };
+    if (url.includes("/audit?")) return { body: { items: [record], total: 1 } };
+  } });
+  app.read('state.page = "security"');
+  await app.read("loadSecurity()");
+  assert.match(app.read("renderSecurity()"), /部分步骤失败，仍在检测/);
+  await app.action("security-detail", { dataset: { id: "one" } });
+  assert.match(app.read("renderSecurityDetailPage()"), /检测进度：128 \/ 4096 字节 · 部分步骤失败，仍在检测/);
+  active = false;
+  await app.action("refresh", {});
+  assert.match(app.read("renderSecurityDetailPage()"), /检测失败/);
+  assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /仍在检测/);
+  await app.action("security-back", {});
+  await app.action("refresh", {});
+  assert.match(app.read("renderSecurity()"), /检测失败/);
+  assert.doesNotMatch(app.read("renderSecurity()"), /仍在检测/);
+});
+
+test("late security responses cannot replace a newer filter result", async () => {
+  let release;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("hours=1&")) return new Promise(resolve => { release = resolve; });
+    if (url.includes("/audit?")) return { body: { items: [], total: 2 } };
+  } });
+  app.read('state.page = "security"; state.security.filters = { hours: "1", severity: "high" }');
+  const first = app.read("loadSecurity()");
+  app.read('state.security.filters = { hours: "24" }');
+  await app.read("loadSecurity()");
+  release({ body: { items: [], total: 99 } });
+  await first;
+  assert.equal(app.read("state.security.result.total"), 2);
+});
+
+test("audit detail navigation restores filters, pagination and scroll through back and forward", async () => {
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", findings: [] } } };
+    if (url.includes("/audit?")) return { body: { items: [{ id: "request-one" }], total: 60, nextCursor: url.includes("cursor=") ? null : "page-two" } };
+  } });
+  app.read('navigatePage("security")'); await setImmediate();
+  await app.submit(formNode("security-filter-form", { hours: "168", hasRisk: "true", category: "sensitive_data" }));
+  await app.action("security-next", { dataset: {} });
+  app.read('window.scrollTo({ top: 1380, left: 0 })');
+  const listReads = app.requests.filter(r => r.url.includes("/audit?")).length;
+  const checkList = () => {
+    assert.equal(app.read("state.page"), "security");
+    assert.equal(app.read("state.security.filters.category"), "sensitive_data");
+    assert.equal(app.read("state.security.filters.hasRisk"), "true");
+    assert.equal(app.read("state.security.cursor"), "page-two");
+    assert.equal(app.read("state.security.history.length"), 1);
+    assert.equal(app.read("window.scrollY"), 1380);
+    assert.equal(app.requests.filter(r => r.url.includes("/audit?")).length, listReads, "return uses the retained list page");
+    assert.doesNotMatch(app.node("#page-content").innerHTML, /aria-label="审计详情"/);
+  };
+  await app.action("security-detail", { dataset: { id: "request-one" } });
+  assert.equal(app.read("window.location.hash"), "#security/audit/request-one");
+  assert.equal(app.read("window.scrollY"), 0);
+  assert.doesNotMatch(app.node("#page-content").innerHTML, /security-filter-form|security-table/);
+  await app.action("security-back", {}); checkList();
+  await app.forward();
+  assert.equal(app.read("state.page"), "security-detail");
+  assert.equal(app.read("state.security.detail.id"), "request-one");
+  await app.back(); checkList();
+});
+
+test("a direct audit detail URL loads independently and failed reads retain list navigation", async () => {
+  const app = await controller(undefined, { url: "http://test/#security/audit/missing", onSecurity(url) {
+    if (url.includes("/audit/missing")) return { status: 404, body: { error: { message: "记录已清理" } } };
+  } });
+  await setImmediate();
+  assert.equal(app.read("state.page"), "security-detail");
+  assert.match(app.node("#page-content").innerHTML, /记录已清理/);
+  assert.match(app.node("#page-content").innerHTML, /返回审计日志/);
+  assert.doesNotMatch(app.node("#page-content").innerHTML, /security-table|security-filter-form/);
+  await app.action("security-back", {});
+  assert.equal(app.read("state.page"), "security");
+  assert.equal(app.read("window.location.hash"), "#security");
+});
+
+test("old credential windows locate the annotated hit across pages without highlighting context", async () => {
+  const preceding = "x".repeat(90000) + "[REDACTED]" + "x".repeat(41062);
+  const prefix = "普通上下文 ".repeat(4000);
+  const start = 131072 + Buffer.byteLength(prefix);
+  const content = prefix + "[REDACTED] retained context";
+  const ref = { snapshotId: "request", start: 80000, end: start + 100 };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) {
+      const offset = Number(new URL(url, "http://test").searchParams.get("offset"));
+      return { body: offset < 131072
+        ? { chunks: [{ start: 0, end: 131072, content: preceding, redactions: [{ start: 90000, end: 90010, reason: "unsupported_stream_fragment" }] }], offset: 0, nextOffset: 131072 }
+        : { chunks: [{ start: 131072, end: 131072 + Buffer.byteLength(content), content, redactions: [{ start, end: start + 10, reason: "known_credential" }] }], offset: 131072, nextOffset: null } };
+    }
+    if (url.includes("/audit/one")) return { body: { record: { id: "one", bodySnapshots: [{ id: "request" }], findings: [{ id: "secret", ruleId: "SEC-SECRET-001", evidence: { bodyRef: ref } }] } } };
+  } });
+  app.read('state.page = "security"');
+  await app.action("security-detail", { dataset: { id: "one" } });
+  await app.action("security-finding", { dataset: { id: "secret" } });
+  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 3);
+  assert.equal(app.read("state.security.bodySelection.start"), start);
+  assert.equal(app.read("state.security.bodySelection.end"), start + 10);
+  assert.equal(app.read("state.security.detail.findings[0].evidence.bodyRef.start"), 80000, "historical evidence is immutable");
+  assert.match(app.node("#page-content").innerHTML, /<mark[^>]+>\[REDACTED\]<\/mark> retained context/);
+  assert.doesNotMatch(app.node("#page-content").innerHTML, /<mark[^>]+>普通上下文/);
+});
+
+test("missing credential annotations show a location gap instead of highlighting a whole window", async () => {
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: 100, content: "retained context", redactions: [] }], nextOffset: null, gap: true } };
+    if (url.includes("/audit/one")) return { body: { record: { id: "one", bodySnapshots: [{ id: "request" }], findings: [{ id: "secret", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "request", start: 0, end: 100 } } }] } } };
+  } });
+  app.read('state.page = "security"');
+  await app.action("security-detail", { dataset: { id: "one" } });
+  await app.action("security-finding", { dataset: { id: "secret" } });
+  assert.match(app.node("#page-content").innerHTML, /未保留可定位的凭据命中点/);
+  assert.doesNotMatch(app.node("#page-content").innerHTML, /<mark/);
+});
+
+test("security review lazily loads pages, locates UTF-8 evidence and preserves context", async () => {
+  const body = '普通上下文 <script>context</script> [REDACTED] tail';
+  const start = Buffer.byteLength('普通上下文 <script>context</script> ');
+  const snapshots = [{ id: "request", source: "client_request", state: "complete", byteLength: Buffer.byteLength(body) }, { id: "evidence/one", source: "stream_inspection", state: "complete", byteLength: 28 }];
+  const findings = [{ id: "one", severity: "high", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "request", start, end: start + 10 } } }, { id: "two", severity: "critical", ruleId: "SEC-DELETE-001", evidence: { bodyRef: { snapshotId: "evidence/one", start: 0, end: 8, sourceSnapshotId: "request", sourceStart: 0 } } }];
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit/request-one/body?")) {
+      const params = new URL(url, "http://test").searchParams;
+      const request = params.get("snapshot") === "request";
+      const content = request ? body : 'rm -rf /; echo "context"';
+      return { body: { chunks: [{ start: 0, end: Buffer.byteLength(content), content, redactions: request ? [{ start, end: start + 10, reason: "known_credential" }] : [] }], offset: 0, nextOffset: request ? 100 : null, previousOffset: null } };
+    }
+    if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", schemaVersion: 3, kind: "request", bodySnapshots: snapshots, findings, inspectionProgress: { state: "running", processedBytes: 12, observedBytes: 40 } } } };
+  } });
+  app.read('state.page = "security"');
+  await app.action("security-detail", { dataset: { id: "request-one" } });
+  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 1, "one selected body page only");
+  await app.action("security-finding", { dataset: { id: "one" } });
+  let html = app.read("renderSecurityDetailPage()");
+  assert.match(html, /<mark[^>]+>\[REDACTED\]<\/mark>/);
+  assert.match(html, /普通上下文 &lt;script&gt;context&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /脱敏位置 · 1/);
+  assert.match(html, /检测进度：12 \/ 40 字节/);
+  await app.action("security-body-page", { dataset: { offset: "100" } });
+  assert.ok(app.requests.at(-1).url.includes("offset=100"));
+  await app.action("security-finding", { dataset: { id: "two" } });
+  html = app.read("renderSecurityDetailPage()");
+  assert.match(html, /检测时的流式内容快照/);
+  assert.match(html, /<mark[^>]+>rm -rf \/<\/mark>/);
+  assert.match(html, /查看完整正文上下文/);
+  await app.action("refresh", {});
+  assert.equal(app.read("state.security.bodySelection.snapshotId"), "evidence/one");
+  await app.action("security-source", { dataset: { id: "request", offset: "0" } });
+  await app.action("security-location", { dataset: { start: String(start), end: String(start + 10) } });
+  assert.match(app.read("renderSecurityDetailPage()"), /<mark[^>]+>\[REDACTED\]<\/mark>/);
+});
+
+test("late body pages cannot replace a new snapshot or closed detail", async () => {
+  let release;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) {
+      if (url.includes("snapshot=request")) return new Promise(resolve => { release = resolve; });
+      return { body: { chunks: [{ start: 0, end: 6, content: "second", redactions: [] }] } };
+    }
+    if (url.includes("/audit/one")) return { body: { record: { id: "one", bodySnapshots: [{ id: "request" }, { id: "response" }] } } };
+  } });
+  app.read('state.page = "security"');
+  const first = app.action("security-detail", { dataset: { id: "one" } });
+  for (let i = 0; i < 10 && !release; i++) await setImmediate();
+  await app.action("security-body", { dataset: { id: "response" } });
+  release({ body: { chunks: [{ start: 0, end: 5, content: "stale", redactions: [] }] } }); await first;
+  assert.equal(app.read("state.security.bodyPage.chunks[0].content"), "second");
+  const pending = app.action("security-body", { dataset: { id: "request" } });
+  await app.action("security-back", {});
+  release({ body: { chunks: [{ content: "stale" }] } }); await pending;
+  assert.equal(app.read("state.security.detail"), null);
+  assert.equal(app.read("state.security.bodyPage"), null);
+});
+
+test("body locations retain numeric key order and select enclosing command arguments", async () => {
+  const app = await controller();
+  const range = JSON.parse(app.read('JSON.stringify(securityBodyText({ "12": "second", "z": "first" }, "request", "request/field/0/command/0", { request: ["z", "12"] }))'));
+  assert.equal(range.text.slice(range.range.start, range.range.end), '"first"');
+  assert.equal(range.range.path, "request/field/0");
+});
+
+test("returning to the list invalidates pending detail reads", async () => {
+  let release;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit/old")) return new Promise(resolve => { release = resolve; });
+  } });
+  app.read('state.page = "security"');
+  const pending = app.action("security-detail", { dataset: { id: "old" } });
+  await app.action("security-back", {});
+  release({ body: { record: { id: "old" } } });
+  await pending;
+  assert.equal(app.read("state.security.detail"), null);
+});
 
 test("Claude configurations can be created without a Codex catalog and retain native protocol and scoped models", async () => {
   const app = await controller();

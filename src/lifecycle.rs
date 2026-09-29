@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::fs;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 use tokio::process::Command;
 
 pub async fn start_time(pid: u32) -> Option<String> {
@@ -48,33 +48,61 @@ pub async fn start_time(pid: u32) -> Option<String> {
     }
     #[cfg(windows)]
     {
-        let script=format!("$ErrorActionPreference='Stop'; (Get-Process -Id {pid}).StartTime.ToUniversalTime().Ticks.ToString()");
-        let out = tokio::time::timeout(
-            Duration::from_secs(5),
-            Command::new(powershell())
-                .creation_flags(0x08000000)
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &script,
-                ])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .ok()?
-        .ok()?;
-        let s = String::from_utf8(out.stdout).ok()?;
-        return out
-            .status
-            .success()
-            .then(|| parse_start_time("win32", &s, ""))
-            .flatten();
+        return windows_start_time(pid).ok().flatten();
     }
     #[allow(unreachable_code)]
     None
+}
+
+#[cfg(windows)]
+fn windows_start_time(pid: u32) -> std::io::Result<Option<String>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_INVALID_PARAMETER, FILETIME, STILL_ACTIVE},
+        System::Threading::{
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    };
+
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    // Own the handle so all query and error paths close it without launching a shell.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let mut exit_code = 0;
+    if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if exit_code != STILL_ACTIVE as u32 {
+        return Ok(None);
+    }
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+    // FILETIME starts in 1601; preserve the .NET tick epoch used by existing lock files.
+    Ok(ticks
+        .checked_add(504_911_232_000_000_000)
+        .and_then(|ticks| parse_start_time("win32", &ticks.to_string(), "")))
 }
 
 fn parse_start_time(platform: &str, output: &str, boot: &str) -> Option<String> {
@@ -141,28 +169,19 @@ pub async fn inspect(identity: &Value) -> &'static str {
     }
     #[cfg(windows)]
     {
-        let script = format!(
-            "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{exit 0}} else {{exit 3}}"
-        );
-        if let Ok(Ok(out)) = tokio::time::timeout(
-            Duration::from_secs(5),
-            Command::new(powershell())
-                .creation_flags(0x08000000)
-                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        {
-            if out.status.code() == Some(3) {
-                return "dead";
-            }
+        match windows_start_time(pid) {
+            Ok(Some(current)) => compare_start_time(&identity["startTime"], &current),
+            Ok(None) => "dead",
+            Err(_) => "unknown",
         }
     }
-    let Some(current) = start_time(pid).await else {
-        return "unknown";
-    };
-    compare_start_time(&identity["startTime"], &current)
+    #[cfg(not(windows))]
+    {
+        let Some(current) = start_time(pid).await else {
+            return "unknown";
+        };
+        compare_start_time(&identity["startTime"], &current)
+    }
 }
 fn compare_start_time(previous: &Value, current: &str) -> &'static str {
     let previous = text(previous);
@@ -218,16 +237,21 @@ impl InstanceLock {
         let marker = format!("owner-{}.json", uuid::Uuid::new_v4());
         loop {
             if fs::symlink_metadata(&paths.lock).await.is_ok() {
-                let mut read =
-                    match crate::fsutil::retry_sharing(|| fs::read_dir(&paths.lock)).await {
-                        Ok(read) => read,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(e.into()),
-                    };
-                let mut names = Vec::new();
-                while let Some(e) = read.next_entry().await? {
-                    names.push(e.file_name().to_string_lossy().into_owned());
-                }
+                // Windows keeps removed directories pending while enumeration handles are open.
+                let names = match crate::fsutil::retry_sharing(|| async {
+                    let mut read = fs::read_dir(&paths.lock).await?;
+                    let mut names = Vec::new();
+                    while let Some(entry) = read.next_entry().await? {
+                        names.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                    Ok(names)
+                })
+                .await
+                {
+                    Ok(names) => names,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e).context("read daemon lock"),
+                };
                 let generation = names.first().filter(|n| {
                     names.len() == 1
                         && (n.as_str() == "owner.json"
@@ -247,11 +271,12 @@ impl InstanceLock {
                     Value::Null
                 };
                 let state = inspect(&owner).await;
-                let metadata = match fs::metadata(&paths.lock).await {
-                    Ok(m) => m,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e.into()),
-                };
+                let metadata =
+                    match crate::fsutil::retry_sharing(|| fs::metadata(&paths.lock)).await {
+                        Ok(m) => m,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e).context("stat daemon lock"),
+                    };
                 let stale = SystemTime::now()
                     .duration_since(metadata.modified()?)
                     .unwrap_or_default()
@@ -271,18 +296,26 @@ impl InstanceLock {
             ensure_dir(&staged).await?;
             let result = async {
                 crate::config::write_json(&staged.join(&marker), &identity).await?;
-                fs::rename(&staged, &paths.lock)
+                // Windows can deny a directory rename until competing handles close.
+                crate::fsutil::retry_sharing(|| fs::rename(&staged, &paths.lock))
                     .await
                     .context("publish daemon lock")?;
                 Ok::<_, anyhow::Error>(())
             }
             .await;
-            if result.is_err() {
+            if let Err(error) = result {
+                // The competing owner may release its lock before the metadata check.
+                let contended = error.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
+                    )
+                });
                 let _ = fs::remove_dir_all(&staged).await;
-                if fs::metadata(&paths.lock).await.is_ok() {
+                if contended || fs::metadata(&paths.lock).await.is_ok() {
                     continue;
                 }
-                result?;
+                return Err(error);
             }
             let path = paths.lock.clone();
             let heart_path = path.clone();
@@ -461,6 +494,19 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn exited_process_is_dead_while_its_child_handle_is_retained() {
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(inspect(&json!({"pid":pid})).await, "dead");
+        drop(child);
+    }
+
     #[tokio::test]
     async fn releasing_an_old_generation_preserves_the_replacement() {
         let dir = tempfile::tempdir().unwrap();
@@ -476,6 +522,40 @@ mod tests {
         );
         new.release().await.unwrap();
         assert!(!paths.lock.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_short_lived_owners_only_report_lock_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+        let tasks = (0..8).map(|_| {
+            let paths = Paths::new(dir.path().to_owned());
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                let mut errors = Vec::new();
+                for _ in 0..20 {
+                    barrier.wait().await;
+                    match InstanceLock::acquire(&paths).await {
+                        Ok(lock) => {
+                            tokio::task::yield_now().await;
+                            if let Err(error) = lock.release().await {
+                                errors.push(error.to_string());
+                            }
+                        }
+                        Err(error) if error.to_string().starts_with("ELOCKED:") => {}
+                        Err(error) => errors.push(format!("{error:#}")),
+                    }
+                }
+                errors
+            })
+        });
+        for result in futures_util::future::join_all(tasks).await {
+            assert!(
+                result.as_ref().is_ok_and(|errors| errors.is_empty()),
+                "{result:?}"
+            );
+        }
+        assert!(!dir.path().join("daemon.lock").exists());
     }
 
     #[tokio::test]
