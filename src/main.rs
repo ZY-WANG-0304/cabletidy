@@ -27,7 +27,7 @@ async fn run() -> Result<()> {
     }
     let paths = Paths::from_env()?;
     match command {
-        "stop" => lifecycle::stop(&paths).await?,
+        "stop" => std::process::exit(lifecycle::stop(&paths, stop_cancellation()?).await?),
         "status" => println!(
             "{}",
             serde_json::to_string_pretty(&lifecycle::status(&paths).await?)?
@@ -63,4 +63,34 @@ async fn run() -> Result<()> {
         _ => bail!("未知命令: {command}\nUsage: cabletidy <command>"),
     }
     Ok(())
+}
+
+fn stop_cancellation() -> Result<impl std::future::Future<Output = i32>> {
+    #[cfg(unix)]
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let managed = std::env::var_os("CABLETIDY_MANAGED_STDIN").is_some();
+    Ok(async move {
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        loop {
+            tokio::select! {
+                signal = lines.next_line(), if managed => match signal {
+                    Ok(Some(line)) if line == "SIGINT" => return 130,
+                    Ok(Some(line)) if line == "SIGTERM" => return 143,
+                    Ok(Some(_)) => continue,
+                    _ => return 130,
+                },
+                _ = async {
+                    if tokio::signal::ctrl_c().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                } => return 130,
+                _ = async {
+                    #[cfg(unix)]
+                    term.recv().await;
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => return 143,
+            }
+        }
+    })
 }

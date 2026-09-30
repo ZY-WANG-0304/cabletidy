@@ -9,7 +9,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { defaultConfig, nativeBinary } from "./helpers/native.mjs";
+import { defaultConfig, nativeBinary, processStartTime, inspectProcess } from "./helpers/native.mjs";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
 import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
@@ -177,6 +177,93 @@ test("stop waits for streaming requests and releases the instance lock", signalT
   await app.expectExit(0);
   await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
   await assert.rejects(fs.access(path.join(app.directory, "daemon.lock")), { code: "ENOENT" });
+});
+
+async function stopClient(t, directory) {
+  const client = spawn(process.execPath, ["--input-type=module", "-e", `
+    import { launch } from ${JSON.stringify(new URL("../bin/native.mjs", import.meta.url).href)};
+    process.on("message", signal => process.emit(signal));
+    process.channel.unref();
+    const running = launch(["stop"]);
+    process.send({ pid: running.child.pid });
+    process.exitCode = await running.closed;
+  `], { env: { ...process.env, CABLETIDY_HOME: directory }, stdio: ["ignore", "pipe", "pipe", "ipc"] });
+  let output = "";
+  client.stdout.on("data", chunk => { output += chunk; });
+  client.stderr.on("data", chunk => { output += chunk; });
+  const closed = new Promise((resolve, reject) => {
+    client.once("error", reject);
+    client.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  t.after(async () => {
+    if (client.exitCode === null && client.signalCode === null) client.kill("SIGKILL");
+    await closed;
+  });
+  const pid = await new Promise(resolve => client.once("message", message => resolve(message.pid)));
+  const identity = { pid, startTime: await processStartTime(pid) };
+  return {
+    output: () => output,
+    signal: signal => process.platform === "win32" ? client.send(signal) : client.kill(signal),
+    async expectCancelled(code, submitted) {
+      const exit = await Promise.race([closed, delay(5000).then(() => { throw new Error("stop client did not cancel"); })]);
+      assert.deepEqual(exit, { code, signal: null }, output);
+      assert.match(output, submitted ? /已取消等待，停止请求仍将继续执行/ : /未发送停止请求/);
+      assert.equal(await inspectProcess(identity), "dead", "launcher must reap its Rust stop child");
+    },
+  };
+}
+
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  test(`${signal} cancels stop waiting without interrupting daemon draining`, signalTest, async t => {
+    const app = await fixture(t);
+    const { upstream, text } = await startStream(app);
+    const client = await stopClient(t, app.directory);
+    await waitFor(() => client.output().includes("Stopping CableTidy"));
+    await waitFor(async () => {
+      try { await fetch(`${app.url}api/v1/runtime`); return false; }
+      catch { return true; }
+    });
+    client.signal(signal);
+    await client.expectCancelled(code, true);
+    assert.equal(app.child.exitCode, null);
+    assert.ok((await fs.readdir(app.directory)).some(name => /^stop-.*\.json$/.test(name)));
+    upstream.end('data: {"delta":"last"}\n\n');
+    assert.match(await text, /first[\s\S]*last/);
+    await app.expectExit(0);
+  });
+
+  test(`${signal} before submission cancels stop without sending a request`, {
+    ...signalTest, skip: process.platform === "win32",
+  }, async t => {
+    const app = await fixture(t);
+    const saved = `${app.runtime}.saved`;
+    await fs.rename(app.runtime, saved);
+    await execute("mkfifo", [app.runtime]);
+    // Block the read-only preparation stage; cancellation must not publish a request later.
+    const client = await stopClient(t, app.directory);
+    client.signal(signal);
+    await client.expectCancelled(code, false);
+    await fs.rename(saved, app.runtime);
+    assert.ok(!(await fs.readdir(app.directory)).some(name => name.startsWith("stop-")));
+    assert.equal((await fetch(`${app.url}api/v1/runtime`)).status, 200);
+    await app.stop("SIGTERM");
+    await app.expectExit(0);
+  });
+}
+
+test("cancelling stop while daemon is paused preserves the committed request", {
+  ...signalTest, skip: process.platform === "win32",
+}, async t => {
+  const app = await fixture(t, { direct: true });
+  app.child.kill("SIGSTOP");
+  t.after(() => { if (app.child.exitCode === null) app.child.kill("SIGCONT"); });
+  const client = await stopClient(t, app.directory);
+  await waitFor(() => client.output().includes("Stopping CableTidy"));
+  client.signal("SIGINT");
+  await client.expectCancelled(130, true);
+  assert.ok((await fs.readdir(app.directory)).some(name => /^stop-.*\.json$/.test(name)));
+  app.child.kill("SIGCONT");
+  await app.expectExit(0);
 });
 
 test("stop ignores stale PID generations and rejects unverifiable identities", signalTest, async t => {

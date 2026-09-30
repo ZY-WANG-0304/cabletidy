@@ -178,6 +178,13 @@ pub async fn inspect(identity: &Value) -> &'static str {
     #[cfg(not(windows))]
     {
         let Some(current) = start_time(pid).await else {
+            // The process can exit between the initial liveness check and the query.
+            #[cfg(unix)]
+            if unsafe { libc::kill(pid as i32, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return "dead";
+            }
             return "unknown";
         };
         compare_start_time(&identity["startTime"], &current)
@@ -367,43 +374,112 @@ pub fn stop_path(paths: &Paths, generation: &str) -> Result<PathBuf> {
     Ok(paths.home.join(format!("stop-{id}.json")))
 }
 
-pub async fn stop(paths: &Paths) -> Result<()> {
+struct StopRequest {
+    identity: Value,
+    marker: PathBuf,
+    request: PathBuf,
+    staged: tempfile::NamedTempFile,
+}
+
+async fn prepare_stop(paths: &Paths) -> Result<Option<StopRequest>> {
     let Some(runtime) = read_json(&paths.runtime).await? else {
-        println!("CableTidy is not running");
-        return Ok(());
+        return Ok(None);
     };
     let identity = json!({"pid":runtime["pid"],"startTime":runtime["pidStartTime"],"hostname":runtime["hostname"]});
     match inspect(&identity).await {
-        "dead" => {
-            println!("CableTidy is not running");
-            return Ok(());
-        }
+        "dead" => return Ok(None),
         "alive" => {}
         _ => bail!("Cannot verify daemon identity; refusing to stop an unknown process"),
     }
     let id = uuid::Uuid::parse_str(text(&runtime["controlId"]))
         .context("Daemon does not support stop; stop its foreground terminal first")?;
     let marker = paths.lock.join(format!("owner-{id}.json"));
-    let owner = read_json(&marker)
-        .await?
-        .context("Daemon lock generation no longer exists; retry stop")?;
+    let Some(owner) = read_json(&marker).await? else {
+        return Ok(None);
+    };
     if owner["pid"] != identity["pid"] || owner["startTime"] != identity["startTime"] {
         bail!("Daemon runtime does not match its lock; refusing to stop");
     }
     let request = stop_path(paths, &id.to_string())?;
-    crate::config::write_json(&request, &json!({"stop":true})).await?;
-    println!("Stopping CableTidy; waiting for active requests and cleanup...");
-    while fs::try_exists(&marker).await? {
-        match inspect(&identity).await {
-            "dead" => break,
-            "alive" => {}
-            _ => bail!("Stop requested, but daemon identity can no longer be verified"),
+    let mut staged = tempfile::Builder::new()
+        .prefix(".stop-")
+        .tempfile_in(&paths.home)?;
+    std::io::Write::write_all(&mut staged, b"{\"stop\":true}\n")?;
+    Ok(Some(StopRequest {
+        identity,
+        marker,
+        request,
+        staged,
+    }))
+}
+
+async fn generation_finished(marker: &Path, state: &str) -> Result<bool> {
+    // Recheck after inspection: successful daemon cleanup can race that query.
+    if state == "dead" || !fs::try_exists(marker).await? {
+        return Ok(true);
+    }
+    if state != "alive" {
+        bail!("Stop requested, but daemon identity can no longer be verified");
+    }
+    Ok(false)
+}
+
+async fn wait_for_stop(marker: &Path, identity: &Value, request: &Path) -> Result<()> {
+    while fs::try_exists(marker).await? {
+        if generation_finished(marker, inspect(identity).await).await? {
+            break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let _ = fs::remove_file(request).await;
     println!("CableTidy stopped");
     Ok(())
+}
+
+fn cancelled_stop(code: i32, submitted: bool) -> i32 {
+    if submitted {
+        println!("已取消等待，停止请求仍将继续执行");
+    } else {
+        println!("未发送停止请求");
+    }
+    code
+}
+
+pub async fn stop(
+    paths: &Paths,
+    cancellation: impl std::future::Future<Output = i32>,
+) -> Result<i32> {
+    tokio::pin!(cancellation);
+    let prepared = tokio::select! {
+        biased;
+        code = &mut cancellation => return Ok(cancelled_stop(code, false)),
+        prepared = prepare_stop(paths) => prepared?,
+    };
+    let Some(StopRequest {
+        identity,
+        marker,
+        request,
+        staged,
+    }) = prepared
+    else {
+        println!("CableTidy is not running");
+        return Ok(0);
+    };
+    tokio::select! {
+        biased;
+        code = &mut cancellation => return Ok(cancelled_stop(code, false)),
+        result = async {
+            // No await during publication: cancellation is confirmed either before
+            // this atomic rename or after it, never while detached filesystem work runs.
+            staged.persist(&request).map_err(|error| error.error)
+        } => { result?; }
+    }
+    println!("Stopping CableTidy; waiting for active requests and cleanup...");
+    tokio::select! {
+        biased;
+        code = &mut cancellation => Ok(cancelled_stop(code, true)),
+        result = wait_for_stop(&marker, &identity, &request) => { result?; Ok(0) }
+    }
 }
 pub async fn status(paths: &Paths) -> Result<Value> {
     let Some(raw) = read_json(&paths.config).await? else {
@@ -454,6 +530,58 @@ pub async fn status(paths: &Paths) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stop_rechecks_generation_after_an_unknown_identity_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("old-owner.json");
+        fs::write(&marker, b"{}").await.unwrap();
+        assert!(generation_finished(&marker, "unknown").await.is_err());
+        assert!(!generation_finished(&marker, "alive").await.unwrap());
+        fs::remove_file(&marker).await.unwrap();
+        let replacement = dir.path().join("new-owner.json");
+        fs::write(&replacement, b"{}").await.unwrap();
+        assert!(generation_finished(&marker, "unknown").await.unwrap());
+        assert!(replacement.exists());
+    }
+
+    #[tokio::test]
+    async fn cancellation_at_publication_boundary_preserves_only_committed_requests() {
+        for submitted in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::new(dir.path().to_owned());
+            let lock = InstanceLock::acquire(&paths).await.unwrap();
+            persist_runtime(&paths, &lock.identity, &crate::config::defaults(), "test")
+                .await
+                .unwrap();
+            let request = stop_path(&paths, text(&lock.identity["controlId"])).unwrap();
+            let cancellation = std::future::poll_fn(|_| {
+                let staged = std::fs::read_dir(&paths.home).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".stop-")
+                });
+                if (submitted && request.exists()) || (!submitted && staged) {
+                    std::task::Poll::Ready(130)
+                } else {
+                    std::task::Poll::Pending
+                }
+            });
+            assert_eq!(stop(&paths, cancellation).await.unwrap(), 130);
+            assert_eq!(request.exists(), submitted);
+            assert!(!std::fs::read_dir(&paths.home).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".stop-")
+            }));
+            assert!(paths.lock.exists());
+            lock.release().await.unwrap();
+        }
+    }
 
     #[test]
     fn process_identities_parse_platform_outputs_and_reject_garbage() {
