@@ -233,8 +233,9 @@ async fn remove_generation(path: &Path, marker: &str) -> Result<()> {
 impl InstanceLock {
     pub async fn acquire(paths: &Paths) -> Result<Self> {
         ensure_dir(&paths.home).await?;
-        let identity = json!({"pid":std::process::id(),"startTime":start_time(std::process::id()).await,"hostname":hostname()});
-        let marker = format!("owner-{}.json", uuid::Uuid::new_v4());
+        let generation = uuid::Uuid::new_v4();
+        let identity = json!({"pid":std::process::id(),"startTime":start_time(std::process::id()).await,"hostname":hostname(),"controlId":generation.to_string()});
+        let marker = format!("owner-{generation}.json");
         loop {
             if fs::symlink_metadata(&paths.lock).await.is_ok() {
                 // Windows keeps removed directories pending while enumeration handles are open.
@@ -358,7 +359,51 @@ pub async fn persist_runtime(
 ) -> Result<()> {
     let host = text(&config["web"]["listenHost"]);
     let port = &config["web"]["port"];
-    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
+    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"hostname":identity["hostname"],"controlId":identity["controlId"],"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
+}
+pub fn stop_path(paths: &Paths, generation: &str) -> Result<PathBuf> {
+    let id = uuid::Uuid::parse_str(generation)
+        .context("Daemon does not support stop; stop its foreground terminal first")?;
+    Ok(paths.home.join(format!("stop-{id}.json")))
+}
+
+pub async fn stop(paths: &Paths) -> Result<()> {
+    let Some(runtime) = read_json(&paths.runtime).await? else {
+        println!("CableTidy is not running");
+        return Ok(());
+    };
+    let identity = json!({"pid":runtime["pid"],"startTime":runtime["pidStartTime"],"hostname":runtime["hostname"]});
+    match inspect(&identity).await {
+        "dead" => {
+            println!("CableTidy is not running");
+            return Ok(());
+        }
+        "alive" => {}
+        _ => bail!("Cannot verify daemon identity; refusing to stop an unknown process"),
+    }
+    let id = uuid::Uuid::parse_str(text(&runtime["controlId"]))
+        .context("Daemon does not support stop; stop its foreground terminal first")?;
+    let marker = paths.lock.join(format!("owner-{id}.json"));
+    let owner = read_json(&marker)
+        .await?
+        .context("Daemon lock generation no longer exists; retry stop")?;
+    if owner["pid"] != identity["pid"] || owner["startTime"] != identity["startTime"] {
+        bail!("Daemon runtime does not match its lock; refusing to stop");
+    }
+    let request = stop_path(paths, &id.to_string())?;
+    crate::config::write_json(&request, &json!({"stop":true})).await?;
+    println!("Stopping CableTidy; waiting for active requests and cleanup...");
+    while fs::try_exists(&marker).await? {
+        match inspect(&identity).await {
+            "dead" => break,
+            "alive" => {}
+            _ => bail!("Stop requested, but daemon identity can no longer be verified"),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = fs::remove_file(request).await;
+    println!("CableTidy stopped");
+    Ok(())
 }
 pub async fn status(paths: &Paths) -> Result<Value> {
     let Some(raw) = read_json(&paths.config).await? else {

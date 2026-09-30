@@ -120,6 +120,7 @@ pub async fn create(
 ) -> Result<Application> {
     let lock = lifecycle::InstanceLock::acquire(&paths).await?;
     let result = async {
+        crate::daemon_log::init(&paths.home)?;
         config::ensure_dir(&paths.backups).await?;
         let existing = config::read_json(&paths.config).await?;
         let fresh = existing.is_none();
@@ -205,14 +206,21 @@ pub async fn serve_controlled(
         lock,
     } = app;
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let stop_file = lifecycle::stop_path(&state.paths, text(&state.identity["controlId"]))?;
+    let stop_request = stop_file.clone();
     let signals = tokio::spawn(async move {
         #[cfg(unix)]
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("install SIGTERM handler");
         let mut stop_tx = Some(stop_tx);
         let mut control_open = true;
+        let mut stop_poll = tokio::time::interval(Duration::from_millis(100));
         loop {
             let event = tokio::select! {
+                _ = stop_poll.tick(), if stop_tx.is_some() => {
+                    if !tokio::fs::try_exists(&stop_request).await.unwrap_or(false) { continue; }
+                    Shutdown::Terminate
+                },
                 _ = interrupt() => Shutdown::Interrupt,
                 event = control.recv(), if control_open => match event {
                     Some(event) => event,
@@ -232,19 +240,21 @@ pub async fn serve_controlled(
                 std::process::exit(130);
             }
             if let Some(sender) = stop_tx.take() {
-                println!("正在停止 CableTidy，等待请求和清理完成；再次按 Ctrl+C 强制退出。");
+                crate::daemon_log::message(format_args!(
+                    "正在停止 CableTidy，等待请求和清理完成；再次按 Ctrl+C 强制退出。"
+                ));
                 let _ = sender.send(());
             }
         }
     });
     let c = &state.snapshot().config;
-    println!(
+    crate::daemon_log::message(format_args!(
         "CableTidy Web 管理台: http://{}:{}/",
         config::url_host(text(&c["web"]["listenHost"])),
         c["web"]["port"]
-    );
-    println!("数据目录: {}", state.paths.home.display());
-    println!("按 Ctrl+C 停止 daemon");
+    ));
+    crate::daemon_log::message(format_args!("数据目录: {}", state.paths.home.display()));
+    crate::daemon_log::message(format_args!("按 Ctrl+C 停止 daemon"));
     let router = Router::new()
         .fallback(any(handle))
         .with_state(state.clone());
@@ -263,6 +273,7 @@ pub async fn serve_controlled(
         }
     }
     let released = lock.release().await;
+    let _ = tokio::fs::remove_file(stop_file).await;
     signals.abort();
     result?;
     released

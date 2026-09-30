@@ -160,6 +160,39 @@ async function startStream(app) {
   return { upstream, text };
 }
 
+test("stop waits for streaming requests and releases the instance lock", signalTest, async t => {
+  const app = await fixture(t);
+  const { upstream, text } = await startStream(app);
+  let done = false;
+  const stopping = execute(process.execPath, ["bin/cabletidy.mjs", "stop"], {
+    cwd: root, env: { ...process.env, CABLETIDY_HOME: app.directory }, timeout: 25000,
+  }).then(result => { done = true; return result; });
+  stopping.catch(() => {});
+  await waitFor(async () => (await fs.readdir(app.directory)).some(name => name.startsWith("stop-")));
+  await delay(10500);
+  assert.equal(done, false, "stop must not time out while a request is active");
+  upstream.end('data: {"delta":"last"}\n\n');
+  assert.match(await text, /first[\s\S]*last/);
+  assert.match((await stopping).stdout, /CableTidy stopped/);
+  await app.expectExit(0);
+  await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
+  await assert.rejects(fs.access(path.join(app.directory, "daemon.lock")), { code: "ENOENT" });
+});
+
+test("stop ignores stale PID generations and rejects unverifiable identities", signalTest, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-stop-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const cli = () => execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: directory } });
+  const runtime = path.join(directory, "runtime.json");
+  await fs.writeFile(runtime, JSON.stringify({ pid: process.pid }));
+  await assert.rejects(cli(), /Cannot verify daemon identity/);
+  const { processStartTime } = await import("./helpers/native.mjs");
+  const current = await processStartTime(process.pid);
+  await fs.writeFile(runtime, JSON.stringify({ pid: process.pid, pidStartTime: `${current}0` }));
+  assert.match((await cli()).stdout, /not running/);
+  assert.deepEqual(await fs.readdir(directory), ["runtime.json"]);
+});
+
 test("disconnecting before upstream headers cancels the pending inference request", signalTest, async t => {
   const app = await fixture(t, { direct: true });
   const request = http.request(`${app.url}relay/v1/responses`, { method: "POST" });

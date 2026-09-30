@@ -8,13 +8,13 @@
 
 npm 上已发布的 `0.1.0` / `0.2.0` 仍对应原 Node 实现；本次迁移不覆盖既有版本，也不自动发布。下一次发布前需要同步递增 `Cargo.toml`、`Cargo.lock`、`package.json` 和 `package-lock.json` 的应用版本。
 
-CLI 继续提供 `start`、`status`、帮助和版本查询。安装不启动服务、不注册系统服务、不修改客户端配置。用户数据独立于安装目录，继续使用 `config.json`、`secrets.json`、`runtime.json` 和 `daemon.lock/`；升级不要求转换为 TOML 或 OS keyring。
+CLI 继续提供 `start`、`stop`、`status`、帮助和版本查询。安装不启动服务、不注册系统服务、不修改客户端配置。用户数据独立于安装目录，继续使用 `config.json`、`secrets.json`、`runtime.json` 和 `daemon.lock/`；升级不要求转换为 TOML 或 OS keyring。
 
 安装与使用命令以 [README](../README.md#安装与运行) 为准。
 
 ## 包边界
 
-- `bin/cabletidy.mjs` / `bin/native.mjs` 选取当前 OS / CPU 的原生程序，并通过私有标准输入管道传递退出信号。启动器退出后，原生子进程停止，避免留下失去管理的 daemon。
+- `bin/cabletidy.mjs` / `bin/native.mjs` 选取当前 OS / CPU 的原生程序。安装后的 `start` 脱离终端，Rust 在持有实例锁后初始化日志，按写入量轮转 `daemon.log`：每个文件最多 10 MiB，保留三份历史文件，总量最多 40 MiB。启动器仅通过临时 stderr 管道接收启动错误，确认管理接口就绪后关闭该管道并返回；前台标准输出保持不变。源码和 `start --foreground` 使用私有标准输入管道传递退出信号，前台启动器退出后其原生子进程停止。
 - npm 的 `files` 白名单只包含 `bin/`、`native/`，以及 npm 自动纳入的元数据、README 和许可证。源码、测试桥接程序、用户数据不进入发行包。
 - Web 资源通过 Rust `include_bytes!` 在编译时嵌入，运行时无需查找源码或 Web 目录。
 - `native/<平台>/build.json` 记录应用版本、编译目标和二进制 SHA-256，用于打包检查。
@@ -34,7 +34,7 @@ Linux 完整发行产物使用 musl，减少宿主 glibc 版本差异。本地�
 
 ## 运行与升级语义
 
-`start` 前台运行。首次 SIGINT / SIGTERM 停止接受新连接，等待流式请求、客户端断连后仍需完成的管理任务和配置写入，然后清理运行状态、释放实例锁；再次 SIGINT 清理 Codex 子进程并以 130 退出。
+源码调试入口的 `start` 前台运行；安装包的 Node 启动器将 daemon 放到后台，Rust CLI 提供 `stop` 命令。`stop` 校验 PID 启动标识、主机名和锁代次，将停止请求写入数据目录的 `stop-<实例 UUID>.json`；daemon 每 100 ms 检查本代次请求，跨平台执行同一优雅退出流程。停止命令等待本代次锁释放，无排空超时；不对缓存 PID 直接发终止信号。停止时先停止接受新连接，等待流式请求、客户端断连后仍需完成的管理任务和配置写入，然后清理运行状态、释放实例锁。
 
 首次启动优先绑定 `127.0.0.1:43100`，占用则直接绑定系统分配的端口并保存；已有配置必须使用保存的端口。实例锁记录主机、PID 和平台启动标识，仅在锁超过 10 秒且确认原持有者死亡 / PID 复用时回收。未知归属给出人工恢复提示，不能只按 mtime 接管暂停的实例。
 
@@ -81,4 +81,4 @@ npm pack --ignore-scripts
 
 ## 后续服务管理
 
-后台常驻优先评估平台用户级进程管理：Linux systemd user service、macOS LaunchAgent，以及 Windows 任务计划程序或服务。独立设计须处理原生程序稳定路径、数据目录与 Codex PATH、重复启动、崩溃恢复、升级重启、请求排空和卸载行为。`runtime.json` 用于发现与在线探测，不是可长期信任的进程身份凭据。
+当前后台运行由安装包的 Node 启动器负责，尚未注册为系统服务或开机自启。`runtime.json` 用于发现与在线探测，不是可长期信任的进程身份凭据；未来若接入 Linux systemd user service、macOS LaunchAgent 或 Windows 服务，仍需单独处理崩溃恢复、升级重启、请求排空和卸载行为。

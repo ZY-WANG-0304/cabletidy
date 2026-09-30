@@ -5,7 +5,7 @@ use tokio::io::AsyncBufReadExt;
 #[tokio::main(worker_threads = 2)]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("{error:#}");
+        cabletidy::daemon_log::error(format_args!("{error:#}"));
         std::process::exit(1);
     }
     // All daemon work has drained; Tokio's blocking stdin reader may still be waiting on the launcher.
@@ -15,7 +15,7 @@ async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("status");
     if ["--help", "-h", "help"].contains(&command) {
-        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start                       Start the daemon in the foreground\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNo command: show status");
+        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start                       Start daemon (npm: background; native: foreground)\n  stop                        Stop a running daemon\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNo command: show status");
         return Ok(());
     }
     if ["--version", "-v"].contains(&command) {
@@ -27,6 +27,7 @@ async fn run() -> Result<()> {
     }
     let paths = Paths::from_env()?;
     match command {
+        "stop" => lifecycle::stop(&paths).await?,
         "status" => println!(
             "{}",
             serde_json::to_string_pretty(&lifecycle::status(&paths).await?)?

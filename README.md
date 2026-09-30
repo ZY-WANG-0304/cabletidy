@@ -84,13 +84,14 @@ npm 启动器需要本机 Node.js；发行包自带对应平台的原生二进�
 
 ### 启动、升级与卸载
 
-`cabletidy start` 在前台运行，打印管理台地址；按 Ctrl+C 或收到 SIGTERM 后停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并退出，不设置退出倒计时。等待期间再次按 Ctrl+C 会强制退出，退出码为 130；此时可能保留过期的 `runtime.json`，状态检查会检测服务是否仍在线。当前不包含后台常驻或开机自启。
+安装后的 `cabletidy start` 会在后台启动 daemon，确认管理接口就绪后返回管理台地址和日志路径；关闭终端后继续运行。日志写入数据目录中的 `daemon.log`，运行期间自动轮转：单文件上限 10 MiB，保留 `daemon.log.1` 至 `.3` 三份历史文件（`.1` 最新），总量不超过 40 MiB；超出保留范围的旧日志自动删除。升级时已有的超大日志仅保留末尾 10 MiB。使用 `cabletidy stop` 停止服务；daemon 会停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并释放实例锁；`stop` 等待排空完成，不设置强制退出倒计时。未运行时 `stop` 成功返回提示，身份无法确认时拒绝停止。此功能不包含开机自启或崩溃自动重启。源码调试时的 `npm start` 和 `cargo run --bin cabletidy -- start` 仍在前台运行，便于查看日志和使用 Ctrl+C。安装后的 CLI 也可使用 `cabletidy start --foreground` 临时前台运行。
 
 在另一个终端可以运行：
 
 ```bash
 cabletidy --help
 cabletidy status
+cabletidy stop
 ```
 
 `status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前配置套装列表；每套配置包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
@@ -99,11 +100,12 @@ cabletidy status
 升级时先停止服务，再安装最新版本并重新启动：
 
 ```bash
+cabletidy stop
 npm install -g cabletidy@latest --registry=https://registry.npmjs.org/
 cabletidy start
 ```
 
-从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
+从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载前先执行 `cabletidy stop`，再使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
 
 ### 从源码运行与打包
 
@@ -121,7 +123,7 @@ npm run build
 npm pack
 ```
 
-`npm start` 与 `cabletidy start` 使用相同的 Rust CLI。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
+源码中的 `npm start` 与 `cargo run --bin cabletidy -- start` 使用前台 Rust CLI；安装包中的 `cabletidy start` 由启动器放到后台运行。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
 
 本地先运行 `npm run build` 构建当前平台，再运行 `npm pack` 打包，适用于同平台试用。打包和发布钩子不会重新构建或覆盖 `native/` 中的产物。完整发行包由 `Build Native Package` 工作流汇总五个平台的产物，Linux 使用 musl 构建；工作流只生成可下载的 npm tarball，不自动发布。`npm run check:release` 校验各平台二进制、编译目标、版本和摘要，缺少平台或 Linux 目标不是 musl 时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。
 
@@ -138,6 +140,7 @@ npm run dev:status
 
 | 项目 | 正式运行（`cabletidy start` / `npm start`） | 开发运行（`npm run dev`） |
 | --- | --- | --- |
+| 运行方式 | 安装版后台；源码 `npm start` 前台 | 前台，支持热重启 |
 | 数据目录 | `CABLETIDY_HOME` 或 `~/.cabletidy` | 仓库内 `.cabletidy-debug/` |
 | 首次首选端口 | `43100` | `43101` |
 | Codex 配置目录 | `CODEX_HOME` 或 `~/.codex` | `.cabletidy-debug/codex/` |
@@ -165,7 +168,7 @@ npm test
 npm run test:package
 ```
 
-`npm test` 先构建测试二进制、运行 Rust 单元测试，再运行直接调用 Rust 的 JavaScript 契约 / HTTP / 管理页测试；发行包不包含测试桥接程序。安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的原生 CLI、内嵌 Web 资源、重复启动、重启地址及用户数据保留。Linux / macOS 验证 SIGINT / SIGTERM；Windows 直接执行 npm 的 `.cmd` 入口，验证强制终止后的旧锁恢复。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
+`npm test` 先构建测试二进制、运行 Rust 单元测试，再运行直接调用 Rust 的 JavaScript 契约 / HTTP / 管理页测试；发行包不包含测试桥接程序。安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的原生 CLI、内嵌 Web 资源、重复启动、重启地址及用户数据保留。安装冒烟测试在各平台验证后台启动返回、`stop` 优雅退出及重启，Windows 直接执行 npm 的 `.cmd` 入口。生命周期测试另行验证 SIGINT / SIGTERM、长连接排空与过期 PID 防护。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
 
 使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。Rust 版本的目录、配置生成与代理行为由本地契约和模拟上游测试覆盖，真实上游兼容性需按具体接入验证。
 
