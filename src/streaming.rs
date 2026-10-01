@@ -52,7 +52,7 @@ impl Reservation {
     pub fn grow(&mut self, bytes: usize) -> io::Result<()> {
         let bytes = bytes as u64;
         self.counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 n.checked_add(bytes).filter(|n| *n <= self.limit)
             })
             .map_err(|_| io::Error::other("shared_resource_budget"))?;

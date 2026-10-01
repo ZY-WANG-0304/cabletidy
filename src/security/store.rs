@@ -198,7 +198,7 @@ impl Store {
         let size = data.len();
         if self
             .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(size).filter(|total| *total <= QUEUE_BYTES)
             })
             .is_err()

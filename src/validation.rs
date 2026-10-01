@@ -102,10 +102,12 @@ pub fn validate(input: &Value) -> Value {
             format!("{p}.aliases"),
             "aliases 必须是非空字符串数组"
         );
-        for field in ["clientModelId"] {
-            if let Some(v) = m.get(field) {
-                check!(nonempty(v), format!("{p}.{field}"), "必须是非空字符串");
-            }
+        if let Some(v) = m.get("clientModelId") {
+            check!(
+                nonempty(v),
+                format!("{p}.clientModelId"),
+                "必须是非空字符串"
+            );
         }
         if let Some(v) = m.get("capabilities") {
             check!(
