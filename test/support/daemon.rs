@@ -13,7 +13,7 @@ async fn main() {
         let preferred = std::env::var("CABLETIDY_PREFERRED_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(43100);
+            .unwrap_or(0);
         let app = server::create(paths, options, preferred).await?;
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {

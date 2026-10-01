@@ -41,15 +41,6 @@ async function fixture(t) {
       servers.push(server);
       return server;
     },
-    async blockDefault() {
-      try {
-        return await this.block(43100);
-      } catch (error) {
-        if (error.code !== "EADDRINUSE") throw error;
-        t.diagnostic("Default port is already occupied; exercising fallback against that listener");
-        return null;
-      }
-    },
   };
 }
 
@@ -71,7 +62,23 @@ async function post(app, endpoint, body) {
   return result;
 }
 
-for (const preferredPort of [undefined, 43101]) {
+test("ordinary fixtures bind ephemeral ports and preserve their address across restart", async t => {
+  const f = await fixture(t);
+  const paths = f.paths();
+  const app = await f.start(paths);
+  const port = app.state.config.web.port;
+  assert.ok(port > 0);
+  const saved = await fs.readFile(paths.config, "utf8");
+  await app.close();
+  const peer = await f.start(f.paths("peer"));
+  const restarted = await f.start(paths);
+  assert.notEqual(peer.url, app.url);
+  assert.equal(restarted.url, app.url);
+  assert.equal(await fs.readFile(paths.config, "utf8"), saved);
+  assert.equal((await fetch(restarted.url)).status, 200);
+});
+
+for (const preferredPort of [43100, 43101]) {
   test(`first startup persists the listening address with preferred port ${preferredPort ?? "default"}`, async t => {
     const f = await fixture(t);
     const paths = f.paths();
@@ -153,7 +160,6 @@ test("new stores allocate distinct ports while status stays read-only and restar
 
 test("an occupied saved port fails without changing configuration, releases the lock and allows retry", async t => {
   const f = await fixture(t);
-  await f.blockDefault();
   const paths = f.paths();
   const app = await f.start(paths);
   const saved = await fs.readFile(paths.config, "utf8");

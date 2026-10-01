@@ -125,13 +125,15 @@ pub async fn create(
         let existing = config::read_json(&paths.config).await?;
         let fresh = existing.is_none();
         let mut config = existing.as_ref().map(config::normalize).unwrap_or_else(config::defaults);
-        if fresh { config["web"]["port"] = json!(preferred); }
+        // Only test builds accept an ephemeral first listener; saved ports stay strict.
+        let ephemeral = cfg!(feature = "test-support") && fresh && preferred == 0;
+        if fresh && !ephemeral { config["web"]["port"] = json!(preferred); }
         let check = validation::validate(&config);
         if check["ok"] != true {
             bail!("配置校验失败，daemon 未启动: {}", check["errors"]);
         }
         let host = text(&config["web"]["listenHost"]).trim_matches(['[', ']']);
-        let port = config["web"]["port"].as_u64().unwrap() as u16;
+        let port = if ephemeral { 0 } else { config["web"]["port"].as_u64().unwrap() as u16 };
         let listener = match tokio::net::TcpListener::bind((host, port)).await {
             Ok(listener) => listener,
             Err(error) if fresh && error.kind() == std::io::ErrorKind::AddrInUse => {

@@ -103,7 +103,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       },
     );
     const artifactPreview = await artifactResponse.json();
-    assert.equal(artifactResponse.status, 200);
+    assert.equal(artifactResponse.status, 200, JSON.stringify({ artifactPreview, diagnostics: artifactResponse.status === 200 ? undefined : await app.diagnostics() }));
     assert.equal(artifactPreview.artifacts.target, "codex");
     assert.equal(artifactPreview.artifacts.providerId, runtime.virtualProviders[0].id);
     assert.equal(artifactPreview.artifacts.virtualProviderId, runtime.virtualProviders[0].id);

@@ -15,21 +15,34 @@ export async function createApplication(options = {}) {
   const env = { ...process.env, ...options.env, CABLETIDY_HOME: paths.home,
     CODEX_HOME: options.codexHome || path.join(paths.home, "codex-client"),
     CLAUDE_CONFIG_DIR: options.claudeHome || path.join(paths.home, "claude-client"),
-    CABLETIDY_PREFERRED_PORT: String(options.preferredPort || 43100),
+    CABLETIDY_PREFERRED_PORT: String(options.preferredPort ?? 0),
   };
   let loader = options.loadCodexCatalog;
   let catalogServer;
+  const catalogErrors = [];
+  const commandErrors = path.join(paths.home, "catalog-command-errors.log");
   if (loader) {
     catalogServer = http.createServer(async (req, res) => {
       try {
         const value = await loader();
         res.end(req.url === "/version" ? value.version : JSON.stringify(value.catalog));
-      } catch { res.writeHead(503); res.end("catalog unavailable"); }
+      } catch (error) { catalogErrors.push(String(error.stack || error)); res.writeHead(503); res.end("catalog unavailable"); }
     });
     await new Promise(resolve => catalogServer.listen(0, "127.0.0.1", resolve));
     const commands = path.join(paths.home, "test-commands");
     await fs.mkdir(commands, { recursive: true });
-    await writeCodexCommand(commands, `fetch("http://127.0.0.1:${catalogServer.address().port}/" + (process.argv.includes("--version") ? "version" : "models")).then(async r => { if (!r.ok) process.exit(1); process.stdout.write(await r.text()); }).catch(() => process.exit(1));`);
+    await writeCodexCommand(commands, `
+      fetch("http://127.0.0.1:${catalogServer.address().port}/" + (process.argv.includes("--version") ? "version" : "models"))
+        .then(async r => {
+          if (!r.ok) throw new Error("Catalog fixture HTTP " + r.status + ": " + await r.text());
+          process.stdout.write(await r.text());
+        }).catch(error => {
+          const detail = String(error.stack || error) + (error.cause ? "\\nCause: " + String(error.cause.stack || error.cause) : "");
+          console.error(detail);
+          require("node:fs").appendFileSync(${JSON.stringify(commandErrors)}, detail + "\\n");
+          process.exitCode = 1;
+        });
+    `);
     const pathKey = Object.keys(env).find(key => key.toLowerCase() === "path") || "PATH";
     env[pathKey] = `${commands}${path.delimiter}${env[pathKey] || ""}`;
   }
@@ -70,6 +83,13 @@ export async function createApplication(options = {}) {
   };
   return {
     url: runtime.web.url, state, child,
+    async diagnostics() {
+      const command = await fs.readFile(commandErrors, "utf8").catch(error => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      return { daemon: output, catalogErrors, commandErrors: command };
+    },
     close() {
       return closing ||= (async () => {
         child.stdin.end("stop\n");
