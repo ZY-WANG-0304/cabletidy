@@ -25,7 +25,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 检查使用本地规则和有界缓冲。未知工具、动态脚本、未覆盖的推理内容、图片、加密内容以及超限情况会显示覆盖不足。数据库不可用或队列满时代理继续运行，页面显示审计退化状态；正常退出会排空已接收的写入，强制退出可能丢失未提交记录。它是本地可追溯日志，不提供零丢失或防篡改保证。
 
-分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。此功能属于当前源码实现，尚未发布到 npm。
+分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。此功能纳入 `0.3.0-rc.1` 候选版；候选版发布与验收状态见 [发布说明](docs/releases/0.3.0-rc.1.md)。
 
 ## 模型透传与可选设置
 
@@ -48,7 +48,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用原生进程 API 查询进程身份；Codex 目录查询仍需要系统 Windows PowerShell，并允许 `Add-Type` 调用 Windows Job Object API。
 
-本次 Rust 重构尚未发布，不会改变 npm 上既有的 `0.2.0` 包。`0.2.0` 的变更与升级注意事项见 [发布说明](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/releases/0.2.0.md)。
+当前源码版本为 `0.3.0-rc.1`，正在准备候选发布；本页的原生程序、后台运行和安全审计说明对应此版本。npm 的 `latest` 仍为 Node 实现的 `0.2.0`，默认安装命令不会选择候选版。候选版发布后可按 [发布说明](docs/releases/0.3.0-rc.1.md) 指定版本安装；GitHub Pre-release 可用不代表 npm 已发布。历史版本见 [0.2.0 发布说明](docs/releases/0.2.0.md)。
 
 ### 从 npm 官方源安装
 
@@ -66,10 +66,10 @@ npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cab
 
 ### 从本地安装包使用
 
-拿到 `.tgz` 安装包后，无需 clone 仓库即可安装：
+从对应 GitHub Release 下载 `package.tgz` 并按 `SHA256SUMS` 校验后，无需 clone 仓库即可安装：
 
 ```bash
-npm install -g /absolute/path/cabletidy-0.2.0.tgz
+npm install -g /absolute/path/package.tgz
 cabletidy --version
 cabletidy start
 ```
@@ -77,7 +77,7 @@ cabletidy start
 也可以不做全局安装，直接运行同一个安装包：
 
 ```bash
-npm exec --yes --package=/absolute/path/cabletidy-0.2.0.tgz -- cabletidy start
+npm exec --yes --package=/absolute/path/package.tgz -- cabletidy start
 ```
 
 npm 启动器需要本机 Node.js；发行包自带对应平台的原生二进制，没有 npm 运行时依赖，安装时不下载二进制、不编译 Rust。也可直接运行 `native/<平台>/cabletidy`（Windows 为 `.exe`）。安装过程不会启动服务或修改客户端配置。
@@ -97,7 +97,7 @@ cabletidy stop
 `status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前配置套装列表；每套配置包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
 `status` 和不带参数的命令只读取状态，不创建数据目录、配置、密钥或备份。尚未初始化时，只提示未启动以及运行 `cabletidy start`，不返回预设的管理台地址。
 
-升级时先停止服务，再安装最新版本并重新启动：
+升级时先停止服务，再安装目标版本并重新启动。从 `0.2.0` 升级时，先在原运行终端按 Ctrl+C，或通过原进程管理器停止；该版本没有 `stop` 命令。以下命令适用于已经支持 `stop` 的版本，且 `latest` 只选择稳定版；候选版升级步骤见 [发布说明](docs/releases/0.3.0-rc.1.md)：
 
 ```bash
 cabletidy stop

@@ -104,7 +104,7 @@ test("npm publish dry run tests assembled artifacts without rebuilding or replac
   assert.ok(process.env.npm_execpath, "Run with npm test");
   const { directory, files } = await releaseFixture(t);
   const before = await Promise.all(files.map(file => fs.readFile(file)));
-  await execute(process.execPath, [process.env.npm_execpath, "publish", "--dry-run", "--offline"], {
+  await execute(process.execPath, [process.env.npm_execpath, "publish", "--dry-run", "--offline", "--tag", "next"], {
     cwd: directory,
     timeout: 30000,
     env: { ...process.env, npm_config_cache: path.join(directory, "cache"), npm_config_ignore_scripts: "false", npm_config_update_notifier: "false" },
