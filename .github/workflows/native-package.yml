@@ -9,7 +9,11 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    uses: ./.github/workflows/test.yml
+
   native:
+    needs: checks
     strategy:
       fail-fast: false
       matrix:
@@ -18,7 +22,7 @@ jobs:
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -50,6 +54,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
       - if: runner.os != 'Linux'
         run: npm run build -- --target ${{ matrix.target }}
+      - run: npm run test:package:built
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
@@ -73,11 +78,66 @@ jobs:
           path: native/
       - run: chmod +x native/linux-*/cabletidy native/darwin-*/cabletidy
       - run: npm ci
-      - run: npm run check:release
+      - run: npm run pack:release
       - run: npm run test:package:built
-      - run: npm pack --ignore-scripts
+        env:
+          CABLETIDY_PACKAGE_TARBALL: dist-release/package.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: cabletidy-npm-package
-          path: cabletidy-*.tgz
+          path: dist-release/
           if-no-files-found: error
+
+  release:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: cabletidy-npm-package
+          path: dist-release/
+      - name: Verify release artifact
+        working-directory: dist-release
+        run: |
+          sha256sum -c SHA256SUMS
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          const release = JSON.parse(fs.readFileSync('release.json', 'utf8'));
+          const bytes = fs.readFileSync('package.tgz');
+          assert.equal(release.ref, process.env.GITHUB_REF);
+          assert.equal(release.commit, process.env.GITHUB_SHA);
+          assert.equal(`refs/tags/v${release.version}`, process.env.GITHUB_REF);
+          assert.equal(release.sha256, createHash('sha256').update(bytes).digest('hex'));
+          assert.equal(release.integrity, `sha512-${createHash('sha512').update(bytes).digest('base64')}`);
+          JS
+      - name: Create GitHub Release with verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          printf '%s\n\n' 'These assets passed the release workflow. npm publication is managed separately; this GitHub Release does not confirm npm availability.' > "$notes"
+          flags=()
+          if [[ -f "docs/releases/$version.md" ]]; then
+            cat "docs/releases/$version.md" >> "$notes"
+          else
+            flags+=(--generate-notes)
+          fi
+          if [[ "$version" == *-* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" \
+            dist-release/package.tgz dist-release/SHA256SUMS dist-release/release.json \
+            --verify-tag --title "CableTidy $version" --notes-file "$notes" "${flags[@]}"

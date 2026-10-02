@@ -37,6 +37,8 @@
     "test:package": "npm run build && node --test scripts/package-smoke.mjs",
     "test:claude": "node scripts/build-native.mjs --debug --test && node --test scripts/claude-smoke.mjs",
     "check:release": "node scripts/check-release.mjs",
+    "check:version": "node scripts/check-release.mjs --metadata-only",
+    "pack:release": "node scripts/pack-release.mjs",
     "prepublishOnly": "npm test && npm run check:release && npm run test:package:built",
     "test:package:built": "node --test scripts/package-smoke.mjs"
   },

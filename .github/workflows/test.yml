@@ -1,6 +1,7 @@
 name: Test
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -28,6 +29,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
+      - run: npm run check:version
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets --features test-support -- -D warnings
       - run: npm test
