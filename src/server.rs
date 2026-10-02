@@ -1564,59 +1564,18 @@ fn rewrite_spooled_event(
     Ok(output.into_inner().map_err(|e| e.into_error())?.seal()?)
 }
 #[cfg(test)]
-pub(crate) fn sse_delimiter(bytes: &[u8]) -> Option<(usize, usize)> {
-    for i in 0..bytes.len() {
-        for delimiter in [b"\r\n\r\n".as_slice(), b"\r\n\n", b"\n\r\n", b"\n\n"] {
-            if bytes[i..].starts_with(delimiter) {
-                return Some((i, delimiter.len()));
-            }
-        }
-    }
-    None
-}
-pub fn rewrite_event(bytes: &[u8], client: &str, mapped: &str, claude: bool) -> Vec<u8> {
-    let Ok(event) = std::str::from_utf8(bytes) else {
-        return bytes.to_vec();
-    };
-    let separator = if event.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = event
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
-        .collect();
-    let data: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| {
-            s.strip_prefix("data:")
-                .map(|v| (i, v.strip_prefix(' ').unwrap_or(v).to_owned()))
-        })
-        .collect();
-    if data.is_empty() {
-        return bytes.to_vec();
-    }
-    let payload = data
-        .iter()
-        .map(|(_, s)| s.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let Ok(mut parsed) = serde_json::from_str::<Value>(&payload) else {
-        return bytes.to_vec();
-    };
-    let original = parsed.clone();
-    model::rewrite(&mut parsed, client, mapped, claude);
-    if original == parsed {
-        return bytes.to_vec();
-    }
-    lines[data[0].0] = format!("data: {parsed}");
-    for (i, _) in data.iter().skip(1).rev() {
-        lines.remove(*i);
-    }
-    lines.join(separator).into_bytes()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rewrite_sse(bytes: &[u8], client: &str, mapped: &str, claude: bool) -> Vec<u8> {
+        let mut spool = Spool::new().unwrap();
+        spool.write_all(bytes).unwrap();
+        let rewritten =
+            rewrite_spooled_event(spool.seal().unwrap(), client, mapped, claude).unwrap();
+        let mut output = Vec::new();
+        rewritten.reader().read_to_end(&mut output).unwrap();
+        output
+    }
 
     #[tokio::test]
     async fn internal_local_errors_retain_the_returned_body_with_credential_redaction() {
@@ -1694,30 +1653,16 @@ mod tests {
             b"data: {bad json}\n\n",
             b": ping\r\nevent: ping\ndata: {\"type\":\"ping\"}\n\r\n",
         ] {
-            assert_eq!(rewrite_event(event, "client", "vendor", true), event);
+            assert_eq!(rewrite_sse(event, "client", "vendor", true), event);
         }
         let event = b"id: 42\r\nevent: message_start\r\ndata: {\"type\":\"message_start\",\r\ndata: \"message\":{\"model\":\"vendor\"},\"extra\":{\"model\":\"vendor\"}}\r\n\r\n";
-        let result = String::from_utf8(rewrite_event(event, "client", "vendor", true)).unwrap();
-        assert!(result.starts_with("id: 42\r\nevent: message_start\r\n"));
+        let result = String::from_utf8(rewrite_sse(event, "client", "vendor", true)).unwrap();
+        assert_eq!(
+            result.lines().take(2).collect::<Vec<_>>(),
+            ["id: 42", "event: message_start"]
+        );
         assert!(result.ends_with("\r\n\r\n"));
         assert!(result.contains("\"message\":{\"model\":\"client\"}"));
         assert!(result.contains("\"extra\":{\"model\":\"vendor\"}"));
-        assert_eq!(sse_delimiter(b"partial\r\n\r"), None);
-        assert_eq!(sse_delimiter(b"partial\r\n\r\n"), Some((7, 4)));
-    }
-
-    #[test]
-    fn sse_delimiters_wait_for_complete_lf_and_crlf_pairs() {
-        for delimiter in [b"\n\n".as_slice(), b"\r\n\r\n", b"\n\r\n", b"\r\n\n"] {
-            let event = [b"data: {}".as_slice(), delimiter].concat();
-            for end in 0..event.len() {
-                assert_eq!(sse_delimiter(&event[..end]), None);
-            }
-            assert_eq!(sse_delimiter(&event), Some((8, delimiter.len())));
-            assert_eq!(
-                sse_delimiter(&[event, b"data: {}\n\n".to_vec()].concat()),
-                Some((8, delimiter.len()))
-            );
-        }
     }
 }

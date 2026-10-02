@@ -56,11 +56,6 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
             json!({"clientModelId":r.client,"model":{"clientModelId":r.client,"profileId":r.profile_id,"profile":r.profile},"routeId":b.route,"upstream":b.upstream,"upstreamModelId":b.model,"capabilities":b.capabilities})
         }
         "model.models" => json!(model::models(x, y)),
-        "model.rewrite" => {
-            let mut out = x.clone();
-            model::rewrite(&mut out, text(y), text(z), false);
-            out
-        }
         "catalog.public" => catalog::public(x),
         "catalog.plan" => catalog::plan(x, y, z)?,
         "catalog.entry" => {

@@ -59,7 +59,6 @@ export const loadConfig = async paths => { const value = await read(paths.config
 export const readRuntimeInfo = paths => read(paths.runtime);
 export const resolveRequest = (config, provider, request) => native("model.resolve", config, provider, request);
 export const listClientModels = (config, provider) => native("model.models", config, provider);
-export const rewriteModelFields = (value, client, upstream) => native("model.rewrite", value, client, upstream);
 export const publicCodexCatalog = snapshot => native("catalog.public", snapshot);
 export const planCodexCatalog = (config, provider, snapshot) => native("catalog.plan", config, provider, snapshot);
 export const catalogEntryForProfile = (snapshot, id, profile) => native("catalog.entry", snapshot, id, profile);

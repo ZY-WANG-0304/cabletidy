@@ -228,27 +228,3 @@ pub fn models(config: &Value, provider: &Value) -> Vec<Value> {
         })
         .collect()
 }
-pub fn rewrite(v: &mut Value, client: &str, upstream: &str, claude: bool) {
-    if claude {
-        if v["type"] == "message" && v["model"] == upstream {
-            v["model"] = json!(client);
-        }
-        if v["type"] == "message_start" && v["message"]["model"] == upstream {
-            v["message"]["model"] = json!(client);
-        }
-        return;
-    }
-    if let Some(o) = v.as_object_mut() {
-        for (k, v) in o {
-            if k == "model" && v == upstream {
-                *v = json!(client);
-            } else {
-                rewrite(v, client, upstream, false);
-            }
-        }
-    } else if let Some(a) = v.as_array_mut() {
-        for v in a {
-            rewrite(v, client, upstream, false);
-        }
-    }
-}

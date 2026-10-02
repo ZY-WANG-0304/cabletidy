@@ -439,15 +439,80 @@ test("credential detection precedes redaction across UTF-8 pages and long creden
   }
 });
 
-test("large SSE deltas are reconstructed before credential redaction and tool inspection", async t => {
+test("headers and nested credentials are redacted while body positions remain reviewable", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const response = await f.request({
+    input: `Review rm -rf / and https://example.test, then ${secret}`,
+    arguments: JSON.stringify({ command: "echo hello", password: "nested-password-123" }),
+    output: "nested-password-123, header-secret-123 and session-secret-123",
+    key: "-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----",
+  }, { headers: { "content-type": "application/json", authorization: "Bearer header-secret-123", cookie: "session=session-secret-123; other=cookie-value-456" } });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  for (const forbidden of [secret, "nested-password-123", "header-secret-123", "session-secret-123", "cookie-value-456", "private-material"]) {
+    assert.equal(JSON.stringify(record).includes(forbidden), false, forbidden);
+  }
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  assert.match(body.text, /Review rm -rf \/ and https:\/\/example.test/);
+  assert.match(body.text, /echo hello/);
+  for (const id of ["request", "request/headers"]) {
+    const snapshot = record.bodySnapshots.find(s => s.id === id);
+    assert.equal(snapshot.state, "complete");
+    assert.ok(snapshot.redactions.length > 0);
+    for (const mark of snapshot.redactions) assert.equal(Buffer.from(snapshot.text).subarray(mark.start, mark.end).toString(), "[REDACTED]");
+  }
+});
+
+test("numeric and credential keys retain their wire order and byte positions", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const raw = `{"z":"hello","12":"value","${secret}":"one","[REDACTED]#2":"two","model":"${f.model}"}`;
+  const response = await f.request({}, { body: raw });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  assert.doesNotMatch(body.text, /known-security-secret-value/);
+  assert.match(body.text, /"z":"hello","12":"value","\[REDACTED\]":"one","\[REDACTED\]#2":"two"/);
+  assert.equal(Object.keys(body.body).length, 5);
+  assert.ok(body.redactions.length > 0);
+  for (const mark of body.redactions) assert.equal(Buffer.from(body.text).subarray(mark.start, mark.end).toString(), "[REDACTED]");
+});
+
+test("truncated nested JSON credentials never reach retained bodies", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const raw = '{"arguments":"{\\"api_key\\":\\"nested-credential\\",\\"cmd\\":\\"unfinished';
+  const response = await f.request({}, { body: raw });
+  assert.equal(response.status, 400); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "local_error")).items[0];
+  const record = (await review(f, audit.id)).record;
+  assert.equal(record.requestBodyState, "gap");
+  assert.doesNotMatch(JSON.stringify(record), /nested-credential/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("unfinished Messages fragments hide partial credentials", async t => {
+  const partial = secret.slice(0, 13);
+  const f = await fixture(t, (req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: partial } }));
+  }, { claude: true, passthrough: true });
+  await (await f.request({ stream: true })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "unknown")).items[0];
+  const record = (await review(f, audit.id)).record;
+  assert.equal(JSON.stringify(record).includes(partial), false);
+  assert.ok(record.coverageReasons.includes("incomplete_stream_fragment"));
+});
+
+for (const initial of [false, true]) test(`large SSE deltas are reconstructed with ${initial ? "initial arguments" : "empty initial arguments"} before redaction`, async t => {
   const unknown = "cross-event-unknown-credential";
   const args = JSON.stringify({ description: "ordinary ".repeat(40000), password: unknown, cmd: dangerous });
   const at = args.indexOf(unknown) + 7;
   const f = await fixture(t, (req, res, body) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end([
-      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", name: "exec_command", arguments: "" } },
-      { type: "response.function_call_arguments.delta", output_index: 0, delta: args.slice(0, at) },
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", name: "exec_command", arguments: initial ? args.slice(0, at - 3) : "" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: args.slice(initial ? at - 3 : 0, at) },
       { type: "response.function_call_arguments.delta", output_index: 0, delta: args.slice(at) },
       { type: "response.function_call_arguments.done", output_index: 0, arguments: args },
       { type: "response.completed", response: { model: body.model, output: [] } },

@@ -35,7 +35,7 @@ impl Security {
     }
     pub fn status(&self) -> Value {
         json!({"mode":"record_only","ruleVersion":"2","categories":rules::CATEGORIES,"storage":self.store.status(),
-            "resources":streaming::usage(),"limits":{"bodyPageBytes":4*streaming::PAGE,"snapshotQueueBytes":store::QUEUE_BYTES,"concurrentInspections":4},
+            "resources":streaming::usage(),"limits":{"bodyPageBytes":4*streaming::PAGE,"concurrentInspections":4},
             "pendingInspections":self.jobs.load(Ordering::Acquire),
             "coverage":["known_credentials","credential_patterns_before_redaction","structured_tool_calls","literal_shell_commands","external_instruction_heuristics"]})
     }
