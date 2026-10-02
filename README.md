@@ -125,7 +125,7 @@ npm pack
 
 源码中的 `npm start` 与 `cargo run --bin cabletidy -- start` 使用前台 Rust CLI；安装包中的 `cabletidy start` 由启动器放到后台运行。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
 
-本地先运行 `npm run build` 构建当前平台，再运行 `npm pack` 打包，适用于同平台试用。打包和发布钩子不会重新构建或覆盖 `native/` 中的产物。完整发行包由 `Build Native Package` 工作流汇总五个平台的产物，Linux 使用 musl 构建；工作流只生成可下载的 npm tarball，不自动发布。`npm run check:release` 校验各平台二进制、编译目标、版本和摘要，缺少平台或 Linux 目标不是 musl 时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。
+本地先运行 `npm run build` 构建当前平台，再运行 `npm pack` 打包，适用于同平台试用。打包和发布钩子不会重新构建或覆盖 `native/` 中的产物。完整发行包由 `Build Native Package` 工作流在同一提交的完整测试通过后汇总五个平台的产物，Linux 使用 musl 构建；各平台验证实际发行二进制，汇总后直接安装最终 tarball 冒烟。工作流生成可下载的 npm tarball、提交信息和校验摘要，并在 tag 构建通过后自动创建 GitHub Release、附上这三个文件；候选版本标记为 Pre-release，不自动发布 npm。`npm run check:version` 核对四个版本文件及版本 tag，`npm run check:release` 进一步校验各平台二进制、编译目标、版本和摘要，缺少平台或 Linux 目标不是 musl 时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。候选版验收、正式发布与回退步骤见 [维护者发布流程](docs/release-process.md)。
 
 #### 开发与调试
 

@@ -21,7 +21,7 @@ async function releaseFixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-release-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const metadata = JSON.parse(await fs.readFile(new URL("package.json", root), "utf8"));
-  for (const file of ["Cargo.toml", "scripts/check-release.mjs", "scripts/build-native.mjs", "bin/cabletidy.mjs", "bin/native.mjs"]) {
+  for (const file of ["Cargo.toml", "Cargo.lock", "package-lock.json", "scripts/check-release.mjs", "scripts/pack-release.mjs", "scripts/build-native.mjs", "bin/cabletidy.mjs", "bin/native.mjs"]) {
     await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
     await fs.copyFile(new URL(file, root), path.join(directory, file));
   }
@@ -51,6 +51,54 @@ async function releaseFixture(t) {
   await fs.writeFile(path.join(directory, "package.json"), JSON.stringify(metadata));
   return { directory, files };
 }
+
+for (const [file, rootVersion] of [["Cargo.toml"], ["Cargo.lock"], ["package-lock.json", true], ["package-lock.json", false]]) {
+  test(`version validation rejects an out-of-sync ${file}${rootVersion === undefined ? "" : rootVersion ? " root version" : " package entry"}`, async t => {
+    const { directory } = await releaseFixture(t);
+    const location = path.join(directory, file);
+    let content = await fs.readFile(location, "utf8");
+    if (file === "package-lock.json") {
+      const lock = JSON.parse(content);
+      if (rootVersion) lock.version = "99.0.0";
+      else lock.packages[""].version = "99.0.0";
+      content = JSON.stringify(lock);
+    } else {
+      content = content.replace(/(name = "cabletidy"\s+version = ")[^"]+/, "$199.0.0");
+    }
+    await fs.writeFile(location, content);
+    await assert.rejects(execute(process.execPath, ["scripts/check-release.mjs", "--metadata-only"], {
+      cwd: directory,
+    }), /must match package.json/);
+  });
+}
+
+test("metadata validation works without binaries and rejects mismatched tags", async t => {
+  const { directory } = await releaseFixture(t);
+  await fs.rm(path.join(directory, "native"), { recursive: true });
+  const { version } = JSON.parse(await fs.readFile(path.join(directory, "package.json"), "utf8"));
+  const check = ref => execute(process.execPath, ["scripts/check-release.mjs", "--metadata-only"], {
+    cwd: directory, env: { ...process.env, GITHUB_REF: ref },
+  });
+  await check(`refs/tags/v${version}`);
+  await check("refs/heads/main");
+  await assert.rejects(check("refs/tags/v99.0.0"), /Release tag.*must match/);
+});
+
+test("release pack records the commit and checksums of the unchanged tarball", async t => {
+  const { directory, files } = await releaseFixture(t);
+  const before = await Promise.all(files.map(file => fs.readFile(file)));
+  await execute("git", ["init"], { cwd: directory });
+  await execute("git", ["-c", "user.name=Release Test", "-c", "user.email=release@example.invalid", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture"], { cwd: directory });
+  await execute(process.execPath, ["scripts/pack-release.mjs"], { cwd: directory });
+  const output = path.join(directory, "dist-release");
+  const metadata = JSON.parse(await fs.readFile(path.join(output, "release.json"), "utf8"));
+  const bytes = await fs.readFile(path.join(output, "package.tgz"));
+  assert.equal(metadata.sha256, createHash("sha256").update(bytes).digest("hex"));
+  assert.equal(metadata.integrity, `sha512-${createHash("sha512").update(bytes).digest("base64")}`);
+  assert.equal(metadata.commit, (await execute("git", ["rev-parse", "HEAD"], { cwd: directory })).stdout.trim());
+  assert.equal(await fs.readFile(path.join(output, "SHA256SUMS"), "utf8"), `${metadata.sha256}  package.tgz\n`);
+  assert.deepEqual(await Promise.all(files.map(file => fs.readFile(file))), before);
+});
 
 test("npm publish dry run tests assembled artifacts without rebuilding or replacing them", async t => {
   assert.ok(process.env.npm_execpath, "Run with npm test");

@@ -6,7 +6,26 @@ import { targets } from "./build-native.mjs";
 const root = new URL("../", import.meta.url);
 const version = JSON.parse(await fs.readFile(new URL("package.json", root), "utf8")).version;
 const cargo = await fs.readFile(new URL("Cargo.toml", root), "utf8");
-if (!cargo.includes(`version = "${version}"`)) throw new Error("Cargo and npm versions must match");
+const cargoLock = await fs.readFile(new URL("Cargo.lock", root), "utf8");
+const npmLock = JSON.parse(await fs.readFile(new URL("package-lock.json", root), "utf8"));
+const field = (section, name) => section?.match(new RegExp(`^${name}\\s*=\\s*"([^"]+)"`, "m"))?.[1];
+const cargoPackage = cargo.split(/^\[package\]\s*$/m)[1]?.split(/^\[/m)[0];
+const lockedPackages = cargoLock.split(/^\[\[package\]\]\s*$/m)
+  .filter(section => field(section, "name") === "cabletidy");
+for (const [file, actual] of [
+  ["Cargo.toml", field(cargoPackage, "version")],
+  ["Cargo.lock", lockedPackages.length === 1 ? field(lockedPackages[0], "version") : undefined],
+  ["package-lock.json", npmLock.version],
+  ["package-lock.json packages[\"\"]", npmLock.packages?.[""]?.version],
+]) {
+  if (actual !== version) throw new Error(`${file} version ${actual} must match package.json ${version}`);
+}
+const ref = process.env.GITHUB_REF;
+if (ref?.startsWith("refs/tags/") && ref !== `refs/tags/v${version}`) {
+  throw new Error(`Release tag ${ref} must match v${version}`);
+}
+console.log(`Validated CableTidy ${version} version metadata${ref ? ` (${ref})` : ""}`);
+if (process.argv.includes("--metadata-only")) process.exit(0);
 const platforms = [...new Set(Object.values(targets))];
 for (const platform of platforms) {
   const directory = new URL(`native/${platform}/`, root);

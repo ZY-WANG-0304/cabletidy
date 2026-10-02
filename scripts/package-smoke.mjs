@@ -31,14 +31,17 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   };
   const options = { cwd, env, timeout: 90000 };
   const npm = (args, overrides = {}) => execute(process.execPath, [process.env.npm_execpath, ...args], { ...options, ...overrides });
-  const packed = JSON.parse((await npm([
+  const suppliedTarball = process.env.CABLETIDY_PACKAGE_TARBALL;
+  const packed = suppliedTarball ? null : JSON.parse((await npm([
     "pack", "--json", "--ignore-scripts", "--pack-destination", directory,
   ], { cwd: root })).stdout)[0];
-  const files = packed.files.map(file => file.path);
-  assert.ok(files.includes("bin/cabletidy.mjs"));
-  assert.ok(files.includes(`native/${process.platform}-${process.arch}/cabletidy${process.platform === "win32" ? ".exe" : ""}`));
-  assert.ok(files.every(file => /^(bin\/|native\/|package\.json$|README\.md$|LICENSE(?:\..*)?$)/.test(file)));
-  const tarball = path.join(directory, packed.filename);
+  const files = packed?.files.map(file => file.path);
+  if (files) {
+    assert.ok(files.includes("bin/cabletidy.mjs"));
+    assert.ok(files.includes(`native/${process.platform}-${process.arch}/cabletidy${process.platform === "win32" ? ".exe" : ""}`));
+    assert.ok(files.every(file => /^(bin\/|native\/|package\.json$|README\.md$|LICENSE(?:\..*)?$)/.test(file)));
+  }
+  const tarball = suppliedTarball ? path.resolve(root, suppliedTarball) : path.join(directory, packed.filename);
   await npm(["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball]);
   const packageRoot = process.platform === "win32"
     ? path.join(prefix, "node_modules", "cabletidy")
@@ -60,6 +63,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     finally { await fs.rm(directory, { recursive: true, force: true }); }
   });
   const metadata = JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8"));
+  assert.equal(metadata.version, JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8")).version);
   assert.equal((await cli(["--version"])).stdout.trim(), metadata.version);
   assert.match((await cli(["--help"])).stdout, /Usage: cabletidy/);
   await assert.rejects(fs.access(home), { code: "ENOENT" });
@@ -130,7 +134,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   await assert.rejects(fs.access(shim), { code: "ENOENT" });
   assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
   assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
-  t.diagnostic(`${packed.filename}: ${packed.entryCount} files, ${packed.size} packed bytes`);
+  t.diagnostic(packed ? `${packed.filename}: ${packed.entryCount} files, ${packed.size} packed bytes` : `Verified supplied tarball: ${tarball}`);
 });
 
 async function waitFor(predicate) {

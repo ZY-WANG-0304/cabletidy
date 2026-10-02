@@ -6,3 +6,4 @@ data/
 *.tgz
 /target/
 /native/
+/dist-release/

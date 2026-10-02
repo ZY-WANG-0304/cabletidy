@@ -57,7 +57,7 @@ npm run test:package
 
 `npm run test:package` 构建 release 二进制，在临时前缀执行实际 tarball 安装，从无关工作目录验证 CLI、内嵌 Web 文件、状态、端口冲突、重启地址、退出和卸载保留数据。测试使用临时数据目录，不操作日常 Codex / Claude 配置。
 
-CI 的 `Test` 工作流在 Linux、macOS、Windows 上运行 Node.js 22.13.0 / 24 的测试及打包冒烟。`Build Native Package` 工作流额外构建五个平台产物；macOS 两种架构由 Xcode SDK 编译，测试在工作流实际宿主架构上运行。Windows 自动化覆盖私有管道触发的退出处理、npm `.cmd` 入口和 Job Object 后代清理；真实控制台 Ctrl+C 仍需交互验收。平台结果以该提交的 Actions 为准，Linux 本地测试不能替代这些结果。
+CI 的 `Test` 工作流在 Linux、macOS、Windows 上运行 Node.js 22.13.0 / 24 的版本检查、格式检查、Clippy、测试及打包冒烟。`Build Native Package` 在同一个提交上复用完整 `Test` 工作流，通过后构建五个平台产物，并在对应架构的 runner 上对实际发行二进制执行安装冒烟；macOS x64 使用 `macos-15-intel`，arm64 使用 `macos-latest`。Windows 自动化覆盖私有管道触发的退出处理、npm `.cmd` 入口和 Job Object 后代清理；真实控制台 Ctrl+C 仍需交互验收。平台结果以该提交的 Actions 为准，Linux 本地测试不能替代这些结果。
 
 安装了 Claude Code 时，`npm run test:claude` 用本地模拟上游验证真实 CLI 与 Rust daemon 的 JSON / SSE 接入，不调用真实模型服务。
 
@@ -65,19 +65,26 @@ CI 的 `Test` 工作流在 Linux、macOS、Windows 上运行 Node.js 22.13.0 / 2
 
 本地先运行 `npm run build`，再运行 `npm pack`，生成当前平台测试包。`npm pack` 不执行构建，打包和发布钩子不会重新生成或覆盖已经组装的 `native/` 产物。
 
-完整包由 `.github/workflows/native-package.yml` 在手动触发或版本 tag 后组装：各 runner 测试并构建目标二进制，汇总到 `native/`，校验版本和摘要，在 Linux 上对汇总包执行安装冒烟，最后上传 npm tarball。工作流没有 npm 发布步骤。
+完整包由 `.github/workflows/native-package.yml` 在手动触发或版本 tag 后组装。完整测试通过后，各 runner 构建并验证目标二进制，汇总到 `native/`，校验版本和摘要，再生成最终 tarball。Linux 安装冒烟直接安装该 tarball，通过后上传 `cabletidy-npm-package` artifact。tag 构建随后自动创建 GitHub Release 并附上该 artifact 中的三个文件；候选版本标记为 Pre-release，分支构建不创建 Release。工作流没有 npm 发布步骤。
+
+artifact 包含 `package.tgz`、`SHA256SUMS` 和 `release.json`。后者记录包版本、提交 SHA、GitHub ref、运行 ID、tarball SHA-256 和 npm SHA-512 integrity。它们用于核对产物来源和完整性，不是签名或 npm provenance；应从对应提交的可信 Actions 运行下载。
 
 维护者下载各平台产物到 `native/` 后，也可以本地验证和打包：
 
 ```bash
 npm run check:release
 npm run test:package:built
-npm pack --ignore-scripts
+npm run pack:release
+CABLETIDY_PACKAGE_TARBALL=dist-release/package.tgz npm run test:package:built
 ```
 
-`check:release` 缺少任一平台、编译目标不匹配、版本不一致或摘要不匹配时失败；Linux 发行产物必须声明 musl 目标，宿主 GNU 构建不能通过校验。`prepublishOnly` 运行源码测试、完整平台校验和 `test:package:built`，安装冒烟直接使用已组装的二进制，不调用会覆盖当前平台产物的 `test:package`。手动跳过 npm 生命周期钩子也会跳过该保护，维护者应发布已验证的完整产物。
+`check:version` 无需二进制即可核对 `package.json`、`package-lock.json`（含根包条目）、`Cargo.toml` 和 `Cargo.lock` 中的应用版本；tag 构建还必须满足 `GITHUB_REF=refs/tags/v<版本>`。`check:release` 包含上述检查，并在缺少任一平台、编译目标不匹配、版本不一致或摘要不匹配时失败；Linux 发行产物必须声明 musl 目标，宿主 GNU 构建不能通过校验。`pack:release` 先执行完整产物检查，再打包到 `dist-release/` 并生成摘要。
+
+从源码目录发布时，`prepublishOnly` 运行源码测试、完整平台校验和 `test:package:built`，安装冒烟直接使用已组装的二进制，不调用会覆盖当前平台产物的 `test:package`。发布现成 tarball 时不依赖源码目录中的生命周期钩子，应使用已通过 CI 验证的完整产物。
 
 实际发布继续使用 npm 官方源和 MIT 许可，需维护者完成 npm 登录与发布认证；同版本不能覆盖发布。发布成功后确认 registry 的版本、`latest` 和 `dist.integrity`，再使用全新缓存执行按包名安装验证。
+
+具体的候选版验收、发布命令与失败处理见 [维护者发布流程](release-process.md)。
 
 ## 后续服务管理
 
