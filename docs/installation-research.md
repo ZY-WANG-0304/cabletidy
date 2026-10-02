@@ -1,12 +1,12 @@
 # CableTidy 安装与分发决策
 
-更新日期：2026-09-26。2026-09-21 的初始方案为 Node.js CLI npm 包；本次 Rust 重构沿用 npm 命令体验，服务端改为原生程序。
+更新日期：2026-10-02。2026-09-21 的初始方案为 Node.js CLI npm 包；本次 Rust 重构沿用 npm 命令体验，服务端改为原生程序。
 
 ## 当前决策
 
 主要分发产物仍是 npm 包及同结构的 `.tgz`。包内包含 Node.js 薄启动器和预编译的 Rust 程序，没有 npm 运行时依赖，也没有安装时下载或编译步骤。独立 Rust 二进制同样可运行，不需要 Node.js。
 
-npm 上已发布的 `0.1.0` / `0.2.0` 仍对应原 Node 实现；本次迁移不覆盖既有版本，也不自动发布。下一次发布前需要同步递增 `Cargo.toml`、`Cargo.lock`、`package.json` 和 `package-lock.json` 的应用版本。
+npm 上已发布的 `0.1.0` / `0.2.0` 仍对应原 Node 实现；本次迁移以 `0.3.0-rc.1` 准备候选发布，不覆盖既有版本，也不自动发布 npm。`Cargo.toml`、`Cargo.lock`、`package.json` 和 `package-lock.json` 的应用版本已同步；发布状态与升级步骤见 [候选版说明](releases/0.3.0-rc.1.md)。
 
 CLI 继续提供 `start`、`stop`、`status`、帮助和版本查询。安装不启动服务、不注册系统服务、不修改客户端配置。用户数据独立于安装目录，继续使用 `config.json`、`secrets.json`、`runtime.json` 和 `daemon.lock/`；升级不要求转换为 TOML 或 OS keyring。
 
