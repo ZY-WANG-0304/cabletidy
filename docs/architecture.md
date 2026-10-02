@@ -645,6 +645,8 @@ GET  /api/v1/integrations
 
 配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
 
+安装后的 npm 启动器让 `start` 脱离终端，确认管理接口就绪后返回，日志写入 `daemon.log`；源码调试与 `start --foreground` 保持前台。Rust `stop` 根据 runtime 和 owner 记录核对进程身份与实例 UUID，再写入本代次 `stop-<UUID>.json`。服务轮询该文件并执行请求排空、审计持久化和锁释放；停止命令等待该代次结束，避免误停 PID 复用后的其他进程。新实例不会读取旧代次的停止请求。
+
 `src/lifecycle.rs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和同一模块查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 `GetProcessTimes` 创建时间。Windows 使用只读进程查询句柄，结合退出状态区分已退出进程与无法查询的进程，不启动 PowerShell；创建时间转换为既有 `win32:` 标识使用的 .NET UTC ticks，保持旧锁兼容。Tokio 任务每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
 
 身份检查明确区分存活、死亡和未知。存活或未过期返回 `ELOCKED`；过期但身份未知（旧格式缺字段、查询失败、其他主机）或缺少可安全删除的 owner 标记，返回 `ELOCKUNKNOWN` 和人工恢复步骤。旧 Linux start ticks 不含 boot ID，只能在数值不同时排除原持有者，不能凭数值相同确认存活。空的旧锁目录也需要人工确认和删除。暂停的实例不被 mtime 误回收，恢复后的心跳仍能正常更新。
@@ -671,7 +673,7 @@ Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` �
 当前 Rust 实现对应关系：
 
 ```text
-src/main.rs                       CLI: start / status / help / version
+src/main.rs                       CLI: start / stop / status / help / version
 src/config.rs                     JSON store / normalization / secrets / diff
 src/validation.rs                 graph validation / references / local listener limits
 src/model.rs                      provider-scoped model resolution / capabilities / rewrites

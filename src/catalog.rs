@@ -120,11 +120,16 @@ async fn execute(args: &[&str]) -> Result<String> {
         let status = async {
             let status = child.wait().await?;
             if !status.success() {
-                bail!("codex exited with {status}");
+                // Release pipes held by descendants before collecting failure diagnostics.
+                kill_tree(pid);
             }
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(status)
         };
-        let (_, out, _) = tokio::try_join!(status, bounded(stdout), bounded(stderr))?;
+        let (status, out, err) = tokio::try_join!(status, bounded(stdout), bounded(stderr))?;
+        if !status.success() {
+            let detail = String::from_utf8_lossy(&err[..err.len().min(4096)]);
+            bail!("codex exited with {status}: {}", detail.trim());
+        }
         String::from_utf8(out).context("codex returned invalid UTF-8")
     })
     .await

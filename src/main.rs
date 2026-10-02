@@ -5,7 +5,7 @@ use tokio::io::AsyncBufReadExt;
 #[tokio::main(worker_threads = 2)]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("{error:#}");
+        cabletidy::daemon_log::error(format_args!("{error:#}"));
         std::process::exit(1);
     }
     // All daemon work has drained; Tokio's blocking stdin reader may still be waiting on the launcher.
@@ -15,7 +15,7 @@ async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("status");
     if ["--help", "-h", "help"].contains(&command) {
-        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start                       Start the daemon in the foreground\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNo command: show status");
+        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start                       Start daemon (npm: background; native: foreground)\n  stop                        Stop a running daemon\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNo command: show status");
         return Ok(());
     }
     if ["--version", "-v"].contains(&command) {
@@ -27,6 +27,7 @@ async fn run() -> Result<()> {
     }
     let paths = Paths::from_env()?;
     match command {
+        "stop" => std::process::exit(lifecycle::stop(&paths, stop_cancellation()?).await?),
         "status" => println!(
             "{}",
             serde_json::to_string_pretty(&lifecycle::status(&paths).await?)?
@@ -62,4 +63,34 @@ async fn run() -> Result<()> {
         _ => bail!("未知命令: {command}\nUsage: cabletidy <command>"),
     }
     Ok(())
+}
+
+fn stop_cancellation() -> Result<impl std::future::Future<Output = i32>> {
+    #[cfg(unix)]
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let managed = std::env::var_os("CABLETIDY_MANAGED_STDIN").is_some();
+    Ok(async move {
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        loop {
+            tokio::select! {
+                signal = lines.next_line(), if managed => match signal {
+                    Ok(Some(line)) if line == "SIGINT" => return 130,
+                    Ok(Some(line)) if line == "SIGTERM" => return 143,
+                    Ok(Some(_)) => continue,
+                    _ => return 130,
+                },
+                _ = async {
+                    if tokio::signal::ctrl_c().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                } => return 130,
+                _ = async {
+                    #[cfg(unix)]
+                    term.recv().await;
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                } => return 143,
+            }
+        }
+    })
 }

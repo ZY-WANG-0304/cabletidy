@@ -20,14 +20,6 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   const codexHome = path.join(directory, "codex");
   const cwd = path.join(directory, "unrelated");
   await fs.mkdir(cwd);
-  const children = new Set();
-  t.after(async () => {
-    for (const child of children) {
-      await killChild(child.process);
-      await child.closed;
-    }
-    await fs.rm(directory, { recursive: true, force: true });
-  });
   const env = {
     ...process.env,
     CABLETIDY_HOME: home,
@@ -63,6 +55,10 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
     child.once("close", code => code === 0 ? resolve({ stdout, stderr })
       : reject(Object.assign(new Error(stderr), { code, stderr, stdout })));
   });
+  t.after(async () => {
+    try { if (await fs.stat(shim).catch(() => null)) await cli(["stop"]); }
+    finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
   const metadata = JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8"));
   assert.equal((await cli(["--version"])).stdout.trim(), metadata.version);
   assert.match((await cli(["--help"])).stdout, /Usage: cabletidy/);
@@ -74,33 +70,27 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   let savedConfig;
   let url;
 
-  let previousPid;
-  for (const signal of process.platform === "win32" ? ["SIGKILL", "SIGKILL"] : ["SIGTERM", "SIGINT"]) {
-    if (previousPid && process.platform === "win32") await delay(10500);
-    const processHandle = spawn(shim, ["start"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    processHandle.stdout.on("data", chunk => { output += chunk; });
-    processHandle.stderr.on("data", chunk => { output += chunk; });
-    const child = {
-      process: processHandle,
-      closed: new Promise((resolve, reject) => {
-        processHandle.once("error", reject);
-        processHandle.once("close", (code, exitSignal) => resolve({ code, signal: exitSignal }));
-      }),
-    };
-    children.add(child);
-    await waitFor(async () => {
-      assert.equal(processHandle.exitCode, null, output);
-      try {
-        const runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
-        return runtime.pid && runtime.pid !== previousPid;
-      } catch (error) {
-        if (error.code === "ENOENT") return false;
-        throw error;
+  assert.match((await cli(["stop"])).stdout, /not running/);
+  await assert.rejects(fs.access(home), { code: "ENOENT" });
+
+  for (let restart = 0; restart < 2; restart += 1) {
+    if (restart) {
+      // Upgrade from an unbounded logger: oversized existing files must also be capped.
+      for (const suffix of ["", ".1", ".2", ".3"]) {
+        const log = await fs.open(path.join(home, `daemon.log${suffix}`), "w");
+        try { await log.truncate(10 * 1024 * 1024 + 64); }
+        finally { await log.close(); }
       }
-    });
+    }
+    await assert.rejects(cli(["start", "--invalid"]));
+    const started = await cli(["start"]);
+    assert.match(started.stdout, /CableTidy started:/);
+    assert.match(started.stdout, /daemon\.log/);
+    const logs = (await fs.readdir(home)).filter(name => /^daemon\.log(?:\.\d+)?$/.test(name));
+    assert.ok(logs.length <= 4);
+    for (const name of logs) assert.ok((await fs.stat(path.join(home, name))).size <= 10 * 1024 * 1024);
+    assert.match(await fs.readFile(path.join(home, "daemon.log"), "utf8"), /CableTidy Web/);
     const runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
-    previousPid = runtime.pid;
     if (url === undefined) {
       url = runtime.web.url;
       savedConfig = await fs.readFile(configFile, "utf8");
@@ -123,18 +113,14 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.match(error.stderr, /ELOCKED/);
       return true;
     });
-    if (process.platform === "win32") await killChild(processHandle);
-    else processHandle.kill(signal);
-    await waitFor(() => processHandle.exitCode !== null || processHandle.signalCode !== null);
-    const exit = await child.closed;
-    if (process.platform !== "win32") assert.deepEqual(exit, { code: 0, signal: null }, output);
-    children.delete(child);
-    if (process.platform !== "win32") {
-      await assert.rejects(fs.access(path.join(home, "runtime.json")), { code: "ENOENT" });
-    }
+    assert.match((await cli(["stop"])).stdout, /CableTidy stopped/);
+    await waitFor(async () => {
+      try { await fs.access(path.join(home, "runtime.json")); return false; }
+      catch (error) { if (error.code === "ENOENT") return true; throw error; }
+    });
     assert.equal(JSON.parse((await cli(["status"])).stdout).runtime.status, "offline");
+    assert.match((await cli(["stop"])).stdout, /not running/);
   }
-  if (process.platform === "win32") t.diagnostic("Windows: actual .cmd entry, forced termination and stale-lock restart verified; console Ctrl+C requires interactive verification");
   assert.equal(JSON.parse((await npm([
     "exec", "--yes", `--package=${tarball}`, "--", "cabletidy", "status",
   ])).stdout).runtime.status, "offline");
@@ -146,13 +132,6 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
   assert.equal(await fs.readFile(path.join(home, "secrets.json"), "utf8"), savedSecrets);
   t.diagnostic(`${packed.filename}: ${packed.entryCount} files, ${packed.size} packed bytes`);
 });
-
-async function killChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") {
-    await execute(path.join(process.env.SystemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"]);
-  } else child.kill("SIGKILL");
-}
 
 async function waitFor(predicate) {
   const deadline = Date.now() + 10000;

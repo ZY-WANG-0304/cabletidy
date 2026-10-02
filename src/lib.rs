@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod config;
+pub mod daemon_log;
 mod fsutil;
 pub mod lifecycle;
 pub mod model;

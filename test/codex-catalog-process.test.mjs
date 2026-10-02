@@ -28,7 +28,7 @@ for (const [name, body, expected] of [
   ["missing executable", null, process.platform === "win32"
     ? /codex exited with exit code: 127/
     : /No such file|cannot find|not recognized|os error 2/i],
-  ["nonzero exit", "process.exit(7);", /exit.*7/],
+  ["nonzero exit", 'console.error("fixture subprocess failure"); process.exit(7);', /exit.*7[\s\S]*fixture subprocess failure/],
   ["invalid catalog", 'console.log("invalid-json");', /JSON/],
   ["excessive output", 'process.stdout.write("x".repeat(17 * 1024 * 1024));', /16 MiB/],
 ]) {
