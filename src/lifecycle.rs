@@ -218,6 +218,48 @@ pub struct InstanceLock {
     marker: String,
     heartbeat: tokio::task::JoinHandle<()>,
 }
+
+async fn publish_lock_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        fs::rename(source, destination).await
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+        let source = source.to_owned();
+        let destination = destination.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // Canonical paths retain Rust's support for Windows paths over 260 characters.
+            let source = std::fs::canonicalize(source)?;
+            let destination = std::path::absolute(destination)?;
+            let destination = std::fs::canonicalize(
+                destination
+                    .parent()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+            )?
+            .join(
+                destination
+                    .file_name()
+                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+            );
+            let source: Vec<_> = source.as_os_str().encode_wide().chain([0]).collect();
+            let destination: Vec<_> = destination.as_os_str().encode_wide().chain([0]).collect();
+            // Unlike fs::rename's REPLACE_EXISTING, this reports an existing
+            // directory as AlreadyExists even if its owner immediately removes it.
+            if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+}
+
 async fn remove_generation(path: &Path, marker: &str) -> Result<()> {
     for remove_marker in [true, false] {
         let result = crate::fsutil::retry_sharing(|| async {
@@ -305,7 +347,7 @@ impl InstanceLock {
             let result = async {
                 crate::config::write_json(&staged.join(&marker), &identity).await?;
                 // Windows can deny a directory rename until competing handles close.
-                crate::fsutil::retry_sharing(|| fs::rename(&staged, &paths.lock))
+                crate::fsutil::retry_sharing(|| publish_lock_directory(&staged, &paths.lock))
                     .await
                     .context("publish daemon lock")?;
                 Ok::<_, anyhow::Error>(())
@@ -695,6 +737,40 @@ mod tests {
         );
         new.release().await.unwrap();
         assert!(!paths.lock.exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn publishing_over_an_existing_directory_reports_contention_without_replacing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = dir.path().to_owned();
+        for _ in 0..6 {
+            parent.push("long-directory-name-for-lock-publication-regression");
+        }
+        fs::create_dir_all(&parent).await.unwrap();
+        let staged = parent.join("staged");
+        let published = parent.join("published");
+        fs::create_dir(&staged).await.unwrap();
+        fs::write(staged.join("new-owner"), "new").await.unwrap();
+        for occupied in [false, true] {
+            fs::create_dir(&published).await.unwrap();
+            if occupied {
+                fs::write(published.join("old-owner"), "old").await.unwrap();
+            }
+            let error = publish_lock_directory(&staged, &published)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(staged.join("new-owner")).await.unwrap(), b"new");
+            assert!(!published.join("new-owner").exists());
+            if occupied {
+                assert_eq!(fs::read(published.join("old-owner")).await.unwrap(), b"old");
+            }
+            fs::remove_dir_all(&published).await.unwrap();
+        }
+        publish_lock_directory(&staged, &published).await.unwrap();
+        assert!(!staged.exists());
+        assert_eq!(fs::read(published.join("new-owner")).await.unwrap(), b"new");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
