@@ -1044,6 +1044,42 @@ mod tests {
         }
     }
     #[test]
+    fn nested_response_models_are_rewritten_without_changing_other_values() {
+        let source = spool(br#"{"model":"vendor-sol","response":{"model":"vendor-sol","output":[{"type":"message","model":"unrelated"}]}}"#);
+        let edits = response_edits(&source, "sol", "vendor-sol", false).unwrap();
+        let actual: Value = serde_json::from_reader(edits.reader(&source)).unwrap();
+        assert_eq!(
+            actual,
+            json!({"model":"sol","response":{"model":"sol","output":[{"type":"message","model":"unrelated"}]}})
+        );
+    }
+
+    #[test]
+    fn sse_framing_waits_for_complete_delimiters_and_keeps_following_events() {
+        for delimiter in [b"\n\n".as_slice(), b"\r\n\r\n", b"\n\r\n", b"\r\n\n"] {
+            let event = [b"data: {}".as_slice(), delimiter].concat();
+            let mut framing = EventFramer::new();
+            for expected in [&event[..], b"data: {}\n\n".as_slice()] {
+                for (at, byte) in expected.iter().enumerate() {
+                    let completed = framing.byte(*byte).unwrap();
+                    if at + 1 == expected.len() {
+                        let mut actual = Vec::new();
+                        completed
+                            .unwrap()
+                            .reader()
+                            .read_to_end(&mut actual)
+                            .unwrap();
+                        assert_eq!(actual, expected);
+                    } else {
+                        assert!(completed.is_none());
+                    }
+                }
+            }
+            assert!(framing.finish().unwrap().is_none());
+        }
+    }
+
+    #[test]
     fn model_edits_and_large_multiline_events_preserve_extensions() {
         let payload=format!("{{\n\"type\":\"message_start\",\"message\":{{\"model\":\"vendor\"}},\"extension\":{{\"model\":\"vendor\",\"text\":\"{}\"}}}}","x".repeat(300000));
         let wire = format!(

@@ -64,25 +64,6 @@ impl Rules {
         }
     }
 
-    #[cfg(test)]
-    pub fn label(&self, value: &str) -> String {
-        if value.len() > 128
-            || value.chars().any(|c| c.is_control() || c.is_whitespace())
-            || value.contains("://")
-            || value.contains(['?', '#'])
-            || self.secret(value)
-        {
-            "[redacted]".into()
-        } else {
-            value.to_owned()
-        }
-    }
-
-    #[cfg(test)]
-    fn secret(&self, value: &str) -> bool {
-        self.known_secret(value) || CREDENTIAL.is_match(value)
-    }
-
     fn known_secret(&self, value: &str) -> bool {
         self.secrets.iter().any(|s| {
             if s.len() < 4 {
@@ -804,11 +785,6 @@ mod tests {
         assert!(!evidence.contains("known-private-api-key"));
         assert!(!evidence.contains("private.example"));
         assert_eq!(rules.findings.len(), 3);
-        assert_eq!(rules.label("known-private-api-key"), "[redacted]");
-        assert_eq!(
-            rules.label("https://user:password@example.invalid?token=private"),
-            "[redacted]"
-        );
         let mut pattern = Rules::new(&json!({}));
         pattern.content(
             "sk-abcdefghijklmnopqrstuvwxyz012345",

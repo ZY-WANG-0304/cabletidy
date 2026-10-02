@@ -6,7 +6,6 @@ import {
   ModelResolveError,
   listClientModels,
   resolveRequest,
-  rewriteModelFields,
 } from "./helpers/native.mjs";
 import { validateConfig } from "./helpers/native.mjs";
 
@@ -178,23 +177,6 @@ test("passthrough still validates model names, upstream state and protocol", () 
   config.upstreams.primary.protocol = "anthropic.messages";
   assert.throws(() => resolveRequest(config, provider, { model: "new-model" }),
     (error) => error.details.rejected[0].reason === "protocol_transform_missing");
-});
-
-test("rewrites nested response model fields back to the client model", () => {
-  const response = {
-    model: "vendor-sol",
-    response: {
-      model: "vendor-sol",
-      output: [{ type: "message", model: "unrelated" }],
-    },
-  };
-  assert.deepEqual(rewriteModelFields(response, "sol", "vendor-sol"), {
-    model: "sol",
-    response: {
-      model: "sol",
-      output: [{ type: "message", model: "unrelated" }],
-    },
-  });
 });
 
 test("identical official names resolve independently inside each Virtual Provider", () => {

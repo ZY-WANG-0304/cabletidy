@@ -5,10 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc, Arc, Mutex,
-    },
+    sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::oneshot;
@@ -16,11 +13,9 @@ use tokio::sync::oneshot;
 const RETENTION_DAYS: i64 = 30;
 const BUDGET: u64 = 128 * 1024 * 1024;
 pub(super) const MAX_RECORD: usize = 64 * 1024;
-pub const QUEUE_BYTES: usize = 32 * 1024 * 1024;
 
 enum Job {
     Write(Value),
-    Snapshot(String, String, String),
     Body(String, Value, mpsc::Sender<bool>),
     Query(Query, oneshot::Sender<Result<Value>>),
     Flush(oneshot::Sender<()>),
@@ -29,7 +24,6 @@ enum Job {
 pub struct Store {
     sender: mpsc::SyncSender<Job>,
     health: Arc<Mutex<Value>>,
-    queued_bytes: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -155,16 +149,14 @@ impl Store {
             "retentionDays":RETENTION_DAYS, "budgetBytes":BUDGET
         })));
         let (sender, receiver) = mpsc::sync_channel(256);
-        let queued_bytes = Arc::new(AtomicUsize::new(0));
         let store = Arc::new(Self {
             sender,
             health: health.clone(),
-            queued_bytes: queued_bytes.clone(),
         });
         let worker_health = health.clone();
         if std::thread::Builder::new()
             .name("security-audit".into())
-            .spawn(move || worker(path, receiver, worker_health, queued_bytes))
+            .spawn(move || worker(path, receiver, worker_health))
             .is_err()
         {
             health.lock().unwrap()["state"] = json!("unavailable");
@@ -190,28 +182,6 @@ impl Store {
             return false;
         }
         true
-    }
-
-    pub fn snapshot(&self, audit_id: &str, snapshot: Value) {
-        let id = config::text(&snapshot["id"]).to_owned();
-        let data = snapshot.to_string();
-        let size = data.len();
-        if self
-            .queued_bytes
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(size).filter(|total| *total <= QUEUE_BYTES)
-            })
-            .is_err()
-        {
-            self.dropped();
-        } else if self
-            .sender
-            .try_send(Job::Snapshot(audit_id.into(), id, data))
-            .is_err()
-        {
-            self.queued_bytes.fetch_sub(size, Ordering::AcqRel);
-            self.dropped();
-        }
     }
 
     pub fn body(&self, audit_id: &str, data: Value) -> bool {
@@ -673,12 +643,7 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
     )
 }
 
-fn worker(
-    path: PathBuf,
-    receiver: mpsc::Receiver<Job>,
-    health: Arc<Mutex<Value>>,
-    queued_bytes: Arc<AtomicUsize>,
-) {
+fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>>) {
     let mut db = open(&path, true).ok();
     let mut recover_pending = db.is_none();
     update_health(&health, &path, db.is_some(), "audit_open_failed");
@@ -736,12 +701,7 @@ fn worker(
                 }
                 let _ = done.send(result);
             }
-            job @ (Job::Write(_) | Job::Snapshot(..)) => {
-                let reserved = if let Job::Snapshot(_, _, data) = &job {
-                    data.len()
-                } else {
-                    0
-                };
+            Job::Write(record) => {
                 let result = db
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
@@ -752,16 +712,8 @@ fn worker(
                         if disk_bytes(&path) > BUDGET {
                             bail!("audit_capacity");
                         }
-                        match job {
-                            Job::Write(record) => persist(db, record),
-                            Job::Snapshot(audit_id, id, data) => {
-                                db.execute("INSERT OR IGNORE INTO audit_snapshots(audit_id,id,data) VALUES(?,?,?)", params![audit_id,id,data])?;
-                                Ok(())
-                            }
-                            _ => unreachable!(),
-                        }
+                        persist(db, record)
                     });
-                queued_bytes.fetch_sub(reserved, Ordering::AcqRel);
                 writes += 1;
                 let mut h = health.lock().unwrap();
                 h["bytes"] = json!(disk_bytes(&path));
@@ -1184,7 +1136,6 @@ mod tests {
         let store = Store {
             sender,
             health: Arc::new(Mutex::new(json!({}))),
-            queued_bytes: Arc::new(AtomicUsize::new(0)),
         };
         store.write(record("queued", "completed"));
         store.write(record("overflow", "completed"));
@@ -1276,69 +1227,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn schema_one_migrates_without_inventing_bodies_and_snapshots_are_immutable() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
-        persist(&mut db, record("legacy", "completed")).unwrap();
-        db.execute_batch("DROP TABLE audit_snapshots; PRAGMA user_version=1")
-            .unwrap();
-        drop(db);
-        let store = Store::start(dir.path());
-        let detail = || Query {
-            detail: Some("legacy".into()),
-            ..Query::default()
-        };
-        let legacy = store.query(detail()).await.unwrap();
-        assert_eq!(legacy["record"]["bodySnapshots"], json!([]));
-        assert_eq!(legacy["record"]["findings"].as_array().unwrap().len(), 1);
-        store.snapshot(
-            "legacy",
-            json!({"id":"evidence/one","body":"first content"}),
-        );
-        store.snapshot(
-            "legacy",
-            json!({"id":"evidence/one","body":"later content"}),
-        );
-        store.flush().await;
-        let detail = store.query(detail()).await.unwrap();
-        assert_eq!(
-            detail["record"]["bodySnapshots"],
-            json!([{"id":"evidence/one"}])
-        );
-        let page = store
-            .query(Query {
-                detail: Some("legacy".into()),
-                body: Some(("evidence/one".into(), 0)),
-                ..Query::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(page["legacySnapshot"]["body"], "first content");
-        assert_eq!(store.queued_bytes.load(Ordering::Acquire), 0);
-        let db = open(&path, false).unwrap();
-        db.execute("UPDATE audit SET at=0 WHERE id='legacy'", [])
-            .unwrap();
-        maintain(&db, &path).unwrap();
-        let remaining: i64 = db
-            .query_row("SELECT count(*) FROM audit_snapshots", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(remaining, 0);
-    }
-
-    #[test]
-    fn snapshot_queue_bytes_are_bounded_even_before_job_count_is_exhausted() {
-        let (sender, _receiver) = mpsc::sync_channel(256);
-        let store = Store {
-            sender,
-            health: Arc::new(Mutex::new(json!({}))),
-            queued_bytes: Arc::new(AtomicUsize::new(QUEUE_BYTES - 10)),
-        };
-        store.snapshot(
-            "a",
-            json!({"id":"request","body":"too large for remaining queue"}),
-        );
-        assert_eq!(store.status()["droppedWrites"], 1);
-        assert_eq!(store.queued_bytes.load(Ordering::Acquire), QUEUE_BYTES - 10);
+    async fn legacy_schemas_migrate_and_preserve_immutable_snapshots() {
+        for version in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("audit.sqlite3");
+            let mut db = open(&path, true).unwrap();
+            persist(&mut db, record("legacy", "completed")).unwrap();
+            if version == 1 {
+                db.execute_batch("DROP TABLE audit_snapshots; PRAGMA user_version=1")
+                    .unwrap();
+            } else {
+                // Seed the stored format directly; retired writers are not needed to read old data.
+                db.execute(
+                    "INSERT INTO audit_snapshots(audit_id,id,data) VALUES(?,?,?)",
+                    params![
+                        "legacy",
+                        "evidence/one",
+                        json!({"id":"evidence/one","body":"first content"}).to_string()
+                    ],
+                )
+                .unwrap();
+                db.execute_batch("PRAGMA user_version=2").unwrap();
+            }
+            drop(db);
+            let store = Store::start(dir.path());
+            let detail = store
+                .query(Query {
+                    detail: Some("legacy".into()),
+                    ..Query::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(detail["record"]["findings"].as_array().unwrap().len(), 1);
+            let db = open(&path, false).unwrap();
+            assert_eq!(
+                db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                3
+            );
+            if version == 1 {
+                assert_eq!(detail["record"]["bodySnapshots"], json!([]));
+            } else {
+                assert_eq!(
+                    detail["record"]["bodySnapshots"],
+                    json!([{"id":"evidence/one"}])
+                );
+                persist_body(
+                    &db,
+                    "legacy",
+                    &json!({"id":"evidence/one","state":"complete","body":"later content"}),
+                )
+                .unwrap();
+                let page = store
+                    .query(Query {
+                        detail: Some("legacy".into()),
+                        body: Some(("evidence/one".into(), 0)),
+                        ..Query::default()
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(page["legacySnapshot"]["body"], "first content");
+            }
+            db.execute("UPDATE audit SET at=0 WHERE id='legacy'", [])
+                .unwrap();
+            maintain(&db, &path).unwrap();
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM audit_snapshots", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
     }
 }
