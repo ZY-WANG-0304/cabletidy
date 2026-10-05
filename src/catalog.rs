@@ -6,7 +6,7 @@ use futures_util::{
 };
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     process::Stdio,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -298,13 +298,42 @@ pub fn model_ids(c: &Value) -> BTreeSet<(String, String)> {
         .collect()
 }
 pub fn changed_models(c: &Value, old: &Value) -> Vec<(String, String)> {
+    fn route_owners(c: &Value) -> HashMap<&str, Option<&str>> {
+        let mut owners = HashMap::new();
+        for (pid, p) in entries(&c["virtualProviders"]) {
+            if nonempty(&p["route"]) {
+                owners
+                    .entry(text(&p["route"]))
+                    .and_modify(|owner| *owner = None)
+                    .or_insert(Some(pid.as_str()));
+            }
+        }
+        owners
+    }
     let old_ids = model_ids(old);
+    let old_routes = route_owners(old);
+    let new_routes = route_owners(c);
     model_ids(c)
         .into_iter()
         .filter(|(pid, name)| {
-            !old_ids.contains(&(pid.clone(), name.clone()))
-                || c["virtualProviders"][pid]["models"][name]
-                    != old["virtualProviders"][pid]["models"][name]
+            let route = text(&c["virtualProviders"][pid]["route"]);
+            let previous = if old["virtualProviders"][pid]["route"] == route {
+                Some(pid.as_str())
+            } else if new_routes.get(route) == Some(&Some(pid.as_str()))
+                && c["routes"][route].is_object()
+                && c["routes"][route] == old["routes"][route]
+            {
+                // Renaming a configuration changes its provider ID but keeps its route.
+                // Require unique ownership on both sides so copies cannot reuse this exemption.
+                old_routes.get(route).copied().flatten()
+            } else {
+                None
+            };
+            previous.is_none_or(|previous| {
+                !old_ids.contains(&(previous.to_owned(), name.clone()))
+                    || c["virtualProviders"][pid]["models"][name]
+                        != old["virtualProviders"][previous]["models"][name]
+            })
         })
         .collect()
 }

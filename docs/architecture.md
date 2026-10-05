@@ -615,7 +615,7 @@ GET  /api/v1/integrations
 
 新配置不再生成 `web.enabled`；旧值保留但不影响监听。配置入口的启停由 `virtualProviders.<id>.enabled` 控制。有效能力覆盖位于 `virtualProviders.<id>.models.<客户端模型名>.capabilityOverrides`。
 
-配置版本为 2。加载版本 1 时，将 `allowedModels` 引用的全局模型迁入所属配置，使用原 `clientModelId`（缺省时取首个别名，再缺省时取原记录键）作为客户端名称，并展开该配置上游的映射字段。移除内部 `id`、重复的 `clientModelId`、全局 `models`、`allowedModels` 和 backend 的 `models`。旧模型顶层无效的 `capabilityOverrides` 丢弃，仅迁移原上游映射中实际生效的覆盖。默认模型的内部引用转换成客户端名称，Claude 原生默认别名保留字面值。
+配置版本为 2。加载版本 1 时，将 `allowedModels` 引用的全局模型迁入所属配置，使用原 `clientModelId`（缺省时取首个别名，再缺省时取原记录键）作为客户端名称，并展开该配置上游的映射字段。移除内部 `id`、重复的 `clientModelId`、全局 `models`、`allowedModels` 和 backend 的 `models`。旧模型顶层无效的 `capabilityOverrides` 丢弃，仅迁移原上游映射中实际生效的覆盖。默认模型及 `binding.claude.models` 中归属当前配置的内部引用转换成客户端名称。Claude 的默认模型和 subagent 选择按各自支持的原生别名保留字面值；模型家族映射中的旧内部 ID 则转换为客户端名称。
 
 迁移在内存中完成，成功保存配置后写入版本 2。迁移遇到重复客户端名、缺失模型、错误上游绑定或未归属配置的模型记录时拒绝迁移并保留原数据，不静默覆盖或删除；显式别名冲突由新结构的校验报告。旧内部 ID 不会自动变成请求别名。若要回退旧版本，应恢复迁移前的版本 1 配置。
 

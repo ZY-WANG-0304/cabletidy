@@ -7,7 +7,7 @@ import { normalizeConfig } from "./helpers/native.mjs";
 import { publicCodexCatalog, planCodexCatalog, validateCodexChanges, catalogEntryForProfile } from "./helpers/native.mjs";
 import { prepareCodexArtifacts, applyCodexArtifacts, publicArtifacts } from "./helpers/native.mjs";
 import { readCodexConfig } from "./helpers/native.mjs";
-import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function fixture(t) {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-catalog-test-"));
@@ -189,6 +189,52 @@ test("switching a configuration to Codex validates its models even when their se
   assert.equal(errors.length, 1);
   assert.equal(errors[0].path, "virtualProviders.cabletidy_relay.models.custom-client");
 });
+
+test("configuration name swaps compare each provider's own models", async () => {
+  const previous = normalizeConfig(namedCodexConfigFixture({ first: "first", second: "second" }));
+  for (const provider of Object.values(previous.virtualProviders)) {
+    provider.models = { "legacy-alias": provider.models["gpt-5.5"] };
+  }
+  const candidate = structuredClone(previous);
+  candidate.bindings.first.name = "second";
+  candidate.bindings.second.name = "first";
+  const renamed = normalizeConfig(candidate);
+  const load = async () => catalogFixture();
+  assert.deepEqual(await validateCodexChanges(renamed, previous, load), []);
+  renamed.virtualProviders.cabletidy_second.models["legacy-alias"].upstreamModelId = "changed";
+  const errors = await validateCodexChanges(renamed, previous, load);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].path, "virtualProviders.cabletidy_second.models.legacy-alias");
+});
+
+for (const scenario of ["copied route", "shared route", "ambiguous old route", "changed route", "switch target"]) {
+  test(`provider rename matching does not skip catalog validation for ${scenario}`, async () => {
+    const previous = normalizeConfig(codexConfigFixture());
+    previous.virtualProviders.cabletidy_relay.models = { "legacy-alias": {} };
+    if (scenario === "ambiguous old route") {
+      previous.virtualProviders.cabletidy_unused = structuredClone(previous.virtualProviders.cabletidy_relay);
+      previous.virtualProviders.cabletidy_unused.id = "cabletidy_unused";
+    }
+    if (scenario === "switch target") previous.bindings.relay.target = "generic-env";
+    const candidate = structuredClone(previous);
+    if (scenario === "copied route" || scenario === "shared route") {
+      candidate.bindings.copy = { ...candidate.bindings.relay, id: "copy", name: "copy", virtualProvider: "cabletidy_copy" };
+      candidate.virtualProviders.cabletidy_copy = { ...structuredClone(candidate.virtualProviders.cabletidy_relay), id: "cabletidy_copy" };
+      if (scenario === "copied route") {
+        candidate.routes.copy = structuredClone(candidate.routes.route);
+        candidate.virtualProviders.cabletidy_copy.route = "copy";
+      }
+    } else {
+      candidate.bindings.relay.name = "Renamed";
+      candidate.bindings.relay.target = "codex";
+      if (scenario === "ambiguous old route") delete candidate.virtualProviders.cabletidy_unused;
+      if (scenario === "changed route") candidate.routes.route.backends[0].enabled = false;
+    }
+    const errors = await validateCodexChanges(normalizeConfig(candidate), previous, async () => catalogFixture());
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /未匹配/);
+  });
+}
 
 test("apply preserves other providers and multiline instructions, and is idempotent", async (t) => {
   const { config, options, root } = await fixture(t);

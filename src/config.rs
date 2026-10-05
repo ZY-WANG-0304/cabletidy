@@ -225,7 +225,7 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
             for (key, value) in entries(&old["upstreams"][upstream]) {
                 model[key] = value.clone();
             }
-            if let Some(aliases) = model["aliases"].as_array_mut() {
+            if let Some(aliases) = model.get_mut("aliases").and_then(Value::as_array_mut) {
                 aliases.retain(|alias| alias != name);
             }
             models.insert(name.to_owned(), model);
@@ -257,6 +257,27 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
                 .filter(|_| b["target"] != "claude-code" || !claude_alias(text(&b["defaultModel"])))
             {
                 b["defaultModel"] = json!(name);
+            }
+            if b["target"] == "claude-code" {
+                if let Some(models) = b
+                    .get_mut("claude")
+                    .and_then(|claude| claude.get_mut("models"))
+                    .and_then(Value::as_object_mut)
+                {
+                    for field in ["opus", "sonnet", "fable", "haiku", "subagent"] {
+                        if let Some(value) = models.get_mut(field) {
+                            // Family values are model names; subagents also accept native aliases.
+                            if field == "subagent"
+                                && ["opus", "sonnet", "fable", "haiku"].contains(&text(value))
+                            {
+                                continue;
+                            }
+                            if let Some(name) = names.get(text(value)) {
+                                *value = json!(name);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -392,7 +413,7 @@ fn normalize_identities(c: &mut Value) {
             .collect(),
     );
 }
-pub fn redact(v: &mut Value) {
+fn clean_config(v: &mut Value, strip_presentation: bool) {
     const KEYS: &[&str] = &[
         "secret",
         "apiKey",
@@ -408,33 +429,46 @@ pub fn redact(v: &mut Value) {
         "privateKey",
         "private_key",
     ];
-    if let Some(obj) = v.as_object_mut() {
-        obj.retain(|k, _| !KEYS.contains(&k.as_str()));
-        for v in obj.values_mut() {
-            redact(v);
-        }
-    } else if let Some(arr) = v.as_array_mut() {
-        for v in arr {
-            redact(v);
-        }
+    #[derive(Clone, Copy)]
+    enum Scope {
+        Config,
+        Providers,
+        Provider,
+        Models,
+        Fields,
     }
-}
-pub fn strip_presentation(v: &Value) -> Value {
-    fn strip(v: &mut Value) {
+    fn clean(v: &mut Value, scope: Scope, strip_presentation: bool) {
         if let Some(obj) = v.as_object_mut() {
-            obj.remove("secretConfigured");
-            for item in obj.values_mut() {
-                strip(item);
+            // Only schema-level model dictionaries contain names instead of field keys.
+            if !matches!(scope, Scope::Models) {
+                obj.retain(|key, _| {
+                    !KEYS.contains(&key.as_str())
+                        && !(strip_presentation && key == "secretConfigured")
+                });
+            }
+            for (key, value) in obj {
+                let next = match (scope, key.as_str()) {
+                    (Scope::Config | Scope::Provider, "models") => Scope::Models,
+                    (Scope::Config, "virtualProviders") => Scope::Providers,
+                    (Scope::Providers, _) => Scope::Provider,
+                    _ => Scope::Fields,
+                };
+                clean(value, next, strip_presentation);
             }
         } else if let Some(arr) = v.as_array_mut() {
             for item in arr {
-                strip(item);
+                clean(item, Scope::Fields, strip_presentation);
             }
         }
     }
+    clean(v, Scope::Config, strip_presentation);
+}
+pub fn redact(v: &mut Value) {
+    clean_config(v, false);
+}
+pub fn strip_presentation(v: &Value) -> Value {
     let mut out = v.clone();
-    strip(&mut out);
-    redact(&mut out);
+    clean_config(&mut out, true);
     out
 }
 pub fn public(c: &Value, secrets: &Value) -> Value {
@@ -594,8 +628,8 @@ pub fn diff(before: &Value, after: &Value) -> Value {
     }
     let mut out = json!({"added":[],"removed":[],"changed":[]});
     walk(
-        Some(&normalize(before)),
-        Some(&normalize(after)),
+        Some(&normalize(&strip_presentation(before))),
+        Some(&normalize(&strip_presentation(after))),
         String::new(),
         &mut out,
     );

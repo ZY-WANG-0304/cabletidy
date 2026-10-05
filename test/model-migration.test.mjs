@@ -91,6 +91,54 @@ test("migration preserves Claude native default aliases instead of resolving the
   assert.equal(buildTargetArtifacts(c, { bindingId: "relay" }).clientModelId, "sonnet");
 });
 
+test("Claude family and subagent selections migrate through client names to upstream mappings", () => {
+  const input = legacyConfig("claude-code");
+  const fields = ["opus", "sonnet", "fable", "haiku", "subagent"];
+  input.bindings.relay.claude = { models: Object.fromEntries(fields.map((field) => [field, "gpt-5.6-sol"])) };
+  const result = validateConfig(input);
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
+  const c = result.config;
+  const vars = buildTargetArtifacts(c, { bindingId: "relay" }).environment.vars;
+  for (const field of fields) {
+    const variable = field === "subagent" ? "CLAUDE_CODE_SUBAGENT_MODEL" : `ANTHROPIC_DEFAULT_${field.toUpperCase()}_MODEL`;
+    assert.equal(c.bindings.relay.claude.models[field], "gpt-6-sol");
+    assert.equal(vars[variable], "gpt-6-sol");
+    assert.equal(resolveRequest(c, c.virtualProviders.cabletidy_relay, { model: vars[variable] }).upstreamModelId, "vendor-sol");
+  }
+  assert.deepEqual(normalizeConfig(c), c);
+});
+
+for (const alias of ["best", "opus", "sonnet", "fable", "haiku", "opusplan"]) {
+  test(`Claude migration respects field-specific semantics for the native alias ${alias}`, () => {
+    const input = legacyConfig("claude-code");
+    input.models = { [alias]: { clientModelId: "client-model", upstreams: { relay: { upstreamModelId: "vendor-model" } } } };
+    input.routes.route.backends[0].models = [alias];
+    Object.assign(input.virtualProviders.cabletidy_relay, { allowedModels: [alias], defaultModel: alias });
+    Object.assign(input.bindings.relay, { defaultModel: alias, claude: { models: { sonnet: alias, subagent: alias } } });
+    const c = normalizeConfig(input);
+    assert.equal(validateConfig(c).ok, true);
+    assert.equal(c.virtualProviders.cabletidy_relay.models["client-model"].aliases, undefined);
+    const vars = buildTargetArtifacts(c, { bindingId: "relay" }).environment.vars;
+    assert.equal(c.virtualProviders.cabletidy_relay.defaultModel, alias);
+    assert.equal(vars.ANTHROPIC_MODEL, alias);
+    assert.equal(vars.ANTHROPIC_DEFAULT_SONNET_MODEL, "client-model");
+    assert.equal(vars.CLAUDE_CODE_SUBAGENT_MODEL, ["opus", "sonnet", "fable", "haiku"].includes(alias) ? alias : "client-model");
+    assert.equal(resolveRequest(c, c.virtualProviders.cabletidy_relay, { model: vars.ANTHROPIC_DEFAULT_SONNET_MODEL }).upstreamModelId, "vendor-model");
+  });
+}
+
+test("Claude selection migration only resolves IDs owned by the binding's provider", () => {
+  const input = legacyConfig("claude-code");
+  input.models.other = { clientModelId: "other-client", upstreams: { relay: { upstreamModelId: "other-vendor" } } };
+  input.routes.other = { backends: [{ upstream: "relay", models: ["other"] }] };
+  input.virtualProviders.cabletidy_other = { ingressProtocol: "anthropic.messages", route: "other", allowedModels: ["other"] };
+  input.bindings.other = { target: "claude-code", virtualProvider: "cabletidy_other", claude: { models: { sonnet: "other", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" } } };
+  const c = normalizeConfig(input);
+  assert.deepEqual(c.bindings.other.claude.models, { sonnet: "other-client", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" });
+  const vars = buildTargetArtifacts(c, { bindingId: "other" }).environment.vars;
+  assert.equal(resolveRequest(c, c.virtualProviders.cabletidy_other, { model: vars.ANTHROPIC_DEFAULT_SONNET_MODEL }).upstreamModelId, "other-vendor");
+});
+
 test("client names retain case, separators and length without ID slugification", () => {
   const c = normalizeConfig(legacyConfig());
   const p = c.virtualProviders.cabletidy_relay;

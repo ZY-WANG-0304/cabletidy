@@ -8,6 +8,7 @@ import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig, saveConfig } from "./helpers/native.mjs";
 import { readCodexConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { normalizeConfigurationIdentities } from "../web/config-identity.js";
 
 async function freePort() {
   const server = http.createServer();
@@ -16,6 +17,55 @@ async function freePort() {
   await new Promise((resolve) => server.close(resolve));
   return port;
 }
+
+test("config API allows renaming saved legacy models and still validates actual model changes", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-legacy-rename-"));
+  const paths = getPaths(home);
+  const initial = normalizeConfig(codexConfigFixture());
+  initial.web.port = await freePort();
+  initial.virtualProviders.cabletidy_relay.models = { "legacy-alias": { upstreamModelId: "vendor-model" } };
+  initial.virtualProviders.cabletidy_relay.defaultModel = "legacy-alias";
+  initial.bindings.relay.defaultModel = "legacy-alias";
+  await saveConfig(initial, paths);
+  const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture() });
+  t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
+  const call = async (endpoint, config) => {
+    const response = await fetch(`${app.url}api/v1/config${endpoint}`, config ? {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ config, baseRevision: config.revision }),
+    } : {});
+    return { status: response.status, body: await response.json() };
+  };
+  let candidate = (await call("")).body.config;
+  candidate.bindings.relay.name = "Renamed";
+  for (const endpoint of ["/validate", "/commit"]) {
+    const result = await call(endpoint, candidate);
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.ok, true);
+  }
+  candidate = (await call("")).body.config;
+  assert.deepEqual(candidate.virtualProviders.cabletidy_renamed.models, initial.virtualProviders.cabletidy_relay.models);
+  candidate.bindings.renamed.name = "Web renamed";
+  normalizeConfigurationIdentities(candidate);
+  const renamed = await call("/commit", candidate);
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  const saved = renamed.body.config;
+  for (const change of ["mapping", "metadata", "new model", "model name"]) {
+    candidate = structuredClone(saved);
+    const models = candidate.virtualProviders["cabletidy_web-renamed"].models;
+    if (change === "mapping") models["legacy-alias"].upstreamModelId = "changed";
+    if (change === "metadata") models["legacy-alias"].capabilities = ["streaming"];
+    if (change === "new model") models["new-unknown-model"] = {};
+    if (change === "model name") {
+      models["renamed-unknown-model"] = models["legacy-alias"];
+      delete models["legacy-alias"];
+    }
+    const result = await call("/commit", candidate);
+    assert.equal(result.status, 422, change);
+    assert.ok(result.body.errors.some((error) => /未匹配/.test(error.message)), JSON.stringify(result.body));
+    assert.deepEqual((await call("")).body.config, saved);
+  }
+});
 
 test("Web model discovery, dynamic validation, preview and apply share official metadata", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-management-test-"));
