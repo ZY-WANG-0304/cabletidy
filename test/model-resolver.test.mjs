@@ -65,7 +65,7 @@ test("resolves a client alias to the configuration upstream model", () => {
     tools: [{}],
   });
 
-  assert.equal(result.model.profileId, "codex-sol");
+  assert.equal(result.model.matchedModel, "sol");
   assert.equal(result.model.clientModelId, "codex-default");
   assert.equal(result.upstream.id, "primary");
   assert.equal(result.upstreamModelId, "vendor-sol");
@@ -73,15 +73,12 @@ test("resolves a client alias to the configuration upstream model", () => {
 
 test("lists every allowed CableTidy model for the Virtual Provider", () => {
   const config = sampleConfig();
-  config.models["codex-terra"] = {
-    id: "codex-terra",
-    clientModelId: "gpt-5.6-terra",
+  config.virtualProviders.cabletidy_codex.models["gpt-5.6-terra"] = {
     aliases: ["terra"],
     family: "codex",
     capabilities: ["streaming", "tools", "reasoning"],
-    upstreams: { primary: { upstreamModelId: "vendor-terra" } },
+    upstreamModelId: "vendor-terra",
   };
-  config.virtualProviders.cabletidy_codex.allowedModels = ["codex-sol", "codex-terra"];
 
   assert.deepEqual(
     listClientModels(config, config.virtualProviders.cabletidy_codex).map((model) => model.id),
@@ -91,19 +88,19 @@ test("lists every allowed CableTidy model for the Virtual Provider", () => {
 
 test("resolves a profile clientModelId even when aliases are omitted", () => {
   const config = sampleConfig();
-  config.models["codex-sol"].aliases = [];
+  config.virtualProviders.cabletidy_codex.models.sol.aliases = [];
   const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, {
     model: "sol",
   });
-  assert.equal(result.model.profileId, "codex-sol");
+  assert.equal(result.model.matchedModel, "sol");
   assert.equal(result.upstreamModelId, "vendor-sol");
 });
 
-test("rejects missing model mappings without selecting another upstream", () => {
+test("old internal IDs are ordinary unconfigured request names after migration", () => {
   const config = sampleConfig();
-  delete config.models["codex-sol"].upstreams.primary;
-  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
-    (error) => error.code === "no_compatible_upstream" && error.details.rejected[0].reason === "model_binding_missing");
+  const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "codex-sol", images: true });
+  assert.equal(result.model.matchedModel, null);
+  assert.equal(result.upstreamModelId, "codex-sol");
 });
 
 test("rejects multiple route backends even when the second is disabled", () => {
@@ -112,14 +109,6 @@ test("rejects multiple route backends even when the second is disabled", () => {
   assert.equal(validateConfig(config).ok, false);
   assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
     (error) => error.code === "invalid_route");
-});
-
-test("rejects multiple upstream mappings on one model", () => {
-  const config = sampleConfig();
-  config.models["codex-sol"].upstreams.backup = { upstreamModelId: "other-model" };
-  assert.ok(validateConfig(config).errors.some((error) => error.path === "models.codex-sol.upstreams"));
-  assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "sol" }),
-    (error) => error.code === "invalid_model_binding");
 });
 
 test("unconfigured models pass through without inheriting another model's capability limits", () => {
@@ -132,20 +121,19 @@ test("unconfigured models pass through without inheriting another model's capabi
   const result = resolveRequest(config, config.virtualProviders.cabletidy_codex, request);
   assert.equal(result.upstreamModelId, request.model);
   assert.equal(result.upstream.id, "primary");
-  assert.equal(result.model.profileId, null);
+  assert.equal(result.model.matchedModel, null);
 });
 
 test("an empty configuration model list never imports profiles from another configuration", () => {
   const config = sampleConfig();
   const provider = config.virtualProviders.cabletidy_codex;
-  provider.allowedModels = [];
-  config.routes[provider.route].backends[0].models = [];
+  provider.models = {};
   delete provider.defaultModel;
   const result = resolveRequest(config, provider, { model: "sol" });
   assert.equal(result.upstreamModelId, "sol");
   assert.equal(result.model.profile, null);
   assert.deepEqual(listClientModels(config, provider), []);
-  delete provider.allowedModels;
+  delete provider.models;
   assert.equal(resolveRequest(config, provider, { model: "sol" }).upstreamModelId, "sol");
   assert.deepEqual(listClientModels(config, provider), []);
   assert.throws(
@@ -157,7 +145,7 @@ test("an empty configuration model list never imports profiles from another conf
 test("metadata-only profiles keep the requested name and enforce their explicit limits", () => {
   const config = sampleConfig();
   const provider = config.virtualProviders.cabletidy_codex;
-  delete config.models["codex-sol"].upstreams.primary.upstreamModelId;
+  delete config.virtualProviders.cabletidy_codex.models.sol.upstreamModelId;
   assert.equal(resolveRequest(config, provider, { model: "sol" }).upstreamModelId, "sol");
   assert.equal(resolveRequest(config, provider, {}).upstreamModelId, "sol");
   assert.throws(() => resolveRequest(config, provider, { model: "sol", parallel_tool_calls: true }),
@@ -179,24 +167,20 @@ test("passthrough still validates model names, upstream state and protocol", () 
     (error) => error.details.rejected[0].reason === "protocol_transform_missing");
 });
 
-test("identical official names resolve independently inside each Virtual Provider", () => {
+test("identical client names and aliases resolve independently in each configuration", () => {
   const config = sampleConfig();
-  config.models["codex-sol"].clientModelId = "gpt-5.5";
-  config.models["codex-sol"].aliases = ["gpt-5.5"];
-  config.models["other-model"] = {
-    ...structuredClone(config.models["codex-sol"]), id: "other-model",
-    upstreams: { backup: { upstreamModelId: "different-vendor-name" } },
-  };
-  config.routes.other = { backends: [{ upstream: "backup", models: ["other-model"] }] };
-  config.virtualProviders.other = {
-    ...structuredClone(config.virtualProviders.cabletidy_codex), id: "other",
-    route: "other", allowedModels: ["other-model"], defaultModel: "gpt-5.5",
+  config.routes.other = { backends: [{ upstream: "backup" }] };
+  config.virtualProviders.cabletidy_other = {
+    ...structuredClone(config.virtualProviders.cabletidy_codex), id: "cabletidy_other", route: "other",
+    models: { sol: { ...config.virtualProviders.cabletidy_codex.models.sol, upstreamModelId: "different-vendor-name" } },
   };
   assert.equal(validateConfig(config).ok, true);
-  assert.equal(resolveRequest(config, config.virtualProviders.cabletidy_codex, { model: "gpt-5.5" }).upstreamModelId, "vendor-sol");
-  assert.equal(resolveRequest(config, config.virtualProviders.other, { model: "gpt-5.5" }).upstreamModelId, "different-vendor-name");
-  config.virtualProviders.cabletidy_codex.allowedModels.push("other-model");
-  assert.ok(validateConfig(config).errors.some((error) => /当前 Virtual Provider 内重复/.test(error.message)));
+  for (const model of ["sol", "codex-default"]) {
+    assert.equal(resolveRequest(config, config.virtualProviders.cabletidy_codex, { model }).upstreamModelId, "vendor-sol");
+    assert.equal(resolveRequest(config, config.virtualProviders.cabletidy_other, { model }).upstreamModelId, "different-vendor-name");
+  }
+  config.virtualProviders.cabletidy_codex.models.other = { aliases: ["sol"] };
+  assert.ok(validateConfig(config).errors.some(error => /冲突/.test(error.message)));
 });
 
 test("vision detection includes protocol-native nested image inputs", () => {

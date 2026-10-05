@@ -45,7 +45,21 @@ pub fn validate(input: &Value) -> Value {
             }
         };
     }
-    check!(c["version"] == 1, "version", "当前 MVP 只支持 version = 1");
+    if c["version"] == 1 {
+        if let Err(error) = crate::config::migrate_models(&mut c.clone()) {
+            return json!({"ok":false,"errors":[{"path":"models","message":error.to_string()}],"warnings":[],"config":c});
+        }
+    }
+    check!(
+        c["version"] == 2,
+        "version",
+        "只支持 version = 2（version = 1 自动迁移）"
+    );
+    check!(
+        c.get("models").is_none(),
+        "models",
+        "模型设置应存放在各自 Virtual Provider 的 models 中"
+    );
     check!(
         integer(&c["web"]["port"]) && c["web"]["port"].as_u64().unwrap_or(0) <= 65535,
         "web.port",
@@ -93,93 +107,6 @@ pub fn validate(input: &Value) -> Value {
             );
         }
     }
-    for (key, m) in entries(&c["models"]) {
-        let p = format!("models.{key}");
-        check!(m.is_object(), p, "Model Profile 必须是 object");
-        check!(id(key), p, "Model Profile ID 包含非法字符");
-        check!(
-            string_array(&m["aliases"]),
-            format!("{p}.aliases"),
-            "aliases 必须是非空字符串数组"
-        );
-        if let Some(v) = m.get("clientModelId") {
-            check!(
-                nonempty(v),
-                format!("{p}.clientModelId"),
-                "必须是非空字符串"
-            );
-        }
-        if let Some(v) = m.get("capabilities") {
-            check!(
-                string_array(v),
-                format!("{p}.capabilities"),
-                "capabilities 必须是非空字符串数组"
-            );
-        }
-        if let Some(v) = m.get("contextWindow") {
-            check!(
-                integer(v),
-                format!("{p}.contextWindow"),
-                "contextWindow 必须是正整数"
-            );
-        }
-        if let Some(v) = m.get("codex") {
-            check!(
-                v.is_object() && ["official", "override"].contains(&text(&v["metadataMode"])),
-                format!("{p}.codex"),
-                "Codex metadataMode 必须为 official 或 override"
-            );
-            if let Some(v) = v.get("inputModalities") {
-                check!(
-                    v.is_array()
-                        && array(v).contains(&json!("text"))
-                        && array(v)
-                            .iter()
-                            .all(|v| ["text", "image"].contains(&text(v))),
-                    format!("{p}.codex.inputModalities"),
-                    "输入类型必须包含 text，且只能包含 text 或 image"
-                );
-            }
-        }
-        if let Some(v) = m.get("compact") {
-            check!(
-                v.is_object() && v.get("tokenLimit").is_none_or(integer),
-                format!("{p}.compact"),
-                "compact 必须包含合法的 tokenLimit"
-            );
-            if let Some(v) = v.get("strategy") {
-                check!(
-                    ["auto", "manual", "disabled"].contains(&text(v)),
-                    format!("{p}.compact.strategy"),
-                    "不支持的 compact strategy"
-                );
-            }
-        }
-        check!(
-            m["upstreams"].is_object() && entries(&m["upstreams"]).count() == 1,
-            format!("{p}.upstreams"),
-            "每个 Model Profile 必须且只能映射一个 upstream"
-        );
-        for (uid, b) in entries(&m["upstreams"]) {
-            let bp = format!("{p}.upstreams.{uid}");
-            check!(!c["upstreams"][uid].is_null(), bp, "引用的 upstream 不存在");
-            check!(b.is_object(), bp, "模型设置必须是 object");
-            if let Some(v) = b.get("upstreamModelId") {
-                check!(
-                    nonempty(v),
-                    format!("{bp}.upstreamModelId"),
-                    "如需改名，必须填写非空字符串"
-                );
-            }
-            if let Some(v) = b.get("capabilityOverrides") {
-                check!(
-                    string_array(v),
-                    format!("{bp}.capabilityOverrides"),
-                    "capabilityOverrides 必须是非空字符串数组"
-                );
-            }
-        }
-    }
     for (key, r) in entries(&c["routes"]) {
         let p = format!("routes.{key}");
         check!(r.is_object(), p, "route 必须是 object");
@@ -197,22 +124,11 @@ pub fn validate(input: &Value) -> Value {
                 format!("{bp}.upstream"),
                 "upstream 不存在"
             );
-            if let Some(v) = b.get("models") {
-                check!(
-                    string_array(v),
-                    format!("{bp}.models"),
-                    "models 必须是非空字符串数组，可留空以透传模型名"
-                );
-            }
-            for v in array(&b["models"]) {
-                check!(
-                    c["models"][text(v)]["upstreams"]
-                        .get(text(&b["upstream"]))
-                        .is_some(),
-                    format!("{bp}.models"),
-                    format!("模型不存在或没有 upstream 的模型映射: {}", text(v))
-                );
-            }
+            check!(
+                b.get("models").is_none(),
+                format!("{bp}.models"),
+                "路由不再维护模型引用，请使用 Virtual Provider models"
+            );
         }
     }
     for (key, pv) in entries(&c["virtualProviders"]) {
@@ -248,45 +164,107 @@ pub fn validate(input: &Value) -> Value {
                 "defaultModel 必须是非空字符串"
             );
         }
-        if let Some(v) = pv.get("allowedModels") {
+        check!(
+            pv.get("allowedModels").is_none(),
+            format!("{p}.allowedModels"),
+            "请使用当前配置的 models 字典"
+        );
+        if let Some(v) = pv.get("models") {
             check!(
-                string_array(v),
-                format!("{p}.allowedModels"),
-                "模型设置必须是数组，可留空以透传模型名"
+                v.is_object(),
+                format!("{p}.models"),
+                "models 必须是以客户端模型名为键的 object"
             );
         }
         let mut aliases = HashMap::new();
-        for mid in array(&pv["allowedModels"]) {
-            let m = &c["models"][text(mid)];
-            let b = &route["backends"][0];
+        for (key, m) in entries(&pv["models"]) {
+            let p = format!("{p}.models.{key}");
+            check!(m.is_object(), p, "Model Profile 必须是 object");
+            check!(!key.trim().is_empty(), p, "客户端模型名不能为空");
             check!(
-                !m.is_null(),
-                format!("{p}.allowedModels"),
-                format!("模型不存在: {}", text(mid))
+                m.get("aliases").is_none_or(string_array),
+                format!("{p}.aliases"),
+                "aliases 必须是非空字符串数组"
             );
-            if m.is_null() {
-                continue;
-            }
-            check!(
-                array(&b["models"]).contains(mid)
-                    && m["upstreams"].get(text(&b["upstream"])).is_some(),
-                format!("{p}.allowedModels"),
-                "模型必须映射到当前配置的 upstream"
-            );
-            for alias in [mid, &m["clientModelId"]]
-                .into_iter()
-                .chain(array(&m["aliases"]))
-            {
-                if !nonempty(alias) {
-                    continue;
-                }
-                let a = text(alias);
+            for field in ["id", "clientModelId", "upstreams"] {
                 check!(
-                    aliases.get(a).is_none_or(|owner| owner == mid),
-                    format!("{p}.allowedModels"),
-                    format!("模型名或 alias \"{a}\" 在当前 Virtual Provider 内重复")
+                    m.get(field).is_none(),
+                    format!("{p}.{field}"),
+                    "模型名由 models 的键指定，上游由配置指定"
                 );
-                aliases.insert(a, mid.clone());
+            }
+            if let Some(v) = m.get("upstreamModelId") {
+                check!(
+                    nonempty(v),
+                    format!("{p}.upstreamModelId"),
+                    "如需改名，必须填写非空字符串"
+                );
+            }
+            if let Some(v) = m.get("capabilityOverrides") {
+                check!(
+                    string_array(v),
+                    format!("{p}.capabilityOverrides"),
+                    "capabilityOverrides 必须是非空字符串数组"
+                );
+            }
+            if let Some(v) = m.get("capabilities") {
+                check!(
+                    string_array(v),
+                    format!("{p}.capabilities"),
+                    "capabilities 必须是非空字符串数组"
+                );
+            }
+            if let Some(v) = m.get("contextWindow") {
+                check!(
+                    integer(v),
+                    format!("{p}.contextWindow"),
+                    "contextWindow 必须是正整数"
+                );
+            }
+            if let Some(v) = m.get("codex") {
+                check!(
+                    v.is_object() && ["official", "override"].contains(&text(&v["metadataMode"])),
+                    format!("{p}.codex"),
+                    "Codex metadataMode 必须为 official 或 override"
+                );
+                if let Some(v) = v.get("inputModalities") {
+                    check!(
+                        v.is_array()
+                            && array(v).contains(&json!("text"))
+                            && array(v)
+                                .iter()
+                                .all(|v| ["text", "image"].contains(&text(v))),
+                        format!("{p}.codex.inputModalities"),
+                        "输入类型必须包含 text，且只能包含 text 或 image"
+                    );
+                }
+            }
+            if let Some(v) = m.get("compact") {
+                check!(
+                    v.is_object() && v.get("tokenLimit").is_none_or(integer),
+                    format!("{p}.compact"),
+                    "compact 必须包含合法的 tokenLimit"
+                );
+                if let Some(v) = v.get("strategy") {
+                    check!(
+                        ["auto", "manual", "disabled"].contains(&text(v)),
+                        format!("{p}.compact.strategy"),
+                        "不支持的 compact strategy"
+                    );
+                }
+            }
+            for name in std::iter::once(key.as_str())
+                .chain(array(&m["aliases"]).iter().filter_map(Value::as_str))
+            {
+                check!(
+                    aliases.get(name).is_none_or(|owner| *owner == key),
+                    p,
+                    format!(
+                        "客户端模型名或 alias \"{name}\" 与模型 \"{}\" 冲突",
+                        aliases.get(name).unwrap_or(&key)
+                    )
+                );
+                aliases.insert(name, key);
             }
         }
     }

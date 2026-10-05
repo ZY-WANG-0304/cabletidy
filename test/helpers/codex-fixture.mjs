@@ -20,37 +20,34 @@ export function catalogFixture() {
 
 export function codexConfigFixture() {
   return {
+    version: 2,
     upstreams: { relay: { id: "relay", name: "Relay", protocol: "openai.responses", baseUrl: "https://example.invalid/v1" } },
-    models: { model: {
-      id: "model", clientModelId: "gpt-5.5", aliases: ["gpt-5.5"],
-      capabilities: ["streaming", "tools", "reasoning", "vision", "parallel_tool_calls"],
-      codex: { metadataMode: "official" },
-      upstreams: { relay: { upstreamModelId: "VENDOR-GPT" } },
+    routes: { route: { id: "route", backends: [{ upstream: "relay" }] } },
+    virtualProviders: { cabletidy_relay: {
+      id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "route", defaultModel: "gpt-5.5",
+      models: { "gpt-5.5": {
+        capabilities: ["streaming", "tools", "reasoning", "vision", "parallel_tool_calls"],
+        codex: { metadataMode: "official" }, upstreamModelId: "VENDOR-GPT",
+      } },
     } },
-    routes: { route: { id: "route", backends: [{ upstream: "relay", models: ["model"] }] } },
-    virtualProviders: { cabletidy_relay: { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "route", allowedModels: ["model"], defaultModel: "model" } },
-    bindings: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "model", codex: {} } },
+    bindings: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "gpt-5.5", codex: {} } },
   };
 }
 
 export function namedCodexConfigFixture(names) {
   const template = codexConfigFixture();
-  const config = { upstreams: {}, models: {}, routes: {}, virtualProviders: {}, bindings: {} };
+  const config = { version: 2, upstreams: {}, routes: {}, virtualProviders: {}, bindings: {} };
   for (const [id, name] of Object.entries(names)) {
     config.upstreams[id] = {
       ...template.upstreams.relay, id, name: `Upstream ${id}`, baseUrl: `https://${id}.example.invalid/v1`,
     };
-    config.models[id] = {
-      ...structuredClone(template.models.model), id,
-      upstreams: { [id]: { upstreamModelId: `VENDOR-${id}` } },
-    };
-    config.routes[id] = { id, backends: [{ upstream: id, models: [id] }] };
+    config.routes[id] = { id, backends: [{ upstream: id }] };
     config.virtualProviders[`cabletidy_${id}`] = {
       ...template.virtualProviders.cabletidy_relay, id: `cabletidy_${id}`, route: id,
-      allowedModels: [id], defaultModel: id,
+      models: { "gpt-5.5": { ...structuredClone(template.virtualProviders.cabletidy_relay.models["gpt-5.5"]), upstreamModelId: `VENDOR-${id}` } },
     };
     config.bindings[id] = {
-      ...template.bindings.relay, id, name, virtualProvider: `cabletidy_${id}`, defaultModel: id,
+      ...template.bindings.relay, id, name, virtualProvider: `cabletidy_${id}`,
     };
   }
   return config;

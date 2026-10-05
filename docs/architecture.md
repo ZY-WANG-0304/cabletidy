@@ -19,7 +19,7 @@ CableTidy 不是一个“把所有上游都变成 OpenAI API”的薄代理。�
 
 默认按客户端请求中的模型名透传到上游，不要求预先登记模型。可选的 Codex 模型改名和元数据设置只支持与官方 GPT 目录明确对应的模型；上游是否支持未配置的模型由上游判断。
 
-- `clientModelId` 默认使用对应的官方模型名，`upstreamModelId` 保存上游要求的字符串，不要求用户额外创建客户端别名。
+- 客户端模型名默认使用对应的官方模型名，`upstreamModelId` 保存上游要求的字符串，不要求用户额外创建客户端别名。
 - 基础提示词、模板变量和工具行为配置沿用对应的 Codex 官方模型定义，不能随意套用另一个 GPT 模型的目录项。
 - 同一模型经由不同上游接入时，仍需确认代理实际支持的能力和上下文限制，不能由官方模型身份推断完整兼容。
 - 非对应 GPT 模型的客户端适配、中性提示词和自定义适配预设均推迟到后续版本，不属于当前 MVP。
@@ -46,8 +46,8 @@ CableTidy 直接实现 Codex 原生 provider 接入方式。外部教程或客�
 
 ### 2.1 Model Profile 与客户端配置
 
-Model Profile 是 CableTidy 自己维护的模型身份、能力和元数据，
-Upstream Model Binding 记录它在具体上游使用的模型名。
+模型设置保存在所属 Virtual Provider 的 `models` 字典中，以客户端模型名为键。
+记录包含可选的上游模型名、能力和元数据，不再维护独立的内部模型 ID。
 Codex 的 reasoning effort 由请求选择；旧 compact 数据保留但不生效。
 
 客户端接入通过 `config.toml` 的根级模型选择和 provider 条目完成，
@@ -99,7 +99,7 @@ Codex 的 reasoning effort 由请求选择；旧 compact 数据保留但不生�
 2. 校验请求大小和目标协议；本地 listener 无需 API Key
 3. Ingress Adapter 提取 client_model_id 和请求能力
 4. Model Resolver 查找当前配置内可选的 Model Profile，未匹配时透传模型名
-5. Route 定位唯一 upstream，检查协议；匹配 Model Profile 时检查其绑定和能力
+5. Route 定位唯一 upstream，检查协议；匹配模型设置时检查其能力
 6. 使用显式 upstream_model_id，否则沿用客户端请求中的 model
 7. 执行同协议转发或显式协议对转换
 8. 注入上游认证，发送请求
@@ -154,50 +154,35 @@ Upstream = endpoint + wire protocol + secret reference
 
 运行时配置来自 Web/CLI 的 CableTidy 配置图。
 
-### 4.4 Model Profile
+### 4.4 配置内模型设置
 
-Model Profile 是 CableTidy 对客户端暴露的稳定逻辑模型。它不是 Codex profile 文件，也不是上游模型字符串的别名包装。
-
-```json
-{
-  "id": "gpt56-sol",
-  "name": "GPT-5.6 Sol",
-  "clientModelId": "gpt-5.6-sol",
-  "aliases": ["gpt-5.6-sol", "sol"],
-  "family": "codex",
-  "capabilities": ["streaming", "tools", "reasoning"],
-  "contextWindow": 1000000,
-  "compact": { "strategy": "auto", "tokenLimit": 850000 }
-}
-```
-
-这些字段都由 CableTidy 管理。capabilities 参与请求能力检查；context window 仅在显式选择覆盖模式后同步，compact 仍是未生效的历史元数据。上例窗口和阈值仅用于展示旧数据结构，不是新模型的通用默认值。新模型不自动填充这些数值。
-
-### 4.5 Upstream Model Binding
-
-每份配置只连接一个 Upstream，配置内的 Model Profile 都映射到这个 Upstream。一个 Upstream 可以提供多个模型；不同配置使用同名客户端模型时，分别保存各自的 Model Profile 和上游映射：
+`virtualProviders.<provider>.models` 以客户端请求中的模型名为键。每份配置独立保存自己的映射和元数据，同名模型在不同配置中互不影响。没有独立的内部模型 ID，也没有全局模型注册表。
 
 ```json
 {
   "models": {
-    "gpt56-sol": {
-      "clientModelId": "gpt-5.6-sol",
-      "upstreams": {
-        "relay-a": {
-          "upstreamModelId": "vendor-sol-v1",
-          "capabilityOverrides": []
-        }
-      }
+    "gpt-5.6-sol": {
+      "aliases": ["sol"],
+      "family": "codex",
+      "capabilities": ["streaming", "tools", "reasoning"],
+      "upstreamModelId": "vendor-sol-v1",
+      "codex": { "metadataMode": "official" }
     }
   }
 }
 ```
 
-`upstream_model_id` 只在 CableTidy daemon 发给该配置的上游时使用。客户端请求和响应中的模型名保持为 `clientModelId`。
+`aliases` 只保存显式配置的额外请求名称，可省略；已有别名在模型编辑行中显示并可修改。模型名和别名在当前配置内不能指向不同记录。改名后旧名称不再隐式匹配原记录；需要继续接受旧名称时应显式添加别名。模型名按原字符串匹配，不生成规范化名称或数字后缀。
+
+### 4.5 上游模型映射
+
+每份配置只连接一个 Upstream，所有模型设置继承 Route 的唯一上游，不再各自维护 `upstreams` 引用。记录中的 `upstreamModelId` 填写时替换出站请求的模型名；省略时保持请求原名。`capabilityOverrides` 与 `capabilities` 一起决定当前配置中该模型的有效能力。
+
+模型列表返回客户端名称。`/api/v1/tests/model-resolve` 的 `matchedModel` 表示匹配到的客户端名称，未匹配时为 null；不再返回 `profileId`。
 
 ### 4.6 Route
 
-Route 记录配置的唯一 upstream 及其可用模型。存储结构中的 `backends` 必须且只能有一个元素：
+Route 记录配置的唯一 upstream，不维护模型列表。存储结构中的 `backends` 必须且只能有一个元素：
 
 ```json
 {
@@ -205,14 +190,13 @@ Route 记录配置的唯一 upstream 及其可用模型。存储结构中的 `ba
   "backends": [
     {
       "upstream": "relay-a",
-      "models": ["gpt56-sol", "gpt55"],
       "enabled": true
     }
   ]
 }
 ```
 
-backend 连接唯一 upstream，`models` 保存当前配置可选的 Model Profile 引用，不是请求白名单；可省略或为空。模型的公共 alias 和能力由 Model Registry 维护。配置不支持多上游、主备切换或故障转移；上游错误直接返回客户端，连接失败返回 502。旧配置中的 route `strategy`、backend `priority` / `weight` 只保留原值，不再校验或参与转发。
+backend 连接唯一 upstream，模型设置和显式别名由当前 Virtual Provider 的 `models` 维护。配置不支持多上游、主备切换或故障转移；上游错误直接返回客户端，连接失败返回 502。旧配置中的 route `strategy`、backend `priority` / `weight` 只保留原值，不再校验或参与转发。
 
 ### 4.7 Virtual Provider
 
@@ -223,8 +207,11 @@ Virtual Provider 是 CableTidy 在本地暴露的一个面向客户端的服务�
   "id": "cabletidy_codex-main",
   "ingressProtocol": "openai.responses",
   "route": "codex-default",
-  "allowedModels": ["gpt56-sol", "gpt55"],
-  "defaultModel": "gpt56-sol"
+  "models": {
+    "gpt-5.6-sol": { "upstreamModelId": "vendor-sol-v1" },
+    "gpt-5.5": {}
+  },
+  "defaultModel": "gpt-5.6-sol"
 }
 ```
 
@@ -274,26 +261,16 @@ Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如�
 Web 配置表单会将以下信息保存到 CableTidy：
 
 ```text
-上游地址 / API Key / wire protocol
-        |
-        v
-Upstream
-        |
-        +--> Model Profile
-        |       client_model_id / aliases
-        |       capabilities
-        |       context window
-        |       compact policy
-        |
-        +--> Upstream Model Binding
-                upstream_model_id
-                capability overrides
-        |
-        v
-Route -> Virtual Provider -> Codex Binding
+Target Binding -> Virtual Provider -> Route -> Upstream
+                         |
+                         +--> models[客户端模型名]
+                                upstreamModelId（可选）
+                                aliases（可选）
+                                capabilities / capabilityOverrides
+                                contextWindow / codex / compact
 ```
 
-Model Profile 和上游模型映射由 CableTidy 配置图维护，不依赖客户端 profile 名称或文件分组。
+模型设置归属于当前 Virtual Provider，不依赖客户端 profile 名称或文件分组，也不引用全局模型记录。
 
 ### 5.2 Codex 最终看到什么
 
@@ -330,7 +307,7 @@ Codex 不需要知道：
 - 上游模型名和 `upstream_model_id`。
 - 内部 Route 和上游健康状态；必要的模型能力元数据通过客户端适配提供。
 - 外部教程的存在、内容和 profile 文件。
-- CableTidy 内部的 Model Profile、Upstream Model Binding 和 transform plan。
+- CableTidy 内部的模型设置和 transform plan。
 
 Codex 自行选择请求的 `model`，daemon 默认原样发送；仅在命中当前配置的显式改名设置时使用上游模型名。
 
@@ -379,22 +356,20 @@ Upstream
   secretRef -> 上游 API Key
   auth.header / auth.scheme（缺省为 authorization / Bearer）
 
-Model Profile（可选）
-  clientModelId 或 aliases       用于识别客户端 model
-  upstreams[upstream]             关联当前配置的唯一上游
-  upstreams[upstream].upstreamModelId（可选）
-                                  填写时改写 model，省略时透传
-  capabilities                   用于判断 streaming/tools/reasoning 等请求是否可发
+Virtual Provider models[客户端模型名]（可选）
+  aliases（可选）                 额外请求名称
+  upstreamModelId（可选）         填写时改写 model，省略时透传
+  capabilities / capabilityOverrides
+                                 用于判断 streaming/tools/reasoning 等请求是否可发
 
 Route
   backends[].upstream
-  backends[].models（可选模型设置引用）
   backends[0].enabled
 
 Virtual Provider
   ingressProtocol
   route
-  allowedModels（可选模型设置引用）/ defaultModel（可选）
+  models（配置内模型设置字典）/ defaultModel（可选）
 
 Shared listener
   web.listenHost / web.port
@@ -451,8 +426,8 @@ client_model_id
 
 Target Binding 的 `defaultModel` 只用于客户端接入生成；新建配置不自动设置默认模型，客户端自行选择。未登记模型默认透传，不套用其他模型的能力限制；无请求模型且未设置默认模型时返回 `model_required`。
 
-名称和 alias 的唯一性限定在 Virtual Provider 的 `allowedModels` 引用内，而不是全局。该历史字段现在表示可选设置集合，不限制客户端能请求哪些模型。
-不同套装可用相同官方模型名并分别绑定不同上游名称；集合为空或省略时不得回退到其他配置或全局模型设置。
+名称和 alias 的唯一性限定在 Virtual Provider 的 `models` 字典内。请求先精确匹配该字典的客户端名称，再匹配显式别名，未匹配时原名透传。
+不同套装可用相同官方模型名并分别映射不同上游名称；字典为空或省略时不得回退到其他配置的模型设置。配置引用不参与请求名称匹配。
 
 ### 6.2 能力判断
 
@@ -466,7 +441,7 @@ stream       -> streaming
 reasoning    -> reasoning
 ```
 
-有效能力由 Model Profile 和 Upstream Model Binding 的覆盖共同决定。如果能力不能安全转换，CableTidy 在本地返回目标协议错误，不发送一个已经静默丢能力的请求。
+有效能力由当前模型设置的 `capabilities` 和 `capabilityOverrides` 共同决定。如果能力不能安全转换，CableTidy 在本地返回目标协议错误，不发送一个已经静默丢能力的请求。
 
 ### 6.3 协议适配
 
@@ -522,10 +497,7 @@ Codex 的通栏可选模型设置区域每行展示：
 - **模型映射**回答“这个客户端模型在某个上游叫什么、具备什么能力”。
 - **内部 Route**回答“这个 Virtual Provider 使用哪个 upstream 连接”。
 
-CableTidy 仍然在运行时保存独立的 `Model Profile`、`Upstream Model Binding`
-和 `Route`。每个 Model Profile 只有一个上游映射，一份配置中的所有模型共用
-同一上游。Route 随配置自动创建，用户不需要单独配置；需要另一个上游时创建
-另一份配置，不扩展当前 Virtual Provider 的上游数量。
+CableTidy 将模型名、上游模型名及元数据统一保存在当前 Virtual Provider 的 `models` 中。Route 随配置自动创建，只指定唯一上游；需要另一个上游时创建另一份配置。修改模型名会同步更新相关默认模型和 Claude 客户端模型选择，不维护额外的内部 ID 或重复引用列表。
 
 套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
 底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
@@ -636,12 +608,16 @@ GET  /api/v1/integrations
 
 - upstream 或 binding 的 `providerFormat: "codex.toml.v1"` 改为 `integration: "codex-native-provider"`。
 - binding 的 `targetFormat: "codex.toml.v1"` 改为 `"codex.config.toml.v1"`；旧值会被校验拒绝。
-- 模型 `targetOverrides.codex` 或 `legacyCodex` 中的 `model`、`modelContextWindow`、`personality` 分别移至模型的 `clientModelId`、`contextWindow`、`personality`。
+- 模型 `targetOverrides.codex` 或 `legacyCodex` 中的 `model`、`modelContextWindow`、`personality` 分别移至 `models` 的客户端名称键、模型的 `contextWindow`、`personality`。
 - 若需要保留历史 compact 元数据，将 `modelAutoCompactTokenLimit` 移至模型的 `compact: { strategy: "auto", tokenLimit: ... }`；该元数据仍不改变运行时压缩行为。
 
 已采用当前字段的模型数据继续保留。配置名称与引用的同步重命名、旧本地认证字段清理和密钥脱敏继续生效。
 
-新配置不再生成 `web.enabled`。旧配置中的该字段以及顶层 `models.<id>.capabilityOverrides` 保留原值，但运行时忽略，不进行专用校验。套餐入口的启停由 `virtualProviders.<id>.enabled` 控制；实际生效的能力覆盖位于 `models.<id>.upstreams.<upstream>.capabilityOverrides`，继续校验和应用。
+新配置不再生成 `web.enabled`；旧值保留但不影响监听。配置入口的启停由 `virtualProviders.<id>.enabled` 控制。有效能力覆盖位于 `virtualProviders.<id>.models.<客户端模型名>.capabilityOverrides`。
+
+配置版本为 2。加载版本 1 时，将 `allowedModels` 引用的全局模型迁入所属配置，使用原 `clientModelId`（缺省时取首个别名，再缺省时取原记录键）作为客户端名称，并展开该配置上游的映射字段。移除内部 `id`、重复的 `clientModelId`、全局 `models`、`allowedModels` 和 backend 的 `models`。旧模型顶层无效的 `capabilityOverrides` 丢弃，仅迁移原上游映射中实际生效的覆盖。默认模型的内部引用转换成客户端名称，Claude 原生默认别名保留字面值。
+
+迁移在内存中完成，成功保存配置后写入版本 2。迁移遇到重复客户端名、缺失模型、错误上游绑定或未归属配置的模型记录时拒绝迁移并保留原数据，不静默覆盖或删除；显式别名冲突由新结构的校验报告。旧内部 ID 不会自动变成请求别名。若要回退旧版本，应恢复迁移前的版本 1 配置。
 
 配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
 
@@ -657,9 +633,8 @@ Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` �
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "upstreams": {},
-  "models": {},
   "routes": {},
   "virtualProviders": {},
   "bindings": {}
@@ -720,7 +695,7 @@ Web 文件通过 `include_bytes!` 嵌入原生程序。npm 包只包含薄启动
 - 审计库 schema 3 的 audit / findings 保持一对多；audit_snapshots 保存不可覆盖的完成清单或检测范围，audit_body_chunks 保存连续、不可改写的正文段。详情返回清单，独立 /security/audit/<id>/body 接口每页返回最多 4 段。进度、失败和覆盖原因独立于请求结果与风险等级。
 - 上游 URL 可以在管理台展示，但不得写入 Codex 生成的 local provider block。
 - Codex 生成配置只包含 CableTidy local endpoint 和 client model。
-- 每份配置只连接一个 upstream，不支持主备或多上游切换。多 backend、同一 Model Profile 的多上游映射以及配置内模型与上游不一致都必须校验失败。
+- 每份配置只连接一个 upstream，不支持主备或多上游切换。多 backend 以及模型设置中残留的独立 `upstreams` 绑定都必须校验失败。
 - 所有配置提交需要服务端校验、diff、revision 检查和 atomic reload。
 - 生成 Codex 文件前备份原文件，managed block 重复应用必须幂等。
 
@@ -730,7 +705,7 @@ MVP 至少覆盖：
 
 1. Web 单页表单可以直接完成首次配置，不依赖外部教程或 profile 文件。
 2. 每份配置与 Virtual Provider 一对一，并通过 Route 连接唯一的 upstream。
-3. 每个 Model Profile 只有一个上游映射；一份配置内所有模型均映射到该配置的 upstream。不同配置可使用相同客户端模型名。
+3. 模型设置以客户端名称为键，继承所属配置的唯一 upstream。不同配置可使用相同客户端模型名。
 4. 客户端模型名在请求和响应中保持稳定。
 5. Codex artifact 默认只生成 `config.toml`；元数据覆盖时按需生成模型目录，不生成额外的 profile/TUI 文件。
 6. Codex `base_url` 指向本地 Virtual Provider，不包含真实上游 URL。
@@ -750,7 +725,7 @@ MVP 至少覆盖：
 - Rust daemon 和内嵌的 loopback-only Web 管理台。
 - Web 配置创建与详情编辑。
 - `openai.responses` 和 `anthropic.messages` 同协议 Virtual Provider。
-- Upstream、Model Profile、Upstream Model Binding、Route、Virtual Provider、Target Binding。
+- Upstream、配置内模型设置、Route、Virtual Provider、Target Binding。
 - Codex Native Provider Integration 的 Web 配置和原生配置生成。
 - Codex 只生成本地 `config.toml` managed block。
 - Claude Code 官方 Base URL 接入、四个本地接口、模型映射与上游连通性测试。
@@ -780,8 +755,7 @@ Target
   -> Target Binding
   -> Virtual Provider
   -> Model Resolver
-  -> Model Profile
-  -> Upstream Model Binding
+  -> 当前配置的模型设置（可选上游名称映射）
   -> Route
   -> Upstream
   -> protocol-pair transform

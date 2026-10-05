@@ -26,23 +26,19 @@ test("Claude family options support Fable and preserve existing custom values wi
   binding.claude.models = { subagent: "sonnet" };
   assert.equal(validateConfig(config).ok, true);
   binding.claude.models = {};
-  config.models = {};
-  config.routes.route.backends[0].models = [];
-  config.virtualProviders["cabletidy_claude-main"].allowedModels = [];
+  config.virtualProviders["cabletidy_claude-main"].models = {};
   assert.equal(validateConfig(config).ok, true);
 });
 
 test("upstream-only configurations allow empty or omitted model settings and optional defaults", () => {
   const config = codexConfigFixture();
-  config.models = {};
-  config.routes.route.backends[0].models = [];
-  config.virtualProviders.cabletidy_relay.allowedModels = [];
+  config.virtualProviders.cabletidy_relay.models = {};
   delete config.virtualProviders.cabletidy_relay.defaultModel;
   delete config.bindings.relay.defaultModel;
   assert.equal(validateConfig(config).ok, true);
   assert.deepEqual(validateConfig(config).warnings, []);
   delete config.routes.route.backends[0].models;
-  delete config.virtualProviders.cabletidy_relay.allowedModels;
+  delete config.virtualProviders.cabletidy_relay.models;
   config.bindings.relay.defaultModel = "unconfigured-model";
   config.virtualProviders.cabletidy_relay.defaultModel = "unconfigured-model";
   assert.equal(validateConfig(config).ok, true);
@@ -72,7 +68,6 @@ test("obsolete configuration fields round-trip without affecting routing or prov
   config.routes.route.strategy = "obsolete-strategy";
   config.routes.route.backends[0].priority = "obsolete-priority";
   config.routes.route.backends[0].weight = "obsolete-weight";
-  config.models.model.capabilityOverrides = ["-vision"];
   config.virtualProviders.cabletidy_relay.enabled = false;
   const result = validateConfig(config);
   assert.equal(result.ok, true, JSON.stringify(result.errors));
@@ -82,12 +77,12 @@ test("obsolete configuration fields round-trip without affecting routing or prov
     model: "gpt-5.5", images: true,
   }).upstreamModelId, "VENDOR-GPT");
 
-  config.models.model.upstreams.relay.capabilityOverrides = ["-vision"];
+  config.virtualProviders.cabletidy_relay.models["gpt-5.5"].capabilityOverrides = ["-vision"];
   assert.throws(() => resolveRequest(config, config.virtualProviders.cabletidy_relay, {
     model: "gpt-5.5", images: true,
   }), (error) => error.details.rejected[0].reason === "capability_missing");
-  config.models.model.upstreams.relay.capabilityOverrides = "invalid";
-  assert.ok(validateConfig(config).errors.some(({ path }) => path === "models.model.upstreams.relay.capabilityOverrides"));
+  config.virtualProviders.cabletidy_relay.models["gpt-5.5"].capabilityOverrides = "invalid";
+  assert.ok(validateConfig(config).errors.some(({ path }) => path === "virtualProviders.cabletidy_relay.models.gpt-5.5.capabilityOverrides"));
 });
 
 test("normalization discards upstream envKey and Codex auth metadata", () => {
@@ -136,10 +131,10 @@ test("upstream credentials come only from the secrets store even when env refere
 
 test("metadata settings do not require a rename but reject invalid upstream model IDs", () => {
   const config = codexConfigFixture();
-  delete config.models.model.upstreams.relay.upstreamModelId;
+  delete config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId;
   assert.equal(validateConfig(config).ok, true);
   for (const upstreamModelId of [null, "", " ", 123, {}]) {
-    config.models.model.upstreams.relay.upstreamModelId = upstreamModelId;
+    config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId = upstreamModelId;
     assert.ok(validateConfig(config).errors.some((error) => error.path.endsWith("upstreamModelId")));
   }
 });
@@ -161,7 +156,7 @@ test("legacy names and provider ports migrate to the shared listener without cha
   assert.equal(config.virtualProviders["cabletidy_my-relay"].listenHost, undefined);
   assert.equal(config.web.port, 43100);
   assert.equal(config.daemon.proxyPortRange, undefined);
-  assert.deepEqual(config.models, original.models);
+  assert.deepEqual(config.virtualProviders["cabletidy_my-relay"].models, original.virtualProviders["codex-main"].models);
   assert.deepEqual(config.upstreams, original.upstreams);
   assert.deepEqual(normalizeConfig(config), config);
   assert.equal(original.bindings["codex-main"].virtualProvider, "codex-main");
@@ -225,17 +220,12 @@ test("configuration paths cannot shadow the management API namespace", () => {
   assert.ok(result.errors.some(error => error.path === "bindings.api.name" && /保留路径/.test(error.message)));
 });
 
-test("a provider cannot expose models mapped to another configuration's upstream", () => {
+test("provider models inherit the configuration upstream instead of storing separate bindings", () => {
   const config = codexConfigFixture();
-  config.upstreams.other = { ...config.upstreams.relay, id: "other" };
-  config.models.other = {
-    ...config.models.model, id: "other", clientModelId: "gpt-5.6-sol", aliases: ["gpt-5.6-sol"],
-    upstreams: { other: { upstreamModelId: "other-vendor-model" } },
-  };
-  config.virtualProviders.cabletidy_relay.allowedModels.push("other");
+  config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreams = { other: { upstreamModelId: "other" } };
   const result = validateConfig(config);
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some((error) => error.path === "virtualProviders.cabletidy_relay.allowedModels" && /当前配置的 upstream/.test(error.message)));
+  assert.ok(result.errors.some(error => error.path === "virtualProviders.cabletidy_relay.models.gpt-5.5.upstreams"));
 });
 
 test("computes an effective config diff without counting revision metadata", () => {
@@ -272,8 +262,8 @@ test("prototype Codex fields are discarded without migration and old target form
   };
   for (const metadata of [{ targetOverrides: { codex: legacy } }, { legacyCodex: legacy }]) {
     const original = codexConfigFixture();
-    delete original.models.model.clientModelId;
-    Object.assign(original.models.model, metadata);
+    delete original.virtualProviders.cabletidy_relay.models["gpt-5.5"].clientModelId;
+    Object.assign(original.virtualProviders.cabletidy_relay.models["gpt-5.5"], metadata);
     original.upstreams.relay.providerFormat = "codex.toml.v1";
     Object.assign(original.bindings.relay, {
       providerFormat: "codex.toml.v1",
@@ -286,7 +276,7 @@ test("prototype Codex fields are discarded without migration and old target form
     assert.equal(config.upstreams.relay.integration, undefined);
     assert.equal(config.bindings.relay.integration, undefined);
     for (const field of ["clientModelId", "contextWindow", "compact", "personality"]) {
-      assert.equal(config.models.model[field], undefined, field);
+      assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"][field], undefined, field);
     }
     assert.deepEqual(config.bindings.relay.codex, {});
     assert.doesNotMatch(JSON.stringify(config), /profileFile|profileId|targetOverrides|legacyCodex|providerFormat/);
@@ -329,20 +319,19 @@ test("public config recursively removes credential material without changing the
 test("validation reports malformed graph nodes instead of throwing", () => {
   const result = validateConfig({
     upstreams: { broken: null },
-    models: { broken: null },
     routes: { broken: { backends: [null] } },
     virtualProviders: {
       broken: {
         ingressProtocol: "gemini.generate_content",
         route: "missing",
-        allowedModels: ["missing"],
+        models: { broken: null },
       },
     },
     bindings: { broken: null },
   });
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((item) => item.path === "upstreams.broken"));
-  assert.ok(result.errors.some((item) => item.path === "models.broken"));
+  assert.ok(result.errors.some((item) => item.path === "virtualProviders.cabletidy_broken.models.broken"));
   assert.ok(result.errors.some((item) => item.path === "routes.broken.backends.0"));
   assert.ok(result.warnings.some((item) => item.path === "virtualProviders.cabletidy_broken.ingressProtocol"));
 });

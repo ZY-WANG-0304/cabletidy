@@ -58,9 +58,9 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
   });
   config.upstreams.codex.baseUrl = `http://127.0.0.1:${upstreamPort}/v1`;
   config.upstreams.codex.secretRef = "secret://upstreams/codex";
-  config.models.codex.clientModelId = "gpt-5.6-sol";
-  config.models.codex.aliases = ["sol"];
-  config.models.codex.upstreams.codex.upstreamModelId = "vendor-sol";
+  config.virtualProviders.cabletidy_codex.models = { "gpt-5.6-sol": config.virtualProviders.cabletidy_codex.models["gpt-5.5"] };
+  config.virtualProviders.cabletidy_codex.models["gpt-5.6-sol"].aliases = ["sol"];
+  config.virtualProviders.cabletidy_codex.models["gpt-5.6-sol"].upstreamModelId = "vendor-sol";
   await saveConfig(config, paths);
   await saveSecrets({ "secret://upstreams/codex": "upstream-key" }, paths);
 
@@ -484,9 +484,9 @@ test("upstream errors are returned without contacting another configured upstrea
   config.upstreams.backup = {
     id: "backup", protocol: "openai.responses", baseUrl: `http://127.0.0.1:${backupPort}/v1`,
   };
-  config.models.codex.clientModelId = "coder";
-  config.models.codex.aliases = ["coder"];
-  config.models.codex.upstreams.codex.upstreamModelId = "vendor-primary";
+  config.virtualProviders.cabletidy_codex.models = { coder: config.virtualProviders.cabletidy_codex.models["gpt-5.5"] };
+  config.virtualProviders.cabletidy_codex.models.coder.aliases = ["coder"];
+  config.virtualProviders.cabletidy_codex.models.coder.upstreamModelId = "vendor-primary";
   await saveConfig(config, paths);
   const app = await createApplication({ paths });
   try {

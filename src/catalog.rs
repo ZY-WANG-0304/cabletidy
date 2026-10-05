@@ -245,8 +245,7 @@ pub fn public(snapshot: &Value) -> Value {
     }).collect();
     json!({"available": true, "version": snapshot["version"], "models": models})
 }
-pub fn entry(snapshot: &Value, id: &str, p: &Value) -> Result<(Value, Value)> {
-    let name = crate::model::client_model(id, p);
+pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> {
     let original=official(snapshot).find(|m|m["slug"]==name).with_context(||format!("模型 {name} 未匹配本机 Codex 官方 GPT 目录。请选择对应的官方模型；若本机目录过旧，请更新 Codex。当前不支持非对应模型。"))?;
     if !nonempty(&original["base_instructions"])
         && !nonempty(&original["model_messages"]["instructions_template"])
@@ -288,35 +287,40 @@ pub fn entry(snapshot: &Value, id: &str, p: &Value) -> Result<(Value, Value)> {
     }
     Ok((original.clone(), out))
 }
-pub fn model_ids(c: &Value) -> BTreeSet<String> {
+pub fn model_ids(c: &Value) -> BTreeSet<(String, String)> {
     entries(&c["bindings"])
         .filter(|(_, b)| b["target"] == "codex")
         .flat_map(|(_, b)| {
-            array(&c["virtualProviders"][text(&b["virtualProvider"])]["allowedModels"])
+            let pid = text(&b["virtualProvider"]);
+            entries(&c["virtualProviders"][pid]["models"])
+                .map(move |(name, _)| (pid.to_owned(), name.clone()))
         })
-        .map(|id| text(id).to_owned())
+        .collect()
+}
+pub fn changed_models(c: &Value, old: &Value) -> Vec<(String, String)> {
+    let old_ids = model_ids(old);
+    model_ids(c)
+        .into_iter()
+        .filter(|(pid, name)| {
+            !old_ids.contains(&(pid.clone(), name.clone()))
+                || c["virtualProviders"][pid]["models"][name]
+                    != old["virtualProviders"][pid]["models"][name]
+        })
         .collect()
 }
 pub async fn validate_changes(c: &Value, old: &Value, catalog: &Catalog) -> Vec<Value> {
-    let old_ids = model_ids(old);
-    let ids: Vec<_> = model_ids(c)
-        .into_iter()
-        .filter(|id| !old_ids.contains(id) || c["models"][id] != old["models"][id])
-        .collect();
+    let ids = changed_models(c, old);
     if ids.is_empty() {
         return vec![];
     }
     let snapshot = match catalog.load(false).await {
         Ok(v) => v,
-        Err(e) => return vec![json!({"path":"models","message":e.to_string()})],
+        Err(e) => return vec![json!({"path":"virtualProviders","message":e.to_string()})],
     };
-    ids.iter()
-        .filter_map(|id| {
-            entry(&snapshot, id, &c["models"][id])
-                .err()
-                .map(|e| json!({"path":format!("models.{id}"),"message":e.to_string()}))
-        })
-        .collect()
+    ids.iter().filter_map(|(pid, name)| {
+        entry(&snapshot, name, &c["virtualProviders"][pid]["models"][name]).err()
+            .map(|e| json!({"path":format!("virtualProviders.{pid}.models.{name}"),"message":e.to_string()}))
+    }).collect()
 }
 pub fn plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
     validate(&snapshot["catalog"])?;
@@ -330,31 +334,17 @@ pub fn plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
     }
     let backend = &backends[0];
     let upstream = &c["upstreams"][text(&backend["upstream"])];
-    for id in array(&p["allowedModels"]) {
-        let id = text(id);
-        let profile = &c["models"][id];
-        if profile.is_null() {
-            bail!("模型不存在: {id}");
-        }
+    for (id, profile) in entries(&p["models"]) {
         let (original, mut changed) = entry(snapshot, id, profile)?;
         let slug = text(&original["slug"]);
-        if !enabled(backend)
-            || !upstream.is_object()
-            || !enabled(upstream)
-            || (!array(&backend["models"]).is_empty()
-                && !array(&backend["models"]).contains(&json!(id)))
-        {
+        if !enabled(backend) || !upstream.is_object() || !enabled(upstream) {
             bail!("{slug} 的 Codex MVP 接入必须对应一个有效上游");
         }
         if upstream["protocol"] != "openai.responses" {
             bail!("{slug} 的 Codex MVP 上游必须使用 Responses 协议，暂不支持跨协议转换");
         }
-        let binding = &profile["upstreams"][text(&backend["upstream"])];
-        if entries(&profile["upstreams"]).count() != 1 || binding.is_null() {
-            bail!("{slug} 必须且只能映射一个 upstream");
-        }
         if !profile["codex"].is_null()
-            && !crate::model::capabilities(profile, binding).contains("vision")
+            && !crate::model::capabilities(profile).contains("vision")
             && array(&changed["input_modalities"]).contains(&json!("image"))
         {
             changed["input_modalities"] = json!(array(&changed["input_modalities"])

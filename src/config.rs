@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
     collections::HashMap,
@@ -58,7 +58,7 @@ impl Paths {
     }
 }
 pub fn defaults() -> Value {
-    json!({"version":1,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"upstreams":{},"models":{},"routes":{},"virtualProviders":{},"bindings":{}})
+    json!({"version":2,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {
@@ -81,6 +81,12 @@ fn remove(v: &mut Value, keys: &[&str]) {
 pub fn normalize(input: &Value) -> Value {
     let mut c = defaults();
     merge(&mut c, input);
+    if input.get("version").is_none()
+        && (input.get("models").is_some()
+            || entries(&input["virtualProviders"]).any(|(_, p)| p.get("allowedModels").is_some()))
+    {
+        c["version"] = json!(1);
+    }
     for (key, default) in [("version", 1), ("revision", 0)] {
         let n = c[key]
             .as_u64()
@@ -88,13 +94,7 @@ pub fn normalize(input: &Value) -> Value {
             .unwrap_or(default);
         c[key] = json!(if key == "version" && n == 0 { 1 } else { n });
     }
-    for key in [
-        "upstreams",
-        "models",
-        "routes",
-        "virtualProviders",
-        "bindings",
-    ] {
+    for key in ["upstreams", "routes", "virtualProviders", "bindings"] {
         if !c[key].is_object() {
             c[key] = json!({});
         }
@@ -117,7 +117,20 @@ pub fn normalize(input: &Value) -> Value {
             ],
         );
     }
-    for m in c["models"].as_object_mut().unwrap().values_mut() {
+    if c["version"] == 1 {
+        // Migration is transactional: invalid references or duplicate names must not lose data.
+        let mut migrated = c.clone();
+        if migrate_models(&mut migrated).is_ok() {
+            c = migrated;
+        }
+    }
+    for m in c["virtualProviders"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .filter_map(|p| p.get_mut("models").and_then(Value::as_object_mut))
+        .flat_map(|models| models.values_mut())
+    {
         remove(m, &["legacyCodex", "reasoning"]);
         if let Some(overrides) = m.get_mut("targetOverrides") {
             remove(overrides, &["codex"]);
@@ -149,6 +162,117 @@ pub fn normalize(input: &Value) -> Value {
     }
     normalize_identities(&mut c);
     c
+}
+
+pub fn migrate_models(c: &mut Value) -> Result<()> {
+    let legacy = c["models"].clone();
+    let mut referenced = std::collections::HashSet::new();
+    let mut names_by_provider = HashMap::new();
+    for (pid, provider) in entries(&c["virtualProviders"])
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect::<Vec<_>>()
+    {
+        if !provider.is_object() {
+            bail!("virtualProviders.{pid} 必须是 object");
+        }
+        if provider.get("models").is_some() {
+            bail!("virtualProviders.{pid}: 旧配置不能同时包含 models 和 allowedModels");
+        }
+        if provider
+            .get("allowedModels")
+            .is_some_and(|v| !v.is_array() || array(v).iter().any(|id| !nonempty(id)))
+        {
+            bail!("virtualProviders.{pid}.allowedModels 必须是模型引用数组");
+        }
+        let route = &c["routes"][text(&provider["route"])];
+        let backend = &route["backends"][0];
+        let upstream = text(&backend["upstream"]);
+        let mut models = Map::new();
+        let mut names = HashMap::new();
+        for old_id in array(&provider["allowedModels"]) {
+            let old_id = text(old_id);
+            let old = &legacy[old_id];
+            if !old.is_object() {
+                bail!("virtualProviders.{pid}: 模型不存在: {old_id}");
+            }
+            if old.get("clientModelId").is_some_and(|v| !nonempty(v))
+                || old
+                    .get("aliases")
+                    .is_some_and(|v| !v.is_array() || array(v).iter().any(|alias| !nonempty(alias)))
+            {
+                bail!("models.{old_id}: 客户端模型名或 aliases 格式不合法");
+            }
+            if !array(&backend["models"]).contains(&json!(old_id))
+                || entries(&old["upstreams"]).count() != 1
+                || !old["upstreams"][upstream].is_object()
+            {
+                bail!("virtualProviders.{pid}: 模型 {old_id} 必须映射到当前配置的 upstream");
+            }
+            let name = old
+                .get("clientModelId")
+                .or_else(|| array(&old["aliases"]).first())
+                .and_then(Value::as_str)
+                .unwrap_or(old_id);
+            if name.trim().is_empty() || (models.contains_key(name) && !names.contains_key(old_id))
+            {
+                bail!("virtualProviders.{pid}.models: 客户端模型名重复或为空: {name}");
+            }
+            let mut model = old.clone();
+            remove(
+                &mut model,
+                &["id", "clientModelId", "upstreams", "capabilityOverrides"],
+            );
+            for (key, value) in entries(&old["upstreams"][upstream]) {
+                model[key] = value.clone();
+            }
+            if let Some(aliases) = model["aliases"].as_array_mut() {
+                aliases.retain(|alias| alias != name);
+            }
+            models.insert(name.to_owned(), model);
+            names.insert(old_id.to_owned(), name.to_owned());
+            referenced.insert(old_id.to_owned());
+        }
+        let claude = entries(&c["bindings"])
+            .any(|(_, b)| b["virtualProvider"] == pid && b["target"] == "claude-code");
+        let p = &mut c["virtualProviders"][&pid];
+        if let Some(name) = names
+            .get(text(&p["defaultModel"]))
+            .filter(|_| !claude || !claude_alias(text(&p["defaultModel"])))
+        {
+            p["defaultModel"] = json!(name);
+        }
+        p["models"] = Value::Object(models);
+        remove(p, &["allowedModels"]);
+        names_by_provider.insert(pid, names);
+    }
+    for (id, _) in entries(&legacy) {
+        if !referenced.contains(id) {
+            bail!("models.{id}: 模型设置未归属任何配置，请先关联或移除后再迁移");
+        }
+    }
+    for b in c["bindings"].as_object_mut().unwrap().values_mut() {
+        if let Some(names) = names_by_provider.get(text(&b["virtualProvider"])) {
+            if let Some(name) = names
+                .get(text(&b["defaultModel"]))
+                .filter(|_| b["target"] != "claude-code" || !claude_alias(text(&b["defaultModel"])))
+            {
+                b["defaultModel"] = json!(name);
+            }
+        }
+    }
+    for r in c["routes"].as_object_mut().unwrap().values_mut() {
+        if let Some(backends) = r.get_mut("backends").and_then(Value::as_array_mut) {
+            for b in backends {
+                remove(b, &["models"]);
+            }
+        }
+    }
+    remove(c, &["models"]);
+    c["version"] = json!(2);
+    Ok(())
+}
+fn claude_alias(name: &str) -> bool {
+    ["best", "opus", "sonnet", "fable", "haiku", "opusplan"].contains(&name)
 }
 pub fn configuration_id(name: &str, fallback: &str) -> String {
     fn slug(s: &str) -> String {

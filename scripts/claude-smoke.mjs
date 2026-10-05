@@ -58,10 +58,9 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
     await fs.rm(home, { recursive: true, force: true });
   });
   const config = claudeConfigFixture(`http://127.0.0.1:${upstream.address().port}/v1`, Number(new URL(app.url).port));
-  config.models.custom = { ...config.models.sonnet, id: "custom", clientModelId: "claude-custom-sonnet", aliases: ["claude-custom-sonnet"],
-    upstreams: { relay: { upstreamModelId: "vendor-custom-sonnet" } } };
-  config.routes.route.backends[0].models.push("custom");
-  config.virtualProviders["cabletidy_claude-main"].allowedModels.push("custom");
+  config.virtualProviders["cabletidy_claude-main"].models["claude-custom-sonnet"] = {
+    ...config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"], upstreamModelId: "vendor-custom-sonnet",
+  };
   config.bindings["claude-main"].defaultModel = "sonnet";
   config.bindings["claude-main"].claude = { setModel: true, models: { sonnet: "claude-custom-sonnet" } };
   const post = async (route, body) => {

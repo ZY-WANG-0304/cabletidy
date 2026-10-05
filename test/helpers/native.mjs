@@ -71,7 +71,7 @@ export const buildCodexArtifacts = buildTargetArtifacts;
 export async function prepareTargetArtifacts(config, options = {}, secrets = {}) {
   const built = buildTargetArtifacts(config, options, secrets);
   const c = normalizeConfig(config);
-  const needsCatalog = built.target === "codex" && c.virtualProviders[built.virtualProviderId]?.allowedModels?.length;
+  const needsCatalog = built.target === "codex" && Object.keys(c.virtualProviders[built.virtualProviderId]?.models || {}).length;
   const snapshot = needsCatalog && options.loadCatalog ? await options.loadCatalog() : null;
   return snapshot ? nativeAsync("artifacts.prepare", config, options, secrets, snapshot) : nativeAsync("artifacts.prepare", config, options, secrets);
 }

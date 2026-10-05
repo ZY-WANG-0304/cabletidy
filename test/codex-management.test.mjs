@@ -40,13 +40,14 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.doesNotMatch(JSON.stringify(catalog.body), /base_instructions/);
   const candidate = normalizeConfig({ ...codexConfigFixture(), web: initial.web });
   candidate.virtualProviders.cabletidy_relay.enabled = false;
-  candidate.models.model.clientModelId = "unknown-model";
+  const profile = candidate.virtualProviders.cabletidy_relay.models["gpt-5.5"];
+  candidate.virtualProviders.cabletidy_relay.models = { "unknown-model": profile };
   let result = await call("/config/commit", { config: candidate, baseRevision: 0 });
   assert.equal(result.status, 422);
   assert.equal(app.state.config.revision, 0);
-  candidate.models.model.clientModelId = "gpt-5.5";
-  candidate.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
-  candidate.models.model.contextWindow = 128000;
+  candidate.virtualProviders.cabletidy_relay.models = { "gpt-5.5": profile };
+  candidate.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex = { metadataMode: "override", inputModalities: ["text"] };
+  candidate.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 128000;
   result = await call("/config/commit", {
     config: candidate, baseRevision: 0, upstreamSecrets: { relay: "upstream-key" },
   });

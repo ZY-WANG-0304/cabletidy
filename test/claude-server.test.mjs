@@ -79,7 +79,7 @@ test("token counting does not require inference parameters or capabilities and p
       res.writeHead(404, { "content-type": "application/json" });
       res.end(errorText);
     }
-  }, (config) => { config.models.sonnet.capabilities = []; });
+  }, (config) => { config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"].capabilities = []; });
   const payload = { model: "claude-sonnet-4-6", messages: [{ role: "user", content: "Hi" }], tools: [{ name: "tool" }] };
   const result = await f.call("claude-main/v1/messages/count_tokens?beta=true", payload);
   assert.deepEqual(await result.json(), { input_tokens: 42 });
@@ -92,9 +92,7 @@ test("token counting does not require inference parameters or capabilities and p
 
 test("model discovery and startup HEAD stay local and all four endpoints honor pause", async (t) => {
   const f = await fixture(t, () => assert.fail("Local-only endpoint contacted upstream"), (config) => {
-    config.models.opus = { ...structuredClone(config.models.sonnet), id: "opus", clientModelId: "claude-opus-4-6", aliases: ["claude-opus-4-6"] };
-    config.virtualProviders["cabletidy_claude-main"].allowedModels.push("opus");
-    config.routes.route.backends[0].models.push("opus");
+    config.virtualProviders["cabletidy_claude-main"].models["claude-opus-4-6"] = structuredClone(config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"]);
   });
   const models = await f.call("claude-main/v1/models?limit=1");
   assert.equal(models.status, 200);
@@ -116,8 +114,7 @@ test("model discovery and startup HEAD stay local and all four endpoints honor p
 
 test("empty discovery does not block inference and one configuration never lists another's models", async (t) => {
   const f = await fixture(t, (req, res, body) => message(res, body), (config) => {
-    config.virtualProviders["cabletidy_claude-main"].allowedModels = [];
-    config.routes.route.backends[0].models = [];
+    config.virtualProviders["cabletidy_claude-main"].models = {};
   });
   assert.deepEqual((await (await f.call("claude-main/v1/models")).json()).data, []);
   const response = await f.call("claude-main/v1/messages", { model: "claude-sonnet-4-6", messages: [] });

@@ -24,7 +24,7 @@ fn error(code: &'static str, message: impl Into<String>) -> ResolveError {
 #[derive(Clone)]
 pub struct Resolution {
     pub client: String,
-    pub profile_id: Option<String>,
+    pub matched_model: Option<String>,
     pub profile: Value,
 }
 #[derive(Clone)]
@@ -34,21 +34,7 @@ pub struct Backend {
     pub model: String,
     pub capabilities: BTreeSet<String>,
 }
-pub fn client_model<'a>(id: &'a str, profile: &'a Value) -> &'a str {
-    if nonempty(&profile["clientModelId"]) {
-        text(&profile["clientModelId"])
-    } else {
-        array(&profile["aliases"])
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or(id)
-    }
-}
-pub fn resolve(
-    c: &Value,
-    p: &Value,
-    requested: Option<&Value>,
-) -> Result<Resolution, ResolveError> {
+pub fn resolve(p: &Value, requested: Option<&Value>) -> Result<Resolution, ResolveError> {
     if requested.is_some_and(|v| !nonempty(v)) {
         return Err(error("invalid_model", "model 必须是非空字符串"));
     }
@@ -59,40 +45,34 @@ pub fn resolve(
             "请求没有模型，Virtual Provider 也没有默认模型",
         ));
     }
-    let allowed = array(&p["allowedModels"]);
     let key = text(name);
-    let matched = entries(&c["models"])
-        .filter(|(id, _)| allowed.contains(&json!(id)))
+    let matched = entries(&p["models"])
         .find(|(id, _)| id.as_str() == key)
-        .or_else(|| {
-            entries(&c["models"])
-                .filter(|(id, _)| allowed.contains(&json!(id)))
-                .find(|(_, m)| m["clientModelId"] == key || array(&m["aliases"]).contains(name))
-        });
+        .or_else(|| entries(&p["models"]).find(|(_, m)| array(&m["aliases"]).contains(name)));
     match matched {
         Some((id, profile)) => Ok(Resolution {
             client: if requested.is_some() {
                 key.into()
             } else {
-                client_model(id, profile).into()
+                id.clone()
             },
-            profile_id: Some(id.clone()),
+            matched_model: Some(id.clone()),
             profile: profile.clone(),
         }),
         None => Ok(Resolution {
             client: key.into(),
-            profile_id: None,
+            matched_model: None,
             profile: Value::Null,
         }),
     }
 }
-pub fn capabilities(p: &Value, b: &Value) -> BTreeSet<String> {
+pub fn capabilities(p: &Value) -> BTreeSet<String> {
     let mut out: BTreeSet<_> = array(&p["capabilities"])
         .iter()
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect();
-    for v in array(&b["capabilityOverrides"]) {
+    for v in array(&p["capabilityOverrides"]) {
         let s = text(v);
         if let Some(v) = s.strip_prefix('-') {
             out.remove(v);
@@ -136,14 +116,7 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
     let b = &backends[0];
     let u = &c["upstreams"][text(&b["upstream"])];
     let profile = &r.profile;
-    let binding = &profile["upstreams"][text(&b["upstream"])];
-    if entries(&profile["upstreams"]).count() > 1 {
-        return Err(error(
-            "invalid_model_binding",
-            "每个 Model Profile 只能映射一个 upstream",
-        ));
-    }
-    let caps = capabilities(profile, binding);
+    let caps = capabilities(profile);
     let mut required = BTreeSet::new();
     for (key, cap) in [
         ("stream", "streaming"),
@@ -170,16 +143,12 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
     }
     let reason = if !enabled(b) || !u.is_object() || !enabled(u) {
         Some("upstream_disabled_or_missing")
-    } else if !profile.is_null() && !array(&b["models"]).contains(&json!(r.profile_id)) {
-        Some("model_not_in_route")
-    } else if !profile.is_null() && binding.is_null() {
-        Some("model_binding_missing")
     } else if p["ingressProtocol"] != u["protocol"] {
         Some("protocol_transform_missing")
     } else if !profile.is_null()
         && (p["ingressProtocol"] != "anthropic.messages"
             || profile.get("capabilities").is_some()
-            || !array(&binding["capabilityOverrides"]).is_empty())
+            || !array(&profile["capabilityOverrides"]).is_empty())
         && !required.is_subset(&caps)
     {
         Some("capability_missing")
@@ -194,37 +163,31 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
         return Err(ResolveError {
             code: "no_compatible_upstream",
             message: format!("当前配置的 upstream 无法处理模型 {}", r.client),
-            details: json!({"profileId":r.profile_id,"rejected":[rejected]}),
+            details: json!({"matchedModel":r.matched_model,"rejected":[rejected]}),
         });
     }
     Ok(Backend {
         route: text(&p["route"]).into(),
         upstream: u.clone(),
-        model: if nonempty(&binding["upstreamModelId"]) {
-            text(&binding["upstreamModelId"]).into()
+        model: if nonempty(&profile["upstreamModelId"]) {
+            text(&profile["upstreamModelId"]).into()
         } else {
             r.client.clone()
         },
         capabilities: caps,
     })
 }
-pub fn models(config: &Value, provider: &Value) -> Vec<Value> {
-    array(&provider["allowedModels"])
-        .iter()
-        .filter_map(|id| {
-            let model = &config["models"][text(id)];
-            if model.is_null() {
-                return None;
-            }
-            Some(json!({
-                "id": client_model(text(id), model),
-                "profileId": id,
+pub fn models(provider: &Value) -> Vec<Value> {
+    entries(&provider["models"])
+        .map(|(id, model)| {
+            json!({
+                "id": id,
                 "aliases": array(&model["aliases"]),
                 "family": model.get("family").unwrap_or(&json!("unknown")),
                 "capabilities": array(&model["capabilities"]),
                 "object": "model",
                 "owned_by": "cabletidy"
-            }))
+            })
         })
         .collect()
 }
