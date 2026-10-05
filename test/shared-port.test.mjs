@@ -50,19 +50,15 @@ async function fixture(t, configure = () => {}) {
     ...config.upstreams.relay, id: "other", baseUrl: `http://127.0.0.1:${upstreamPort}/right/v1`,
     secretRef: "secret://upstreams/other",
   };
-  config.models.other = {
-    ...structuredClone(config.models.model), id: "other",
-    upstreams: { other: { upstreamModelId: "OTHER-GPT" } },
-  };
-  config.routes.other = { id: "other", backends: [{ upstream: "other", models: ["other"] }] };
+  config.routes.other = { id: "other", backends: [{ upstream: "other" }] };
   // An occupied legacy port must not cause the shared listener to bind again.
   config.virtualProviders.cabletidy_relay.listenPort = upstreamPort;
   config.virtualProviders.cabletidy_other = {
     ...config.virtualProviders.cabletidy_relay, id: "cabletidy_other", route: "other",
-    allowedModels: ["other"], defaultModel: "other",
+    models: { "gpt-5.5": { ...structuredClone(config.virtualProviders.cabletidy_relay.models["gpt-5.5"]), upstreamModelId: "OTHER-GPT" } }, defaultModel: "gpt-5.5",
   };
   config.bindings.other = {
-    ...config.bindings.relay, id: "other", name: "Other", virtualProvider: "cabletidy_other", defaultModel: "other",
+    ...config.bindings.relay, id: "other", name: "Other", virtualProvider: "cabletidy_other", defaultModel: "gpt-5.5",
   };
   configure(config);
   await fs.writeFile(paths.config, JSON.stringify(config));
@@ -158,9 +154,9 @@ test("saving an API key uses it on outbound requests despite legacy environment 
 test("upstream-only configuration commits, previews and relays JSON and SSE without model registration", async (t) => {
   const { app, call, commit, calls, streams } = await fixture(t);
   const config = structuredClone(app.state.config);
-  delete config.models.model;
+  delete config.virtualProviders.cabletidy_relay.models["gpt-5.5"];
   delete config.routes.route.backends[0].models;
-  delete config.virtualProviders.cabletidy_relay.allowedModels;
+  delete config.virtualProviders.cabletidy_relay.models;
   delete config.virtualProviders.cabletidy_relay.defaultModel;
   delete config.bindings.relay.defaultModel;
   app.state.loadCodexCatalog = async () => { throw new Error("catalog unavailable"); };
@@ -189,7 +185,7 @@ test("upstream-only configuration commits, previews and relays JSON and SSE with
   assert.match(await response.text(), /"model":"new-upstream-model","delta":"last"/);
   const resolved = await call("api/v1/tests/model-resolve", { virtualProviderId: "cabletidy_relay", model: "new-upstream-model" });
   assert.deepEqual(resolved.body.rejectedBackends, []);
-  assert.equal(resolved.body.profileId, null);
+  assert.equal(resolved.body.matchedModel, null);
   assert.equal(resolved.body.upstreamModelId, "new-upstream-model");
   const count = calls.length;
   assert.equal((await call("relay/v1/responses", { input: "missing model" })).status, 400);

@@ -51,24 +51,18 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
             Value::Null
         }
         "model.resolve" => {
-            let r = model::resolve(x, y, z.get("model"))?;
+            let r = model::resolve(y, z.get("model"))?;
             let b = model::select(x, y, &r, z)?;
-            json!({"clientModelId":r.client,"model":{"clientModelId":r.client,"profileId":r.profile_id,"profile":r.profile},"routeId":b.route,"upstream":b.upstream,"upstreamModelId":b.model,"capabilities":b.capabilities})
+            json!({"clientModelId":r.client,"model":{"clientModelId":r.client,"matchedModel":r.matched_model,"profile":r.profile},"routeId":b.route,"upstream":b.upstream,"upstreamModelId":b.model,"capabilities":b.capabilities})
         }
-        "model.models" => json!(model::models(x, y)),
+        "model.models" => json!(model::models(y)),
         "catalog.public" => catalog::public(x),
         "catalog.plan" => catalog::plan(x, y, z)?,
         "catalog.entry" => {
             let (official, entry) = catalog::entry(x, text(y), z)?;
             json!({"official":official,"entry":entry})
         }
-        "catalog.changed" => {
-            let old_ids = catalog::model_ids(y);
-            json!(catalog::model_ids(x)
-                .into_iter()
-                .filter(|id| !old_ids.contains(id) || x["models"][id] != y["models"][id])
-                .collect::<Vec<_>>())
-        }
+        "catalog.changed" => json!(catalog::changed_models(x, y)),
         "catalog.validateChanges" => {
             json!(catalog::validate_changes(x, y, &Catalog::fixture(z.clone())).await)
         }

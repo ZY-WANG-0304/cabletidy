@@ -41,7 +41,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
   const config = claude ? claudeConfigFixture() : normalizeConfig(codexConfigFixture());
   config.web.port = Number(new URL(app.url).port);
   config.upstreams.relay.baseUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
-  if (passthrough) config.models[claude ? "sonnet" : "model"].upstreams.relay.upstreamModelId = model;
+  if (passthrough) config.virtualProviders[provider].models[model].upstreamModelId = model;
   const call = (route, body, options = {}) => fetch(`${app.url}${route}`, {
     method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body), ...options,

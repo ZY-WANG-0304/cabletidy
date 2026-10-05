@@ -468,11 +468,11 @@ test("Claude configurations can be created without a Codex catalog and retain na
   assert.equal(config.upstreams[backend.upstream].protocol, "anthropic.messages");
   assert.deepEqual(config.upstreams[backend.upstream].auth, { header: "authorization" });
   assert.equal(config.upstreams[backend.upstream].integration, undefined);
-  const model = config.models[backend.models[0]];
-  assert.equal(model.clientModelId, "claude-sonnet-4-6");
+  const model = provider.models["claude-sonnet-4-6"];
+  assert.deepEqual(Object.keys(provider.models), ["claude-sonnet-4-6"]);
   assert.equal(model.capabilities, undefined);
   assert.equal(model.contextWindow, undefined);
-  assert.ok(config.models.model);
+  assert.ok(config.virtualProviders.cabletidy_relay.models["gpt-5.5"]);
   assert.equal(validateConfig(config).ok, true);
   const html = app.read("renderSuiteDetail()");
   assert.match(html, /应用到 Claude Code/);
@@ -502,7 +502,7 @@ test("Claude creation saves family aliases and selectable defaults without apply
   assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "opus");
   assert.equal(validateConfig(config).ok, true);
   assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
-  for (const section of ["models", "upstreams", "routes", "virtualProviders", "bindings"]) {
+  for (const section of ["upstreams", "routes", "virtualProviders", "bindings"]) {
     for (const [id, value] of Object.entries(before[section])) assert.deepEqual(config[section][id], value);
   }
 });
@@ -518,7 +518,7 @@ test("Claude creation allows empty optional sections and clears values outside t
     const config = app.persisted();
     const binding = config.bindings.development;
     const provider = config.virtualProviders[binding.virtualProvider];
-    assert.deepEqual(provider.allowedModels, []);
+    assert.deepEqual(provider.models, {});
     assert.equal(binding.defaultModel, undefined);
     assert.equal(provider.defaultModel, undefined);
     assert.deepEqual(binding.claude, {});
@@ -596,10 +596,10 @@ test("Claude mapping edits do not invent capability or compaction policies", asy
   const app = await controller(claudeConfigFixture());
   await app.action("open-suite", { dataset: { id: "claude-main" } });
   const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model" };
-  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
-  const model = app.persisted().models.sonnet;
-  assert.equal(model.upstreams.relay.upstreamModelId, "new-model");
-  assert.equal(model.name, "claude-sonnet-4-6");
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  const model = app.persisted().virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"];
+  assert.equal(model.upstreamModelId, "new-model");
+  assert.equal(model.id, undefined);
   assert.equal(model.description, undefined);
   assert.equal(model.capabilities, undefined);
   assert.equal(model.contextWindow, undefined);
@@ -619,8 +619,8 @@ test("Claude model suggestions allow custom IDs and empty upstream mappings with
   await app.submit(form);
   const config = app.persisted();
   assert.equal(validateConfig(config).ok, true);
-  const model = Object.values(config.models).find((model) => model.clientModelId === "custom-client-model");
-  assert.deepEqual(Object.values(model.upstreams), [{}]);
+  const model = config.virtualProviders.cabletidy_development.models["custom-client-model"];
+  assert.equal(model.upstreamModelId, undefined);
   assert.match(app.read('claudeAliasSelect(selectedSuite(), "fable")'), /value="custom-client-model"/);
   const html = app.read("renderSuiteDetail()");
   assert.doesNotMatch(html, /data-claude-model-name|data-claude-model-description|显示名称|模型列表显示/);
@@ -632,7 +632,7 @@ test("Claude model suggestions allow custom IDs and empty upstream mappings with
 
 test("Claude alias choices are scoped to saved client IDs and keep references through rename and removal", async () => {
   const config = claudeConfigFixture();
-  config.models.other = { ...structuredClone(config.models.sonnet), id: "other", clientModelId: "other-configuration-model" };
+  config.virtualProviders.cabletidy_other = { ...clone(config.virtualProviders["cabletidy_claude-main"]), id: "cabletidy_other", models: { "other-configuration-model": {} } };
   const app = await controller(config);
   await app.action("open-suite", { dataset: { id: "claude-main" } });
   const choices = app.read('claudeAliasSelect(selectedSuite(), "opus")');
@@ -644,7 +644,7 @@ test("Claude alias choices are scoped to saved client IDs and keep references th
   assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
   await app.submit(formNode("claude-client-form", { opus: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", haiku: "claude-sonnet-4-6" }));
   const controls = { "[data-suite-model-client]": "my-claude", '[data-suite-model-upstream="relay"]': "" };
-  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
   assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, { opus: "my-claude", sonnet: "my-claude", fable: "my-claude", haiku: "my-claude" });
   assert.equal(validateConfig(app.persisted()).ok, true);
   await app.submit(formNode("suite-models-form"));
@@ -675,7 +675,7 @@ test("Claude default client IDs follow mapping renames and removals in saved set
     const app = await controller(config);
     await app.action("open-suite", { dataset: { id: "claude-main" } });
     const controls = { "[data-suite-model-client]": "renamed-client", '[data-suite-model-upstream="relay"]': "vendor-sonnet" };
-    await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "sonnet" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+    await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
     let saved = app.persisted();
     assert.equal(saved.bindings["claude-main"].defaultModel, "renamed-client");
     assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, "renamed-client");
@@ -701,7 +701,7 @@ test("Claude default client IDs follow mapping renames and removals in saved set
 test("Claude default aliases survive removal of a same-named model profile or client ID", async () => {
   for (const clientModelId of ["claude-sonnet-4-6", "sonnet"]) {
     const config = claudeConfigFixture();
-    config.models.sonnet.clientModelId = clientModelId;
+    config.virtualProviders["cabletidy_claude-main"].models = { [clientModelId]: config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"] };
     const app = await controller(config);
     await app.action("open-suite", { dataset: { id: "claude-main" } });
     await app.submit(formNode("claude-client-form", { defaultModel: "sonnet", subagent: "sonnet", sonnet: clientModelId }));
@@ -719,7 +719,7 @@ test("Claude default aliases survive removal of a same-named model profile or cl
 
 test("Claude default model selectors expose field-specific aliases and current client IDs only", async () => {
   const config = claudeConfigFixture();
-  config.models.other = { ...structuredClone(config.models.sonnet), id: "other", clientModelId: "other-configuration-model" };
+  config.virtualProviders.cabletidy_other = { ...clone(config.virtualProviders["cabletidy_claude-main"]), id: "cabletidy_other", models: { "other-configuration-model": {} } };
   config.bindings["claude-main"].defaultModel = "legacy-startup";
   config.bindings["claude-main"].claude.models = { subagent: "legacy-subagent" };
   const app = await controller(config);
@@ -806,8 +806,8 @@ test("creation commits immediately and clears transient secrets", async () => {
   assert.match(app.read("renderSuiteDetail()"), /cabletidy_development/);
   assert.match(app.read("renderSuiteDetail()"), /http:\/\/127\.0\.0\.1:43100\/development\/v1/);
   assert.equal(config.virtualProviders.cabletidy_development.listenPort, undefined);
-  assert.equal(Object.values(config.models)[0].clientModelId, "gpt-5.5");
-  assert.equal(Object.values(Object.values(config.models)[0].upstreams)[0].upstreamModelId, "vendor-gpt");
+  assert.deepEqual(Object.keys(config.virtualProviders.cabletidy_development.models), ["gpt-5.5"]);
+  assert.equal(config.virtualProviders.cabletidy_development.models["gpt-5.5"].upstreamModelId, "vendor-gpt");
   const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
   assert.equal(commits.length, 1);
   assert.deepEqual(Object.values(commits[0].body.upstreamSecrets), ["test-key"]);
@@ -846,10 +846,10 @@ test("creation needs only upstream credentials and keeps other configurations' m
   await app.submit(formNode("suite-create-form", creationForm().fields));
   const config = app.persisted();
   assert.equal(config.bindings.development.defaultModel, undefined);
-  assert.deepEqual(config.virtualProviders.cabletidy_development.allowedModels, []);
+  assert.deepEqual(config.virtualProviders.cabletidy_development.models, {});
   assert.equal(config.virtualProviders.cabletidy_development.defaultModel, undefined);
-  assert.deepEqual(config.routes[config.virtualProviders.cabletidy_development.route].backends[0].models, []);
-  assert.deepEqual(Object.keys(config.models), ["model"]);
+  assert.equal(config.routes[config.virtualProviders.cabletidy_development.route].backends[0].models, undefined);
+  assert.deepEqual(Object.keys(config.virtualProviders.cabletidy_relay.models), ["gpt-5.5"]);
   assert.equal(validateConfig(config).ok, true);
   assert.match(app.read("renderSuiteDetail()"), /模型名直接透传/);
   assert.doesNotMatch(app.read("renderSuiteDetail()"), /data-model-id="model"/);
@@ -860,7 +860,7 @@ test("creation needs only upstream credentials and keeps other configurations' m
 test("model settings can override context without a rename and can all be removed", async () => {
   const app = await controller();
   await app.submit(formNode("suite-models-form", {}, [{
-    dataset: { modelId: "model" },
+    dataset: { modelId: "gpt-5.5" },
     querySelector(selector) {
       if (selector === "[data-suite-model-client]") return { value: "gpt-5.5" };
       if (selector.startsWith("[data-suite-model-upstream=")) return { value: "" };
@@ -871,15 +871,15 @@ test("model settings can override context without a rename and can all be remove
     },
   }]));
   let config = app.persisted();
-  assert.equal(config.models.model.contextWindow, 128000);
-  assert.equal(config.models.model.codex.metadataMode, "override");
-  assert.deepEqual(config.models.model.upstreams.relay, {});
+  assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow, 128000);
+  assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex.metadataMode, "override");
+  assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, undefined);
   assert.equal(validateConfig(config).ok, true);
   await app.submit(formNode("suite-models-form"));
   config = app.persisted();
-  assert.deepEqual(config.models, {});
-  assert.deepEqual(config.virtualProviders.cabletidy_relay.allowedModels, []);
-  assert.deepEqual(config.routes.route.backends[0].models, []);
+  assert.equal(config.models, undefined);
+  assert.deepEqual(config.virtualProviders.cabletidy_relay.models, {});
+  assert.equal(config.routes.route.backends[0].models, undefined);
   assert.equal(config.virtualProviders.cabletidy_relay.defaultModel, undefined);
   assert.equal(config.bindings.relay.defaultModel, undefined);
   assert.equal(validateConfig(config).ok, true);
@@ -891,8 +891,8 @@ test("optional creation rows may leave the upstream model name blank", async () 
     querySelector: selector => ({ value: selector.includes("clientModelId") ? "gpt-5.5" : "" }),
   }]));
   const config = app.persisted();
-  const model = Object.values(config.models)[0];
-  assert.deepEqual(Object.values(model.upstreams), [{}]);
+  const model = Object.values(config.virtualProviders.cabletidy_development.models)[0];
+  assert.equal(model.upstreamModelId, undefined);
   assert.equal(config.bindings.development.defaultModel, undefined);
   assert.equal(validateConfig(config).ok, true);
 });
@@ -912,9 +912,8 @@ test("separate configurations each keep their own upstream and model mappings", 
     assert.equal(route.backends.length, 1);
     const upstreamId = route.backends[0].upstream;
     upstreamIds.add(upstreamId);
-    for (const modelId of provider.allowedModels) {
-      assert.deepEqual(Object.keys(config.models[modelId].upstreams), [upstreamId]);
-    }
+    assert.deepEqual(Object.keys(provider.models), ["gpt-5.5"]);
+    assert.equal(provider.models["gpt-5.5"].upstreamModelId, "vendor-gpt");
   }
   assert.equal(upstreamIds.size, 2);
   assert.equal(validateConfig(config).ok, true);
@@ -923,16 +922,17 @@ test("separate configurations each keep their own upstream and model mappings", 
 test("advanced model editor exposes one upstream and saves only its model mapping", async () => {
   const app = await controller();
   const models = app.read("renderModels()");
-  assert.equal((models.match(/name="upstreamId"/g) || []).length, 1);
+  assert.equal((models.match(/name="upstreamId"/g) || []).length, 0);
+  assert.doesNotMatch(models, /CableTidy Model ID/);
   await app.submit(formNode("model-form", {
     id: "model", clientModelId: "gpt-5.5", aliases: "gpt-5.5",
     upstreamId: "relay", upstreamModelId: "changed-model", capabilityOverrides: "-vision",
     capabilities: "streaming, tools, reasoning",
   }));
-  const model = app.persisted().models.model;
-  assert.deepEqual(Object.keys(model.upstreams), ["relay"]);
-  assert.equal(model.upstreams.relay.upstreamModelId, "changed-model");
-  assert.deepEqual(model.upstreams.relay.capabilityOverrides, ["-vision"]);
+  const model = app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"];
+  assert.equal(model.upstreams, undefined);
+  assert.equal(model.upstreamModelId, "changed-model");
+  assert.deepEqual(model.capabilityOverrides, ["-vision"]);
 });
 
 test("a rejected creation stays on the form and can be retried without duplicate records", async () => {
@@ -1083,12 +1083,12 @@ for (const color of ["blue", "red"]) {
     await app.submit(formNode("suite-create-form", creationForm().fields, [{
       querySelector: (selector) => ({ value: selector.includes("clientModelId") ? id : "vendor-security" }),
     }]));
-    const model = Object.values(app.persisted().models)[0];
-    const upstreamId = Object.keys(model.upstreams)[0];
-    assert.equal(model.clientModelId, id);
+    const model = app.persisted().virtualProviders.cabletidy_development.models[id];
+    const upstreamId = app.read("selectedSuite().upstreamId");
+    assert.ok(model);
     assert.match(app.read('renderSuiteDetail()'), new RegExp(`value="${id}" selected`));
     await app.submit(formNode("suite-models-form", {}, [{
-      dataset: { modelId: model.id },
+      dataset: { modelId: id },
       querySelector(selector) {
         if (selector === "[data-suite-model-client]") return { value: id };
         if (selector.startsWith("[data-suite-model-upstream=")) return { value: "updated-security" };
@@ -1096,8 +1096,8 @@ for (const color of ["blue", "red"]) {
         return null;
       },
     }]));
-    assert.equal(app.persisted().models[model.id].clientModelId, id);
-    assert.equal(app.persisted().models[model.id].upstreams[upstreamId].upstreamModelId, "updated-security");
+    assert.deepEqual(Object.keys(app.persisted().virtualProviders.cabletidy_development.models), [id]);
+    assert.equal(app.persisted().virtualProviders.cabletidy_development.models[id].upstreamModelId, "updated-security");
     assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 2);
   });
 }
@@ -1322,7 +1322,7 @@ function metadataRow(mode = "official") {
   const metadataMode = inputNode("", mode, { dataset: { codexMetadataMode: "" }, type: "select-one" });
   const instructions = { textContent: "Original definition" };
   const row = {
-    dataset: { modelId: "model" },
+    dataset: { modelId: "gpt-5.5" },
     querySelector: (selector) => ({
       "[data-suite-model-client]": select,
       "[data-suite-model-context]": context,
@@ -1375,11 +1375,64 @@ test("official metadata changes are ignored when determining whether a form is d
   assert.equal(app.edited(form), false);
 });
 
-function addFixtureModel(config, id = "second", clientModelId = "gpt-5.6-sol") {
-  config.models[id] = { ...clone(config.models.model), id, clientModelId, aliases: [clientModelId] };
-  config.virtualProviders.cabletidy_relay.allowedModels.push(id);
-  config.routes.route.backends[0].models.push(id);
+function addFixtureModel(config, clientModelId = "gpt-5.6-sol") {
+  config.virtualProviders.cabletidy_relay.models[clientModelId] = clone(config.virtualProviders.cabletidy_relay.models["gpt-5.5"] || { codex: { metadataMode: "official" }, upstreamModelId: "VENDOR-GPT" });
 }
+
+test("renaming saved models frees their old client names for new rows without hidden ID collisions", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  const profile = config.virtualProviders.cabletidy_relay.models["gpt-5.5"];
+  config.virtualProviders.cabletidy_relay.models = {
+    "gpt-5.6-sol": { ...profile, upstreamModelId: "old-sol" },
+    "gpt-5.6-luna": { ...profile, upstreamModelId: "old-luna" },
+  };
+  config.virtualProviders.cabletidy_relay.defaultModel = "gpt-5.6-sol";
+  config.bindings.relay.defaultModel = "gpt-5.6-sol";
+  const catalog = catalogFixture();
+  catalog.catalog.models = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna"].map(slug => ({ ...catalog.catalog.models[0], slug }));
+  const app = await controller(config, { catalog });
+  const rows = [
+    ["gpt-5.6-sol", "gpt-6-sol", "new-sol"],
+    ["gpt-5.6-luna", "gpt-6-luna", "new-luna"],
+    ["", "gpt-5.6-sol", "old-sol"],
+    ["", "gpt-5.6-luna", "old-luna"],
+  ].map(([oldName, name, upstreamModelId]) => ({
+    dataset: { modelId: oldName },
+    querySelector: selector => selector === "[data-suite-model-client]" ? { value: name }
+      : selector === '[data-suite-model-upstream="relay"]' ? { value: upstreamModelId } : null,
+  }));
+  const form = formNode("suite-models-form", {}, rows);
+  await app.submit(form);
+  assert.equal(form.feedback, null);
+  const saved = app.persisted();
+  const provider = saved.virtualProviders.cabletidy_relay;
+  assert.deepEqual(Object.keys(provider.models), ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]);
+  assert.equal(provider.models["gpt-6-sol"].upstreamModelId, "new-sol");
+  assert.equal(provider.models["gpt-5.6-sol"].upstreamModelId, "old-sol");
+  assert.equal(provider.defaultModel, "gpt-6-sol");
+  assert.equal(saved.bindings.relay.defaultModel, "gpt-6-sol");
+  assert.equal(saved.models, undefined);
+  assert.equal(provider.allowedModels, undefined);
+  assert.equal(validateConfig(saved).ok, true);
+});
+
+test("model names can be swapped while mappings and defaults follow the edited rows", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  addFixtureModel(config);
+  const app = await controller(config);
+  const rows = [["gpt-5.5", "gpt-5.6-sol", "first"], ["gpt-5.6-sol", "gpt-5.5", "second"]].map(([oldName, name, mapping]) => ({
+    dataset: { modelId: oldName },
+    querySelector: selector => selector === "[data-suite-model-client]" ? { value: name }
+      : selector === '[data-suite-model-upstream="relay"]' ? { value: mapping } : null,
+  }));
+  const form = formNode("suite-models-form", {}, rows);
+  await app.submit(form);
+  assert.equal(form.feedback, null);
+  const provider = app.persisted().virtualProviders.cabletidy_relay;
+  assert.equal(provider.models["gpt-5.6-sol"].upstreamModelId, "first");
+  assert.equal(provider.models["gpt-5.5"].upstreamModelId, "second");
+  assert.equal(provider.defaultModel, "gpt-5.6-sol");
+});
 
 // Model the form replacement lifecycle, not just the saved configuration object.
 function mountSuiteEditor(app) {
@@ -1406,15 +1459,15 @@ function mountSuiteEditor(app) {
     form.querySelectorAll = (selector) => selector === "[data-suite-model]" ? [...form.rows]
       : selector === "input, select, textarea" ? form.rows.flatMap(row => row.inputs)
       : selector === "[data-official-model]" ? form.rows.flatMap(row => row.inputs.filter(input => "officialModel" in input.dataset)) : [];
-    for (const id of config.virtualProviders.cabletidy_relay.allowedModels) {
-      const model = config.models[id];
+    for (const id of Object.keys(config.virtualProviders.cabletidy_relay.models)) {
+      const model = config.virtualProviders.cabletidy_relay.models[id];
       const metadata = metadataRow(model.codex?.metadataMode);
       const { row, select, context, vision } = metadata;
       row.dataset.modelId = id;
-      select.value = model.clientModelId;
+      select.value = id;
       context.value = String(model.contextWindow || 272000);
       vision.checked = model.codex?.inputModalities?.includes("image") ?? true;
-      const mapping = inputNode("", model.upstreams.relay.upstreamModelId, {
+      const mapping = inputNode("", model.upstreamModelId, {
         dataset: { suiteModelUpstream: "relay" }, closest: () => row,
       });
       const query = row.querySelector;
@@ -1432,7 +1485,7 @@ function mountSuiteEditor(app) {
   page.querySelectorAll = (selector) => selector === "form" ? [current] : [];
   page.querySelector = (selector) => selector === "#suite-models-form" ? current : null;
   app.read("render()");
-  return { form: () => current, row: (id = "model") => current.rows.find(row => row.dataset.modelId === id) };
+  return { form: () => current, row: (id = "gpt-5.5") => current.rows.find(row => row.dataset.modelId === id) };
 }
 
 test("conflict refresh merges another window's added model before retrying a local mapping edit", async () => {
@@ -1442,35 +1495,35 @@ test("conflict refresh merges another window's added model before retrying a loc
   app.externalUpdate(config => addFixtureModel(config));
   await app.submit(editor.form());
   assert.match(editor.form().feedback.innerHTML, /其他窗口变更/);
-  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "VENDOR-GPT");
+  assert.equal(app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, "VENDOR-GPT");
   await app.action("refresh");
-  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model", "second"]);
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["gpt-5.5", "gpt-5.6-sol"]);
   assert.equal(editor.row().mapping.value, "LOCAL-MAPPING");
   assert.equal(app.edited(editor.form()), true);
   await app.submit(editor.form());
   const saved = app.persisted();
-  assert.deepEqual(Object.keys(saved.models), ["model", "second"]);
-  assert.deepEqual(saved.routes.route.backends[0].models, ["model", "second"]);
-  assert.deepEqual(saved.virtualProviders.cabletidy_relay.allowedModels, ["model", "second"]);
-  assert.equal(saved.models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+  assert.deepEqual(Object.keys(saved.virtualProviders.cabletidy_relay.models), ["gpt-5.5", "gpt-5.6-sol"]);
+  assert.equal(saved.routes.route.backends[0].models, undefined);
+  assert.deepEqual(Object.keys(saved.virtualProviders.cabletidy_relay.models), ["gpt-5.5", "gpt-5.6-sol"]);
+  assert.equal(saved.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, "LOCAL-MAPPING");
   assert.equal(validateConfig(saved).ok, true);
   assert.equal(app.edited(editor.form()), false);
 });
 
 test("refresh merges disjoint fields on the same model and does not keep stale server values", async () => {
   const config = normalizeConfig(codexConfigFixture());
-  config.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
-  config.models.model.contextWindow = 64000;
+  config.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex = { metadataMode: "override", inputModalities: ["text"] };
+  config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 64000;
   const app = await controller(config);
   const editor = mountSuiteEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
-  app.externalUpdate(config => { config.models.model.contextWindow = 128000; });
+  app.externalUpdate(config => { config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 128000; });
   await app.action("refresh");
   assert.equal(editor.row().mapping.value, "LOCAL-MAPPING");
   assert.equal(editor.row().context.value, "128000");
   await app.submit(editor.form());
-  assert.equal(app.persisted().models.model.contextWindow, 128000);
-  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+  assert.equal(app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow, 128000);
+  assert.equal(app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, "LOCAL-MAPPING");
 });
 
 test("overlapping edits remain blocked across repeated refreshes until explicitly reloaded", async () => {
@@ -1478,7 +1531,7 @@ test("overlapping edits remain blocked across repeated refreshes until explicitl
   const editor = mountSuiteEditor(app);
   const local = editor.form();
   editor.row().mapping.value = "LOCAL-MAPPING";
-  app.externalUpdate(config => { config.models.model.upstreams.relay.upstreamModelId = "REMOTE-MAPPING"; });
+  app.externalUpdate(config => { config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId = "REMOTE-MAPPING"; });
   await app.submit(local);
   const commits = () => app.requests.filter(({ url }) => url.endsWith("/config/commit")).length;
   const attempts = commits();
@@ -1502,15 +1555,16 @@ test("overlapping edits remain blocked across repeated refreshes until explicitl
 test("local model removal and remote model addition are merged independently", async () => {
   const config = normalizeConfig(codexConfigFixture());
   addFixtureModel(config);
-  const app = await controller(config);
+  const catalog = catalogFixture();
+  catalog.catalog.models.push({ ...catalog.catalog.models[0], slug: "gpt-5.6-luna" });
+  const app = await controller(config, { catalog });
   const editor = mountSuiteEditor(app);
   editor.row().remove();
-  app.externalUpdate(config => addFixtureModel(config, "replacement", "gpt-5.5"));
+  app.externalUpdate(config => addFixtureModel(config, "gpt-5.6-luna"));
   await app.action("refresh");
-  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["second", "replacement"]);
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["gpt-5.6-sol", "gpt-5.6-luna"]);
   await app.submit(editor.form());
-  assert.deepEqual(Object.keys(app.persisted().models), ["second", "replacement"]);
-  assert.deepEqual(app.persisted().virtualProviders.cabletidy_relay.allowedModels, ["second", "replacement"]);
+  assert.deepEqual(Object.keys(app.persisted().virtualProviders.cabletidy_relay.models), ["gpt-5.6-sol", "gpt-5.6-luna"]);
 });
 
 for (const localDeletes of [true, false]) {
@@ -1519,14 +1573,12 @@ for (const localDeletes of [true, false]) {
     addFixtureModel(config);
     const app = await controller(config);
     const editor = mountSuiteEditor(app);
-    if (localDeletes) editor.row("second").remove();
-    else editor.row("second").mapping.value = "LOCAL-MAPPING";
+    if (localDeletes) editor.row("gpt-5.6-sol").remove();
+    else editor.row("gpt-5.6-sol").mapping.value = "LOCAL-MAPPING";
     app.externalUpdate(config => {
-      if (localDeletes) config.models.second.upstreams.relay.upstreamModelId = "REMOTE-MAPPING";
+      if (localDeletes) config.virtualProviders.cabletidy_relay.models["gpt-5.6-sol"].upstreamModelId = "REMOTE-MAPPING";
       else {
-        delete config.models.second;
-        config.virtualProviders.cabletidy_relay.allowedModels = ["model"];
-        config.routes.route.backends[0].models = ["model"];
+        delete config.virtualProviders.cabletidy_relay.models["gpt-5.6-sol"];
       }
     });
     await app.action("refresh");
@@ -1546,7 +1598,7 @@ test("pending new rows survive remote additions and the refreshed baseline track
   editor.form().querySelector("#suite-model-list").append(added);
   app.externalUpdate(config => addFixtureModel(config));
   await app.action("refresh");
-  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model", "second", ""]);
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["gpt-5.5", "gpt-5.6-sol", ""]);
   assert.equal(app.edited(editor.form()), true);
   added.remove();
   assert.equal(app.edited(editor.form()), false);
@@ -1569,8 +1621,8 @@ for (const property of ["model", "metadata mode"]) {
     const editor = mountSuiteEditor(app);
     editor.row().mapping.value = "LOCAL-MAPPING";
     app.externalUpdate(config => {
-      if (property === "model") config.models.model.clientModelId = "gpt-5.6-sol";
-      else config.models.model.codex = { metadataMode: "override", inputModalities: ["text"] };
+      if (property === "model") config.virtualProviders.cabletidy_relay.models = { "gpt-5.6-sol": config.virtualProviders.cabletidy_relay.models["gpt-5.5"] };
+      else config.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex = { metadataMode: "override", inputModalities: ["text"] };
     });
     await app.action("refresh");
     assert.match(editor.form().feedback.innerHTML, /冲突/);
@@ -1586,15 +1638,13 @@ test("an unchanged model removed remotely is not resurrected by a local edit to 
   const editor = mountSuiteEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => {
-    delete config.models.second;
-    config.virtualProviders.cabletidy_relay.allowedModels = ["model"];
-    config.routes.route.backends[0].models = ["model"];
+    delete config.virtualProviders.cabletidy_relay.models["gpt-5.6-sol"];
   });
   await app.action("refresh");
-  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["model"]);
+  assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["gpt-5.5"]);
   await app.submit(editor.form());
-  assert.deepEqual(Object.keys(app.persisted().models), ["model"]);
-  assert.equal(app.persisted().models.model.upstreams.relay.upstreamModelId, "LOCAL-MAPPING");
+  assert.deepEqual(Object.keys(app.persisted().virtualProviders.cabletidy_relay.models), ["gpt-5.5"]);
+  assert.equal(app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, "LOCAL-MAPPING");
 });
 
 test("merged local model selection keeps its matching security hint", async () => {

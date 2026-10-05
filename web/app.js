@@ -121,9 +121,9 @@ async function bootstrap() {
     state.runtime = runtime;
     state.codexCatalog = codexCatalog;
     state.events = events.events || [];
-    state.selected.model = firstKey(state.candidate.models);
     state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
     state.selected.suite = firstKey(state.candidate.bindings);
+    state.selected.model = selectedSuite()?.modelIds[0] || null;
     railStatus.textContent = "服务运行中";
     railStatus.parentElement.classList.remove("is-offline");
     render();
@@ -365,11 +365,7 @@ function configurationSuites(config) {
     const routeBackend = suiteRouteBackend(route);
     const upstreamId = routeBackend?.upstream || null;
     const upstream = upstreamId ? config.upstreams?.[upstreamId] || null : null;
-    const modelIdSet = new Set(virtualProvider.allowedModels || []);
-    for (const modelId of routeBackend?.models || []) {
-      modelIdSet.add(modelId);
-    }
-    const modelIds = [...modelIdSet].filter((id) => config.models?.[id]);
+    const modelIds = Object.keys(virtualProvider.models || {});
     const name =
       binding.name ||
       virtualProvider.name ||
@@ -386,7 +382,7 @@ function configurationSuites(config) {
       upstreamId,
       upstream,
       modelIds,
-      models: modelIds.map((id) => ({ id, profile: config.models[id] })),
+      models: modelIds.map((id) => ({ id, profile: virtualProvider.models[id] })),
     };
   });
 }
@@ -455,32 +451,32 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
   const model = profile || {};
   const isCodex = suite.target === "codex";
   const compact = model.compact || {};
-  const binding = model.upstreams?.[upstreamId] || {};
   const expanded = model.codex?.metadataMode === "override" || Boolean(model.compact)
     || (isCodex && !model.codex && Boolean(model.contextWindow));
   return `
     <article class="suite-model-card" data-suite-model data-model-id="${esc(modelId)}">
       <div class="suite-model-mapping">
         ${isCodex
-          ? officialModelSelect("data-suite-model-client", model.clientModelId || model.aliases?.[0] || "")
+          ? officialModelSelect("data-suite-model-client", modelId || "")
           : suite.target === "claude-code"
-            ? claudeModelInput("data-suite-model-client", model.clientModelId || model.aliases?.[0] || modelId)
-            : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(model.clientModelId || model.aliases?.[0] || modelId)}" placeholder="客户端模型 ID" required /></label>`}
+            ? claudeModelInput("data-suite-model-client", modelId)
+            : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(modelId)}" placeholder="客户端模型 ID" required /></label>`}
         <span class="suite-mapping-arrow" aria-hidden="true">&rarr;</span>
         ${upstreamId
-          ? `<label class="field"><span>上游模型 ID（可选）</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(binding.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
+          ? `<label class="field"><span>上游模型 ID（可选）</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(model.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
           : `<div class="notice warning">请先配置上游连接</div>`}
-        <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(model.clientModelId || modelId || "映射")}">移除</button>
+        <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(modelId || "映射")}">移除</button>
       </div>
+      ${model.aliases?.length ? `<label class="field"><span>额外请求别名（可选）</span><input data-suite-model-aliases value="${esc(model.aliases.join(", "))}" placeholder="多个别名用逗号分隔" /></label>` : ""}
       ${suite.target === "claude-code" ? "" : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
         <summary><span>模型能力与上下文</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
         <div class="form-grid suite-model-policy">
-          ${isCodex ? codexMetadataFields(model) : `
+          ${isCodex ? codexMetadataFields(model, modelId) : `
           <label class="field full"><span>Capabilities</span><input data-suite-model-capabilities-common value="${esc((model.capabilities || ["streaming", "tools", "reasoning"]).join(", "))}" placeholder="streaming, tools, reasoning" /></label>
           <label class="field"><span>Context window</span><input type="number" data-suite-model-context value="${esc(model.contextWindow ?? 1000000)}" placeholder="tokens" /></label>
           <label class="field"><span>Compact strategy</span><select data-suite-model-compact>${optionList(["auto", "manual", "disabled"], compact.strategy || "auto")}</select></label>
           <label class="field"><span>Compact token limit</span><input type="number" data-suite-model-compact-limit value="${esc(compact.tokenLimit ?? 850000)}" placeholder="tokens" /></label>
-          ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-suite-model-capabilities="${esc(upstreamId)}" value="${esc((binding.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
+          ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-suite-model-capabilities="${esc(upstreamId)}" value="${esc((model.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
           `}
         </div>
       </details>`}
@@ -535,8 +531,8 @@ function codexCatalogStatus() {
     <button class="mini-button" type="button" data-action="refresh-codex-models">刷新模型列表</button></div>`;
 }
 
-function codexMetadataFields(model) {
-  const definition = officialModel(model.clientModelId);
+function codexMetadataFields(model, modelId) {
+  const definition = officialModel(modelId);
   const override = model.codex?.metadataMode === "override";
   const vision = override ? model.codex.inputModalities?.includes("image") ?? definition?.inputModalities.includes("image") : definition?.inputModalities.includes("image");
   return `
@@ -741,7 +737,7 @@ function claudeModelSuggestions() {
 
 function claudeAliasSelect(suite, family) {
   const selected = suite?.binding.claude?.models?.[family] || "";
-  const ids = (suite?.models || []).map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
+  const ids = (suite?.models || []).map(({ id }) => id);
   return `<label class="field"><span>${family[0].toUpperCase() + family.slice(1)} 别名指向</span><select name="${family}">
     ${claudeAliasOptions(ids, selected)}
   </select></label>`;
@@ -784,7 +780,7 @@ function syncClaudeCreateModels(form) {
 }
 
 function claudeModelGroups(suite = null) {
-  const ids = (suite?.models || []).map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
+  const ids = (suite?.models || []).map(({ id }) => id);
   return `<section class="subsection" aria-labelledby="claude-aliases-title">
         <div class="subsection-header"><h3 id="claude-aliases-title">模型别名</h3></div>
         <p class="field-hint">${suite ? "从当前配置已保存的" : "可选。从本次填写的"}客户端模型 ID 中选择，或由 Claude 默认决定。</p>
@@ -806,7 +802,7 @@ function claudeClientForm(suite) {
   const options = suite.binding.claude || {};
   return `<section class="suite-section">
     <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>设置模型别名和默认模型。上游改名在模型设置中配置。</p></div>
-    <form id="claude-client-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id)]))}">
+    <form id="claude-client-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.models.map(({ id }) => id)]))}">
       ${claudeModelGroups(suite)}
       <div class="form-actions">
         ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
@@ -888,22 +884,6 @@ function nextConfigId(record, base) {
   return `${base}-${suffix}`;
 }
 
-function modelProfileId(clientModelId, existingModels, reservedIds) {
-  const normalized = String(clientModelId || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/^[^a-z0-9]+/, "")
-    .slice(0, 56) || "model";
-  const occupiedIds = new Set([...Object.keys(existingModels || {}), ...reservedIds]);
-  let id = normalized;
-  let suffix = 2;
-  while (occupiedIds.has(id)) id = `${normalized}-${suffix++}`;
-  reservedIds.add(id);
-  return id;
-}
-
 function upstreamDisplayName(baseUrl, fallback) {
   try {
     return new URL(baseUrl).hostname || fallback;
@@ -913,12 +893,13 @@ function upstreamDisplayName(baseUrl, fallback) {
 }
 
 function renderModels() {
-  const config = state.candidate;
   const selectedId = state.selected.model;
-  const selected = selectedId ? config.models[selectedId] : null;
+  const suite = selectedSuite();
+  if (!suite) return `<div class="empty">请先选择配置</div>`;
+  const models = suite.virtualProvider.models || {};
+  const selected = selectedId ? models[selectedId] : null;
   const compact = selected?.compact || {};
-  const upstreamId = firstKey(selected?.upstreams) || firstKey(config.upstreams) || "";
-  const mapping = selected?.upstreams?.[upstreamId] || {};
+  const mapping = selected || {};
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
     <div class="form-layout">
@@ -929,19 +910,18 @@ function renderModels() {
         </div>
         <div class="panel-body">
           ${
-            Object.keys(config.models).length
-              ? `<div class="list">${entries(config.models).map(([id, item]) => modelRow(id, item, id === selectedId)).join("")}</div>`
+            Object.keys(models).length
+              ? `<div class="list">${entries(models).map(([id, item]) => modelRow(id, item, id === selectedId)).join("")}</div>`
               : `<div class="empty">暂无模型</div>`
           }
         </div>
       </div>
       <div class="panel">
-        <div class="panel-header"><h2>${selected ? esc(selected.name || selectedId) : "新增模型"}</h2></div>
+        <div class="panel-header"><h2>${selected ? esc(selectedId) : "新增模型"}</h2></div>
         <div class="panel-body">
-          <form id="model-form">
+          <form id="model-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, selectedId, suite.upstreamId]))}">
             <div class="form-grid">
-              ${field("CableTidy Model ID", "id", selectedId || "", "例如 gpt56-sol", false, "text", Boolean(selectedId))}
-              ${field("Client model ID", "clientModelId", selected?.clientModelId || selected?.aliases?.[0] || "", "Codex 请求里的 model")}
+              ${field("Client model ID", "clientModelId", selectedId || "", "客户端请求里的 model")}
               ${field("Aliases", "aliases", (selected?.aliases || []).join(", "), "son, codex-default")}
               ${field("Family", "family", selected?.family || "codex", "codex")}
               ${field("Capabilities", "capabilities", (selected?.capabilities || ["streaming", "tools", "reasoning"]).join(", "), "streaming, tools, reasoning", true)}
@@ -952,7 +932,7 @@ function renderModels() {
             <div class="subsection">
               <div class="subsection-header"><h3>上游模型映射</h3></div>
               <div class="form-grid">
-                ${selectField("Upstream", "upstreamId", upstreamId, Object.keys(config.upstreams))}
+                <div class="field"><span>上游</span><span>${esc(suite.upstream?.name || suite.upstreamId)}</span></div>
                 ${field("上游模型 ID（可选）", "upstreamModelId", mapping.upstreamModelId || "", "留空使用请求中的模型名")}
                 ${field("能力覆盖", "capabilityOverrides", (mapping.capabilityOverrides || []).join(", "), "可留空")}
               </div>
@@ -1331,7 +1311,7 @@ function renderDiagnostics() {
 function modelRow(id, item, active = false) {
   const context = item.contextWindow ? `${item.contextWindow.toLocaleString()} ctx` : "context unset";
   const compact = item.compact?.tokenLimit ? `${item.compact.tokenLimit.toLocaleString()} compact` : "compact unset";
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(item.clientModelId || item.aliases?.[0] || id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")} · ${esc(context)} · ${esc(compact)}</p></div><span class="status-badge">${Object.keys(item.upstreams || {}).length} bindings</span></button>`;
+  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")} · ${esc(context)} · ${esc(compact)}</p></div><span class="status-badge">当前配置</span></button>`;
 }
 
 function eventRow(event) {
@@ -1359,7 +1339,7 @@ function resolveResultPanel(result) {
     return `<div class="subsection"><div class="notice warning">${esc(result.error?.message || "模型解析失败")}</div></div>`;
   }
   return `<div class="subsection"><h3>解析结果</h3><pre class="code-preview">${esc(
-    `client model  : ${result.clientModelId}\nprofile        : ${result.profileId}\nroute          : ${result.routeId}\nupstream       : ${result.upstreamId}\nupstream model : ${result.upstreamModelId}\ncapabilities   : ${(result.capabilities || []).join(", ")}`,
+    `client model  : ${result.clientModelId}\nmatched model  : ${result.matchedModel || "透传"}\nroute          : ${result.routeId}\nupstream       : ${result.upstreamId}\nupstream model : ${result.upstreamModelId}\ncapabilities   : ${(result.capabilities || []).join(", ")}`,
   )}</pre></div>`;
 }
 
@@ -1458,9 +1438,7 @@ async function handleAction(action, element) {
       const suite = selectedSuite();
       const upstreamId = suite?.upstreamId || null;
       wrapper.innerHTML = suiteModelEditor(suite || {}, "", {
-        clientModelId: "",
         ...(suite?.target === "codex" ? { codex: { metadataMode: "official" } } : suite?.target === "claude-code" ? {} : { capabilities: ["streaming", "tools", "reasoning"] }),
-        upstreams: {},
       }, upstreamId);
       const row = wrapper.firstElementChild;
       list.querySelector(".empty")?.remove();
@@ -1499,7 +1477,7 @@ async function handleAction(action, element) {
       render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
-      state.selected.model = selectedSuite()?.modelIds?.[0] || firstKey(state.candidate.models);
+      state.selected.model = selectedSuite()?.modelIds?.[0] || null;
       render();
     }
   } catch (error) {
@@ -1609,21 +1587,33 @@ async function handleFormSubmit(event, form) {
   }
 }
 
-function removeModel(id) {
-  delete state.candidate.models[id];
-  for (const provider of values(state.candidate.virtualProviders)) {
-    provider.allowedModels = (provider.allowedModels || []).filter((modelId) => modelId !== id);
-    if (provider.defaultModel === id) delete provider.defaultModel;
-  }
-  for (const route of values(state.candidate.routes)) {
-    for (const backend of route.backends || []) {
-      backend.models = (backend.models || []).filter((modelId) => modelId !== id);
+function syncModelSelections(suite, renames, nextModels) {
+  const sync = (value, nativeAliases = []) => {
+    if (nativeAliases.includes(value)) return value;
+    if (renames.has(value)) return renames.get(value);
+    if (Object.hasOwn(nextModels, value)) return value;
+    if (suite.target === "claude-code" || Object.hasOwn(suite.virtualProvider.models || {}, value)) return undefined;
+    return value;
+  };
+  const defaults = suite.target === "claude-code" ? CLAUDE_MODEL_ALIASES.defaultModel : [];
+  const defaultModel = suite.target === "claude-code" ? sync(claudeDefaultModel(suite), defaults) : undefined;
+  suite.virtualProvider.defaultModel = suite.target === "claude-code" ? defaultModel : sync(suite.virtualProvider.defaultModel);
+  suite.binding.defaultModel = suite.target === "claude-code" ? defaultModel : sync(suite.binding.defaultModel);
+  if (suite.target === "claude-code" && suite.binding.claude) {
+    for (const [family, value] of entries(suite.binding.claude.models)) {
+      suite.binding.claude.models[family] = sync(value, family === "subagent" ? CLAUDE_MODEL_ALIASES.subagent : []);
     }
+    suite.binding.claude.setModel = Boolean(suite.binding.defaultModel || suite.virtualProvider.defaultModel);
   }
-  for (const binding of values(state.candidate.bindings)) {
-    if (binding.defaultModel === id) delete binding.defaultModel;
-  }
-  state.selected.model = firstKey(state.candidate.models);
+}
+
+function removeModel(id) {
+  const suite = selectedSuite();
+  const models = { ...suite.virtualProvider.models };
+  delete models[id];
+  syncModelSelections(suite, new Map(), models);
+  suite.virtualProvider.models = models;
+  state.selected.model = firstKey(models);
 }
 
 function saveSuiteModels(form) {
@@ -1644,16 +1634,14 @@ function saveSuiteModels(form) {
     throw new Error("客户端模型 ID 不能重复");
   }
 
-  const reservedIds = new Set();
-  const nextModels = {};
+  const renames = new Map();
+  const nextModels = Object.create(null);
   for (const row of modelRows) {
     const oldId = row.dataset.modelId || "";
-    const existing = state.candidate.models[oldId] || {};
+    const existing = suite.virtualProvider.models?.[oldId] || {};
     const clientModelId = row.querySelector("[data-suite-model-client]").value.trim();
-    const profileId = oldId || modelProfileId(clientModelId, state.candidate.models, reservedIds);
-    if (nextModels[profileId]) throw new Error(`模型 ID 冲突: ${profileId}`);
+    if (oldId) renames.set(oldId, clientModelId);
 
-    const upstreams = {};
     const upstreamInput = row.querySelector(
       `[data-suite-model-upstream="${CSS.escape(upstreamId)}"]`,
     );
@@ -1661,26 +1649,14 @@ function saveSuiteModels(form) {
       `[data-suite-model-capabilities="${CSS.escape(upstreamId)}"]`,
     );
     const upstreamModelId = upstreamInput?.value.trim() || "";
-    const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.upstreams?.[upstreamId]?.capabilityOverrides || [];
-    upstreams[upstreamId] = { ...(existing.upstreams?.[upstreamId] || {}) };
-    if (upstreamModelId) upstreams[upstreamId].upstreamModelId = upstreamModelId;
-    else delete upstreams[upstreamId].upstreamModelId;
-    if (capabilityOverrides.length) upstreams[upstreamId].capabilityOverrides = capabilityOverrides;
-    else delete upstreams[upstreamId].capabilityOverrides;
-
-    const aliases = [...new Set([
-      ...(existing.aliases || []).filter((alias) => alias !== existing.clientModelId),
-      clientModelId,
-    ])];
+    const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.capabilityOverrides || [];
     const capabilities = commaList(
       row.querySelector("[data-suite-model-capabilities-common]")?.value,
     );
-    nextModels[profileId] = {
+    const aliasInput = row.querySelector("[data-suite-model-aliases]");
+    nextModels[clientModelId] = {
       ...existing,
-      id: profileId,
-      name: clientModelId,
-      clientModelId,
-      aliases,
+      ...(aliasInput ? { aliases: commaList(aliasInput.value) } : {}),
       family: existing.family || (suite.target === "claude-code" ? "claude" : "codex"),
       ...(suite.target === "claude-code" ? {
         description: undefined,
@@ -1694,75 +1670,13 @@ function saveSuiteModels(form) {
         ),
         },
       }),
-      upstreams,
+      upstreamModelId: upstreamModelId || undefined,
+      capabilityOverrides: capabilityOverrides.length ? capabilityOverrides : undefined,
     };
   }
 
-  const routeId = suite.route?.id;
-  if (!routeId) throw new Error("当前配置套装没有可编辑的 Route");
-  const existingRouteBackend = suite.routeBackend || {};
-  const nextRouteBackend = {
-    ...existingRouteBackend,
-    upstream: upstreamId,
-    models: Object.keys(nextModels),
-    enabled: true,
-  };
-
-  const oldModelIds = new Set(suite.modelIds);
-  const nextModelIds = new Set(Object.keys(nextModels));
-  for (const oldModelId of oldModelIds) {
-    if (nextModelIds.has(oldModelId)) continue;
-    const usedByOtherProvider = values(state.candidate.virtualProviders).some(
-      (provider) =>
-        provider !== suite.virtualProvider &&
-        (provider.allowedModels || []).includes(oldModelId),
-    );
-    const usedByOtherRoute = entries(state.candidate.routes).some(
-      ([id, route]) =>
-        id !== routeId &&
-        (route.backends || []).some((backend) => (backend.models || []).includes(oldModelId)),
-    );
-    if (!usedByOtherProvider && !usedByOtherRoute) delete state.candidate.models[oldModelId];
-  }
-  Object.assign(state.candidate.models, nextModels);
-  state.candidate.routes[routeId] = {
-    ...state.candidate.routes[routeId],
-    backends: [nextRouteBackend],
-  };
-  state.candidate.virtualProviders[suite.binding.virtualProvider] = {
-    ...state.candidate.virtualProviders[suite.binding.virtualProvider],
-    allowedModels: Object.keys(nextModels),
-    defaultModel: oldModelIds.has(suite.virtualProvider.defaultModel) && !nextModelIds.has(suite.virtualProvider.defaultModel)
-      ? undefined : suite.virtualProvider.defaultModel,
-  };
-  state.candidate.bindings[suite.bindingId] = {
-    ...state.candidate.bindings[suite.bindingId],
-    defaultModel: oldModelIds.has(suite.binding.defaultModel) && !nextModelIds.has(suite.binding.defaultModel)
-      ? undefined : suite.binding.defaultModel,
-  };
-  if (suite.target === "claude-code") {
-    // Keep client-ID selections attached to their row; Claude resolves aliases itself.
-    const syncSelection = (value, aliases = []) => {
-      if (!value) return undefined;
-      if (aliases.includes(value)) return value;
-      const previous = suite.models.find(({ id, profile }) => (profile.clientModelId || profile.aliases?.[0] || id) === value);
-      if (previous && nextModels[previous.id]) return nextModels[previous.id].clientModelId;
-      return Object.values(nextModels).some((model) => model.clientModelId === value) ? value : undefined;
-    };
-    const models = { ...suite.binding.claude?.models };
-    for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-      const value = syncSelection(models[family]);
-      if (value) models[family] = value;
-      else delete models[family];
-    }
-    const subagent = syncSelection(models.subagent, CLAUDE_MODEL_ALIASES.subagent);
-    if (subagent) models.subagent = subagent;
-    else delete models.subagent;
-    const defaultModel = syncSelection(claudeDefaultModel(suite), CLAUDE_MODEL_ALIASES.defaultModel);
-    state.candidate.virtualProviders[suite.binding.virtualProvider].defaultModel = defaultModel;
-    state.candidate.bindings[suite.bindingId].defaultModel = defaultModel;
-    state.candidate.bindings[suite.bindingId].claude = { ...suite.binding.claude, models, setModel: Boolean(defaultModel) };
-  }
+  syncModelSelections(suite, renames, nextModels);
+  suite.virtualProvider.models = nextModels;
   selectSuite(suite.bindingId);
 
 }
@@ -1770,7 +1684,7 @@ function saveSuiteModels(form) {
 function saveClaudeClient(data) {
   const suite = selectedSuite();
   if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
-  const clientIds = suite.models.map(({ id, profile }) => profile.clientModelId || profile.aliases?.[0] || id);
+  const clientIds = suite.models.map(({ id }) => id);
   const defaultModel = claudeModelChoice("defaultModel", clientIds, data.get("defaultModel"));
   const models = Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"].map((family) =>
     [family, String(data.get(family) || "").trim()]).filter(([, value]) => value));
@@ -1839,32 +1753,11 @@ function saveSuiteCreate(data, form) {
   if (Object.hasOwn(state.candidate.bindings, bindingId) || Object.hasOwn(state.candidate.virtualProviders, virtualProviderId)) {
     throw new Error(`配置名称对应的 ID 已存在: ${bindingId}，请使用不同的配置名称`);
   }
-  const reservedModelIds = new Set();
-  const models = Object.fromEntries(
-    modelEntries.map((model) => {
-      const profileId = modelProfileId(
-        model.clientModelId,
-        state.candidate.models,
-        reservedModelIds,
-      );
-      return [
-        profileId,
-        {
-          id: profileId,
-          name: model.clientModelId,
-          clientModelId: model.clientModelId,
-          aliases: [model.clientModelId],
-          family: isClaude ? "claude" : "codex",
-          ...(isClaude ? {} : codexModelFields(model.clientModelId)),
-          upstreams: {
-            [upstreamId]: {
-              ...(model.upstreamModelId ? { upstreamModelId: model.upstreamModelId } : {}),
-            },
-          },
-        },
-      ];
-    }),
-  );
+  const models = Object.fromEntries(modelEntries.map((model) => [model.clientModelId, {
+    family: isClaude ? "claude" : "codex",
+    ...(isClaude ? {} : codexModelFields(model.clientModelId)),
+    ...(model.upstreamModelId ? { upstreamModelId: model.upstreamModelId } : {}),
+  }]));
   const modelIds = Object.keys(models);
 
   state.candidate.upstreams[upstreamId] = {
@@ -1876,15 +1769,12 @@ function saveSuiteCreate(data, form) {
     secretRef: `secret://upstreams/${upstreamId}`,
     enabled: true,
   };
-  for (const modelId of modelIds) delete state.candidate.models[modelId];
-  Object.assign(state.candidate.models, models);
   state.candidate.routes[routeId] = {
     id: routeId,
     name: `${upstreamName} route`,
     backends: [
       {
         upstream: upstreamId,
-        models: modelIds,
         enabled: true,
       },
     ],
@@ -1894,7 +1784,7 @@ function saveSuiteCreate(data, form) {
     name: `${targetLabel(target)} via ${upstreamName}`,
     ingressProtocol: protocol,
     route: routeId,
-    allowedModels: modelIds,
+    models,
     ...(defaultModel ? { defaultModel } : {}),
     enabled: true,
   };
@@ -1959,25 +1849,17 @@ function saveSuiteUpstream(data) {
 }
 
 function saveModel(data, form) {
-  const id = String(data.get("id") || "").trim();
-  if (!id) throw new Error("CableTidy Model ID 不能为空");
-  const existing = state.candidate.models[id] || {};
-  const upstreamId = String(data.get("upstreamId") || "").trim();
-  const upstreamModelId = String(data.get("upstreamModelId") || "").trim();
-  if (!upstreamId) throw new Error("请选择一个 upstream");
-  const upstreams = {
-    [upstreamId]: {
-      ...(existing.upstreams?.[upstreamId] || {}),
-      ...(upstreamModelId ? { upstreamModelId } : {}),
-      capabilityOverrides: commaList(data.get("capabilityOverrides")),
-    },
-  };
-  if (!upstreamModelId) delete upstreams[upstreamId].upstreamModelId;
-  const clientModelId = String(data.get("clientModelId") || "").trim();
-  state.candidate.models[id] = {
+  const suite = selectedSuite();
+  if (!suite) throw new Error("找不到当前配置");
+  const oldName = state.selected.model;
+  const name = String(data.get("clientModelId") || "").trim();
+  if (!name) throw new Error("客户端模型 ID 不能为空");
+  const models = { ...suite.virtualProvider.models };
+  if (name !== oldName && Object.hasOwn(models, name)) throw new Error("客户端模型 ID 不能重复");
+  const existing = oldName && Object.hasOwn(models, oldName) ? models[oldName] : {};
+  if (oldName) delete models[oldName];
+  Object.defineProperty(models, name, { enumerable: true, configurable: true, writable: true, value: {
     ...existing,
-    id,
-    clientModelId: clientModelId || id,
     aliases: commaList(data.get("aliases")),
     family: String(data.get("family") || "codex").trim(),
     capabilities: commaList(data.get("capabilities")),
@@ -1986,10 +1868,12 @@ function saveModel(data, form) {
       strategy: String(data.get("compactStrategy") || "auto").trim(),
       tokenLimit: Number(data.get("compactTokenLimit") || 850000),
     },
-    upstreams,
-  };
-  state.selected.model = id;
-
+    upstreamModelId: String(data.get("upstreamModelId") || "").trim() || undefined,
+    capabilityOverrides: commaList(data.get("capabilityOverrides")),
+  } });
+  syncModelSelections(suite, new Map(oldName ? [[oldName, name]] : []), models);
+  suite.virtualProvider.models = models;
+  state.selected.model = name;
 }
 
 async function testUpstream(id) {

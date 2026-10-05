@@ -85,16 +85,17 @@ impl AppState {
                 "status": if config::enabled(provider) { "listening" } else { "paused" }
             })
         }).collect();
-        let counts: serde_json::Map<_, _> = [
-            "upstreams",
-            "models",
-            "routes",
-            "virtualProviders",
-            "bindings",
-        ]
-        .into_iter()
-        .map(|key| (key.to_owned(), json!(entries(&config[key]).count())))
-        .collect();
+        let mut counts: serde_json::Map<_, _> =
+            ["upstreams", "routes", "virtualProviders", "bindings"]
+                .into_iter()
+                .map(|key| (key.to_owned(), json!(entries(&config[key]).count())))
+                .collect();
+        counts.insert(
+            "models".into(),
+            json!(entries(&config["virtualProviders"])
+                .map(|(_, p)| entries(&p["models"]).count())
+                .sum::<usize>()),
+        );
         json!({
             "version": crate::VERSION,
             "pid": std::process::id(),
@@ -540,17 +541,11 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
                 }
             }
             if path == "/api/v1/config/commit" {
-                let changed: Vec<_> = [
-                    "upstreams",
-                    "models",
-                    "routes",
-                    "virtualProviders",
-                    "bindings",
-                    "web",
-                ]
-                .into_iter()
-                .filter(|k| body["config"][k] != snapshot.config[k])
-                .collect();
+                let changed: Vec<_> =
+                    ["upstreams", "routes", "virtualProviders", "bindings", "web"]
+                        .into_iter()
+                        .filter(|k| body["config"][k] != snapshot.config[k])
+                        .collect();
                 audit.set("changedSections", json!(changed));
                 audit.set(
                     "credentialsSubmitted",
@@ -814,12 +809,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 "Virtual Provider 不存在",
             ));
         }
-        let result = model::resolve(&candidate, p, body.get("model"))
+        let result = model::resolve(p, body.get("model"))
             .and_then(|r| model::select(&candidate, p, &r, &body).map(|b| (r, b)));
         return Ok(match result {
             Ok((r, b)) => json_response(
                 200,
-                json!({"ok":true,"requestedModel":body["model"],"profileId":r.profile_id,"clientModelId":r.client,"upstreamId":b.upstream["id"],"upstreamModelId":b.model,"routeId":b.route,"capabilities":b.capabilities,"rejectedBackends":[]}),
+                json!({"ok":true,"requestedModel":body["model"],"matchedModel":r.matched_model,"clientModelId":r.client,"upstreamId":b.upstream["id"],"upstreamModelId":b.model,"routeId":b.route,"capabilities":b.capabilities,"rejectedBackends":[]}),
             ),
             Err(e) => json_response(
                 422,
@@ -1177,7 +1172,7 @@ async fn proxy(
         return Ok(r);
     }
     if method == Method::GET && (path == "/v1/models" || (!claude && path == "/models")) {
-        let models = model::models(c, p);
+        let models = model::models(p);
         if !claude {
             return Ok(json_response(200, json!({"object":"list","data":models})));
         }
@@ -1273,7 +1268,7 @@ async fn proxy(
         a.set("clientModelId", json!(text(&body["model"])));
         a.set("stream", json!(body["stream"] == true));
     }
-    let resolution = match model::resolve(c, p, body.get("model")) {
+    let resolution = match model::resolve(p, body.get("model")) {
         Ok(r) => r,
         Err(e) => return Ok(protocol_error(protocol, 400, e.code, &e.message)),
     };

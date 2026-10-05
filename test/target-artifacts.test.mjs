@@ -88,18 +88,16 @@ test("generic CLI environments need only a local URL and model", () => {
   assert.deepEqual(publicTargetArtifacts(artifacts).environment.vars, artifacts.environment.vars);
 });
 
-test("Claude startup aliases remain literal when they collide with profile IDs or custom aliases", () => {
+test("Claude startup aliases remain literal when they collide with client names or custom aliases", () => {
   for (const alias of ["best", "opus", "sonnet", "fable", "haiku", "opusplan"]) {
-    for (const match of ["profileId", "customAlias"]) {
+    for (const match of ["clientName", "customAlias"]) {
       const config = claudeConfigFixture();
-      const profileId = match === "profileId" ? alias : "internal-model";
-      config.models = {
-        [profileId]: { ...config.models.sonnet, id: profileId, aliases: ["claude-sonnet-4-6", alias] },
-        custom: { ...config.models.sonnet, id: "custom", clientModelId: "claude-custom-sonnet", aliases: ["claude-custom-sonnet"] },
-      };
-      config.routes.route.backends[0].models = [profileId, "custom"];
+      const name = match === "clientName" ? alias : "claude-sonnet-4-6";
       const provider = config.virtualProviders["cabletidy_claude-main"];
-      provider.allowedModels = [profileId, "custom"];
+      provider.models = {
+        [name]: { ...provider.models["claude-sonnet-4-6"], aliases: [alias] },
+        "claude-custom-sonnet": { upstreamModelId: "custom-sonnet" },
+      };
       provider.defaultModel = alias;
       config.bindings["claude-main"].claude.models = { sonnet: "claude-custom-sonnet", subagent: "sonnet" };
       assert.equal(validateConfig(config).ok, true);
@@ -119,9 +117,7 @@ test("Claude startup aliases remain literal when they collide with profile IDs o
 test("passthrough leaves Claude and generic CLI model selection to the client", () => {
   for (const target of ["claude-code", "generic-env"]) {
     const config = claudeConfig();
-    config.models = {};
-    config.routes["claude-route"].backends[0].models = [];
-    config.virtualProviders["cabletidy_claude-main"].allowedModels = [];
+    config.virtualProviders["cabletidy_claude-main"].models = {};
     delete config.virtualProviders["cabletidy_claude-main"].defaultModel;
     delete config.bindings["claude-main"].defaultModel;
     config.bindings["claude-main"].target = target;

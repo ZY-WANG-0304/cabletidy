@@ -90,9 +90,9 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
         {
             Some(text(name).to_owned())
         } else {
-            let r = model::resolve(&c, p, Some(name))?;
-            Some(if let Some(id) = &r.profile_id {
-                model::client_model(id, &r.profile).to_owned()
+            let r = model::resolve(p, Some(name))?;
+            Some(if let Some(id) = &r.matched_model {
+                id.clone()
             } else {
                 r.client
             })
@@ -114,7 +114,7 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
         let active=format!("# >>> CABLETIDY MANAGED ACTIVE PROVIDER {provider} -->\nmodel_provider = {}\n{}# <<< CABLETIDY MANAGED ACTIVE PROVIDER {provider} <--\n",json!(provider),default.as_ref().map(|d|format!("model = {}\n",json!(d))).unwrap_or_default());
         let provider_contents=format!("# >>> CABLETIDY MANAGED PROVIDER {provider} -->\n[model_providers.{provider}]\nname = {}\nbase_url = {}\nwire_api = \"responses\"\nrequires_openai_auth = false\n# <<< CABLETIDY MANAGED PROVIDER {provider} <--\n",json!(format!("CableTidy / {}",text(u.get("name").unwrap_or(&u["id"])))),json!(format!("{base}/v1")));
         let profile = if requested.is_some() {
-            model::resolve(&c, p, requested)?.profile
+            model::resolve(p, requested)?.profile
         } else {
             Value::Null
         };
@@ -187,7 +187,7 @@ pub async fn prepare(
         "codex" => {
             let normalized = normalize(c);
             let p = &normalized["virtualProviders"][text(&a["virtualProviderId"])];
-            a["catalogPlan"] = if array(&p["allowedModels"]).is_empty() {
+            a["catalogPlan"] = if entries(&p["models"]).next().is_none() {
                 json!({"catalog":null,"models":[],"overrides":[],"warnings":[]})
             } else {
                 crate::catalog::plan(&normalized, p, &catalog.load(false).await?)?
