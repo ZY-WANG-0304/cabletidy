@@ -409,11 +409,12 @@ test("stream findings map to the response body and expose a separate event timel
     { id: "request", source: "client_request", state: "complete", byteLength: 12 },
     { id: "response", source: "upstream_response", state: "complete", byteLength: 24 },
     { id: "stream/one", source: "stream_inspection", state: "interrupted", byteLength: 24 },
+    { id: "stream/two", source: "stream_inspection", state: "complete", byteLength: 23 },
   ];
   const app = await controller(undefined, { onSecurity(url) {
     if (url.includes("/audit/stream-one/body?")) {
       const snapshot = new URL(url, "http://test").searchParams.get("snapshot");
-      return { body: { chunks: [{ start: 0, end: 24, content: snapshot === "stream/one" ? '{"text":"partial event"}' : "response context", redactions: [] }], nextOffset: null, gap: snapshot === "stream/one" } };
+      return { body: { chunks: [{ start: 0, end: 24, content: snapshot === "stream/one" ? '{"text":"partial event"}' : snapshot === "stream/two" ? '{"text":"next event"}' : "response context", redactions: [] }], nextOffset: null, gap: snapshot === "stream/one" } };
     }
     if (url.includes("/audit/stream-one")) return { body: { record: { id: "stream-one", bodySnapshots: snapshots, findings: [{ id: "stream-risk", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", start: 0, end: 10, sourceSnapshotId: "stream/one", sourceStart: 4, sourceEnd: 14 } } }] } } };
   } });
@@ -428,6 +429,8 @@ test("stream findings map to the response body and expose a separate event timel
   assert.match(html, /partial event/);
   assert.match(html, /接收中断或未观察到协议结束/);
   assert.ok(app.requests.some(r => r.url.includes("snapshot=stream%2Fone")));
+  await app.action("security-event", { dataset: { id: "stream/two" } });
+  assert.match(app.read("renderSecurityDetailPage()"), /next event/);
 });
 
 test("late body pages cannot replace a new snapshot or closed detail", async () => {

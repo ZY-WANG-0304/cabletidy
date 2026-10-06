@@ -1194,7 +1194,10 @@ function renderSecurityBody(record) {
   const streamContent = streamPage?.chunks?.map(chunk => chunk.content).join("") || "";
   const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；局部快照可能不完整，风险定位仍以响应正文为准。</p>${streamSnapshots.map((item, i) => {
     const active = selection.detectionSnapshotId === item.id;
-    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `<pre class="code-preview security-body-content">${esc(streamContent)}</pre>` : `<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
+    const previous = streamSnapshots[i - 1]?.id;
+    const next = streamSnapshots[i + 1]?.id;
+    const navigation = active ? `<nav class="security-event-nav" aria-label="流式事件导航"><button class="mini-button" data-action="security-event" data-id="${esc(previous || "")}" ${previous ? "" : "disabled"}>上一事件</button><button class="mini-button" data-action="security-event" data-id="${esc(next || "")}" ${next ? "" : "disabled"}>下一事件</button></nav>` : "";
+    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<pre class="code-preview security-body-content">${esc(streamContent)}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
   }).join("")}</section>` : "";
   return `<section aria-label="正文复核"><h3>正文复核</h3>${panels || `<p class="muted">当前记录没有可展示的请求或响应内容。</p>`}${timeline}</section>`;
 }
@@ -1292,8 +1295,14 @@ async function securityAction(action, element) {
     await loadSecurityDetail(element.dataset.id);
     return;
   }
-  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page"].includes(action)) {
+  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page", "security-event"].includes(action)) {
     if (!s.detail) return;
+    if (action === "security-event") {
+      if (!element.dataset.id) return;
+      s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
+      await loadSecurityStream(element.dataset.id);
+      return;
+    }
     if (action === "security-finding") {
       const finding = s.detail.findings?.find(item => item.id === element.dataset.id);
       const ref = finding?.evidence?.bodyRef || { snapshotId: "unavailable" };
