@@ -355,7 +355,7 @@ npm run test:claude
 CABLETIDY_CLAUDE_BIN=/absolute/path/claude npm run test:claude
 ```
 
-首版仅支持 Anthropic Messages 兼容上游。HTTP/HTTPS 企业网络代理、动态上游凭据、Bedrock/Vertex 原生协议转换和内置 `claude gateway` 托管不在本版范围。模型网关不代表 npm、Git、MCP 子进程或 Claude 其他联网流量也经过 CableTidy。
+首版仅支持 Anthropic Messages 兼容上游。动态上游凭据、Bedrock/Vertex 原生协议转换和内置 `claude gateway` 托管不在本版范围。模型网关不代表 npm、Git、MCP 子进程或 Claude 其他联网流量也经过 CableTidy。
 
 ## 其他 CLI
 
@@ -369,6 +369,27 @@ npm test
 ```
 
 配置文件和 secrets 使用原子写入。管理台和 Virtual Provider 都只绑定 loopback，不需要本地访问 token、API Key 或 session 有效期。上游 API Key 由 CableTidy 单独保存和使用。
+
+## Q&A
+
+### Q：配置显示“已启动”，本地地址也正确，为什么客户端仍然连接失败或请求报错？
+
+A：一种可能原因是客户端继承了终端配置或启动脚本中的代理环境变量。检查启动客户端的环境中是否设置了 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或对应的小写变量。
+
+部分客户端会将发往 `127.0.0.1`、`localhost` 或 `::1` 的请求也交给代理，导致本地连接失败或收到代理返回的错误。浏览器和客户端使用的代理设置也可能不同，因此管理台或浏览器中的 `/v1/models` 能正常访问，并不代表客户端的请求一定能直达 CableTidy。
+
+如果设置了上述任一代理变量，需要同时配置 `NO_PROXY`，将本地回环地址排除，让客户端直接连接 CableTidy。
+
+在启动客户端和 CableTidy 的终端中执行以下 Bash / Zsh 命令，保留已有排除规则，并兼容读取小写 `no_proxy` 的客户端：
+
+```bash
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${no_proxy:+${no_proxy},}127.0.0.1,localhost,::1"
+export no_proxy="$NO_PROXY"
+```
+
+随后从该环境重新启动客户端和 CableTidy，已运行的进程不会自动读取新的环境变量。仅给 CableTidy 设置 `NO_PROXY` 无法改变客户端的代理行为，客户端也必须继承这些变量。
+
+`NO_PROXY` 中填写主机名或 IP，不填写 `http://`、端口或接口路径。CableTidy 的上游请求也会读取启动环境中的代理变量；此设置让本地上游绕过代理，远程上游仍可通过原有代理访问。
 
 ## 许可证
 

@@ -4,7 +4,18 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 # Missing executables must not trigger a scan of every installed PowerShell module.
-if (-not (Get-Command codex -CommandType Application -ListImported -ErrorAction SilentlyContinue)) {
+$codexFound = $false
+foreach ($directory in @($env:PATH -split [IO.Path]::PathSeparator)) {
+    if ([string]::IsNullOrWhiteSpace($directory)) { continue }
+    foreach ($name in @('codex.exe', 'codex.cmd', 'codex.bat', 'codex')) {
+        if ([IO.File]::Exists((Join-Path -Path $directory -ChildPath $name))) {
+            $codexFound = $true
+            break
+        }
+    }
+    if ($codexFound) { break }
+}
+if (-not $codexFound) {
     [Console]::Error.WriteLine('Cannot find codex in PATH')
     exit 127
 }

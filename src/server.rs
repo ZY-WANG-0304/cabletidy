@@ -114,6 +114,19 @@ pub struct Application {
     pub listener: tokio::net::TcpListener,
     lock: lifecycle::InstanceLock,
 }
+
+fn upstream_client(redirect: reqwest::redirect::Policy) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder().redirect(redirect);
+    // Local HTTPS fixtures trust their own CA only in test-support builds.
+    #[cfg(feature = "test-support")]
+    let builder = if let Some(path) = std::env::var_os("CABLETIDY_TEST_CA_CERT") {
+        builder.add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(path)?)?)
+    } else {
+        builder
+    };
+    Ok(builder.build()?)
+}
+
 pub async fn create(
     paths: Paths,
     target_options: targets::Options,
@@ -159,8 +172,8 @@ pub async fn create(
             target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
             security: security::Security::new(&paths.home),
-            client: reqwest::Client::builder().no_proxy().build()?,
-            claude_client: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?,
+            client: upstream_client(reqwest::redirect::Policy::default())?,
+            claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
         });
         config::write_json(&paths.secrets, &secrets).await?;
@@ -1074,7 +1087,9 @@ async fn probe(state: &AppState, snapshot: &Snapshot, body: &Value) -> Result<Re
     Ok(match result {
         Ok(r) => {
             let status = r.status().as_u16();
-            let ok = status < 500 || status == 501;
+            let proxy_authentication_required =
+                status == StatusCode::PROXY_AUTHENTICATION_REQUIRED.as_u16();
+            let ok = !proxy_authentication_required && (status < 500 || status == 501);
             state.health(
                 id,
                 if r.status().is_success() {
@@ -1086,7 +1101,7 @@ async fn probe(state: &AppState, snapshot: &Snapshot, body: &Value) -> Result<Re
             );
             json_response(
                 200,
-                json!({"ok":ok,"status":status,"latencyMs":start.elapsed().as_millis(),"secretConfigured":!secret.is_empty(),"message":if ok{"上游可连接"}else{"上游返回服务端错误"}}),
+                json!({"ok":ok,"status":status,"latencyMs":start.elapsed().as_millis(),"secretConfigured":!secret.is_empty(),"message":if proxy_authentication_required{"代理认证失败，请检查代理凭据"}else if ok{"上游可连接"}else{"上游返回服务端错误"}}),
             )
         }
         Err(e) => {
