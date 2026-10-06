@@ -192,19 +192,6 @@ CABLETIDY_HOME="$PWD/.cabletidy-dev" cabletidy start
 
 Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示例假设端口为 `43100`；每份配置通过 `/<配置ID>/v1/...` 接入，例如 `http://127.0.0.1:43100/codex-main/v1/responses`；管理接口仍使用 `/api/v1/...`。
 
-### 网络代理
-
-CableTidy 请求上游时读取启动环境中的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`，也支持对应的小写变量。Responses、Messages、Token counting 和管理台的“测试连通性”使用相同的环境代理规则；未配置代理时直接连接上游。
-
-如果终端设置了代理，请将本地回环地址加入排除列表，让客户端直接访问 CableTidy，也让 CableTidy 直接访问本地上游。在启动 CableTidy 和客户端前设置以下变量，保留已有排除规则：
-
-```bash
-export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${no_proxy:+${no_proxy},}127.0.0.1,localhost,::1"
-export no_proxy="$NO_PROXY"
-```
-
-代理变量由进程启动时继承，修改后需在设置好变量的环境中重新启动 CableTidy 和客户端。CableTidy 的本地 daemon 状态探测始终直连，不依赖 `NO_PROXY`。
-
 ## Web 配置管理
 
 管理台直接显示配置列表，首次使用与后续使用采用相同的操作流程，不设置介绍页或配置向导。点击“新建配置”填写：
@@ -368,7 +355,7 @@ npm run test:claude
 CABLETIDY_CLAUDE_BIN=/absolute/path/claude npm run test:claude
 ```
 
-首版仅支持 Anthropic Messages 兼容上游。HTTP/HTTPS 上游支持通过环境变量使用网络代理，见“网络代理”一节；动态上游凭据、Bedrock/Vertex 原生协议转换和内置 `claude gateway` 托管不在本版范围。模型网关不代表 npm、Git、MCP 子进程或 Claude 其他联网流量也经过 CableTidy。
+首版仅支持 Anthropic Messages 兼容上游。动态上游凭据、Bedrock/Vertex 原生协议转换和内置 `claude gateway` 托管不在本版范围。模型网关不代表 npm、Git、MCP 子进程或 Claude 其他联网流量也经过 CableTidy。
 
 ## 其他 CLI
 
@@ -387,7 +374,7 @@ npm test
 
 ### Q：配置显示“已启动”，本地地址也正确，为什么客户端仍然连接失败或请求报错？
 
-A：先检查启动客户端的环境中是否设置了 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或对应的小写变量。这些设置可能来自终端配置或启动脚本；即使没有在 CableTidy 中配置网络代理，客户端也可能继承它们。
+A：一种可能原因是客户端继承了终端配置或启动脚本中的代理环境变量。检查启动客户端的环境中是否设置了 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 或对应的小写变量。
 
 部分客户端会将发往 `127.0.0.1`、`localhost` 或 `::1` 的请求也交给代理，导致本地连接失败或收到代理返回的错误。浏览器和客户端使用的代理设置也可能不同，因此管理台或浏览器中的 `/v1/models` 能正常访问，并不代表客户端的请求一定能直达 CableTidy。
 
@@ -402,7 +389,7 @@ export no_proxy="$NO_PROXY"
 
 随后从该环境重新启动客户端和 CableTidy，已运行的进程不会自动读取新的环境变量。仅给 CableTidy 设置 `NO_PROXY` 无法改变客户端的代理行为，客户端也必须继承这些变量。
 
-`NO_PROXY` 中填写主机名或 IP，不填写 `http://`、端口或接口路径。此设置只让匹配的地址绕过代理，远程上游仍可通过原有代理访问。完整代理行为见[网络代理](#网络代理)。
+`NO_PROXY` 中填写主机名或 IP，不填写 `http://`、端口或接口路径。CableTidy 的上游请求也会读取启动环境中的代理变量；此设置让本地上游绕过代理，远程上游仍可通过原有代理访问。
 
 ## 许可证
 

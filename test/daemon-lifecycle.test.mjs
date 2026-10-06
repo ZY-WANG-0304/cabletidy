@@ -11,7 +11,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { defaultConfig, nativeBinary, processStartTime, inspectProcess } from "./helpers/native.mjs";
 import { catalogFixture } from "./helpers/codex-fixture.mjs";
-import { commandEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
+import { commandEnvironment, fixtureEnvironment, writeCodexCommand } from "./helpers/commands.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const execute = promisify(execFile);
@@ -65,7 +65,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   config.virtualProviders.cabletidy_relay = { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "relay" };
   config.bindings.relay = { id: "relay", target: "codex", virtualProvider: "cabletidy_relay" };
   await fs.writeFile(path.join(directory, "config.json"), JSON.stringify(config));
-  let env = { ...process.env, CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
+  let env = fixtureEnvironment({ CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") });
   const releaseCatalog = path.join(directory, "release-catalog");
   if (mockCatalog) {
     monitor = net.createServer(socket => {
@@ -95,8 +95,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
         console.log(${JSON.stringify(JSON.stringify(catalogFixture().catalog))});
       }
     `);
-    env = { ...commandEnvironment(`${bin}${path.delimiter}${process.env.PATH || process.env.Path || ""}`),
-      CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") };
+    env = commandEnvironment(`${bin}${path.delimiter}${env.PATH || env.Path || ""}`, env);
   }
   const entry = "bin/cabletidy.mjs";
   const windows = process.platform === "win32";
@@ -158,6 +157,24 @@ async function startStream(app) {
   // A forced exit intentionally aborts the response body.
   text.catch(() => {});
   return { upstream, text };
+}
+
+for (const mockCatalog of [false, true]) {
+  test(`lifecycle fixture ignores inherited proxies with mockCatalog=${mockCatalog}`, signalTest, async t => {
+    const inherited = process.env;
+    process.env = { ...inherited };
+    t.after(() => { process.env = inherited; });
+    for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
+      process.env[key] = process.env[key.toLowerCase()] = "http://127.0.0.1:9";
+    }
+    process.env.NO_PROXY = process.env.no_proxy = "";
+    const app = await fixture(t, { mockCatalog });
+    const { upstream, text } = await startStream(app);
+    upstream.end('data: {"delta":"last"}\n\n');
+    assert.match(await text, /first[\s\S]*last/);
+    await app.stop("SIGTERM");
+    await app.expectExit(0);
+  });
 }
 
 test("stop waits for streaming requests and releases the instance lock", signalTest, async t => {

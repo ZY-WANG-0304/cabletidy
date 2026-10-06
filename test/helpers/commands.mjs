@@ -10,7 +10,16 @@ export async function writeCodexCommand(directory, source) {
   }
 }
 
-export function commandEnvironment(searchPath) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+export function fixtureEnvironment(overrides = {}) {
+  // Local fixtures must not inherit a developer's upstream proxy settings.
+  const inherited = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key)));
+  // Remove unset overrides before Node deduplicates Windows environment keys.
+  return Object.fromEntries(Object.entries({ ...inherited, ...overrides })
+    .filter(([, value]) => value !== undefined));
+}
+
+export function commandEnvironment(searchPath, inherited = process.env) {
+  const env = Object.fromEntries(Object.entries(inherited).filter(([key]) => key.toLowerCase() !== "path"));
   return { ...env, PATH: searchPath };
 }

@@ -5,23 +5,18 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { writeCodexCommand } from "./commands.mjs";
+import { fixtureEnvironment, writeCodexCommand } from "./commands.mjs";
 import { normalizeConfig } from "./native.mjs";
 
 const executable = fileURLToPath(new URL(`../../target/debug/cabletidy-test-daemon${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
 
 export async function createApplication(options = {}) {
   const paths = options.paths;
-  // Fixtures use local upstreams; only proxy tests should inherit proxy settings.
-  const inherited = Object.fromEntries(Object.entries(process.env)
-    .filter(([key]) => !/^(https?|all|no)_proxy$/i.test(key)));
-  const env = { ...inherited, ...options.env, CABLETIDY_HOME: paths.home,
+  const env = fixtureEnvironment({ ...options.env, CABLETIDY_HOME: paths.home,
     CODEX_HOME: options.codexHome || path.join(paths.home, "codex-client"),
     CLAUDE_CONFIG_DIR: options.claudeHome || path.join(paths.home, "claude-client"),
     CABLETIDY_PREFERRED_PORT: String(options.preferredPort ?? 0),
-  };
-  // Remove unset overrides before Node deduplicates Windows environment keys.
-  for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
+  });
   let loader = options.loadCodexCatalog;
   let catalogServer;
   const catalogErrors = [];

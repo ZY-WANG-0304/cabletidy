@@ -114,6 +114,19 @@ pub struct Application {
     pub listener: tokio::net::TcpListener,
     lock: lifecycle::InstanceLock,
 }
+
+fn upstream_client(redirect: reqwest::redirect::Policy) -> Result<reqwest::Client> {
+    let builder = reqwest::Client::builder().redirect(redirect);
+    // Local HTTPS fixtures trust their own CA only in test-support builds.
+    #[cfg(feature = "test-support")]
+    let builder = if let Some(path) = std::env::var_os("CABLETIDY_TEST_CA_CERT") {
+        builder.add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(path)?)?)
+    } else {
+        builder
+    };
+    Ok(builder.build()?)
+}
+
 pub async fn create(
     paths: Paths,
     target_options: targets::Options,
@@ -159,8 +172,8 @@ pub async fn create(
             target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
             security: security::Security::new(&paths.home),
-            client: reqwest::Client::builder().build()?,
-            claude_client: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?,
+            client: upstream_client(reqwest::redirect::Policy::default())?,
+            claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
         });
         config::write_json(&paths.secrets, &secrets).await?;
