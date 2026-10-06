@@ -1174,6 +1174,11 @@ button.list-row:hover,
 .security-body-review { border-top: 1px solid var(--line); margin-top: 24px; min-width: 0; }
 .security-body-review > summary { cursor: pointer; padding: 14px 0; font-weight: 600; list-style-position: inside; }
 .security-body-review[open] > summary { color: var(--accent); }
+.security-event-timeline { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 8px; }
+.security-event-timeline h4 { margin: 12px 0 6px; }
+.security-event { border-top: 1px solid var(--line); margin-top: 8px; }
+.security-event > summary { cursor: pointer; padding: 10px 0; list-style-position: inside; }
+.security-event[open] > summary { color: var(--accent); }
 .security-body-tabs [aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
 .security-body-content { max-height: 520px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .security-body-hit { background: #ffe3a1; color: #49300a; outline: 2px solid #b97b1b; border-radius: 2px; scroll-margin-block: 24px; }

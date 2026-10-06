@@ -121,7 +121,7 @@ try {
   await page.locator(`[data-action="security-finding"][data-id="${responseHit.id}"]`).click();
   await visibleHit("response-evidence");
   await screenshot("03-desktop-response-hit.png");
-  assert.equal(await page.locator('[data-security-snapshot="evidence/response"]').count(), 0);
+  assert.equal(await page.locator('[data-security-snapshot^="stream/"]').count(), 0);
   report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
   await page.goBack();
   await checkList(savedScroll);

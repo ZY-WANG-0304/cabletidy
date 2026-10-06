@@ -404,6 +404,32 @@ test("security review lazily loads pages, locates UTF-8 evidence and preserves c
   assert.match(app.read("renderSecurityDetailPage()"), /<mark[^>]+>\[REDACTED\]<\/mark>/);
 });
 
+test("stream findings map to the response body and expose a separate event timeline", async () => {
+  const snapshots = [
+    { id: "request", source: "client_request", state: "complete", byteLength: 12 },
+    { id: "response", source: "upstream_response", state: "complete", byteLength: 24 },
+    { id: "stream/one", source: "stream_inspection", state: "interrupted", byteLength: 24 },
+  ];
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit/stream-one/body?")) {
+      const snapshot = new URL(url, "http://test").searchParams.get("snapshot");
+      return { body: { chunks: [{ start: 0, end: 24, content: snapshot === "stream/one" ? '{"text":"partial event"}' : "response context", redactions: [] }], nextOffset: null, gap: snapshot === "stream/one" } };
+    }
+    if (url.includes("/audit/stream-one")) return { body: { record: { id: "stream-one", bodySnapshots: snapshots, findings: [{ id: "stream-risk", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", start: 0, end: 10, sourceSnapshotId: "stream/one", sourceStart: 4, sourceEnd: 14 } } }] } } };
+  } });
+  app.read('state.page = "security"');
+  await app.action("security-detail", { dataset: { id: "stream-one" } });
+  await app.action("security-finding", { dataset: { id: "stream-risk" } });
+  const html = app.read("renderSecurityDetailPage()");
+  assert.equal(app.read("state.security.bodySelection.snapshotId"), "response");
+  assert.match(html, /data-security-snapshot="response" open/);
+  assert.doesNotMatch(html, /data-security-snapshot="stream\/one"/);
+  assert.match(html, /流式事件时间线/);
+  assert.match(html, /partial event/);
+  assert.match(html, /接收中断或未观察到协议结束/);
+  assert.ok(app.requests.some(r => r.url.includes("snapshot=stream%2Fone")));
+});
+
 test("late body pages cannot replace a new snapshot or closed detail", async () => {
   let release;
   const app = await controller(undefined, { onSecurity(url) {
