@@ -28,7 +28,7 @@ dirs = "6"
 filetime = "0.2"
 futures-util = "0.3"
 hostname = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream", "json", "gzip", "brotli", "deflate"] }
 regex = "1"
 ring = "0.17"
 rusqlite = { version = "0.37", features = ["bundled"] }

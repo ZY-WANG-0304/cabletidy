@@ -1087,7 +1087,9 @@ async fn probe(state: &AppState, snapshot: &Snapshot, body: &Value) -> Result<Re
     Ok(match result {
         Ok(r) => {
             let status = r.status().as_u16();
-            let ok = status < 500 || status == 501;
+            let proxy_authentication_required =
+                status == StatusCode::PROXY_AUTHENTICATION_REQUIRED.as_u16();
+            let ok = !proxy_authentication_required && (status < 500 || status == 501);
             state.health(
                 id,
                 if r.status().is_success() {
@@ -1099,7 +1101,7 @@ async fn probe(state: &AppState, snapshot: &Snapshot, body: &Value) -> Result<Re
             );
             json_response(
                 200,
-                json!({"ok":ok,"status":status,"latencyMs":start.elapsed().as_millis(),"secretConfigured":!secret.is_empty(),"message":if ok{"上游可连接"}else{"上游返回服务端错误"}}),
+                json!({"ok":ok,"status":status,"latencyMs":start.elapsed().as_millis(),"secretConfigured":!secret.is_empty(),"message":if proxy_authentication_required{"代理认证失败，请检查代理凭据"}else if ok{"上游可连接"}else{"上游返回服务端错误"}}),
             )
         }
         Err(e) => {
