@@ -159,8 +159,8 @@ pub async fn create(
             target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
             security: security::Security::new(&paths.home),
-            client: reqwest::Client::builder().no_proxy().build()?,
-            claude_client: reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).build()?,
+            client: reqwest::Client::builder().build()?,
+            claude_client: reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?,
             jobs: AtomicUsize::new(0),
         });
         config::write_json(&paths.secrets, &secrets).await?;
