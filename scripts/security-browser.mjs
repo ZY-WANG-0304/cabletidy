@@ -121,10 +121,8 @@ try {
   await page.locator(`[data-action="security-finding"][data-id="${responseHit.id}"]`).click();
   await visibleHit("response-evidence");
   await screenshot("03-desktop-response-hit.png");
-  await page.getByRole("button", { name: "查看完整正文上下文", exact: true }).click();
-  await visibleHit("response-source-context");
-  assert.match(await page.locator('[aria-label="保留正文"]').innerText(), /响应命中前 \[REDACTED\] 响应命中后/);
-  report.checks.push("precise request, immutable response evidence and source-context hits are visible inside both viewport and scroll container");
+  assert.equal(await page.locator('[data-security-snapshot="evidence/response"]').count(), 0);
+  report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
   await page.goBack();
   await checkList(savedScroll);
   await page.goForward();

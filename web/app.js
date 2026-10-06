@@ -566,7 +566,6 @@ function syncCodexMetadata(row, resetOverrides = false) {
 }
 
 pageContent.addEventListener("change", (event) => {
-  if (event.target.id === "security-snapshot") { securityAction("security-body", { dataset: { id: event.target.value } }); return; }
   if (event.target.matches('#suite-create-form [name="target"]')) {
     state.createTarget = event.target.value;
     const form = event.target.closest("form");
@@ -590,6 +589,13 @@ pageContent.addEventListener("change", (event) => {
   if (modelChanged) updateOfficialModelHint(event.target);
   if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
     syncCodexMetadata(event.target.closest("[data-suite-model]"), modelChanged);
+  }
+});
+
+pageContent.addEventListener("toggle", (event) => {
+  const panel = event.target;
+  if (panel.matches("[data-security-snapshot]") && panel.open) {
+    securityAction("security-body", { dataset: { id: panel.dataset.securitySnapshot } });
   }
 });
 
@@ -1151,20 +1157,26 @@ function securityPageText(page, selection) {
   }).join("");
 }
 
+function canonicalBodySnapshotId(id) {
+  if (["request", "request/headers", "response", "response/headers"].includes(id)) return id;
+  if (id?.startsWith("request")) return "request";
+  if (id?.startsWith("response")) return "response";
+  return id;
+}
+
 function renderSecurityBody(record) {
   const s = state.security;
-  const snapshots = record.bodySnapshots || [];
+  const allSnapshots = record.bodySnapshots || [];
+  const snapshots = ["request/headers", "request", "response/headers", "response"].map(id => allSnapshots.find(item => item.id === id) || { id, state: "not_observed" });
   const selection = s.bodySelection || { snapshotId: "request" };
-  const snapshot = snapshots.find(item => item.id === selection.snapshotId);
+  const snapshot = allSnapshots.find(item => item.id === selection.snapshotId);
   const risk = record.findings?.find(item => item.id === selection.findingId);
   const page = s.bodyPage;
-  const options = snapshots.map((item, i) => ({ id: item.id, label: item.id === "request" ? "请求正文" : item.id === "response" ? "响应正文" : item.id === "request/headers" ? "请求头" : item.id === "response/headers" ? "响应头" : `${item.id.startsWith("stream/") ? "流式内容" : "检测快照"} ${i + 1}` }));
+  const labelFor = (item, i) => item.id === "request" ? "请求正文" : item.id === "response" ? "响应正文" : item.id === "request/headers" ? "请求头" : item.id === "response/headers" ? "响应头" : `${item.id.startsWith("stream/") ? "流式内容" : "检测快照"} ${i + 1}`;
   const marks = page?.chunks?.flatMap(chunk => chunk.redactions || []) || page?.legacySnapshot?.redactions || [];
   const references = [...new Set((page?.chunks || []).flatMap(chunk => [...chunk.content.matchAll(/"contentSnapshotId":"([^"]+)"/g)].map(match => match[1])))].filter(id => snapshots.some(item => item.id === id));
-  return `<section class="security-body-review" aria-label="正文复核"><h3>正文复核</h3>
-    <label class="field"><span>正文来源</span><select id="security-snapshot" aria-label="正文来源">${options.map(item => `<option value="${esc(item.id)}" ${item.id === selection.snapshotId ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
-    ${risk ? `<p class="security-selected-risk">正在复核：${esc(securityLabel("rule", risk.ruleId))} · ${esc(securityLabel("stage", risk.evidenceStage))}</p>` : ""}
-    ${snapshot ? `<p>${esc(SECURITY_BODY_LABELS.source[snapshot.source] || snapshot.source)} · ${esc(SECURITY_BODY_LABELS.state[snapshot.state] || snapshot.state)} · ${esc(securityTime(snapshot.capturedAt))}</p>` : `<div class="notice warning">${record.schemaVersion === 1 ? "旧记录未保留正文，无法恢复检测时的内容。" : "正文仍在等待保存，或该快照未能保留。请结合检测进度和覆盖缺口复核。"}</div>`}
+  const content = snapshot && selection.snapshotId === snapshot.id ? `${risk ? `<p class="security-selected-risk">正在复核：${esc(securityLabel("rule", risk.ruleId))} · ${esc(securityLabel("stage", risk.evidenceStage))}</p>${selection.detectionSnapshotId ? `<p class="muted">证据来自检测时的流式内容快照，当前已定位到对应的${selection.snapshotId === "response" ? "响应" : "请求"}正文。</p>` : ""}` : ""}
+    <p>${esc(SECURITY_BODY_LABELS.source[snapshot.source] || snapshot.source)} · ${esc(SECURITY_BODY_LABELS.state[snapshot.state] || snapshot.state)} · ${esc(securityTime(snapshot.capturedAt))}</p>
     <p class="muted">正文分段按需加载。凭据显示为 [REDACTED]；高亮位置对应脱敏后的内容。响应事件中的引用可通过“关联流式内容”打开重组快照。</p>
     ${s.bodyLoading ? `<p role="status">${s.bodyLocating ? "正在定位凭据命中点…" : "正在加载正文片段…"}</p>` : s.bodyError ? `<div class="notice warning">${esc(s.bodyError)}</div>` : page ? `
       ${page.legacySnapshot?.headers ? `<details><summary>旧记录请求 / 响应头</summary><pre class="code-preview security-body-content">${esc(JSON.stringify(page.legacySnapshot.headers, null, 2))}</pre></details>` : ""}
@@ -1174,8 +1186,9 @@ function renderSecurityBody(record) {
       <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection)}</pre>
       ${references.length ? `<div class="security-body-tabs" aria-label="关联流式内容">${references.map((id, i) => `<button class="mini-button" data-action="security-body" data-id="${esc(id)}">关联流式内容 ${i + 1} · ${esc(id.split("/").at(-1).slice(0, 8))}</button>`).join("")}</div>` : ""}
       ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart ?? selection.start ?? 0)}">查看完整正文上下文</button>` : ""}
-      <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}
-  </section>`;
+      <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
+  const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
+  return `<section aria-label="正文复核"><h3>正文复核</h3>${panels || `<p class="muted">当前记录没有可展示的请求或响应内容。</p>`}</section>`;
 }
 
 async function loadSecurityBody(offset = 0, locateCredential = false) {
@@ -1258,11 +1271,18 @@ async function securityAction(action, element) {
     if (!s.detail) return;
     if (action === "security-finding") {
       const finding = s.detail.findings?.find(item => item.id === element.dataset.id);
-      s.bodySelection = { ...(finding?.evidence?.bodyRef || { snapshotId: "unavailable" }), findingId: finding?.id };
+      const ref = finding?.evidence?.bodyRef || { snapshotId: "unavailable" };
+      const source = ref.sourceSnapshotId || ref.snapshotId;
+      const snapshotId = canonicalBodySnapshotId(source);
+      s.bodySelection = { ...ref, snapshotId, ...(snapshotId !== ref.snapshotId && ref.sourceStart != null ? { start: ref.sourceStart, end: ref.sourceEnd } : {}), ...(snapshotId !== ref.snapshotId ? { detectionSnapshotId: ref.snapshotId } : {}), findingId: finding?.id };
     } else if (action === "security-source") {
       const previous = s.bodySelection;
-      s.bodySelection = { snapshotId: element.dataset.id, start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
-    } else if (action === "security-body") s.bodySelection = { snapshotId: element.dataset.id, start: Number(element.dataset.offset || 0) };
+      const id = element.dataset.id;
+      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
+    } else if (action === "security-body") {
+      const id = element.dataset.id;
+      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: Number(element.dataset.offset || 0) };
+    }
     else if (action === "security-location") s.bodySelection = { ...s.bodySelection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
     const finding = s.detail.findings?.find(item => item.id === s.bodySelection.findingId);
     const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001";

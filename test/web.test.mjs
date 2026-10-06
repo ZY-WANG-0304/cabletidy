@@ -394,11 +394,11 @@ test("security review lazily loads pages, locates UTF-8 evidence and preserves c
   assert.ok(app.requests.at(-1).url.includes("offset=100"));
   await app.action("security-finding", { dataset: { id: "two" } });
   html = app.read("renderSecurityDetailPage()");
-  assert.match(html, /检测时的流式内容快照/);
-  assert.match(html, /<mark[^>]+>rm -rf \/<\/mark>/);
-  assert.match(html, /查看完整正文上下文/);
+  assert.match(html, /data-security-snapshot="request" open/);
+  assert.doesNotMatch(html, /data-security-snapshot="evidence\/one"/);
+  assert.match(html, /证据来自检测时的流式内容快照，当前已定位到对应的请求正文/);
   await app.action("refresh", {});
-  assert.equal(app.read("state.security.bodySelection.snapshotId"), "evidence/one");
+  assert.equal(app.read("state.security.bodySelection.snapshotId"), "request");
   await app.action("security-source", { dataset: { id: "request", offset: "0" } });
   await app.action("security-location", { dataset: { start: String(start), end: String(start + 10) } });
   assert.match(app.read("renderSecurityDetailPage()"), /<mark[^>]+>\[REDACTED\]<\/mark>/);
