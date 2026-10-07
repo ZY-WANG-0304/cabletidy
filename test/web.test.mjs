@@ -416,7 +416,7 @@ test("stream findings map to the response body and expose a separate event timel
       const snapshot = new URL(url, "http://test").searchParams.get("snapshot");
       return { body: { chunks: [{ start: 0, end: 24, content: snapshot === "stream/one" ? '{"text":"partial event"}' : snapshot === "stream/two" ? '{"text":"next event"}' : "response context", redactions: [] }], nextOffset: null, gap: snapshot === "stream/one" } };
     }
-    if (url.includes("/audit/stream-one")) return { body: { record: { id: "stream-one", bodySnapshots: snapshots, findings: [{ id: "stream-risk", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", start: 0, end: 10, sourceSnapshotId: "stream/one", sourceStart: 4, sourceEnd: 14 } } }] } } };
+    if (url.includes("/audit/stream-one")) return { body: { record: { id: "stream-one", bodySnapshots: snapshots, findings: [{ id: "stream-risk", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", start: 0, end: 10, sourceSnapshotId: "stream/one", sourceStart: 4, sourceEnd: 14 } } }, { id: "stream-unmapped", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", start: 0, end: 10, sourceSnapshotId: "stream/one" } } }] } } };
   } });
   app.read('state.page = "security"');
   await app.action("security-detail", { dataset: { id: "stream-one" } });
@@ -426,11 +426,16 @@ test("stream findings map to the response body and expose a separate event timel
   assert.match(html, /data-security-snapshot="response" open/);
   assert.doesNotMatch(html, /data-security-snapshot="stream\/one"/);
   assert.match(html, /流式事件时间线/);
-  assert.match(html, /partial event/);
+  assert.match(html, /artial event/);
   assert.match(html, /接收中断或未观察到协议结束/);
   assert.ok(app.requests.some(r => r.url.includes("snapshot=stream%2Fone")));
   await app.action("security-event", { dataset: { id: "stream/two" } });
-  assert.match(app.read("renderSecurityDetailPage()"), /next event/);
+  assert.match(app.read("renderSecurityDetailPage()"), /ext event/);
+  await app.action("security-finding", { dataset: { id: "stream-unmapped" } });
+  assert.equal(app.read("state.security.bodySelection.hitUnavailable"), true);
+  const unmappedHtml = app.read("renderSecurityDetailPage()");
+  const responsePanel = unmappedHtml.match(/data-security-snapshot="response"[\s\S]*?<\/details><section class="security-event-timeline"/)?.[0] || "";
+  assert.doesNotMatch(responsePanel, /security-body-hit/);
 });
 
 test("late stream evidence cannot replace the currently selected event", async () => {
@@ -458,11 +463,11 @@ test("late stream evidence cannot replace the currently selected event", async (
   releaseTwo({ body: { chunks: [{ start: 0, end: 9, content: "event two", redactions: [] }] } });
   await second;
   await setImmediate();
-  assert.match(app.read("renderSecurityDetailPage()"), /event two/);
+  assert.match(app.read("renderSecurityDetailPage()"), /t two/);
   releaseOne({ body: { chunks: [{ start: 0, end: 9, content: "event one", redactions: [] }] } });
   await first;
-  assert.match(app.read("renderSecurityDetailPage()"), /event two/);
-  assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /event one/);
+  assert.match(app.read("renderSecurityDetailPage()"), /t two/);
+  assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /t one/);
 });
 
 test("late body pages cannot replace a new snapshot or closed detail", async () => {
