@@ -15,52 +15,26 @@
       "text": "[REDACTED]",
       "hit": {
         "x": 656.4375,
-        "y": 742.609375,
+        "y": 492.609375,
         "width": 72.015625,
         "height": 14,
-        "top": 742.609375,
+        "top": 492.609375,
         "right": 728.453125,
-        "bottom": 756.609375,
+        "bottom": 506.609375,
         "left": 656.4375
       },
       "body": {
         "x": 229,
-        "y": 257.5,
+        "y": 7.5,
         "width": 1166,
         "height": 520,
-        "top": 257.5,
+        "top": 7.5,
         "right": 1395,
-        "bottom": 777.5,
+        "bottom": 527.5,
         "left": 229
       },
       "bodyScrollTop": 1375,
-      "pageScrollY": 974
-    },
-    {
-      "stage": "response-evidence",
-      "text": "[REDACTED]",
-      "hit": {
-        "x": 656.4375,
-        "y": 891.109375,
-        "width": 72.015625,
-        "height": 14,
-        "top": 891.109375,
-        "right": 728.453125,
-        "bottom": 905.109375,
-        "left": 656.4375
-      },
-      "body": {
-        "x": 229,
-        "y": 406,
-        "width": 1166,
-        "height": 520,
-        "top": 406,
-        "right": 1395,
-        "bottom": 926,
-        "left": 229
-      },
-      "bodyScrollTop": 1375,
-      "pageScrollY": 1006
+      "pageScrollY": 2046
     }
   ],
   "checks": [

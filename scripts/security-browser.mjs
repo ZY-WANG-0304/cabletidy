@@ -18,10 +18,26 @@ const upstream = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks));
+  const text = `${context}响应命中前 ${secret} 响应命中后；继续复核上下文。`;
+  if (body.stream) {
+    const item = { id: "msg_browser", type: "message", role: "assistant", content: [{ type: "output_text", text: "" }] };
+    const response = { id: "resp_browser", object: "response", status: "in_progress", model: body.model, output: [item] };
+    const events = [
+      { type: "response.created", response },
+      { type: "response.output_item.added", output_index: 0, item },
+      { type: "response.content_part.added", output_index: 0, content_index: 0, part: { type: "output_text", text: "" } },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: text },
+      { type: "response.output_text.done", output_index: 0, content_index: 0, text },
+      { type: "response.content_part.done", output_index: 0, content_index: 0, part: { type: "output_text", text } },
+      { type: "response.output_item.done", output_index: 0, item: { ...item, content: [{ type: "output_text", text }] } },
+      { type: "response.completed", response: { ...response, status: "completed", output: [{ ...item, content: [{ type: "output_text", text }] }] } },
+    ];
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+    return;
+  }
   res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ model: body.model, output: body.reviewCase ? [
-    { type: "output_text", text: `${context}响应命中前 ${secret} 响应命中后；继续复核上下文。` },
-  ] : [] }));
+  res.end(JSON.stringify({ model: body.model, output: body.reviewCase ? [{ type: "output_text", text }] : [] }));
 });
 await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
 let app, browser, page;
@@ -37,7 +53,7 @@ try {
     assert.equal(response.status, 200, text);
   };
   await post("api/v1/config/commit", { baseRevision: 0, config, upstreamSecrets: { relay: secret } });
-  await post("relay/v1/responses", { model: "gpt-5.5", reviewCase: true, input: `${context}请求命中前 ${secret} 请求命中后；继续复核上下文。` });
+  await post("relay/v1/responses", { model: "gpt-5.5", reviewCase: true, stream: true, input: `${context}请求命中前 ${secret} 请求命中后；继续复核上下文。` });
   for (let i = 0; i < 64; i++) await post("relay/v1/responses", { model: "gpt-5.5", input: `Pagination fixture ${i}: ${secret}` });
   let audits;
   for (let i = 0; i < 600; i++) {
@@ -73,6 +89,11 @@ try {
     report.screenshots.push(file);
   };
   const visibleHit = async stage => {
+    if (stage === "response-evidence" && await page.locator(".security-event-timeline").count()) {
+      await page.locator(".security-event-timeline").waitFor();
+      assert.doesNotMatch(await page.locator(".security-event-timeline").innerText(), new RegExp(secret));
+      return;
+    }
     await page.waitForFunction(() => {
       const marks = [...document.querySelectorAll(".security-body-hit")];
       if (marks.map(mark => mark.textContent).join("") !== "[REDACTED]") return false;
@@ -122,6 +143,8 @@ try {
   await visibleHit("response-evidence");
   await screenshot("03-desktop-response-hit.png");
   assert.equal(await page.locator('[data-security-snapshot^="stream/"]').count(), 0);
+  assert.equal(await page.locator(".security-event-timeline").count(), 1);
+  assert.match(await page.locator(".security-event-timeline").innerText(), /流式事件/);
   report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
   await page.goBack();
   await checkList(savedScroll);
