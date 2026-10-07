@@ -203,7 +203,11 @@ async fn handle(
             tokio::time::timeout(TIMEOUT, write(&mut stream, &json!({"state":"stopping"})))
                 .await??;
             while *state.borrow_and_update() != "stopped" {
-                state.changed().await?;
+                // Shutdown is already committed; release the slot when its waiter leaves.
+                tokio::select! {
+                    result = state.changed() => result?,
+                    _ = stream.read_u8() => return Ok(()),
+                }
             }
             tokio::time::timeout(TIMEOUT, write(&mut stream, &json!({"state":"stopped"})))
                 .await??;
@@ -394,14 +398,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnected_stop_client_does_not_cancel_shutdown_and_other_clients_can_wait() {
+    async fn disconnected_stop_clients_release_slots_without_cancelling_shutdown() {
         let (_dir, paths, runtime, mut server, mut shutdown) = fixture().await;
-        let mut first = connect(&paths, &runtime).await.unwrap();
-        write(&mut first, &request(&runtime, "stop")).await.unwrap();
-        shutdown.recv().await.unwrap();
-        assert_eq!(read(&mut first).await.unwrap()["state"], "stopping");
-        server.state.send_replace("draining");
-        drop(first);
+        // Exceed the listener's capacity while keeping shutdown pending throughout.
+        for attempt in 0..64 {
+            tokio::time::timeout(TIMEOUT, async {
+                let mut client = connect(&paths, &runtime).await.unwrap();
+                write(&mut client, &request(&runtime, "stop"))
+                    .await
+                    .unwrap();
+                shutdown.recv().await.unwrap();
+                assert_eq!(read(&mut client).await.unwrap()["state"], "stopping");
+                server.state.send_replace("draining");
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("disconnected clients exhausted slots at attempt {attempt}")
+            });
+        }
         let mut second = connect(&paths, &runtime).await.unwrap();
         write(&mut second, &request(&runtime, "stop"))
             .await

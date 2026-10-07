@@ -517,7 +517,15 @@ mod tests {
             .unwrap();
         assert!(locked(&paths).unwrap());
         drop(lock);
-        assert!(!locked(&paths).unwrap());
+        // A parallel test can briefly inherit the descriptor between fork and exec;
+        // Windows may also defer OS lock cleanup after closing the handle.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while locked(&paths).unwrap() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dropping the owner must release the kernel lock");
         assert!(paths.lock.is_file());
         InstanceLock::acquire(&paths)
             .await

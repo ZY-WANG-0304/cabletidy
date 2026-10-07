@@ -228,6 +228,10 @@ async function stopClient(t, directory) {
   return {
     output: () => output,
     signal: signal => process.platform === "win32" ? client.send(signal) : client.kill(signal),
+    async expectStopped() {
+      assert.deepEqual(await closed, { code: 0, signal: null }, output);
+      assert.match(output, /CableTidy stopped/);
+    },
     async expectCancelled(code, submitted) {
       const exit = await Promise.race([closed, delay(5000).then(() => { throw new Error("stop client did not cancel"); })]);
       assert.deepEqual(exit, { code, signal: null }, output);
@@ -274,6 +278,28 @@ for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
     await app.expectExit(0);
   });
 }
+
+test("repeated stop cancellations keep status and new stop waiters available during draining", {
+  timeout: 120000,
+}, async t => {
+  const app = await fixture(t);
+  const { upstream, text } = await startStream(app);
+  for (let attempt = 0; attempt < 34; attempt += 1) {
+    const client = await stopClient(t, app.directory);
+    await waitFor(() => client.output().includes("Stopping CableTidy"));
+    const [signal, code] = attempt % 2 ? ["SIGTERM", 143] : ["SIGINT", 130];
+    client.signal(signal);
+    await client.expectCancelled(code, true);
+  }
+  assert.equal(app.child.exitCode, null);
+  assert.equal((await daemonStatus(app)).runtime.status, "stopping");
+  const waiting = await stopClient(t, app.directory);
+  await waitFor(() => waiting.output().includes("Stopping CableTidy"));
+  upstream.end('data: {"delta":"last"}\n\n');
+  assert.match(await text, /first[\s\S]*last/);
+  await waiting.expectStopped();
+  await app.expectExit(0);
+});
 
 test("cancelling stop before a paused daemon completes its handshake sends no request", {
   ...signalTest, skip: process.platform === "win32",
