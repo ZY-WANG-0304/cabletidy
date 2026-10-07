@@ -598,7 +598,7 @@ GET  /api/v1/integrations
 ~/.cabletidy/config.json
 ~/.cabletidy/secrets.json
 ~/.cabletidy/runtime.json
-~/.cabletidy/daemon.lock/
+~/.cabletidy/daemon.lock
 ~/.cabletidy/backups/
 ```
 
@@ -621,11 +621,17 @@ GET  /api/v1/integrations
 
 配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
 
-安装后的 npm 启动器让 `start` 脱离终端，确认管理接口就绪后返回，日志写入 `daemon.log`；源码调试与 `start --foreground` 保持前台。Rust `stop` 根据 runtime 和 owner 记录核对进程身份与实例 UUID，再写入本代次 `stop-<UUID>.json`。服务轮询该文件并执行请求排空、审计持久化和锁释放；停止命令等待该代次结束，避免误停 PID 复用后的其他进程。新实例不会读取旧代次的停止请求。
+安装后的 npm 启动器让 `start` 脱离终端，确认管理接口就绪后返回，日志写入 `daemon.log`；源码调试与 `start --foreground` 保持前台。
 
-`src/lifecycle.rs` 先在临时目录写入带 UUID 文件名的 owner 记录，再原子发布整个非空锁目录，避免取得锁和写入归属之间的空窗。记录包含主机名、PID 和同一模块查询的启动标识：Linux 的 boot ID + `/proc` start ticks、macOS 的 `ps lstart`、Windows 的 `GetProcessTimes` 创建时间。Windows 使用只读进程查询句柄，结合退出状态区分已退出进程与无法查询的进程，不启动 PowerShell；创建时间转换为既有 `win32:` 标识使用的 .NET UTC ticks，保持旧锁兼容。Tokio 任务每 2 秒刷新心跳，但禁用仅凭 mtime 的自动回收；只有身份检查确认原进程死亡或 PID 被复用，且锁至少 10 秒未更新时才回收。回收与释放只删除对应代次的 owner 文件，然后使用非递归 `rmdir`，不会删除并发启动者的新 owner。
+`src/lifecycle.rs` 使用持久的普通文件 `daemon.lock` 和 `std::fs::File::try_lock()` 保证同一数据目录仅有一个实例。Unix 使用内核 `flock`，Windows 使用 `LockFileEx`。锁覆盖初始化、服务、请求排空和清理的全过程；正常退出显式释放，异常退出由操作系统释放，不再依赖目录 mtime、心跳或 PID 身份推断。锁文件不删除、不替换，文件存在本身不代表实例正在运行。Unix 锁描述符设置 close-on-exec，避免启动的子进程延长锁寿命。数据目录须位于本地文件系统；不承诺 NFS / SMB 或跨机器共享目录的互斥语义。
 
-身份检查明确区分存活、死亡和未知。存活或未过期返回 `ELOCKED`；过期但身份未知（旧格式缺字段、查询失败、其他主机）或缺少可安全删除的 owner 标记，返回 `ELOCKUNKNOWN` 和人工恢复步骤。旧 Linux start ticks 不含 boot ID，只能在数值不同时排除原持有者，不能凭数值相同确认存活。空的旧锁目录也需要人工确认和删除。暂停的实例不被 mtime 误回收，恢复后的心跳仍能正常更新。
+`src/control.rs` 提供独立的本地控制通道：Unix 使用 domain socket，Windows 使用 named pipe。Unix 控制目录位于 `/tmp/cabletidy-<uid>-<数据目录规范路径摘要>/`，验证归属和 `0700` 权限，避免深层数据目录超过 macOS socket 路径限制；每代 socket 以 UUID 命名，持有实例锁的启动者清理旧代次 socket。Windows pipe 设置当前用户 SID 专属 DACL、拒绝远程客户端，并使用首实例保护。两端从数据目录规范路径和 `controlId` 推导地址，不依赖 runtime 中提供的任意地址。
+
+控制协议使用 4 字节大端长度加 JSON，单帧上限 4096 字节，握手和命令接收限时 2 秒，并限制并发连接数。服务端首先发送协议版本、`controlId` 和状态；命令必须回传版本与目标 UUID。`stop` 收到接受确认后等待该连接上的完成确认，daemon 排空请求、完成审计持久化、清理 runtime 并释放锁后才确认完成。连接提前断开报告异常，不冒充正常退出；客户端取消等待不会撤销已接受的停止请求。发送前取消明确报告未发送，发送中取消报告可能提交，确认后取消报告请求继续执行。
+
+`runtime.json` 保存 `controlVersion: 1`、实例 UUID 和诊断信息。hostname、PID、进程启动时间仅供诊断，不决定是否可以停止实例。`status` 结合内核锁和 IPC 区分 `online`、`stopping`、`unresponsive`、`offline`；持锁但 IPC 无响应时，不允许回收锁或启动第二个实例。未初始化时 `status` / `stop` 不创建目录或文件。
+
+旧版使用同路径的 `daemon.lock` 目录。新版发现目录即返回 `ELOCKLEGACY`，要求用户核对并手动停止旧进程，确认退出后删除旧锁目录。即使旧记录中的 PID 已退出，也不自动迁移或回收。不支持同时运行新旧生命周期协议，也不增加系统服务注册、自启动或自动重启。
 
 Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` 命令，兼容 `.exe` 和 npm `.cmd`。监督进程先加入带 `KILL_ON_JOB_CLOSE` 的 Windows Job Object，所有后代继承该归属；查询结束、超时或强制终止监督进程时一并清理后代，即使中间启动器已退出也不遗留持有管道的进程。监督进程忽略控制台 Ctrl+C，由 daemon 控制排空和终止；同时持有 daemon 的 Windows 进程句柄，daemon 被系统强制结束时关闭整个 Job Object，不受 PID 复用影响。Linux / macOS 使用进程组处理受控退出。
 

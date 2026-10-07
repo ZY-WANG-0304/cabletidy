@@ -97,7 +97,7 @@ async function fixture(t) {
               const result = await closed;
               assert.ok(result.code === 0 || (watch && result.signal === "SIGTERM"), output);
               await assert.rejects(fs.access(paths.runtime), { code: "ENOENT" });
-              await assert.rejects(fs.access(paths.lock), { code: "ENOENT" });
+              assert.ok((await fs.stat(paths.lock)).isFile());
             },
           };
         },
@@ -182,7 +182,7 @@ test("development checkouts run alongside production and apply only to their tes
   f.cleanup(() => new Promise(resolve => blocker.close(resolve)));
   await assert.rejects(dev.run(), error => error.code === 1 && /EADDRINUSE/.test(error.stderr));
   assert.equal(await fs.readFile(dev.paths.config, "utf8"), saved);
-  await assert.rejects(fs.access(dev.paths.lock), { code: "ENOENT" });
+  assert.ok((await fs.stat(dev.paths.lock)).isFile());
   await production.close();
 });
 

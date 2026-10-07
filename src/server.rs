@@ -113,6 +113,7 @@ pub struct Application {
     pub state: Arc<AppState>,
     pub listener: tokio::net::TcpListener,
     lock: lifecycle::InstanceLock,
+    control: crate::control::Listener,
 }
 
 fn upstream_client(redirect: reqwest::redirect::Policy) -> Result<reqwest::Client> {
@@ -134,6 +135,7 @@ pub async fn create(
 ) -> Result<Application> {
     let lock = lifecycle::InstanceLock::acquire(&paths).await?;
     let result = async {
+        let control = crate::control::Listener::bind(&paths, text(&lock.identity["controlId"]))?;
         crate::daemon_log::init(&paths.home)?;
         config::ensure_dir(&paths.backups).await?;
         let existing = config::read_json(&paths.config).await?;
@@ -179,13 +181,14 @@ pub async fn create(
         config::write_json(&paths.secrets, &secrets).await?;
         if fresh { config::write_json(&paths.config, &config).await?; }
         lifecycle::persist_runtime(&paths, &lock.identity, &config, &state.started).await?;
-        Ok::<_, anyhow::Error>((state, listener))
+        Ok::<_, anyhow::Error>((state, listener, control))
     }.await;
     match result {
-        Ok((state, listener)) => Ok(Application {
+        Ok((state, listener, control)) => Ok(Application {
             state,
             listener,
             lock,
+            control,
         }),
         Err(e) => {
             lock.release().await?;
@@ -220,23 +223,21 @@ pub async fn serve_controlled(
         state,
         listener,
         lock,
+        control: control_listener,
     } = app;
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-    let stop_file = lifecycle::stop_path(&state.paths, text(&state.identity["controlId"]))?;
-    let stop_request = stop_file.clone();
+    let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut ipc = control_listener.serve(text(&state.identity["controlId"]).to_owned(), ipc_tx);
+    let control_state = ipc.state.clone();
     let signals = tokio::spawn(async move {
         #[cfg(unix)]
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("install SIGTERM handler");
         let mut stop_tx = Some(stop_tx);
         let mut control_open = true;
-        let mut stop_poll = tokio::time::interval(Duration::from_millis(100));
         loop {
             let event = tokio::select! {
-                _ = stop_poll.tick(), if stop_tx.is_some() => {
-                    if !tokio::fs::try_exists(&stop_request).await.unwrap_or(false) { continue; }
-                    Shutdown::Terminate
-                },
+                Some(()) = ipc_rx.recv() => Shutdown::Terminate,
                 _ = interrupt() => Shutdown::Interrupt,
                 event = control.recv(), if control_open => match event {
                     Some(event) => event,
@@ -256,6 +257,7 @@ pub async fn serve_controlled(
                 std::process::exit(130);
             }
             if let Some(sender) = stop_tx.take() {
+                control_state.send_replace("draining");
                 crate::daemon_log::message(format_args!(
                     "正在停止 CableTidy，等待请求和清理完成；再次按 Ctrl+C 强制退出。"
                 ));
@@ -284,15 +286,16 @@ pub async fn serve_controlled(
     }
     state.security.flush().await;
     if let Ok(Some(runtime)) = config::read_json(&state.paths.runtime).await {
-        if runtime["pid"] == std::process::id() && runtime["startedAt"] == state.started {
+        if runtime["controlId"] == state.identity["controlId"] {
             let _ = tokio::fs::remove_file(&state.paths.runtime).await;
         }
     }
     let released = lock.release().await;
-    let _ = tokio::fs::remove_file(stop_file).await;
     signals.abort();
     result?;
-    released
+    released?;
+    ipc.finish().await;
+    Ok(())
 }
 struct Job(Arc<AppState>);
 impl Drop for Job {

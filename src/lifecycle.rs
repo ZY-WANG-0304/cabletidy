@@ -1,10 +1,10 @@
 use crate::config::{ensure_dir, read_json, text, Paths};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime},
-};
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::time::Duration;
+#[cfg(any(target_os = "linux", test))]
 use tokio::fs;
 #[cfg(target_os = "macos")]
 use tokio::process::Command;
@@ -214,190 +214,76 @@ fn compare_start_time(previous: &Value, current: &str) -> &'static str {
 }
 pub struct InstanceLock {
     pub identity: Value,
-    path: PathBuf,
-    marker: String,
-    heartbeat: tokio::task::JoinHandle<()>,
+    file: std::fs::File,
 }
 
-async fn publish_lock_directory(source: &Path, destination: &Path) -> std::io::Result<()> {
-    #[cfg(not(windows))]
-    {
-        fs::rename(source, destination).await
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-
-        let source = source.to_owned();
-        let destination = destination.to_owned();
-        tokio::task::spawn_blocking(move || {
-            // Canonical paths retain Rust's support for Windows paths over 260 characters.
-            let source = std::fs::canonicalize(source)?;
-            let destination = std::path::absolute(destination)?;
-            let destination = std::fs::canonicalize(
-                destination
-                    .parent()
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
-            )?
-            .join(
-                destination
-                    .file_name()
-                    .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
-            );
-            let source: Vec<_> = source.as_os_str().encode_wide().chain([0]).collect();
-            let destination: Vec<_> = destination.as_os_str().encode_wide().chain([0]).collect();
-            // Unlike fs::rename's REPLACE_EXISTING, this reports an existing
-            // directory as AlreadyExists even if its owner immediately removes it.
-            if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })
-        .await
-        .map_err(std::io::Error::other)?
-    }
-}
-
-async fn remove_generation(path: &Path, marker: &str) -> Result<()> {
-    for remove_marker in [true, false] {
-        let result = crate::fsutil::retry_sharing(|| async {
-            if remove_marker {
-                fs::remove_file(path.join(marker)).await
-            } else {
-                fs::remove_dir(path).await
-            }
-        })
-        .await;
-        match result {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => return Ok(()),
-            Err(e) => return Err(e.into()),
-        }
+fn legacy_lock(paths: &Paths) -> Result<()> {
+    match std::fs::symlink_metadata(&paths.lock) {
+        Ok(m) if m.is_dir() => bail!("ELOCKLEGACY: 检测到旧版 daemon.lock 目录。请核对旧进程后手动执行 kill <PID>（Windows: taskkill /PID <PID>），确认实例已退出，再手动删除旧锁目录并启动新版: {}", paths.lock.display()),
+        Ok(m) if !m.is_file() => bail!("Daemon lock must be a regular file: {}", paths.lock.display()),
+        Ok(_) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(e) => return Err(e).context("Inspect daemon lock path"),
     }
     Ok(())
 }
+
+fn open_lock(paths: &Paths, create: bool) -> Result<Option<std::fs::File>> {
+    legacy_lock(paths)?;
+    let mut options = std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create(create)
+        .truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    let file = match options.open(&paths.lock) {
+        Ok(file) => file,
+        Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context("Open daemon lock"),
+    };
+    if !file.metadata()?.is_file() {
+        bail!("Daemon lock must be a regular file");
+    }
+    Ok(Some(file))
+}
+
+pub fn locked(paths: &Paths) -> Result<bool> {
+    let Some(file) = open_lock(paths, false)? else {
+        return Ok(false);
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(e)) => Err(e).context("Inspect daemon lock"),
+    }
+}
+
 impl InstanceLock {
     pub async fn acquire(paths: &Paths) -> Result<Self> {
         ensure_dir(&paths.home).await?;
-        let generation = uuid::Uuid::new_v4();
-        let identity = json!({"pid":std::process::id(),"startTime":start_time(std::process::id()).await,"hostname":hostname(),"controlId":generation.to_string()});
-        let marker = format!("owner-{generation}.json");
-        loop {
-            if fs::symlink_metadata(&paths.lock).await.is_ok() {
-                // Windows keeps removed directories pending while enumeration handles are open.
-                let names = match crate::fsutil::retry_sharing(|| async {
-                    let mut read = fs::read_dir(&paths.lock).await?;
-                    let mut names = Vec::new();
-                    while let Some(entry) = read.next_entry().await? {
-                        names.push(entry.file_name().to_string_lossy().into_owned());
-                    }
-                    Ok(names)
-                })
-                .await
-                {
-                    Ok(names) => names,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e).context("read daemon lock"),
-                };
-                let generation = names.first().filter(|n| {
-                    names.len() == 1
-                        && (n.as_str() == "owner.json"
-                            || n.strip_prefix("owner-")
-                                .and_then(|n| n.strip_suffix(".json"))
-                                .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok()))
-                });
-                let owner = if let Some(m) = generation {
-                    match crate::fsutil::retry_sharing(|| fs::read_to_string(paths.lock.join(m)))
-                        .await
-                    {
-                        Ok(v) => serde_json::from_str(&v).unwrap_or(Value::Null),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(_) => Value::Null,
-                    }
-                } else {
-                    Value::Null
-                };
-                let state = inspect(&owner).await;
-                let metadata =
-                    match crate::fsutil::retry_sharing(|| fs::metadata(&paths.lock)).await {
-                        Ok(m) => m,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                        Err(e) => return Err(e).context("stat daemon lock"),
-                    };
-                let stale = SystemTime::now()
-                    .duration_since(metadata.modified()?)
-                    .unwrap_or_default()
-                    >= Duration::from_secs(10);
-                if state == "alive" || !stale {
-                    bail!("ELOCKED: 此数据目录已有 CableTidy 实例运行，或异常退出后的锁尚未过期；异常退出后等待 10 秒再重试: {}",paths.home.display());
-                }
-                if state == "unknown" || generation.is_none() {
-                    bail!("ELOCKUNKNOWN: 无法确认旧实例锁的进程身份。请确认实例已退出后，手动删除锁目录并重新启动: {}",paths.lock.display());
-                }
-                remove_generation(&paths.lock, generation.unwrap()).await?;
-                continue;
-            }
-            let staged = paths
-                .home
-                .join(format!(".daemon-lock-{}", uuid::Uuid::new_v4()));
-            ensure_dir(&staged).await?;
-            let result = async {
-                crate::config::write_json(&staged.join(&marker), &identity).await?;
-                // Windows can deny a directory rename until competing handles close.
-                crate::fsutil::retry_sharing(|| publish_lock_directory(&staged, &paths.lock))
-                    .await
-                    .context("publish daemon lock")?;
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
-            if let Err(error) = result {
-                // The competing owner may release its lock before the metadata check.
-                let contended = error.downcast_ref::<std::io::Error>().is_some_and(|e| {
-                    matches!(
-                        e.kind(),
-                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty
-                    )
-                });
-                let _ = fs::remove_dir_all(&staged).await;
-                if contended || fs::metadata(&paths.lock).await.is_ok() {
-                    continue;
-                }
-                return Err(error);
-            }
-            let path = paths.lock.clone();
-            let heart_path = path.clone();
-            let heart_marker = marker.clone();
-            let heartbeat = tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    if fs::metadata(heart_path.join(&heart_marker)).await.is_err() {
-                        break;
-                    }
-                    let _ = filetime::set_file_mtime(
-                        &heart_path,
-                        filetime::FileTime::from_system_time(SystemTime::now()),
-                    );
-                }
-            });
-            return Ok(Self {
-                identity,
-                path,
-                marker,
-                heartbeat,
-            });
+        let file = open_lock(paths, true)?.unwrap();
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => bail!(
+                "ELOCKED: 此数据目录已有 CableTidy 实例运行或正在退出: {}",
+                paths.home.display()
+            ),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e).context("Acquire daemon lock"),
         }
+        let identity = json!({"pid":std::process::id(),"startTime":start_time(std::process::id()).await,"hostname":hostname(),"controlId":uuid::Uuid::new_v4().to_string()});
+        Ok(Self { identity, file })
     }
     pub async fn release(self) -> Result<()> {
-        self.heartbeat.abort();
-        remove_generation(&self.path, &self.marker).await
-    }
-}
-impl Drop for InstanceLock {
-    fn drop(&mut self) {
-        self.heartbeat.abort();
+        // Never unlink this file: all starters must lock the same underlying object.
+        self.file.unlock()?;
+        Ok(())
     }
 }
 pub async fn persist_runtime(
@@ -408,81 +294,30 @@ pub async fn persist_runtime(
 ) -> Result<()> {
     let host = text(&config["web"]["listenHost"]);
     let port = &config["web"]["port"];
-    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"hostname":identity["hostname"],"controlId":identity["controlId"],"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
+    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"hostname":identity["hostname"],"controlId":identity["controlId"],"controlVersion":1,"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
 }
-pub fn stop_path(paths: &Paths, generation: &str) -> Result<PathBuf> {
-    let id = uuid::Uuid::parse_str(generation)
-        .context("Daemon does not support stop; stop its foreground terminal first")?;
-    Ok(paths.home.join(format!("stop-{id}.json")))
-}
-
-struct StopRequest {
-    identity: Value,
-    marker: PathBuf,
-    request: PathBuf,
-    staged: tempfile::NamedTempFile,
-}
-
-async fn prepare_stop(paths: &Paths) -> Result<Option<StopRequest>> {
-    let Some(runtime) = read_json(&paths.runtime).await? else {
+async fn prepare_stop(paths: &Paths) -> Result<Option<(Value, crate::control::Stream)>> {
+    if !locked(paths)? {
         return Ok(None);
-    };
-    let identity = json!({"pid":runtime["pid"],"startTime":runtime["pidStartTime"],"hostname":runtime["hostname"]});
-    match inspect(&identity).await {
-        "dead" => return Ok(None),
-        "alive" => {}
-        _ => bail!("Cannot verify daemon identity; refusing to stop an unknown process"),
     }
-    let id = uuid::Uuid::parse_str(text(&runtime["controlId"]))
-        .context("Daemon does not support stop; stop its foreground terminal first")?;
-    let marker = paths.lock.join(format!("owner-{id}.json"));
-    let Some(owner) = read_json(&marker).await? else {
-        return Ok(None);
-    };
-    if owner["pid"] != identity["pid"] || owner["startTime"] != identity["startTime"] {
-        bail!("Daemon runtime does not match its lock; refusing to stop");
-    }
-    let request = stop_path(paths, &id.to_string())?;
-    let mut staged = tempfile::Builder::new()
-        .prefix(".stop-")
-        .tempfile_in(&paths.home)?;
-    std::io::Write::write_all(&mut staged, b"{\"stop\":true}\n")?;
-    Ok(Some(StopRequest {
-        identity,
-        marker,
-        request,
-        staged,
-    }))
+    let runtime = read_json(&paths.runtime).await?.context(
+        "Daemon holds its lock but runtime is unavailable; startup or cleanup may be in progress",
+    )?;
+    let stream = tokio::time::timeout(
+        crate::control::TIMEOUT,
+        crate::control::connect(paths, &runtime),
+    )
+    .await
+    .context("Daemon holds its lock but the control channel timed out")?
+    .context("Daemon holds its lock but the control channel is unavailable")?;
+    Ok(Some((runtime, stream)))
 }
 
-async fn generation_finished(marker: &Path, state: &str) -> Result<bool> {
-    // Recheck after inspection: successful daemon cleanup can race that query.
-    if state == "dead" || !fs::try_exists(marker).await? {
-        return Ok(true);
-    }
-    if state != "alive" {
-        bail!("Stop requested, but daemon identity can no longer be verified");
-    }
-    Ok(false)
-}
-
-async fn wait_for_stop(marker: &Path, identity: &Value, request: &Path) -> Result<()> {
-    while fs::try_exists(marker).await? {
-        if generation_finished(marker, inspect(identity).await).await? {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let _ = fs::remove_file(request).await;
-    println!("CableTidy stopped");
-    Ok(())
-}
-
-fn cancelled_stop(code: i32, submitted: bool) -> i32 {
-    if submitted {
-        println!("已取消等待，停止请求仍将继续执行");
-    } else {
-        println!("未发送停止请求");
+fn cancelled_stop(code: i32, submitted: u8) -> i32 {
+    match submitted {
+        0 => println!("未发送停止请求"),
+        1 => println!("已取消等待，停止请求可能已提交；请使用 cabletidy status 查询状态"),
+        _ => println!("已取消等待，停止请求仍将继续执行"),
     }
     code
 }
@@ -494,33 +329,34 @@ pub async fn stop(
     tokio::pin!(cancellation);
     let prepared = tokio::select! {
         biased;
-        code = &mut cancellation => return Ok(cancelled_stop(code, false)),
+        code = &mut cancellation => return Ok(cancelled_stop(code, 0)),
         prepared = prepare_stop(paths) => prepared?,
     };
-    let Some(StopRequest {
-        identity,
-        marker,
-        request,
-        staged,
-    }) = prepared
-    else {
+    let Some((runtime, mut stream)) = prepared else {
         println!("CableTidy is not running");
         return Ok(0);
     };
+    let mut submitted = 0;
     tokio::select! {
         biased;
-        code = &mut cancellation => return Ok(cancelled_stop(code, false)),
+        code = &mut cancellation => Ok(cancelled_stop(code, submitted)),
         result = async {
-            // No await during publication: cancellation is confirmed either before
-            // this atomic rename or after it, never while detached filesystem work runs.
-            staged.persist(&request).map_err(|error| error.error)
-        } => { result?; }
-    }
-    println!("Stopping CableTidy; waiting for active requests and cleanup...");
-    tokio::select! {
-        biased;
-        code = &mut cancellation => Ok(cancelled_stop(code, true)),
-        result = wait_for_stop(&marker, &identity, &request) => { result?; Ok(0) }
+            // Once writing starts, cancellation cannot promise that nothing was sent.
+            submitted = 1;
+            tokio::time::timeout(crate::control::TIMEOUT, async {
+                crate::control::write(&mut stream, &crate::control::request(&runtime, "stop")).await?;
+                let ack = crate::control::read(&mut stream).await?;
+                if ack["state"] != "stopping" { bail!("Daemon did not acknowledge the stop request"); }
+                Ok::<_, anyhow::Error>(())
+            }).await.context("Stop acknowledgement timed out; the request may have been accepted")??;
+            submitted = 2;
+            println!("Stopping CableTidy; waiting for active requests and cleanup...");
+            let finished = crate::control::read(&mut stream).await
+                .context("Control channel closed before shutdown completed; daemon may have exited abnormally")?;
+            if finished["state"] != "stopped" { bail!("Invalid shutdown completion acknowledgement"); }
+            println!("CableTidy stopped");
+            Ok(0)
+        } => result,
     }
 }
 pub async fn status(paths: &Paths) -> Result<Value> {
@@ -536,33 +372,32 @@ pub async fn status(paths: &Paths) -> Result<Value> {
     let host = text(&runtime["web"]["host"]);
     let port = &runtime["web"]["port"];
     let url = format!("http://{}:{port}/", crate::config::url_host(host));
-    let valid = runtime["pid"].as_u64().is_some_and(|v| v > 0)
-        && crate::validation::loopback(host)
-        && port.as_u64().is_some_and(|v| v > 0 && v <= 65535);
-    let mut online = false;
-    if valid {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_millis(1500))
-            .build()?;
-        if let Ok(r) = client.get(format!("{url}api/v1/runtime")).send().await {
-            if r.status() == 200
-                && r.headers()
-                    .get("x-cabletidy")
-                    .is_some_and(|v| v == "cabletidy")
-            {
-                if let Ok(v) = r.json::<Value>().await {
-                    online = v["pid"] == runtime["pid"] && v["startedAt"] == runtime["startedAt"];
-                }
-            }
+    let held = locked(paths)?;
+    let control_state = if held {
+        let probe = async {
+            let mut stream = crate::control::connect(paths, &runtime).await?;
+            crate::control::write(&mut stream, &crate::control::request(&runtime, "status"))
+                .await?;
+            crate::control::read(&mut stream).await
+        };
+        match tokio::time::timeout(crate::control::TIMEOUT, probe).await {
+            Ok(Ok(reply)) => match text(&reply["state"]) {
+                "running" => "online",
+                "draining" => "stopping",
+                _ => "unresponsive",
+            },
+            _ => "unresponsive",
         }
-    }
-    runtime["web"]["url"] = json!(url);
-    runtime["status"] = json!(if online { "online" } else { "offline" });
-    runtime["liveness"] = json!(if online {
-        "Web runtime probe 正常"
     } else {
-        "CableTidy daemon 不在线或管理台无响应"
+        "offline"
+    };
+    runtime["web"]["url"] = json!(url);
+    runtime["status"] = json!(control_state);
+    runtime["liveness"] = json!(match control_state {
+        "online" => "本地控制通道正常",
+        "stopping" => "正在等待请求和清理完成",
+        "unresponsive" => "实例持有锁，但控制通道无响应；可能正在启动、清理或进程暂停",
+        _ => "CableTidy daemon 未运行",
     });
     Ok(
         json!({"configRevision":config["revision"],"runtime":runtime,"configurations":crate::config::entries(&config["bindings"]).map(|(id,b)|json!({"id":id,"name":b.get("name").unwrap_or(&json!(id)),"target":b["target"],"url":format!("{}/v1",crate::config::base_url(&config,id)),"enabled":crate::config::enabled(b)&&crate::config::enabled(&config["virtualProviders"][text(&b["virtualProvider"])])})).collect::<Vec<_>>()}),
@@ -572,58 +407,6 @@ pub async fn status(paths: &Paths) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn stop_rechecks_generation_after_an_unknown_identity_query() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = dir.path().join("old-owner.json");
-        fs::write(&marker, b"{}").await.unwrap();
-        assert!(generation_finished(&marker, "unknown").await.is_err());
-        assert!(!generation_finished(&marker, "alive").await.unwrap());
-        fs::remove_file(&marker).await.unwrap();
-        let replacement = dir.path().join("new-owner.json");
-        fs::write(&replacement, b"{}").await.unwrap();
-        assert!(generation_finished(&marker, "unknown").await.unwrap());
-        assert!(replacement.exists());
-    }
-
-    #[tokio::test]
-    async fn cancellation_at_publication_boundary_preserves_only_committed_requests() {
-        for submitted in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let paths = Paths::new(dir.path().to_owned());
-            let lock = InstanceLock::acquire(&paths).await.unwrap();
-            persist_runtime(&paths, &lock.identity, &crate::config::defaults(), "test")
-                .await
-                .unwrap();
-            let request = stop_path(&paths, text(&lock.identity["controlId"])).unwrap();
-            let cancellation = std::future::poll_fn(|_| {
-                let staged = std::fs::read_dir(&paths.home).unwrap().any(|entry| {
-                    entry
-                        .unwrap()
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with(".stop-")
-                });
-                if (submitted && request.exists()) || (!submitted && staged) {
-                    std::task::Poll::Ready(130)
-                } else {
-                    std::task::Poll::Pending
-                }
-            });
-            assert_eq!(stop(&paths, cancellation).await.unwrap(), 130);
-            assert_eq!(request.exists(), submitted);
-            assert!(!std::fs::read_dir(&paths.home).unwrap().any(|entry| {
-                entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".stop-")
-            }));
-            assert!(paths.lock.exists());
-            lock.release().await.unwrap();
-        }
-    }
 
     #[test]
     fn process_identities_parse_platform_outputs_and_reject_garbage() {
@@ -723,99 +506,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn releasing_an_old_generation_preserves_the_replacement() {
+    async fn file_lock_survives_metadata_changes_and_releases_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path().to_owned());
-        let old = InstanceLock::acquire(&paths).await.unwrap();
-        fs::remove_file(paths.lock.join(&old.marker)).await.unwrap();
-        fs::remove_dir(&paths.lock).await.unwrap();
-        let new = InstanceLock::acquire(&paths).await.unwrap();
-        old.release().await.unwrap();
-        assert_eq!(
-            read_json(&paths.lock.join(&new.marker)).await.unwrap(),
-            Some(new.identity.clone())
-        );
-        new.release().await.unwrap();
-        assert!(!paths.lock.exists());
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn publishing_over_an_existing_directory_reports_contention_without_replacing_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut parent = dir.path().to_owned();
-        for _ in 0..6 {
-            parent.push("long-directory-name-for-lock-publication-regression");
-        }
-        fs::create_dir_all(&parent).await.unwrap();
-        let staged = parent.join("staged");
-        let published = parent.join("published");
-        fs::create_dir(&staged).await.unwrap();
-        fs::write(staged.join("new-owner"), "new").await.unwrap();
-        for occupied in [false, true] {
-            fs::create_dir(&published).await.unwrap();
-            if occupied {
-                fs::write(published.join("old-owner"), "old").await.unwrap();
+        let lock = InstanceLock::acquire(&paths).await.unwrap();
+        assert!(locked(&paths).unwrap());
+        assert!(InstanceLock::acquire(&paths).await.is_err());
+        fs::write(&paths.runtime, b"{\"hostname\":\"changed\"}")
+            .await
+            .unwrap();
+        assert!(locked(&paths).unwrap());
+        drop(lock);
+        // A parallel test can briefly inherit the descriptor between fork and exec;
+        // Windows may also defer OS lock cleanup after closing the handle.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while locked(&paths).unwrap() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            let error = publish_lock_directory(&staged, &published)
-                .await
-                .unwrap_err();
-            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-            assert_eq!(fs::read(staged.join("new-owner")).await.unwrap(), b"new");
-            assert!(!published.join("new-owner").exists());
-            if occupied {
-                assert_eq!(fs::read(published.join("old-owner")).await.unwrap(), b"old");
-            }
-            fs::remove_dir_all(&published).await.unwrap();
-        }
-        publish_lock_directory(&staged, &published).await.unwrap();
-        assert!(!staged.exists());
-        assert_eq!(fs::read(published.join("new-owner")).await.unwrap(), b"new");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_short_lived_owners_only_report_lock_contention() {
-        let dir = tempfile::tempdir().unwrap();
-        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
-        let tasks = (0..8).map(|_| {
-            let paths = Paths::new(dir.path().to_owned());
-            let barrier = barrier.clone();
-            tokio::spawn(async move {
-                let mut errors = Vec::new();
-                for _ in 0..20 {
-                    barrier.wait().await;
-                    match InstanceLock::acquire(&paths).await {
-                        Ok(lock) => {
-                            tokio::task::yield_now().await;
-                            if let Err(error) = lock.release().await {
-                                errors.push(error.to_string());
-                            }
-                        }
-                        Err(error) if error.to_string().starts_with("ELOCKED:") => {}
-                        Err(error) => errors.push(format!("{error:#}")),
-                    }
-                }
-                errors
-            })
-        });
-        for result in futures_util::future::join_all(tasks).await {
-            assert!(
-                result.as_ref().is_ok_and(|errors| errors.is_empty()),
-                "{result:?}"
-            );
-        }
-        assert!(!dir.path().join("daemon.lock").exists());
+        })
+        .await
+        .expect("dropping the owner must release the kernel lock");
+        assert!(paths.lock.is_file());
+        InstanceLock::acquire(&paths)
+            .await
+            .unwrap()
+            .release()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
-    async fn removing_a_stale_marker_does_not_recursively_delete_new_owners() {
+    async fn legacy_lock_is_never_automatically_removed() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("old"), "old").await.unwrap();
-        fs::write(dir.path().join("new"), "new").await.unwrap();
-        remove_generation(dir.path(), "old").await.unwrap();
-        assert_eq!(
-            fs::read_to_string(dir.path().join("new")).await.unwrap(),
-            "new"
-        );
+        let paths = Paths::new(dir.path().to_owned());
+        fs::create_dir(&paths.lock).await.unwrap();
+        let error = InstanceLock::acquire(&paths).await.err().unwrap();
+        assert!(error.to_string().contains("ELOCKLEGACY"));
+        assert!(paths.lock.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_executed_child_does_not_keep_the_lock_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_owned());
+        let lock = InstanceLock::acquire(&paths).await.unwrap();
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        drop(lock);
+        let result = locked(&paths);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn inspecting_an_uninitialized_store_does_not_create_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("missing"));
+        assert!(!locked(&paths).unwrap());
+        assert!(!paths.home.exists());
     }
 }

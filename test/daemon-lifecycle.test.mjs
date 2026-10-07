@@ -144,6 +144,13 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   };
 }
 
+async function daemonStatus(app) {
+  const result = await execute(nativeBinary, ["status"], {
+    env: { ...process.env, CABLETIDY_HOME: app.directory }, timeout: 5000,
+  });
+  return JSON.parse(result.stdout);
+}
+
 async function startStream(app) {
   const response = fetch(`${app.url}relay/v1/responses`, {
     method: "POST",
@@ -185,7 +192,7 @@ test("stop waits for streaming requests and releases the instance lock", signalT
     cwd: root, env: { ...process.env, CABLETIDY_HOME: app.directory }, timeout: 25000,
   }).then(result => { done = true; return result; });
   stopping.catch(() => {});
-  await waitFor(async () => (await fs.readdir(app.directory)).some(name => name.startsWith("stop-")));
+  await waitFor(async () => (await daemonStatus(app)).runtime.status === "stopping");
   await delay(10500);
   assert.equal(done, false, "stop must not time out while a request is active");
   upstream.end('data: {"delta":"last"}\n\n');
@@ -193,7 +200,7 @@ test("stop waits for streaming requests and releases the instance lock", signalT
   assert.match((await stopping).stdout, /CableTidy stopped/);
   await app.expectExit(0);
   await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
-  await assert.rejects(fs.access(path.join(app.directory, "daemon.lock")), { code: "ENOENT" });
+  assert.ok((await fs.stat(path.join(app.directory, "daemon.lock"))).isFile());
 });
 
 async function stopClient(t, directory) {
@@ -221,6 +228,10 @@ async function stopClient(t, directory) {
   return {
     output: () => output,
     signal: signal => process.platform === "win32" ? client.send(signal) : client.kill(signal),
+    async expectStopped() {
+      assert.deepEqual(await closed, { code: 0, signal: null }, output);
+      assert.match(output, /CableTidy stopped/);
+    },
     async expectCancelled(code, submitted) {
       const exit = await Promise.race([closed, delay(5000).then(() => { throw new Error("stop client did not cancel"); })]);
       assert.deepEqual(exit, { code, signal: null }, output);
@@ -243,7 +254,7 @@ for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
     client.signal(signal);
     await client.expectCancelled(code, true);
     assert.equal(app.child.exitCode, null);
-    assert.ok((await fs.readdir(app.directory)).some(name => /^stop-.*\.json$/.test(name)));
+    assert.equal((await daemonStatus(app)).runtime.status, "stopping");
     upstream.end('data: {"delta":"last"}\n\n');
     assert.match(await text, /first[\s\S]*last/);
     await app.expectExit(0);
@@ -268,32 +279,93 @@ for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
   });
 }
 
-test("cancelling stop while daemon is paused preserves the committed request", {
+test("repeated stop cancellations keep status and new stop waiters available during draining", {
+  timeout: 120000,
+}, async t => {
+  const app = await fixture(t);
+  const { upstream, text } = await startStream(app);
+  for (let attempt = 0; attempt < 34; attempt += 1) {
+    const client = await stopClient(t, app.directory);
+    await waitFor(() => client.output().includes("Stopping CableTidy"));
+    const [signal, code] = attempt % 2 ? ["SIGTERM", 143] : ["SIGINT", 130];
+    client.signal(signal);
+    await client.expectCancelled(code, true);
+  }
+  assert.equal(app.child.exitCode, null);
+  assert.equal((await daemonStatus(app)).runtime.status, "stopping");
+  const waiting = await stopClient(t, app.directory);
+  await waitFor(() => waiting.output().includes("Stopping CableTidy"));
+  upstream.end('data: {"delta":"last"}\n\n');
+  assert.match(await text, /first[\s\S]*last/);
+  await waiting.expectStopped();
+  await app.expectExit(0);
+});
+
+test("cancelling stop before a paused daemon completes its handshake sends no request", {
   ...signalTest, skip: process.platform === "win32",
 }, async t => {
   const app = await fixture(t, { direct: true });
   app.child.kill("SIGSTOP");
   t.after(() => { if (app.child.exitCode === null) app.child.kill("SIGCONT"); });
   const client = await stopClient(t, app.directory);
-  await waitFor(() => client.output().includes("Stopping CableTidy"));
   client.signal("SIGINT");
-  await client.expectCancelled(130, true);
-  assert.ok((await fs.readdir(app.directory)).some(name => /^stop-.*\.json$/.test(name)));
+  await client.expectCancelled(130, false);
   app.child.kill("SIGCONT");
+  assert.equal((await fetch(app.url)).status, 200);
+  assert.equal((await daemonStatus(app)).runtime.status, "online");
+  await app.stop("SIGTERM");
   await app.expectExit(0);
 });
 
-test("stop ignores stale PID generations and rejects unverifiable identities", signalTest, async t => {
+test("stop and status use IPC despite changed hostname and invalid diagnostic PID fields", signalTest, async t => {
+  const app = await fixture(t);
+  const runtime = JSON.parse(await fs.readFile(app.runtime, "utf8"));
+  await fs.writeFile(app.runtime, JSON.stringify({ ...runtime, hostname: "renamed-host", pid: -1, pidStartTime: null }));
+  assert.equal((await daemonStatus(app)).runtime.status, "online");
+  const result = await execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: app.directory } });
+  assert.match(result.stdout, /CableTidy stopped/);
+  await app.expectExit(0);
+  await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
+});
+
+test("a daemon crash during draining is not reported as a successful stop", {
+  ...signalTest, skip: process.platform === "win32",
+}, async t => {
+  const app = await fixture(t, { direct: true });
+  await startStream(app);
+  const stopping = execute(nativeBinary, ["stop"], {
+    env: { ...process.env, CABLETIDY_HOME: app.directory }, timeout: 10000,
+  });
+  stopping.catch(() => {});
+  await waitFor(async () => (await daemonStatus(app)).runtime.status === "stopping");
+  app.child.kill("SIGKILL");
+  await app.closed;
+  await assert.rejects(stopping, error => {
+    assert.match(error.stderr, /closed before shutdown completed/);
+    assert.doesNotMatch(error.stdout, /CableTidy stopped/);
+    return true;
+  });
+  assert.equal((await daemonStatus(app)).runtime.status, "offline");
+});
+
+test("stale runtime generations cannot stop the current instance", signalTest, async t => {
+  const app = await fixture(t);
+  const runtime = JSON.parse(await fs.readFile(app.runtime, "utf8"));
+  await fs.writeFile(app.runtime, JSON.stringify({ ...runtime, controlId: "00000000-0000-4000-8000-000000000001" }));
+  await assert.rejects(execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: app.directory } }), /control channel is unavailable/);
+  assert.equal((await fetch(app.url)).status, 200);
+  await fs.writeFile(app.runtime, JSON.stringify(runtime));
+  assert.equal((await daemonStatus(app)).runtime.status, "online");
+  await app.stop("SIGTERM");
+  await app.expectExit(0);
+});
+
+test("an unlocked store ignores stale runtime PID metadata", signalTest, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-stop-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const cli = () => execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: directory } });
-  const runtime = path.join(directory, "runtime.json");
-  await fs.writeFile(runtime, JSON.stringify({ pid: process.pid }));
-  await assert.rejects(cli(), /Cannot verify daemon identity/);
-  const { processStartTime } = await import("./helpers/native.mjs");
-  const current = await processStartTime(process.pid);
-  await fs.writeFile(runtime, JSON.stringify({ pid: process.pid, pidStartTime: `${current}0` }));
-  assert.match((await cli()).stdout, /not running/);
+  await fs.writeFile(path.join(directory, "runtime.json"), JSON.stringify({ pid: process.pid }));
+  const result = await execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: directory } });
+  assert.match(result.stdout, /not running/);
   assert.deepEqual(await fs.readdir(directory), ["runtime.json"]);
 });
 
@@ -333,7 +405,7 @@ test("SIGINT drains a stream beyond five seconds and cleans runtime after comple
   assert.match(await text, /first[\s\S]*last/);
   await app.expectExit(0);
   await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
-  await assert.rejects(fs.access(path.join(app.directory, "daemon.lock")), { code: "ENOENT" });
+  assert.ok((await fs.stat(path.join(app.directory, "daemon.lock"))).isFile());
 });
 
 test("direct startup waits for a probe after its client disconnects on SIGTERM", signalTest, async t => {
