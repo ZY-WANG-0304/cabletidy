@@ -84,9 +84,13 @@ npm 启动器需要本机 Node.js；发行包自带对应平台的原生二进�
 
 ### 启动、升级与卸载
 
-安装后的 `cabletidy start` 会在后台启动 daemon，确认管理接口就绪后返回管理台地址和日志路径；关闭终端后继续运行。日志写入数据目录中的 `daemon.log`，运行期间自动轮转：单文件上限 10 MiB，保留 `daemon.log.1` 至 `.3` 三份历史文件（`.1` 最新），总量不超过 40 MiB；超出保留范围的旧日志自动删除。升级时已有的超大日志仅保留末尾 10 MiB。使用 `cabletidy stop` 停止服务；daemon 会停止接受新连接，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并释放实例锁；`stop` 等待排空完成，不设置强制退出倒计时。 Ctrl+C 在停止请求原子发布前取消操作，不发送请求；发布后仅取消客户端等待，保留停止请求让 daemon 继续关闭。取消时退出码为 130，并提示是否已提交；SIGTERM 同样取消操作或等待，退出码为 143。未运行时 `stop` 成功返回提示，身份无法确认时拒绝停止。此功能不包含开机自启或崩溃自动重启。源码调试时的 `npm start` 和 `cargo run --bin cabletidy -- start` 仍在前台运行，便于查看日志和使用 Ctrl+C。安装后的 CLI 也可使用 `cabletidy start --foreground` 临时前台运行。
+安装后的 `cabletidy start` 会在后台启动 daemon，确认管理接口就绪后返回管理台地址和日志路径；关闭终端后继续运行。日志写入数据目录中的 `daemon.log`，运行期间自动轮转：单文件上限 10 MiB，保留 `daemon.log.1` 至 `.3` 三份历史文件（`.1` 最新），总量不超过 40 MiB；超出保留范围的旧日志自动删除。升级时已有的超大日志仅保留末尾 10 MiB。
 
-在另一个终端可以运行：
+`cabletidy stop` 通过本地控制通道请求正常退出，等待已开始的请求、子进程和配置写入完成，再清理 `runtime.json` 并释放操作系统文件锁；不设置强制退出倒计时。主机改名不影响启停。Ctrl+C / SIGTERM 在发送前取消操作，发送过程中取消会提示请求可能已提交，收到接受确认后只取消客户端等待，daemon 继续退出；退出码分别为 130 / 143。`status` 区分运行中、退出排空中、持锁但控制通道无响应和未运行。未运行时 `stop` 成功返回提示，连接提前中断则报告未确认正常退出。
+
+`daemon.lock` 现在是持久的普通文件，退出后保留；它存在不代表服务正在运行，请勿删除或替换。异常退出后锁由操作系统释放，无需等待旧版的 10 秒心跳过期。数据目录应位于本地文件系统，不支持跨机器共享目录的锁协调。此功能不包含开机自启或崩溃自动重启。
+
+源码调试时的 `npm start` 和 `cargo run --bin cabletidy -- start` 仍在前台运行，便于查看日志和使用 Ctrl+C。安装后的 CLI 也可使用 `cabletidy start --foreground` 临时前台运行。
 
 ```bash
 cabletidy --help
@@ -104,6 +108,8 @@ cabletidy stop
 npm install -g cabletidy@latest --registry=https://registry.npmjs.org/
 cabletidy start
 ```
+
+如果新版提示 `ELOCKLEGACY`，说明数据目录中仍有旧版的 `daemon.lock` **目录**。请先从 `runtime.json` 查看 PID，并用系统进程工具核对；旧版 `stop` 不可用时，可手动执行 `kill <实际 PID>`（Windows 使用 `taskkill /PID <实际 PID>`），等待并确认旧进程退出后，再删除这个旧锁目录并启动新版。这里的 `<实际 PID>` 必须替换为核对后的数字；不要删除配置、密钥或新版的普通锁文件。新版不自动控制旧 daemon 或回收旧锁。
 
 从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载前先执行 `cabletidy stop`，再使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
 
@@ -123,7 +129,7 @@ npm run build
 npm pack
 ```
 
-源码中的 `npm start` 与 `cargo run --bin cabletidy -- start` 使用前台 Rust CLI；安装包中的 `cabletidy start` 由启动器放到后台运行。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
+源码构建需要 Rust 1.95 或更新版本。源码中的 `npm start` 与 `cargo run --bin cabletidy -- start` 使用前台 Rust CLI；安装包中的 `cabletidy start` 由启动器放到后台运行。源码启动器优先使用 `target/debug/cabletidy`；`npm run build` 生成 release 二进制并复制到 `native/<平台>/`。Web 文件在编译时嵌入，修改后需要重新编译。`Cargo.toml` 是 Rust 构建清单，不是 CableTidy 用户配置。
 
 本地先运行 `npm run build` 构建当前平台，再运行 `npm pack` 打包，适用于同平台试用。打包和发布钩子不会重新构建或覆盖 `native/` 中的产物。完整发行包由 `Build Native Package` 工作流在同一提交的完整测试通过后汇总五个平台的产物，Linux 使用 musl 构建；各平台验证实际发行二进制，汇总后直接安装最终 tarball 冒烟。工作流生成可下载的 npm tarball、提交信息和校验摘要，并在 tag 构建通过后自动创建 GitHub Release、附上这三个文件；候选版本标记为 Pre-release，不自动发布 npm。`npm run check:version` 核对四个版本文件及版本 tag，`npm run check:release` 进一步校验各平台二进制、编译目标、版本和摘要，缺少平台或 Linux 目标不是 musl 时阻止发布。发布前需要同步递增 `Cargo.toml`、`Cargo.lock` 和 npm 包版本。候选版验收、正式发布与回退步骤见 [维护者发布流程](docs/release-process.md)。
 
@@ -168,7 +174,7 @@ npm test
 npm run test:package
 ```
 
-`npm test` 先构建测试二进制、运行 Rust 单元测试，再运行直接调用 Rust 的 JavaScript 契约 / HTTP / 管理页测试；发行包不包含测试桥接程序。安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的原生 CLI、内嵌 Web 资源、重复启动、重启地址及用户数据保留。安装冒烟测试在各平台验证后台启动返回、`stop` 优雅退出及重启，Windows 直接执行 npm 的 `.cmd` 入口。生命周期测试另行验证 SIGINT / SIGTERM、长连接排空与过期 PID 防护。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
+`npm test` 先构建测试二进制、运行 Rust 单元测试，再运行直接调用 Rust 的 JavaScript 契约 / HTTP / 管理页测试；发行包不包含测试桥接程序。安装冒烟测试会在临时目录打包、安装、启动和卸载，验证安装后的原生 CLI、内嵌 Web 资源、重复启动、重启地址及用户数据保留。安装冒烟测试在各平台验证后台启动返回、`stop` 优雅退出及重启，Windows 直接执行 npm 的 `.cmd` 入口。生命周期测试另行验证 SIGINT / SIGTERM、长连接排空、主机名变化、实例 UUID 隔离、异常退出恢复和并发文件锁。Windows 的退出处理逻辑通过测试 IPC 触发验证，真实终端 Ctrl+C 的事件投递仍需交互验收。分发方案的取舍、维护者发布流程与后续服务管理设计见 [安装与分发决策](https://github.com/ZY-WANG-0304/cabletidy/blob/main/docs/installation-research.md)。
 
 使用 Codex 可选模型设置时，本机需要可执行支持 `debug models --bundled` 的 Codex CLI，daemon 的 `PATH` 必须包含它。目录读取失败不会阻止纯透传配置的创建、代理启动、预览或应用，但会阻止新增模型设置或应用包含模型设置的 Codex 接入；管理台可在更新 Codex 后刷新模型列表。Rust 版本的目录、配置生成与代理行为由本地契约和模拟上游测试覆盖，真实上游兼容性需按具体接入验证。
 
@@ -186,9 +192,7 @@ CABLETIDY_HOME="$PWD/.cabletidy-dev" cabletidy start
 
 已有配置中的端口（包括手动指定的端口）被占用时，启动会明确报错，不会自动更换。可以停止占用端口的服务，或修改 `web.port` 后重启，并重新应用客户端配置。实际地址以启动输出或 `cabletidy status` 为准。
 
-同一份数据目录只允许运行一个实例，启动和退出清理期间均持有 `daemon.lock`。锁记录主机名、持有者 PID 和进程启动标识：Linux 使用系统启动 ID 与进程启动时钟，macOS 使用 `ps` 的启动时间，Windows 使用 `GetProcessTimes` 的创建时间，并转换为兼容既有锁记录的 UTC ticks。正常退出或启动失败后释放；只有能识别锁的代次、确认原进程已退出或 PID 已被复用，且锁至少 10 秒未更新时才自动回收。被暂停的实例仍然持有锁，恢复后不会因锁被误回收而崩溃。
-
-旧版本的空锁目录、缺少启动标识的存活 PID、进程查询不可用或来自另一主机的锁，可能无法确认归属。此时启动返回 `ELOCKUNKNOWN` 并列出锁目录路径；继续等待不会补全缺失信息。请检查并停止使用该数据目录的 CableTidy，确认没有运行中或暂停中的实例后，手动删除提示的 `daemon.lock` 目录并重新启动，保留 `config.json` 和 `secrets.json`。不要仅凭 `status` 离线就删除锁，暂停中的实例也可能无法响应探测。
+同一份数据目录只允许运行一个实例，初始化和退出清理期间均持有操作系统独占文件锁。被暂停的实例仍持有锁；`status` 可报告控制通道无响应，但不会因此允许第二个实例启动。锁的生命周期不依赖主机名、PID 查询或心跳时间。旧版目录锁的手动迁移方法见“启动、升级与卸载”。
 
 Web 管理台与所有 Virtual Provider 共用最终分配的端口。以下示例假设端口为 `43100`；每份配置通过 `/<配置ID>/v1/...` 接入，例如 `http://127.0.0.1:43100/codex-main/v1/responses`；管理接口仍使用 `/api/v1/...`。
 

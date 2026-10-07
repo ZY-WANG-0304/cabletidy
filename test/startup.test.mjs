@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "./helpers/native-app.mjs";
-import { processStartTime, nativeBinary } from "./helpers/native.mjs";
+import { nativeBinary } from "./helpers/native.mjs";
 import { getPaths, loadConfig, readRuntimeInfo, saveConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
@@ -150,7 +150,7 @@ test("new stores allocate distinct ports while status stays read-only and restar
 
   const saved = await fs.readFile(paths.config, "utf8");
   await app.close();
-  await assert.rejects(fs.access(paths.lock), { code: "ENOENT" });
+  assert.ok((await fs.stat(paths.lock)).isFile());
   await assert.rejects(fs.access(paths.runtime), { code: "ENOENT" });
   const restarted = await f.start(paths);
   assert.equal(restarted.url, app.url);
@@ -172,7 +172,7 @@ test("an occupied saved port fails without changing configuration, releases the 
     return true;
   });
   assert.equal(await fs.readFile(paths.config, "utf8"), saved);
-  await assert.rejects(fs.access(paths.lock), { code: "ENOENT" });
+  assert.ok((await fs.stat(paths.lock)).isFile());
   await assert.rejects(fs.access(paths.runtime), { code: "ENOENT" });
   await new Promise(resolve => blocker.close(resolve));
   assert.equal((await f.start(paths)).url, app.url);
@@ -214,7 +214,7 @@ test("legacy locks without reliable identity give actionable recovery instructio
       await fs.utimes(paths.lock, stale, stale);
     }
     await assert.rejects(f.start(paths), error => {
-      assert.equal(error.code, "ELOCKUNKNOWN");
+      assert.equal(error.code, "ELOCKLEGACY");
       assert.ok(error.message.includes(paths.lock));
       assert.match(error.message, /确认实例已退出/);
       return true;
@@ -227,18 +227,17 @@ test("legacy locks without reliable identity give actionable recovery instructio
   assert.equal((await status(paths)).runtime.web.url, app.url);
 });
 
-test("a stale lock is recovered when its PID belongs to a different process generation", async t => {
+test("legacy locks require manual migration even with a dead or mismatched PID", async t => {
   const f = await fixture(t);
   const paths = f.paths();
   await fs.mkdir(paths.lock, { recursive: true });
-  const current = await processStartTime(process.pid);
-  const previous = current.replace(/\d$/, digit => String((Number(digit) + 1) % 10));
-  assert.notEqual(previous, current);
-  await fs.writeFile(path.join(paths.lock, "owner.json"), JSON.stringify({ pid: process.pid, startTime: previous }));
-  const stale = new Date(Date.now() - 60000);
-  await fs.utimes(paths.lock, stale, stale);
-  const app = await f.start(paths);
-  assert.equal((await status(paths)).runtime.web.url, app.url);
+  const owner = JSON.stringify({ pid: 2147483647, startTime: "old", hostname: "another-host" });
+  await fs.writeFile(path.join(paths.lock, "owner.json"), owner);
+  await assert.rejects(f.start(paths), /ELOCKLEGACY/);
+  await assert.rejects(execute(nativeBinary, ["stop"], {
+    env: { ...process.env, CABLETIDY_HOME: paths.home },
+  }), /ELOCKLEGACY/);
+  assert.equal(await fs.readFile(path.join(paths.lock, "owner.json"), "utf8"), owner);
 });
 
 async function startChild(t, paths) {
@@ -276,14 +275,12 @@ async function startChild(t, paths) {
   return { child, closed };
 }
 
-test("concurrent stale-lock reclaimers preserve the new owner after a killed daemon", { timeout: 30000 }, async t => {
+test("concurrent starts immediately after a killed daemon acquire exactly one kernel lock", { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const paths = f.paths();
   const { child, closed } = await startChild(t, paths);
   child.kill("SIGKILL");
   await closed;
-  const stale = new Date(Date.now() - 60000);
-  await fs.utimes(paths.lock, stale, stale);
   const results = await Promise.allSettled(Array.from({ length: 4 }, () => f.start(paths)));
   const started = results.filter(result => result.status === "fulfilled");
   assert.equal(started.length, 1, results.filter(result => result.status === "rejected").map(result => result.reason.stack).join("\n"));
@@ -295,7 +292,7 @@ test("concurrent stale-lock reclaimers preserve the new owner after a killed dae
   assert.equal((await fetch(started[0].value.url)).status, 200);
 });
 
-test("a stale lock held by a paused live instance survives resume and subsequent heartbeats", {
+test("a paused live instance retains its kernel lock regardless of file timestamps", {
   skip: process.platform === "win32", timeout: 30000,
 }, async t => {
   const f = await fixture(t);
@@ -303,7 +300,9 @@ test("a stale lock held by a paused live instance survives resume and subsequent
   const { child, closed } = await startChild(t, paths);
   const runtime = await readRuntimeInfo(paths);
   process.kill(child.pid, "SIGSTOP");
-  await delay(11500);
+  const stale = new Date(Date.now() - 60000);
+  await fs.utimes(paths.lock, stale, stale);
+  assert.equal((await status(paths)).runtime.status, "unresponsive");
 
   await assert.rejects(f.start(paths), error => {
     assert.equal(error.code, "ELOCKED");
@@ -322,7 +321,7 @@ test("invalid configuration releases the lock and is preserved", async t => {
   await saveConfig({ web: { port: -1 } }, paths);
   const saved = await fs.readFile(paths.config, "utf8");
   await assert.rejects(f.start(paths), /web\.port/);
-  await assert.rejects(fs.access(paths.lock), { code: "ENOENT" });
+  assert.ok((await fs.stat(paths.lock)).isFile());
   assert.equal(await fs.readFile(paths.config, "utf8"), saved);
   await assert.rejects(fs.access(paths.runtime), { code: "ENOENT" });
 });

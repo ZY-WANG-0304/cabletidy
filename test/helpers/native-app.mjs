@@ -69,7 +69,7 @@ export async function createApplication(options = {}) {
     await closed.catch(() => {});
     catalogServer?.closeAllConnections();
     if (catalogServer) await new Promise(resolve => catalogServer.close(resolve));
-    const code = output.match(/ELOCKUNKNOWN|ELOCKED|EADDRINUSE/)?.[0];
+    const code = output.match(/ELOCKLEGACY|ELOCKED|EADDRINUSE/)?.[0];
     if (code) error.code = code;
     throw error;
   }
