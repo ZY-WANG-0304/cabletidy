@@ -1,0 +1,47 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 1000
+  },
+  "screenshots": [
+    "/home/users/ziyang01.wang-al/projects/cabletidy/docs/screenshots/security-review-updated/01-desktop-list-page-two.png",
+    "/home/users/ziyang01.wang-al/projects/cabletidy/docs/screenshots/security-review-updated/02-desktop-request-hit.png",
+    "/home/users/ziyang01.wang-al/projects/cabletidy/docs/screenshots/security-review-updated/03-desktop-response-hit.png",
+    "/home/users/ziyang01.wang-al/projects/cabletidy/docs/screenshots/security-review-updated/04-desktop-list-restored.png"
+  ],
+  "hits": [
+    {
+      "stage": "request",
+      "text": "[REDACTED]",
+      "hit": {
+        "x": 656.4375,
+        "y": 492.609375,
+        "width": 72.015625,
+        "height": 14,
+        "top": 492.609375,
+        "right": 728.453125,
+        "bottom": 506.609375,
+        "left": 656.4375
+      },
+      "body": {
+        "x": 229,
+        "y": 7.5,
+        "width": 1166,
+        "height": 520,
+        "top": 7.5,
+        "right": 1395,
+        "bottom": 527.5,
+        "left": 229
+      },
+      "bodyScrollTop": 1375,
+      "pageScrollY": 2046
+    }
+  ],
+  "checks": [
+    "precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels",
+    "browser back/forward, detail reload and return button restore applied filters, page two and exact list scroll",
+    "no browser errors or horizontal page overflow; body content remains escaped and credentials remain redacted"
+  ],
+  "savedListScrollY": 776,
+  "passed": true
+}

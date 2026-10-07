@@ -52,7 +52,7 @@ const state = {
   },
   artifactPreview: null,
   resolveResult: null,
-  security: { bodySelection: null, detailSequence: 0, detailId: null, detailLoading: false, detailError: null, listScroll: { x: 0, y: 0 }, filters: { hours: "24" }, cursor: "", history: [], result: null, status: null, detail: null, loading: false, error: null, sequence: 0, updatedAt: null },
+  security: { bodySelection: null, bodyPage: null, streamPage: null, streamPageSnapshotId: null, streamSequence: 0, streamLoading: false, streamError: null, detailSequence: 0, detailId: null, detailLoading: false, detailError: null, listScroll: { x: 0, y: 0 }, filters: { hours: "24" }, cursor: "", history: [], result: null, status: null, detail: null, loading: false, error: null, sequence: 0, updatedAt: null },
 };
 
 function clone(value) {
@@ -566,7 +566,6 @@ function syncCodexMetadata(row, resetOverrides = false) {
 }
 
 pageContent.addEventListener("change", (event) => {
-  if (event.target.id === "security-snapshot") { securityAction("security-body", { dataset: { id: event.target.value } }); return; }
   if (event.target.matches('#suite-create-form [name="target"]')) {
     state.createTarget = event.target.value;
     const form = event.target.closest("form");
@@ -590,6 +589,13 @@ pageContent.addEventListener("change", (event) => {
   if (modelChanged) updateOfficialModelHint(event.target);
   if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
     syncCodexMetadata(event.target.closest("[data-suite-model]"), modelChanged);
+  }
+});
+
+pageContent.addEventListener("toggle", (event) => {
+  const panel = event.target;
+  if (panel.matches("[data-security-snapshot]") && panel.open) {
+    securityAction("security-body", { dataset: { id: panel.dataset.securitySnapshot } });
   }
 });
 
@@ -987,7 +993,7 @@ function saveSecurityList() {
 async function showSecurityList(list = securityListState()) {
   const s = state.security;
   s.detailSequence++; s.bodySequence = (s.bodySequence || 0) + 1;
-  s.detail = null; s.detailId = null; s.bodyPage = null; s.bodySelection = null;
+  s.detail = null; s.detailId = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.streamError = null; s.bodySelection = null;
   s.filters = list.filters; s.cursor = list.cursor; s.history = list.history; s.listScroll = list.scroll;
   state.page = "security";
   const params = new URLSearchParams({ ...s.filters, ...(s.cursor ? { cursor: s.cursor } : {}) }).toString();
@@ -1022,7 +1028,7 @@ async function loadSecurityDetail(id, reset = true) {
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
   s.bodySequence = (s.bodySequence || 0) + 1;
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
-  if (reset) { s.detail = null; s.bodyPage = null; s.bodySelection = { snapshotId: "request" }; }
+  if (reset) { s.detail = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.streamError = null; s.bodySelection = { snapshotId: "request" }; }
   state.page = "security-detail";
   render();
   if (reset) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
@@ -1032,7 +1038,7 @@ async function loadSecurityDetail(id, reset = true) {
     s.detail = result.record;
   } catch (error) {
     if (sequence !== s.detailSequence || state.page !== "security-detail") return;
-    s.detail = null; s.bodyPage = null; s.detailError = error.message;
+    s.detail = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.detailError = error.message;
   }
   s.detailLoading = false;
   render();
@@ -1151,20 +1157,28 @@ function securityPageText(page, selection) {
   }).join("");
 }
 
+function canonicalBodySnapshotId(id) {
+  if (["request", "request/headers", "response", "response/headers"].includes(id)) return id;
+  if (id?.startsWith("request")) return "request";
+  if (id?.startsWith("response")) return "response";
+  if (id?.startsWith("stream/")) return "response";
+  return id;
+}
+
 function renderSecurityBody(record) {
   const s = state.security;
-  const snapshots = record.bodySnapshots || [];
+  const allSnapshots = record.bodySnapshots || [];
+  const snapshots = ["request/headers", "request", "response/headers", "response"].map(id => allSnapshots.find(item => item.id === id) || { id, state: "not_observed" });
+  const streamSnapshots = allSnapshots.filter(item => item.id.startsWith("stream/"));
   const selection = s.bodySelection || { snapshotId: "request" };
-  const snapshot = snapshots.find(item => item.id === selection.snapshotId);
+  const snapshot = allSnapshots.find(item => item.id === selection.snapshotId);
   const risk = record.findings?.find(item => item.id === selection.findingId);
   const page = s.bodyPage;
-  const options = snapshots.map((item, i) => ({ id: item.id, label: item.id === "request" ? "请求正文" : item.id === "response" ? "响应正文" : item.id === "request/headers" ? "请求头" : item.id === "response/headers" ? "响应头" : `${item.id.startsWith("stream/") ? "流式内容" : "检测快照"} ${i + 1}` }));
+  const labelFor = (item, i) => item.id === "request" ? "请求正文" : item.id === "response" ? "响应正文" : item.id === "request/headers" ? "请求头" : item.id === "response/headers" ? "响应头" : `${item.id.startsWith("stream/") ? "流式内容" : "检测快照"} ${i + 1}`;
   const marks = page?.chunks?.flatMap(chunk => chunk.redactions || []) || page?.legacySnapshot?.redactions || [];
   const references = [...new Set((page?.chunks || []).flatMap(chunk => [...chunk.content.matchAll(/"contentSnapshotId":"([^"]+)"/g)].map(match => match[1])))].filter(id => snapshots.some(item => item.id === id));
-  return `<section class="security-body-review" aria-label="正文复核"><h3>正文复核</h3>
-    <label class="field"><span>正文来源</span><select id="security-snapshot" aria-label="正文来源">${options.map(item => `<option value="${esc(item.id)}" ${item.id === selection.snapshotId ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>
-    ${risk ? `<p class="security-selected-risk">正在复核：${esc(securityLabel("rule", risk.ruleId))} · ${esc(securityLabel("stage", risk.evidenceStage))}</p>` : ""}
-    ${snapshot ? `<p>${esc(SECURITY_BODY_LABELS.source[snapshot.source] || snapshot.source)} · ${esc(SECURITY_BODY_LABELS.state[snapshot.state] || snapshot.state)} · ${esc(securityTime(snapshot.capturedAt))}</p>` : `<div class="notice warning">${record.schemaVersion === 1 ? "旧记录未保留正文，无法恢复检测时的内容。" : "正文仍在等待保存，或该快照未能保留。请结合检测进度和覆盖缺口复核。"}</div>`}
+  const content = snapshot && selection.snapshotId === snapshot.id ? `${risk ? `<p class="security-selected-risk">正在复核：${esc(securityLabel("rule", risk.ruleId))} · ${esc(securityLabel("stage", risk.evidenceStage))}</p>${selection.detectionSnapshotId ? `<p class="muted">证据来自检测时的流式内容快照，当前已定位到对应的${selection.snapshotId === "response" ? "响应" : "请求"}正文。</p>` : ""}` : ""}
+    <p>${esc(SECURITY_BODY_LABELS.source[snapshot.source] || snapshot.source)} · ${esc(SECURITY_BODY_LABELS.state[snapshot.state] || snapshot.state)} · ${esc(securityTime(snapshot.capturedAt))}</p>
     <p class="muted">正文分段按需加载。凭据显示为 [REDACTED]；高亮位置对应脱敏后的内容。响应事件中的引用可通过“关联流式内容”打开重组快照。</p>
     ${s.bodyLoading ? `<p role="status">${s.bodyLocating ? "正在定位凭据命中点…" : "正在加载正文片段…"}</p>` : s.bodyError ? `<div class="notice warning">${esc(s.bodyError)}</div>` : page ? `
       ${page.legacySnapshot?.headers ? `<details><summary>旧记录请求 / 响应头</summary><pre class="code-preview security-body-content">${esc(JSON.stringify(page.legacySnapshot.headers, null, 2))}</pre></details>` : ""}
@@ -1173,9 +1187,19 @@ function renderSecurityBody(record) {
       <div class="security-pagination"><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.previousOffset ?? "")}" ${page.previousOffset == null ? "disabled" : ""}>上一段上下文</button><span>${page.rangeStart > 0 ? "源正文" : ""}字节 ${esc(page.offset ?? 0)}–${esc(page.chunks?.at(-1)?.end ?? page.offset ?? 0)} · 本快照 ${esc(snapshot?.byteLength ?? 0)} 字节</span><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.nextOffset ?? "")}" ${page.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div>
       <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection)}</pre>
       ${references.length ? `<div class="security-body-tabs" aria-label="关联流式内容">${references.map((id, i) => `<button class="mini-button" data-action="security-body" data-id="${esc(id)}">关联流式内容 ${i + 1} · ${esc(id.split("/").at(-1).slice(0, 8))}</button>`).join("")}</div>` : ""}
-      ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart ?? selection.start ?? 0)}">查看完整正文上下文</button>` : ""}
-      <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}
-  </section>`;
+      ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId && selection.sourceStart != null ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart)}">查看完整正文上下文</button>` : ""}
+      <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
+  const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
+  const streamPage = s.streamPageSnapshotId === selection.detectionSnapshotId ? s.streamPage : null;
+  const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }) : "";
+  const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；局部快照可能不完整，风险定位仍以响应正文为准。</p>${streamSnapshots.map((item, i) => {
+    const active = selection.detectionSnapshotId === item.id;
+    const previous = streamSnapshots[i - 1]?.id;
+    const next = streamSnapshots[i + 1]?.id;
+    const navigation = active ? `<nav class="security-event-nav" aria-label="流式事件导航"><button class="mini-button" data-action="security-event" data-id="${esc(previous || "")}" ${previous ? "" : "disabled"}>上一事件</button><button class="mini-button" data-action="security-event" data-id="${esc(next || "")}" ${next ? "" : "disabled"}>下一事件</button></nav>` : "";
+    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<pre class="code-preview security-body-content">${streamContent}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
+  }).join("")}</section>` : "";
+  return `<section aria-label="正文复核"><h3>正文复核</h3>${panels || `<p class="muted">当前记录没有可展示的请求或响应内容。</p>`}${timeline}</section>`;
 }
 
 async function loadSecurityBody(offset = 0, locateCredential = false) {
@@ -1206,6 +1230,29 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
   if (!current()) return false;
   s.bodyLoading = false; s.bodyLocating = false; render();
   return !s.bodyError;
+}
+
+async function loadSecurityStream(snapshotId) {
+  const s = state.security;
+  const recordId = s.detail?.id;
+  if (!recordId || !snapshotId) return false;
+  const sequence = s.streamSequence = (s.streamSequence || 0) + 1;
+  const current = () => sequence === s.streamSequence && s.detail?.id === recordId && s.bodySelection?.detectionSnapshotId === snapshotId && state.page === "security-detail";
+  s.streamPage = null;
+  s.streamPageSnapshotId = null;
+  s.streamLoading = true;
+  s.streamError = null;
+  if (state.page === "security-detail") render();
+  try {
+    const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset: 0 })}`);
+    if (current()) { s.streamPage = page; s.streamPageSnapshotId = snapshotId; }
+  } catch (error) {
+    if (current()) s.streamError = error.message;
+  }
+  if (!current()) return false;
+  s.streamLoading = false;
+  if (state.page === "security-detail") render();
+  return !s.streamError;
 }
 
 function renderSecurityDetail(record) {
@@ -1254,20 +1301,39 @@ async function securityAction(action, element) {
     await loadSecurityDetail(element.dataset.id);
     return;
   }
-  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page"].includes(action)) {
+  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page", "security-event"].includes(action)) {
     if (!s.detail) return;
+    if (action === "security-event") {
+      if (!element.dataset.id) return;
+      s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
+      delete s.bodySelection.detectionStart;
+      delete s.bodySelection.detectionEnd;
+      await loadSecurityStream(element.dataset.id);
+      return;
+    }
     if (action === "security-finding") {
       const finding = s.detail.findings?.find(item => item.id === element.dataset.id);
-      s.bodySelection = { ...(finding?.evidence?.bodyRef || { snapshotId: "unavailable" }), findingId: finding?.id };
+      const ref = finding?.evidence?.bodyRef || { snapshotId: "unavailable" };
+      const source = ref.sourceSnapshotId || ref.snapshotId;
+      const snapshotId = canonicalBodySnapshotId(source);
+      const mapped = snapshotId !== ref.snapshotId;
+      s.bodySelection = { ...ref, snapshotId, ...(mapped ? { detectionSnapshotId: ref.snapshotId, detectionStart: ref.start, detectionEnd: ref.end } : {}), ...(mapped && ref.sourceStart != null ? { start: ref.sourceStart, end: ref.sourceEnd } : {}), ...(mapped && ref.sourceStart == null ? { hitUnavailable: true } : {}), findingId: finding?.id };
+      if (mapped && ref.sourceStart == null) { delete s.bodySelection.start; delete s.bodySelection.end; }
     } else if (action === "security-source") {
       const previous = s.bodySelection;
-      s.bodySelection = { snapshotId: element.dataset.id, start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
-    } else if (action === "security-body") s.bodySelection = { snapshotId: element.dataset.id, start: Number(element.dataset.offset || 0) };
+      const id = element.dataset.id;
+      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
+    } else if (action === "security-body") {
+      const id = element.dataset.id;
+      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: Number(element.dataset.offset || 0) };
+    }
     else if (action === "security-location") s.bodySelection = { ...s.bodySelection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
     const finding = s.detail.findings?.find(item => item.id === s.bodySelection.findingId);
-    const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001";
+    const mappedStream = s.bodySelection.detectionSnapshotId != null;
+    const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null);
     const offset = action === "security-body-page" ? Number(element.dataset.offset) : Math.max(0, (s.bodySelection.start || 0) - 512);
     if (!await loadSecurityBody(offset, locateCredential)) return;
+    if (s.bodySelection.detectionSnapshotId) await loadSecurityStream(s.bodySelection.detectionSnapshotId);
     const target = pageContent.querySelector(".security-body-hit") || pageContent.querySelector(".security-body-review");
     target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     target?.focus?.({ preventScroll: true });
@@ -1275,7 +1341,7 @@ async function securityAction(action, element) {
   }
   if (action === "security-back") { await returnSecurityList(); return; }
   if (action === "security-reset") {
-    s.detailSequence++; s.filters = { hours: "24" }; s.cursor = ""; s.history = []; s.detail = null; s.bodySelection = null; s.result = null;
+    s.detailSequence++; s.streamSequence = (s.streamSequence || 0) + 1; s.filters = { hours: "24" }; s.cursor = ""; s.history = []; s.detail = null; s.bodySelection = null; s.result = null;
   } else if (action === "security-next" && s.result?.nextCursor) {
     s.history.push(s.cursor); s.cursor = s.result.nextCursor;
   } else if (action === "security-prev" && s.history.length) { s.cursor = s.history.pop(); }
