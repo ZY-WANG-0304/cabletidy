@@ -433,6 +433,38 @@ test("stream findings map to the response body and expose a separate event timel
   assert.match(app.read("renderSecurityDetailPage()"), /next event/);
 });
 
+test("late stream evidence cannot replace the currently selected event", async () => {
+  let releaseOne;
+  let releaseTwo;
+  const snapshots = [
+    { id: "request", source: "client_request", state: "complete" },
+    { id: "response", source: "upstream_response", state: "complete" },
+    { id: "stream/one", source: "stream_inspection", state: "complete" },
+    { id: "stream/two", source: "stream_inspection", state: "complete" },
+  ];
+  const app = await controller(undefined, { onSecurity(url) {
+    const snapshot = url.includes("/body?") ? new URL(url, "http://test").searchParams.get("snapshot") : null;
+    if (snapshot === "stream/one") return new Promise(resolve => { releaseOne = resolve; });
+    if (snapshot === "stream/two") return new Promise(resolve => { releaseTwo = resolve; });
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: 8, content: "response", redactions: [] }], nextOffset: null } };
+    if (url.includes("/audit/late-stream")) return { body: { record: { id: "late-stream", bodySnapshots: snapshots, findings: [{ id: "risk", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "stream/one", sourceSnapshotId: "stream/one", start: 0, end: 4, sourceStart: 0, sourceEnd: 4 } } }] } } };
+  } });
+  app.read('state.page = "security"');
+  await app.action("security-detail", { dataset: { id: "late-stream" } });
+  const first = app.action("security-finding", { dataset: { id: "risk" } });
+  for (let i = 0; i < 20 && !releaseOne; i++) await setImmediate();
+  const second = app.action("security-event", { dataset: { id: "stream/two" } });
+  for (let i = 0; i < 20 && !releaseTwo; i++) await setImmediate();
+  releaseTwo({ body: { chunks: [{ start: 0, end: 9, content: "event two", redactions: [] }] } });
+  await second;
+  await setImmediate();
+  assert.match(app.read("renderSecurityDetailPage()"), /event two/);
+  releaseOne({ body: { chunks: [{ start: 0, end: 9, content: "event one", redactions: [] }] } });
+  await first;
+  assert.match(app.read("renderSecurityDetailPage()"), /event two/);
+  assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /event one/);
+});
+
 test("late body pages cannot replace a new snapshot or closed detail", async () => {
   let release;
   const app = await controller(undefined, { onSecurity(url) {

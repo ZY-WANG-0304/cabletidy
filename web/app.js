@@ -52,7 +52,7 @@ const state = {
   },
   artifactPreview: null,
   resolveResult: null,
-  security: { bodySelection: null, bodyPage: null, streamPage: null, streamLoading: false, streamError: null, detailSequence: 0, detailId: null, detailLoading: false, detailError: null, listScroll: { x: 0, y: 0 }, filters: { hours: "24" }, cursor: "", history: [], result: null, status: null, detail: null, loading: false, error: null, sequence: 0, updatedAt: null },
+  security: { bodySelection: null, bodyPage: null, streamPage: null, streamPageSnapshotId: null, streamSequence: 0, streamLoading: false, streamError: null, detailSequence: 0, detailId: null, detailLoading: false, detailError: null, listScroll: { x: 0, y: 0 }, filters: { hours: "24" }, cursor: "", history: [], result: null, status: null, detail: null, loading: false, error: null, sequence: 0, updatedAt: null },
 };
 
 function clone(value) {
@@ -993,7 +993,7 @@ function saveSecurityList() {
 async function showSecurityList(list = securityListState()) {
   const s = state.security;
   s.detailSequence++; s.bodySequence = (s.bodySequence || 0) + 1;
-  s.detail = null; s.detailId = null; s.bodyPage = null; s.streamPage = null; s.streamError = null; s.bodySelection = null;
+  s.detail = null; s.detailId = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.streamError = null; s.bodySelection = null;
   s.filters = list.filters; s.cursor = list.cursor; s.history = list.history; s.listScroll = list.scroll;
   state.page = "security";
   const params = new URLSearchParams({ ...s.filters, ...(s.cursor ? { cursor: s.cursor } : {}) }).toString();
@@ -1028,7 +1028,7 @@ async function loadSecurityDetail(id, reset = true) {
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
   s.bodySequence = (s.bodySequence || 0) + 1;
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
-  if (reset) { s.detail = null; s.bodyPage = null; s.streamPage = null; s.streamError = null; s.bodySelection = { snapshotId: "request" }; }
+  if (reset) { s.detail = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.streamError = null; s.bodySelection = { snapshotId: "request" }; }
   state.page = "security-detail";
   render();
   if (reset) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
@@ -1038,7 +1038,7 @@ async function loadSecurityDetail(id, reset = true) {
     s.detail = result.record;
   } catch (error) {
     if (sequence !== s.detailSequence || state.page !== "security-detail") return;
-    s.detail = null; s.bodyPage = null; s.streamPage = null; s.detailError = error.message;
+    s.detail = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.detailError = error.message;
   }
   s.detailLoading = false;
   render();
@@ -1190,7 +1190,7 @@ function renderSecurityBody(record) {
       ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart ?? selection.start ?? 0)}">查看完整正文上下文</button>` : ""}
       <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
   const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
-  const streamPage = s.streamPage;
+  const streamPage = s.streamPageSnapshotId === selection.detectionSnapshotId ? s.streamPage : null;
   const streamContent = streamPage?.chunks?.map(chunk => chunk.content).join("") || "";
   const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；局部快照可能不完整，风险定位仍以响应正文为准。</p>${streamSnapshots.map((item, i) => {
     const active = selection.detectionSnapshotId === item.id;
@@ -1236,14 +1236,20 @@ async function loadSecurityStream(snapshotId) {
   const s = state.security;
   const recordId = s.detail?.id;
   if (!recordId || !snapshotId) return false;
+  const sequence = s.streamSequence = (s.streamSequence || 0) + 1;
+  const current = () => sequence === s.streamSequence && s.detail?.id === recordId && s.bodySelection?.detectionSnapshotId === snapshotId && state.page === "security-detail";
+  s.streamPage = null;
+  s.streamPageSnapshotId = null;
   s.streamLoading = true;
   s.streamError = null;
   if (state.page === "security-detail") render();
   try {
-    s.streamPage = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset: 0 })}`);
+    const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset: 0 })}`);
+    if (current()) { s.streamPage = page; s.streamPageSnapshotId = snapshotId; }
   } catch (error) {
-    s.streamError = error.message;
+    if (current()) s.streamError = error.message;
   }
+  if (!current()) return false;
   s.streamLoading = false;
   if (state.page === "security-detail") render();
   return !s.streamError;
@@ -1330,7 +1336,7 @@ async function securityAction(action, element) {
   }
   if (action === "security-back") { await returnSecurityList(); return; }
   if (action === "security-reset") {
-    s.detailSequence++; s.filters = { hours: "24" }; s.cursor = ""; s.history = []; s.detail = null; s.bodySelection = null; s.result = null;
+    s.detailSequence++; s.streamSequence = (s.streamSequence || 0) + 1; s.filters = { hours: "24" }; s.cursor = ""; s.history = []; s.detail = null; s.bodySelection = null; s.result = null;
   } else if (action === "security-next" && s.result?.nextCursor) {
     s.history.push(s.cursor); s.cursor = s.result.nextCursor;
   } else if (action === "security-prev" && s.history.length) { s.cursor = s.history.pop(); }
