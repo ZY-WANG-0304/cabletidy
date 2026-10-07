@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
+#[cfg(any(target_os = "linux", test))]
 use tokio::fs;
 #[cfg(target_os = "macos")]
 use tokio::process::Command;
