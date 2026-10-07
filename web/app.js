@@ -1306,6 +1306,8 @@ async function securityAction(action, element) {
     if (action === "security-event") {
       if (!element.dataset.id) return;
       s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
+      delete s.bodySelection.detectionStart;
+      delete s.bodySelection.detectionEnd;
       await loadSecurityStream(element.dataset.id);
       return;
     }

@@ -430,7 +430,9 @@ test("stream findings map to the response body and expose a separate event timel
   assert.match(html, /接收中断或未观察到协议结束/);
   assert.ok(app.requests.some(r => r.url.includes("snapshot=stream%2Fone")));
   await app.action("security-event", { dataset: { id: "stream/two" } });
-  assert.match(app.read("renderSecurityDetailPage()"), /ext event/);
+  const nextEventHtml = app.read("renderSecurityDetailPage()");
+  assert.match(nextEventHtml, /ext event/);
+  assert.doesNotMatch(nextEventHtml, /<mark class="security-body-hit">/);
   await app.action("security-finding", { dataset: { id: "stream-unmapped" } });
   assert.equal(app.read("state.security.bodySelection.hitUnavailable"), true);
   const unmappedHtml = app.read("renderSecurityDetailPage()");
