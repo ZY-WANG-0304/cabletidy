@@ -556,10 +556,22 @@ mod tests {
             .spawn()
             .unwrap();
         drop(lock);
-        let result = locked(&paths);
-        child.kill().unwrap();
+        // Other parallel tests can briefly inherit this descriptor before exec.
+        // The executed child must remain alive while the kernel lock is released.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while locked(&paths)? {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        let still_running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
         child.wait().unwrap();
-        assert!(!result.unwrap());
+        assert!(still_running, "the executed child must still be alive");
+        result
+            .expect("an executed child must not retain the kernel lock")
+            .unwrap();
     }
 
     #[test]
