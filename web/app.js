@@ -29,7 +29,7 @@ const PAGE_META = {
   "suite-detail": "配置详情",
   models: "模型管理",
   diagnostics: "诊断",
-  security: "安全",
+  security: "审计记录",
   "security-detail": "审计详情",
 };
 
@@ -963,7 +963,7 @@ const SECURITY_LABELS = {
   action: { "model.request": "模型请求", "tokens.count": "Token 计数", "config.commit": "配置提交", "target.apply": "应用客户端配置", "target.restore": "恢复客户端配置", "virtual_provider.start": "启动配置", "virtual_provider.pause": "暂停配置", "audit.gap": "审计记录缺口" },
   basis: { system_wide_damage_possible: "显式关闭根目录保护，可能造成系统范围的数据破坏", credential_exposure_possible: "凭据可能暴露在模型内容或联网操作中", working_data_loss_possible: "操作可能丢弃工作区数据或影响较大目录范围", broad_write_access_possible: "操作可能向所有用户开放写权限", unreviewed_remote_code_execution: "远程内容直接进入代码解释器", sensitive_goal_redirection_possible: "外部指令试图将原任务引向敏感操作", scoped_sensitive_operation: "涉及有限范围的数据修改、敏感读取或权限变更", known_credential_match: "内容与本地已知凭据匹配", credential_pattern_match: "仅匹配凭据格式，尚未验证其有效性", heuristic_keyword_combination: "命中指令覆盖与敏感动作的启发式组合", network_sensitive_file_reference: "联网命令引用敏感文件，未确认实际发送", recognized_literal_tool_arguments: "已识别的工具参数或字面量命令结构" },
   rule: { "SEC-SECRET-001": "内容中发现凭据特征", "SEC-READ-001": "读取敏感文件", "SEC-DELETE-001": "递归删除目录", "SEC-DELETE-002": "补丁删除文件", "SEC-VCS-001": "丢弃工作区修改", "SEC-CONFIG-001": "修改代理或安全配置", "SEC-PRIV-001": "请求提升执行权限", "SEC-PRIV-002": "授予所有用户写权限", "SEC-EXEC-001": "下载内容直接交给解释器执行", "SEC-EXEC-002": "动态代码执行", "SEC-EXPORT-001": "联网命令引用敏感文件", "SEC-INJECT-001": "外部内容要求改写目标并执行敏感操作" },
-  reason: { header_storage_or_processing_failure: "请求或响应头保存失败", invalid_json_or_structure_budget: "JSON 不完整或超出解析栈预算，仅保留可安全脱敏的前缀", evidence_storage_unavailable: "检测快照写入失败", audit_metadata_budget: "审计元数据写入有缺口", redaction_buffer_budget: "脱敏工作区不足，或长 URL 认证区、令牌前缀无法确认，相关内容已隐藏", invalid_sse_event: "流式事件无法解析，内容已隐藏", shared_encrypted_spool_budget: "共享临时空间或内存不足，正文保留有缺口", shared_working_memory_budget: "共享内存不足，部分工具参数无法完整解析", shared_detection_budget: "共享检测资源不足，风险发现可能不完整", credential_redaction_budget: "凭据匹配资源不足，相关内容已隐藏", body_storage_or_processing_failure: "正文存储或处理失败", body_not_complete: "正文接收未完成", unstructured_content: "非结构化或无效 JSON，仅完成文本规则检查", non_text_or_reasoning_semantics: "非文本或推理内容的语义不在规则覆盖范围", inspection_worker_failed: "检测任务失败", incomplete_body_fragment: "不完整正文末尾已隐藏", incomplete_stream_fragment: "流式内容未结束，部分片段已隐藏", stream_item_metadata_missing: "流式条目缺少工具类型或名称", credential_catalog_limit: "部分本地凭据超出支持的数量或长度范围", concurrent_inspection_limit: "并发检查数量达到上限", request_inspection_limit: "请求内容检查达到上限", response_inspection_limit: "响应内容检查达到上限", sse_event_limit: "流式事件过大", tool_argument_limit: "工具参数过大", finding_limit: "单次请求风险数量达到上限", unsupported_tool: "工具语义暂不支持", unsupported_tool_arguments: "工具参数结构暂不支持", unsupported_shell_syntax: "命令包含暂不解析的展开或复合语法", unsupported_shell_wrapper: "命令包装方式暂不支持", shell_nesting_limit: "嵌套命令达到检查上限", external_script_not_inspected: "无法观察脚本文件内容", command_semantics_not_inspected: "命令语义未覆盖", dynamic_code_not_inspected: "动态代码内容未检查", non_text_content: "包含非文本内容", opaque_content: "包含不透明或加密内容", reasoning_content_not_inspected: "推理文本已做凭据检查，推理语义未覆盖", unsupported_response_event: "包含未知响应事件，无法安全复核的内容已隐藏", unsupported_response_item: "包含未知响应项", invalid_response_json: "响应无法解析为 JSON", invalid_event_json: "流式事件 JSON 无效", invalid_event_encoding: "流式事件编码无效", unterminated_sse_event: "流式事件未完整结束", missing_terminal_event: "未观察到协议结束事件", incomplete_response_item: "响应项尚未完整返回", missing_tool_start: "缺少工具调用开始事件", invalid_tool_arguments: "工具参数无法解析", response_item_limit: "响应项数量达到上限", text_item_limit: "文本项达到检查上限", response_not_complete: "响应未完整接收", request_not_inspected: "请求未进入内容检查", request_interrupted: "请求在响应前中断", daemon_restarted: "上次进程未记录请求结束", historical_context_not_visible: "引用的历史上下文未经过本次请求" },
+  reason: { header_storage_or_processing_failure: "请求或响应头保存失败", invalid_json_or_structure_budget: "JSON 不完整或超出解析栈预算，仅保留已解析的前缀", evidence_storage_unavailable: "检测快照写入失败", audit_metadata_budget: "审计元数据写入有缺口", redaction_buffer_budget: "凭据检测工作区不足，或长 URL 认证区、令牌前缀无法确认", invalid_sse_event: "流式事件无法解析，仅按文本检查", shared_encrypted_spool_budget: "共享临时空间或内存不足，正文保留有缺口", shared_working_memory_budget: "共享内存不足，部分工具参数无法完整解析", shared_detection_budget: "共享检测资源不足，风险发现可能不完整", credential_redaction_budget: "凭据匹配资源不足，检测可能不完整", body_storage_or_processing_failure: "正文存储或处理失败", body_not_complete: "正文接收未完成", unstructured_content: "非结构化或无效 JSON，仅完成文本规则检查", non_text_or_reasoning_semantics: "非文本或推理内容的语义不在规则覆盖范围", inspection_worker_failed: "检测任务失败", incomplete_body_fragment: "正文末尾不完整", incomplete_stream_fragment: "流式内容未结束，部分片段无法完整检查", stream_item_metadata_missing: "流式条目缺少工具类型或名称", credential_catalog_limit: "部分本地凭据超出支持的数量或长度范围", concurrent_inspection_limit: "并发检查数量达到上限", request_inspection_limit: "请求内容检查达到上限", response_inspection_limit: "响应内容检查达到上限", sse_event_limit: "流式事件过大", tool_argument_limit: "工具参数过大", finding_limit: "单次请求风险数量达到上限", unsupported_tool: "工具语义暂不支持", unsupported_tool_arguments: "工具参数结构暂不支持", unsupported_shell_syntax: "命令包含暂不解析的展开或复合语法", unsupported_shell_wrapper: "命令包装方式暂不支持", shell_nesting_limit: "嵌套命令达到检查上限", external_script_not_inspected: "无法观察脚本文件内容", command_semantics_not_inspected: "命令语义未覆盖", dynamic_code_not_inspected: "动态代码内容未检查", non_text_content: "包含非文本内容", opaque_content: "包含不透明或加密内容", reasoning_content_not_inspected: "推理文本已做凭据检查，推理语义未覆盖", unsupported_response_event: "包含未知响应事件，部分语义未覆盖", unsupported_response_item: "包含未知响应项", invalid_response_json: "响应无法解析为 JSON", invalid_event_json: "流式事件 JSON 无效", invalid_event_encoding: "流式事件编码无效", unterminated_sse_event: "流式事件未完整结束", missing_terminal_event: "未观察到协议结束事件", incomplete_response_item: "响应项尚未完整返回", missing_tool_start: "缺少工具调用开始事件", invalid_tool_arguments: "工具参数无法解析", response_item_limit: "响应项数量达到上限", text_item_limit: "文本项达到检查上限", response_not_complete: "响应未完整接收", request_not_inspected: "请求未进入内容检查", request_interrupted: "请求在响应前中断", daemon_restarted: "上次进程未记录请求结束", historical_context_not_visible: "引用的历史上下文未经过本次请求" },
 };
 
 function securityLabel(group, value) { return SECURITY_LABELS[group]?.[value] || value || "未知"; }
@@ -1048,9 +1048,9 @@ async function loadSecurityDetail(id, reset = true) {
 
 function renderSecurityDetailPage() {
   const s = state.security;
-  return `<nav class="security-detail-nav" aria-label="审计导航"><button class="button" data-action="security-back">返回审计日志</button><span class="muted">安全 / 审计详情</span><span class="status-badge">仅记录</span></nav>
+  return `<nav class="security-detail-nav" aria-label="审计导航"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 审计详情</span><span class="status-badge">仅记录</span></nav>
     ${s.detailLoading ? `<p role="status">正在读取审计详情…</p>` : ""}
-    ${s.detailError ? `<div class="notice warning" role="alert">${esc(s.detailError)}<p>可刷新重试，或返回审计日志。</p></div>` : ""}
+    ${s.detailError ? `<div class="notice warning" role="alert">${esc(s.detailError)}<p>可刷新重试，或返回审计记录。</p></div>` : ""}
     ${s.detail ? renderSecurityDetail(s.detail) : ""}`;
 }
 
@@ -1083,7 +1083,7 @@ function renderSecurity() {
     </div><div class="form-actions"><label class="security-risk-toggle"><input type="checkbox" name="hasRisk" value="true" ${s.filters.hasRisk === "true" ? "checked" : ""}> 仅看有风险</label><button class="button button-primary" type="submit" ${s.loading ? "disabled" : ""}>筛选</button><button class="button" type="button" data-action="security-reset">重置筛选</button></div></form></div></div>
     <div class="security-summary" aria-live="polite"><div><strong>${esc(s.result?.total ?? "—")}</strong><span>条审计记录</span></div><div><strong>${esc(s.result?.riskRecordCount ?? "—")}</strong><span>条有风险的记录</span></div><div><strong>${esc(s.result?.findingCount ?? "—")}</strong><span>项风险发现</span></div><div><strong>${esc(s.result ? (count.high || 0) + (count.critical || 0) : "—")}</strong><span>条高 / 严重记录</span></div></div>
     <p class="muted">统计覆盖全部筛选结果。严重程度按记录的最高等级筛选；风险发现数包含这些记录关联的全部风险。未命中规则不等于已证明安全。</p>
-    <div class="panel"><div class="panel-header"><h2>审计日志</h2><span class="muted">${s.loading ? "读取中..." : `更新于 ${esc(securityTime(s.updatedAt))}`}</span></div>
+    <div class="panel"><div class="panel-header"><h2>审计记录</h2><span class="muted">${s.loading ? "读取中..." : `更新于 ${esc(securityTime(s.updatedAt))}`}</span></div>
       ${s.result?.items?.length ? `<div class="security-table-wrap"><table class="suite-table security-table"><thead><tr><th>配置 / 时间</th><th>操作 / 模型</th><th>最高风险</th><th>风险发现</th><th>结果 / 检查状态</th><th>详情</th></tr></thead><tbody>${s.result.items.map(item => securityRow(item)).join("")}</tbody></table></div>` : `<div class="empty">${s.loading ? "正在读取安全记录..." : s.error ? "暂时无法读取记录。" : "当前筛选范围内没有审计记录。通过此代理发起请求后可在这里查看。"}</div>`}
       <div class="panel-body security-pagination"><button class="button" data-action="security-prev" ${!s.history.length || s.loading ? "disabled" : ""}>上一页</button><span class="muted">第 ${s.history.length + 1} 页 · 每页 50 条</span><button class="button" data-action="security-next" ${!s.result?.nextCursor || s.loading ? "disabled" : ""}>下一页</button></div>
     </div>
@@ -1141,6 +1141,11 @@ const SECURITY_BODY_LABELS = {
   redaction: { unsupported_stream_fragment: "无法安全重组的未知流式片段", credential_in_arguments: "工具参数中的凭据", credential_continuation: "跨段凭据续片", url_authority_uncertain: "无法确认的长 URL 认证区", credential_prefix_uncertain: "无法确认的长令牌前缀", redaction_buffer_budget: "脱敏工作区不足", cookie_header: "Cookie 头", credential_field: "凭据字段", known_credential: "已知凭据", credential_pattern: "凭据格式", credential_assignment: "凭据赋值", authorization: "认证值", private_key: "私钥", url_credentials: "URL 认证信息", url_credential_parameter: "URL 凭据参数", nested_json_credentials: "参数内嵌 JSON 凭据", incomplete_stream_fragment: "未完成的流式片段", incomplete_body_fragment: "截断文本末尾", unparsed_json_credentials: "含凭据的内嵌 JSON 无法解析", redaction_depth_limit: "脱敏深度上限", redaction_catalog_limit: "凭据字典上限" },
 };
 
+function securityPageMarks(page) {
+  const marks = page?.chunks?.flatMap(chunk => [...(chunk.sensitiveRanges || []), ...(chunk.redactions || [])]) || page?.legacySnapshot?.redactions || [];
+  return [...new Map(marks.map(mark => [JSON.stringify([mark.start, mark.end, mark.reason, mark.location]), mark])).values()];
+}
+
 function securityPageText(page, selection) {
   if (page.legacySnapshot) {
     const snapshot = page.legacySnapshot;
@@ -1149,12 +1154,29 @@ function securityPageText(page, selection) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   return (page.chunks || []).map(chunk => {
-    if (selection.hitUnavailable) return esc(chunk.content);
     const bytes = encoder.encode(chunk.content);
-    const start = Math.max(0, (selection.start ?? -1) - chunk.start);
-    const end = Math.min(bytes.length, (selection.end ?? -1) - chunk.start);
-    if (end <= start) return esc(chunk.content);
-    return `${esc(decoder.decode(bytes.slice(0, start)))}<mark class="security-body-hit" tabindex="-1">${esc(decoder.decode(bytes.slice(start, end)))}</mark>${esc(decoder.decode(bytes.slice(end)))}`;
+    const events = [{ at: 0, sensitive: 0, selected: 0 }, { at: bytes.length, sensitive: 0, selected: 0 }];
+    const add = (range, kind) => {
+      const start = Math.max(0, (range.start ?? -1) - chunk.start);
+      const end = Math.min(bytes.length, (range.end ?? -1) - chunk.start);
+      if (end <= start) return;
+      events.push({ at: start, [kind]: 1 }, { at: end, [kind]: -1 });
+    };
+    for (const range of chunk.sensitiveRanges || []) add(range, "sensitive");
+    if (!selection.hitUnavailable) add(selection, "selected");
+    events.sort((a, b) => a.at - b.at);
+    let at = 0, sensitive = 0, selected = 0, html = "";
+    for (const event of events) {
+      if (event.at > at) {
+        const content = esc(decoder.decode(bytes.slice(at, event.at)));
+        const classes = [sensitive > 0 && "security-sensitive-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
+        html += classes ? `<mark class="${classes}"${selected > 0 ? ' tabindex="-1"' : ""}>${content}</mark>` : content;
+        at = event.at;
+      }
+      sensitive += event.sensitive || 0;
+      selected += event.selected || 0;
+    }
+    return html;
   }).join("");
 }
 
@@ -1173,32 +1195,34 @@ function renderSecurityBody(record) {
   const streamSnapshots = allSnapshots.filter(item => item.id.startsWith("stream/"));
   const selection = s.bodySelection || { snapshotId: "request" };
   const snapshot = allSnapshots.find(item => item.id === selection.snapshotId);
+  const detection = allSnapshots.find(item => item.id === selection.detectionSnapshotId);
   const risk = record.findings?.find(item => item.id === selection.findingId);
   const page = s.bodyPage;
   const labelFor = (item, i) => item.id === "request" ? "请求正文" : item.id === "response" ? "响应正文" : item.id === "request/headers" ? "请求头" : item.id === "response/headers" ? "响应头" : `${item.id.startsWith("stream/") ? "流式内容" : "检测快照"} ${i + 1}`;
-  const marks = page?.chunks?.flatMap(chunk => chunk.redactions || []) || page?.legacySnapshot?.redactions || [];
-  const references = [...new Set((page?.chunks || []).flatMap(chunk => [...chunk.content.matchAll(/"contentSnapshotId":"([^"]+)"/g)].map(match => match[1])))].filter(id => snapshots.some(item => item.id === id));
+  const marks = securityPageMarks(page);
+  const original = snapshot?.contentMode === "original" || page?.chunks?.some(chunk => chunk.sensitiveRanges?.length);
+  const references = [...new Set((page?.chunks || []).flatMap(chunk => [...chunk.content.matchAll(/"contentSnapshotId":"([^"]+)"/g)].map(match => match[1])))].filter(id => allSnapshots.some(item => item.id === id));
   const content = snapshot && selection.snapshotId === snapshot.id ? `${risk ? `<p class="security-selected-risk">正在复核：${esc(securityLabel("rule", risk.ruleId))} · ${esc(securityLabel("stage", risk.evidenceStage))}</p>${selection.detectionSnapshotId ? `<p class="muted">证据来自检测时的流式内容快照，当前已定位到对应的${selection.snapshotId === "response" ? "响应" : "请求"}正文。</p>` : ""}` : ""}
     <p>${esc(SECURITY_BODY_LABELS.source[snapshot.source] || snapshot.source)} · ${esc(SECURITY_BODY_LABELS.state[snapshot.state] || snapshot.state)} · ${esc(securityTime(snapshot.capturedAt))}</p>
-    <p class="muted">正文分段按需加载。凭据显示为 [REDACTED]；高亮位置对应脱敏后的内容。响应事件中的引用可通过“关联流式内容”打开重组快照。</p>
+    <p class="muted">正文分段按需加载。${original ? "敏感内容保留原文并高亮显示，点击位置可定位复核。" : "此旧记录保存的是脱敏内容，已替换的凭据无法恢复。"}响应事件中的引用可通过“关联流式内容”打开重组快照。</p>
     ${s.bodyLoading ? `<p role="status">${s.bodyLocating ? "正在定位凭据命中点…" : "正在加载正文片段…"}</p>` : s.bodyError ? `<div class="notice warning">${esc(s.bodyError)}</div>` : page ? `
       ${page.legacySnapshot?.headers ? `<details><summary>旧记录请求 / 响应头</summary><pre class="code-preview security-body-content">${esc(JSON.stringify(page.legacySnapshot.headers, null, 2))}</pre></details>` : ""}
       ${page.gap ? `<div class="notice warning">此范围存在未保存的正文，不能视为完整证据。</div>` : ""}
-      ${selection.hitUnavailable ? `<div class="notice warning">此检测范围未保留可定位的凭据命中点，仅展示正文上下文。</div>` : ""}
+      ${selection.hitUnavailable ? detection ? `<p class="muted">命中原文保存在下方检测快照中，响应正文保留关联引用。</p>` : `<div class="notice warning">此检测范围未保留可定位的凭据命中点，仅展示正文上下文。</div>` : ""}
       <div class="security-pagination"><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.previousOffset ?? "")}" ${page.previousOffset == null ? "disabled" : ""}>上一段上下文</button><span>${page.rangeStart > 0 ? "源正文" : ""}字节 ${esc(page.offset ?? 0)}–${esc(page.chunks?.at(-1)?.end ?? page.offset ?? 0)} · 本快照 ${esc(snapshot?.byteLength ?? 0)} 字节</span><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.nextOffset ?? "")}" ${page.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div>
       <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection)}</pre>
       ${references.length ? `<div class="security-body-tabs" aria-label="关联流式内容">${references.map((id, i) => `<button class="mini-button" data-action="security-body" data-id="${esc(id)}">关联流式内容 ${i + 1} · ${esc(id.split("/").at(-1).slice(0, 8))}</button>`).join("")}</div>` : ""}
       ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId && selection.sourceStart != null ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart)}">查看完整正文上下文</button>` : ""}
-      <details class="security-redactions"><summary>本页脱敏位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
+      <details class="security-redactions"><summary>本页${original ? "敏感" : "脱敏"}位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
   const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
   const streamPage = s.streamPageSnapshotId === selection.detectionSnapshotId ? s.streamPage : null;
   const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }) : "";
-  const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；局部快照可能不完整，风险定位仍以响应正文为准。</p>${streamSnapshots.map((item, i) => {
-    const active = selection.detectionSnapshotId === item.id;
+  const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；点击风险可查看检测快照中的命中原文，响应正文保留关联引用。</p>${streamSnapshots.map((item, i) => {
+    const active = selection.detectionSnapshotId === item.id || detection?.sourceSnapshotId === item.id;
     const previous = streamSnapshots[i - 1]?.id;
     const next = streamSnapshots[i + 1]?.id;
     const navigation = active ? `<nav class="security-event-nav" aria-label="流式事件导航"><button class="mini-button" data-action="security-event" data-id="${esc(previous || "")}" ${previous ? "" : "disabled"}>上一事件</button><button class="mini-button" data-action="security-event" data-id="${esc(next || "")}" ${next ? "" : "disabled"}>下一事件</button></nav>` : "";
-    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<pre class="code-preview security-body-content">${streamContent}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
+    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<div class="security-pagination"><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.previousOffset ?? "")}" ${streamPage.previousOffset == null ? "disabled" : ""}>上一段上下文</button><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.nextOffset ?? "")}" ${streamPage.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div><pre class="code-preview security-body-content" aria-label="检测快照">${streamContent}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
   }).join("")}</section>` : "";
   return `<section aria-label="正文复核"><h3>正文复核</h3>${panels || `<p class="muted">当前记录没有可展示的请求或响应内容。</p>`}${timeline}</section>`;
 }
@@ -1219,7 +1243,7 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
       if (!current()) return false;
       s.bodyPage = page;
       if (!locateCredential || page.legacySnapshot) break;
-      const mark = (page.chunks || []).flatMap(chunk => chunk.redactions || []).find(mark =>
+      const mark = securityPageMarks(page).find(mark =>
         !["redaction_buffer_budget", "url_authority_uncertain", "credential_prefix_uncertain", "incomplete_body_fragment", "unsupported_stream_fragment"].includes(mark.reason)
         && mark.end > selection.start && mark.start < selection.end);
       if (mark) { selection.start = mark.start; selection.end = mark.end; selection.hitUnavailable = false; break; }
@@ -1233,7 +1257,7 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
   return !s.bodyError;
 }
 
-async function loadSecurityStream(snapshotId) {
+async function loadSecurityStream(snapshotId, offset = Math.max(0, (state.security.bodySelection?.detectionStart || 0) - 512)) {
   const s = state.security;
   const recordId = s.detail?.id;
   if (!recordId || !snapshotId) return false;
@@ -1245,7 +1269,7 @@ async function loadSecurityStream(snapshotId) {
   s.streamError = null;
   if (state.page === "security-detail") render();
   try {
-    const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset: 0 })}`);
+    const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset })}`);
     if (current()) { s.streamPage = page; s.streamPageSnapshotId = snapshotId; }
   } catch (error) {
     if (current()) s.streamError = error.message;
@@ -1260,7 +1284,7 @@ function renderSecurityDetail(record) {
   const facts = [["记录 ID", record.id], ["操作", securityLabel("action", record.action)], ["配置入口", record.providerId || "本地管理"], ["发生时间", securityTime(record.at)], ["结束时间", record.finishedAt ? securityTime(record.finishedAt) : "未记录"], ["请求结果", securityLabel("outcome", record.outcome)], ["HTTP 状态", record.httpStatus ?? "未知"], ["配置修订", record.revision ?? "未知"], ["客户端模型", record.clientModelId || "—"], ["上游模型", record.upstreamModelId || "—"], ["响应头耗时", record.headersMs == null ? "—" : `${record.headersMs} ms`], ["完整记录耗时", record.durationMs == null ? "—" : `${record.durationMs} ms`]];
   if (record.kind === "management") {
     facts.push(["操作对象", record.bindingId || record.providerId || "本地配置"], ["操作后观察到的修订", record.resultRevision ?? "未知"]);
-    if (record.credentialsSubmitted != null) facts.push(["包含凭据变更", record.credentialsSubmitted ? "是（凭据定向脱敏）" : "否"]);
+    if (record.credentialsSubmitted != null) facts.push(["包含凭据变更", record.credentialsSubmitted ? "是" : "否"]);
   }
   return `<section class="panel security-detail" aria-label="审计详情"><div class="panel-header"><h2>请求与操作记录</h2>${securityBadge(record.severity)}</div><div class="panel-body">
     <dl class="security-facts">${facts.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
@@ -1272,7 +1296,7 @@ function renderSecurityDetail(record) {
     ${record.changedSections?.length ? `<p>涉及配置区段：${record.changedSections.map(esc).join("、")}</p>` : ""}
     ${record.usage && Object.keys(record.usage).length ? `<details><summary>上游报告的 Token 用量</summary><pre class="code-preview">${esc(JSON.stringify(record.usage, null, 2))}</pre></details>` : ""}
     <h3>关联风险 · ${record.findings?.length || 0}</h3>
-    ${(record.findings || []).map(f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div><p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>脱敏证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`).join("") || `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>`}
+    ${(record.findings || []).map(f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div><p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`).join("") || `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>`}
     ${renderSecurityBody(record)}
   </div></section>`;
 }
@@ -1302,8 +1326,12 @@ async function securityAction(action, element) {
     await loadSecurityDetail(element.dataset.id);
     return;
   }
-  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page", "security-event"].includes(action)) {
+  if (["security-finding", "security-body", "security-location", "security-source", "security-body-page", "security-event", "security-event-page"].includes(action)) {
     if (!s.detail) return;
+    if (action === "security-event-page") {
+      if (element.dataset.offset !== "") await loadSecurityStream(s.bodySelection.detectionSnapshotId, Number(element.dataset.offset));
+      return;
+    }
     if (action === "security-event") {
       if (!element.dataset.id) return;
       s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
@@ -1318,20 +1346,21 @@ async function securityAction(action, element) {
       const source = ref.sourceSnapshotId || ref.snapshotId;
       const snapshotId = canonicalBodySnapshotId(source);
       const mapped = snapshotId !== ref.snapshotId;
-      s.bodySelection = { ...ref, snapshotId, ...(mapped ? { detectionSnapshotId: ref.snapshotId, detectionStart: ref.start, detectionEnd: ref.end } : {}), ...(mapped && ref.sourceStart != null ? { start: ref.sourceStart, end: ref.sourceEnd } : {}), ...(mapped && ref.sourceStart == null ? { hitUnavailable: true } : {}), findingId: finding?.id };
-      if (mapped && ref.sourceStart == null) { delete s.bodySelection.start; delete s.bodySelection.end; }
+      const unrelatedOffsets = snapshotId !== source;
+      s.bodySelection = { ...ref, snapshotId, ...(mapped ? { detectionSnapshotId: ref.snapshotId, detectionStart: ref.start, detectionEnd: ref.end } : {}), ...(mapped && ref.sourceStart != null ? { start: ref.sourceStart, end: ref.sourceEnd } : {}), ...(mapped && unrelatedOffsets && ref.sourceStart == null ? { hitUnavailable: true } : {}), findingId: finding?.id };
+      if (mapped && unrelatedOffsets && ref.sourceStart == null) { delete s.bodySelection.start; delete s.bodySelection.end; }
     } else if (action === "security-source") {
       const previous = s.bodySelection;
       const id = element.dataset.id;
       s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
     } else if (action === "security-body") {
       const id = element.dataset.id;
-      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: Number(element.dataset.offset || 0) };
+      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), ...(id.startsWith("stream/") ? { detectionSnapshotId: id } : { start: Number(element.dataset.offset || 0) }) };
     }
     else if (action === "security-location") s.bodySelection = { ...s.bodySelection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
     const finding = s.detail.findings?.find(item => item.id === s.bodySelection.findingId);
     const mappedStream = s.bodySelection.detectionSnapshotId != null;
-    const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null);
+    const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null || s.bodySelection.snapshotId === s.bodySelection.sourceSnapshotId);
     const offset = action === "security-body-page" ? Number(element.dataset.offset) : Math.max(0, (s.bodySelection.start || 0) - 512);
     if (!await loadSecurityBody(offset, locateCredential)) return;
     if (s.bodySelection.detectionSnapshotId) await loadSecurityStream(s.bodySelection.detectionSnapshotId);

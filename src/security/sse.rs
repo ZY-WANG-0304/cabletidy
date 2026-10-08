@@ -259,7 +259,6 @@ impl Streams {
             self.terminal = true;
         }
         let mut edits = Edits::new();
-        let mut hidden_payload = false;
         if let Ok(info) = streaming::index(&data.payload, None) {
             let kind = text(&info.values["type"]);
             let key = format!(
@@ -279,7 +278,6 @@ impl Streams {
                             kind.ends_with("done"),
                         )? {
                             p.rules.reasons.insert("unsupported_response_item");
-                            hidden_payload = !kind.ends_with("done");
                         }
                     }
                 }
@@ -307,7 +305,6 @@ impl Streams {
                     };
                     if !supported {
                         p.rules.reasons.insert("unsupported_response_item");
-                        hidden_payload = true;
                     }
                 }
                 "response.function_call_arguments.delta"
@@ -390,7 +387,6 @@ impl Streams {
                     if let Some(item) = node(&info, "content_block") {
                         if !self.item(p, &content, &data.payload, item, &mut edits, false)? {
                             p.rules.reasons.insert("unsupported_response_item");
-                            hidden_payload = true;
                         }
                     }
                 }
@@ -407,7 +403,6 @@ impl Streams {
                             "signature_delta" => "signature",
                             _ => {
                                 p.rules.reasons.insert("unsupported_response_event");
-                                hidden_payload = true;
                                 ""
                             }
                         };
@@ -444,7 +439,6 @@ impl Streams {
                                     kind == "response.completed",
                                 )? {
                                     p.rules.reasons.insert("unsupported_response_item");
-                                    hidden_payload = kind != "response.completed";
                                 }
                             }
                         }
@@ -458,38 +452,26 @@ impl Streams {
                 "message_start" | "message_delta" | "ping" => {}
                 _ => {
                     p.rules.reasons.insert("unsupported_response_event");
-                    hidden_payload = true;
                 }
             }
         } else if data.payload.len > 0 && &prefix[..n] != b"[DONE]" {
             p.rules.reasons.insert("invalid_sse_event");
-            edits.add(
-                0,
-                data.payload.len,
-                serde_json::to_vec("[REDACTED: unparseable SSE event]")?,
-            )?;
         }
         edits.ranges.sort_by_key(|r| r.0);
-        let mut safe_source = Spool::new()?;
-        std::io::copy(&mut edits.reader(&data.payload), &mut safe_source)?;
-        let safe_source = safe_source.seal()?;
-        learn_credentials(&safe_source, &mut p.redactor);
-        // Fragment references replace raw deltas. Their reconstructed content is redacted
-        // as a continuous stream before any fragment is written to the audit database.
+        let mut retained_source = Spool::new()?;
+        std::io::copy(&mut edits.reader(&data.payload), &mut retained_source)?;
+        let retained_source = retained_source.seal()?;
+        learn_credentials(&retained_source, &mut p.redactor);
+        // Fragment references link to reconstructed original content, where credentials
+        // split across events can be detected and highlighted together.
         if data.fields.len > 0 {
             p.render_text(writer, data.fields, "response", true, true)?;
         }
         writer.push("data: ")?;
-        if hidden_payload {
-            // Unknown event schemas may carry credential fragments that cannot be
-            // safely redacted one event at a time.
-            let start = writer.position() + 1;
-            writer.mark("unsupported_stream_fragment", start, start + 10);
-            writer.push("\"[REDACTED]\"")?;
-        } else if learn_credentials(&safe_source, &mut p.redactor) {
-            p.render_json(writer, safe_source, "response", true)?;
+        if learn_credentials(&retained_source, &mut p.redactor) {
+            p.render_json(writer, retained_source, "response", true)?;
         } else {
-            p.render_text(writer, safe_source, "response", true, true)?;
+            p.render_text(writer, retained_source, "response", true, true)?;
         }
         writer.push("\n\n")?;
         Ok(())

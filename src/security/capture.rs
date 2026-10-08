@@ -345,12 +345,11 @@ fn replace_spans(value: &str, spans: &[Span], path: &str, marks: &mut Vec<Value>
 }
 
 pub struct TextPiece {
-    pub raw: String,
     pub text: String,
     pub marks: Vec<Value>,
 }
 
-enum OpenMask {
+enum OpenCredential {
     Jwt { dots: usize, segment: usize },
     Authority,
     Token,
@@ -360,14 +359,13 @@ enum OpenMask {
 pub struct StreamText {
     pending: String,
     forced: bool,
-    marked: bool,
     incomplete: bool,
     budget_gap: bool,
-    open: Option<OpenMask>,
+    open: Option<OpenCredential>,
     _memory: crate::streaming::Reservation,
 }
 impl StreamText {
-    pub fn hide_tail(&mut self) {
+    pub fn mark_incomplete(&mut self) {
         self.incomplete = true;
     }
     pub fn new(forced: bool) -> std::io::Result<Self> {
@@ -376,7 +374,6 @@ impl StreamText {
         Ok(Self {
             pending: String::new(),
             forced,
-            marked: false,
             incomplete: false,
             budget_gap: false,
             open: None,
@@ -391,7 +388,6 @@ impl StreamText {
                 .grow((needed - self._memory.bytes) as usize)
                 .is_err()
         {
-            self.forced = true;
             self.budget_gap = true;
         }
         self.pending.push_str(input);
@@ -407,27 +403,18 @@ impl StreamText {
             if self.pending.is_empty() {
                 break;
             }
-            if self.forced {
+            if self.forced || self.budget_gap {
                 let raw = std::mem::take(&mut self.pending);
-                let marks = if self.marked {
-                    Vec::new()
-                } else {
-                    vec![
-                        json!({"reason":if self.budget_gap{"redaction_buffer_budget"}else{"credential_field"},"start":0,"end":MARKER.len()}),
-                    ]
-                };
-                let text = if self.marked {
-                    String::new()
-                } else {
-                    MARKER.into()
-                };
-                self.marked = true;
-                output.push(TextPiece { raw, text, marks });
+                let marks = vec![
+                    json!({"reason":if self.forced{"credential_field"}else{"redaction_buffer_budget"},"start":0,"end":raw.len()}),
+                ];
+                let text = raw;
+                output.push(TextPiece { text, marks });
                 break;
             }
             if let Some(mask) = &mut self.open {
                 let stop = match mask {
-                    OpenMask::Jwt { dots, segment } => {
+                    OpenCredential::Jwt { dots, segment } => {
                         let mut stop = None;
                         for (i, c) in self.pending.char_indices() {
                             if c == '.' && *dots < 2 && *segment > 0 {
@@ -442,17 +429,17 @@ impl StreamText {
                         }
                         stop
                     }
-                    OpenMask::Authority => self
+                    OpenCredential::Authority => self
                         .pending
                         .char_indices()
                         .find(|(_, c)| c.is_whitespace() || "/@\"'".contains(*c))
                         .map(|(i, _)| i),
-                    OpenMask::Token => self
+                    OpenCredential::Token => self
                         .pending
                         .char_indices()
                         .find(|(_, c)| !c.is_ascii_alphanumeric() && !"._~+/=-".contains(*c))
                         .map(|(i, _)| i),
-                    OpenMask::Assignment(quote, escaped) => {
+                    OpenCredential::Assignment(quote, escaped) => {
                         let mut stop = None;
                         for (i, c) in self.pending.char_indices() {
                             if *escaped {
@@ -472,12 +459,12 @@ impl StreamText {
                         }
                         stop
                     }
-                    OpenMask::Private => PRIVATE_KEY_END.find(&self.pending).map(|m| m.end()),
+                    OpenCredential::Private => PRIVATE_KEY_END.find(&self.pending).map(|m| m.end()),
                 };
                 let n = stop.unwrap_or_else(|| {
                     if end {
                         self.pending.len()
-                    } else if matches!(mask, OpenMask::Private) {
+                    } else if matches!(mask, OpenCredential::Private) {
                         self.pending.len().saturating_sub(128)
                     } else {
                         self.pending.len()
@@ -488,25 +475,27 @@ impl StreamText {
                     n -= 1;
                 }
                 let reason = match mask {
-                    OpenMask::Jwt { dots, segment } if *dots == 2 && *segment > 0 => {
+                    OpenCredential::Jwt { dots, segment } if *dots == 2 && *segment > 0 => {
                         "credential_pattern"
                     }
-                    OpenMask::Jwt { .. } => "credential_prefix_uncertain",
-                    OpenMask::Authority
+                    OpenCredential::Jwt { .. } => "credential_prefix_uncertain",
+                    OpenCredential::Authority
                         if stop.is_some_and(|i| self.pending.as_bytes()[i] == b'@') =>
                     {
                         "url_credentials"
                     }
-                    OpenMask::Authority => "url_authority_uncertain",
+                    OpenCredential::Authority => "url_authority_uncertain",
                     _ => "credential_continuation",
                 };
                 if n == 0 {
                     if stop.is_some() {
                         if reason == "url_credentials" {
+                            // The authority was emitted before its terminating @ arrived.
+                            // Retain and annotate that delimiter when the format is confirmed.
+                            self.pending.remove(0);
                             output.push(TextPiece {
-                                raw: String::new(),
-                                text: MARKER.into(),
-                                marks: vec![json!({"reason":reason,"start":0,"end":MARKER.len()})],
+                                text: "@".into(),
+                                marks: vec![json!({"reason":reason,"start":0,"end":1})],
                             });
                         }
                         self.open = None;
@@ -514,11 +503,10 @@ impl StreamText {
                     }
                     break;
                 }
-                let raw = self.pending.drain(..n).collect();
+                let raw: String = self.pending.drain(..n).collect();
                 output.push(TextPiece {
-                    raw,
-                    text: MARKER.into(),
-                    marks: vec![json!({"reason":reason,"start":0,"end":MARKER.len()})],
+                    text: raw,
+                    marks: vec![json!({"reason":reason,"start":0,"end":n})],
                 });
                 if stop.is_some() || end {
                     self.open = None;
@@ -564,7 +552,7 @@ impl StreamText {
                             end: m.end(),
                             reason: "url_authority_uncertain",
                         });
-                        self.open = Some(OpenMask::Authority);
+                        self.open = Some(OpenCredential::Authority);
                     }
                 }
             }
@@ -597,22 +585,22 @@ impl StreamText {
                 }
                 if !end && span.start < cut && span.end == self.pending.len() {
                     self.open = match span.reason {
-                        "private_key" => Some(OpenMask::Private),
-                        "url_authority_uncertain" => Some(OpenMask::Authority),
+                        "private_key" => Some(OpenCredential::Private),
+                        "url_authority_uncertain" => Some(OpenCredential::Authority),
                         "credential_prefix_uncertain" => {
                             let token = &self.pending[span.start..span.end];
-                            Some(OpenMask::Jwt {
+                            Some(OpenCredential::Jwt {
                                 dots: token.bytes().filter(|b| *b == b'.').count(),
                                 segment: token.rsplit('.').next().unwrap_or("").len(),
                             })
                         }
-                        "credential_pattern" | "authorization" => Some(OpenMask::Token),
+                        "credential_pattern" | "authorization" => Some(OpenCredential::Token),
                         "credential_assignment" | "url_credential_parameter" | "cookie_header" => {
                             let quote = self.pending[..span.start]
                                 .chars()
                                 .next_back()
                                 .filter(|c| *c == '"' || *c == '\'');
-                            Some(OpenMask::Assignment(
+                            Some(OpenCredential::Assignment(
                                 quote,
                                 quote.is_some()
                                     && self.pending[span.start..]
@@ -629,14 +617,13 @@ impl StreamText {
                 }
             }
             let raw: String = self.pending.drain(..cut).collect();
-            let mut marks = Vec::new();
-            let selected: Vec<_> = spans.into_iter().filter(|s| s.end <= cut).collect();
-            let text = replace_spans(&raw, &selected, "", &mut marks);
-            for mark in &mut marks {
-                mark["start"] = mark["range"]["start"].clone();
-                mark["end"] = mark["range"]["end"].clone();
-            }
-            output.push(TextPiece { raw, text, marks });
+            let marks = spans
+                .into_iter()
+                .filter(|s| s.end <= cut)
+                .map(|s| json!({"reason":s.reason,"start":s.start,"end":s.end}))
+                .collect();
+            let text = raw;
+            output.push(TextPiece { text, marks });
             if !end && self.pending.len() <= keep * 2 {
                 break;
             }
@@ -658,7 +645,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn long_credential_continuations_do_not_leak_at_escape_or_token_boundaries() {
+    fn long_credential_continuations_retain_original_text_at_escape_or_token_boundaries() {
         let redactor = Redactor::new(&json!({}));
         let quoted = format!(
             "password=\"{}\\\" tail-private-value\" visible",
@@ -688,15 +675,15 @@ mod tests {
             let mut rules = super::super::rules::Rules::new(&json!({}));
             for piece in raw.as_bytes().chunks(crate::streaming::PAGE) {
                 for output in stream.feed(std::str::from_utf8(piece).unwrap(), &redactor, false) {
-                    rules.redactions(&output.marks, "response_content", "response");
+                    rules.annotations(&output.marks, "response_content", "response");
                     safe.push_str(&output.text);
                 }
             }
             for output in stream.feed("", &redactor, true) {
-                rules.redactions(&output.marks, "response_content", "response");
+                rules.annotations(&output.marks, "response_content", "response");
                 safe.push_str(&output.text);
             }
-            assert!(!safe.contains(forbidden), "{forbidden}: {safe}");
+            assert_eq!(safe, raw, "{forbidden}");
             assert!(safe.contains("visible"));
             assert_eq!(rules.findings.len(), 1, "{forbidden}");
             assert_eq!(rules.findings[0]["confidence"], "medium");

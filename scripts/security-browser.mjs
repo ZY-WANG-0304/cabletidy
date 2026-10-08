@@ -69,9 +69,9 @@ try {
   const responseHit = record.findings.find(f => f.evidenceStage === "response_content");
   for (const finding of [requestHit, responseHit]) {
     assert.equal(finding.ruleId, "SEC-SECRET-001");
-    assert.equal(finding.evidence.bodyRef.matchKind, "redaction");
+    assert.equal(finding.evidence.bodyRef.matchKind, "sensitive");
     assert.ok(finding.evidence.bodyRef.start > 1024 * 1024);
-    assert.equal(finding.evidence.bodyRef.end - finding.evidence.bodyRef.start, 10);
+    assert.equal(finding.evidence.bodyRef.end - finding.evidence.bodyRef.start, Buffer.byteLength(secret));
   }
   browser = await chromium.launch({ headless: true, ...(process.env.CABLETIDY_BROWSER_EXECUTABLE ? { executablePath: process.env.CABLETIDY_BROWSER_EXECUTABLE } : {}) });
   page = await browser.newPage({ viewport: report.viewport });
@@ -89,26 +89,22 @@ try {
     report.screenshots.push(file);
   };
   const visibleHit = async stage => {
-    if (stage === "response-evidence" && await page.locator(".security-event-timeline").count()) {
-      await page.locator(".security-event-timeline").waitFor();
-      assert.doesNotMatch(await page.locator(".security-event-timeline").innerText(), new RegExp(secret));
-      return;
-    }
-    await page.waitForFunction(() => {
+    await page.waitForFunction(expected => {
       const marks = [...document.querySelectorAll(".security-body-hit")];
-      if (marks.map(mark => mark.textContent).join("") !== "[REDACTED]") return false;
-      const box = document.querySelector('[aria-label="保留正文"]').getBoundingClientRect();
+      if (marks.map(mark => mark.textContent).join("") !== expected) return false;
+      const box = marks[0]?.closest(".security-body-content").getBoundingClientRect();
+      if (!box) return false;
       return marks.every(mark => [...mark.getClientRects()].every(rect =>
         rect.top >= Math.max(0, box.top) && rect.bottom <= Math.min(innerHeight, box.bottom)
         && rect.left >= Math.max(0, box.left) && rect.right <= Math.min(innerWidth, box.right)));
-    });
+    }, secret);
     const geometry = await page.evaluate(() => {
       const mark = document.querySelector(".security-body-hit");
-      const body = document.querySelector('[aria-label="保留正文"]');
+      const body = mark.closest(".security-body-content");
       return { text: mark.textContent, hit: mark.getBoundingClientRect().toJSON(), body: body.getBoundingClientRect().toJSON(), bodyScrollTop: body.scrollTop, pageScrollY: scrollY };
     });
-    assert.ok(geometry.bodyScrollTop > 0, "the long body scrolls to its actual hit");
-    assert.doesNotMatch(await page.locator("#page-content").innerText(), new RegExp(secret));
+    if (stage === "request") assert.ok(geometry.bodyScrollTop > 0, "the long body scrolls to its actual hit");
+    assert.match(await page.locator("#page-content").innerText(), new RegExp(secret));
     assert.equal(await page.locator(".security-body-content script").count(), 0);
     report.hits.push({ stage, ...geometry });
   };
@@ -120,7 +116,7 @@ try {
     assert.equal(await page.locator(".security-detail").count(), 0);
   };
   await page.goto(app.url);
-  await page.getByRole("button", { name: "安全", exact: true }).click();
+  await page.getByRole("button", { name: "审计记录", exact: true }).click();
   await page.locator(".security-table tbody tr").first().waitFor();
   await page.getByLabel("仅看有风险").check();
   await page.locator('[name="category"]').selectOption("sensitive_data");
@@ -153,12 +149,12 @@ try {
   await page.reload();
   await page.locator(".security-detail").waitFor();
   assert.equal(await page.locator(".security-table, #security-filter-form").count(), 0);
-  await page.getByRole("button", { name: "返回审计日志", exact: true }).click();
+  await page.getByRole("button", { name: "返回审计记录", exact: true }).click();
   await checkList(savedScroll);
   await screenshot("04-desktop-list-restored.png");
   report.checks.push("browser back/forward, detail reload and return button restore applied filters, page two and exact list scroll");
   assert.deepEqual(errors, []);
-  report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and credentials remain redacted");
+  report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;
   report.passed = true;
   await fs.writeFile(path.join(output, "report.json"), JSON.stringify(report, null, 2) + "\n");

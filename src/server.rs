@@ -1602,7 +1602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn internal_local_errors_retain_the_returned_body_with_credential_redaction() {
+    async fn internal_local_errors_retain_the_returned_body_with_sensitive_ranges() {
         let dir = tempfile::tempdir().unwrap();
         let security = security::Security::new(dir.path());
         let audit = security.audit(
@@ -1644,7 +1644,17 @@ mod tests {
         let page = security.store.query(query).await.unwrap();
         let retained: Value = serde_json::from_str(text(&page["chunks"][0]["content"])).unwrap();
         assert_eq!(retained["error"]["code"], "internal_error");
-        assert_eq!(retained["error"]["message"], "write failed: [REDACTED]");
+        assert_eq!(
+            retained["error"]["message"],
+            "write failed: test-error-credential"
+        );
+        let hit = &page["chunks"][0]["sensitiveRanges"][0];
+        let content = text(&page["chunks"][0]["content"]);
+        assert_eq!(
+            &content
+                [hit["start"].as_u64().unwrap() as usize..hit["end"].as_u64().unwrap() as usize],
+            "test-error-credential"
+        );
     }
 
     #[test]

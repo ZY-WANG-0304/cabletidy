@@ -185,7 +185,7 @@ impl Rules {
         );
     }
 
-    pub fn redactions(&mut self, marks: &[Value], stage: &str, location: &str) {
+    pub fn annotations(&mut self, marks: &[Value], stage: &str, location: &str) {
         let mut credential = false;
         let mut known = false;
         for mark in marks {
@@ -802,7 +802,7 @@ mod tests {
     fn hidden_uncertain_fragments_do_not_imply_confirmed_credentials() {
         let mut rules = Rules::new(&json!({"relay":"x"}));
         rules.content("an ordinary example", "response_content", "response");
-        rules.redactions(
+        rules.annotations(
             &[
                 json!({"reason":"redaction_buffer_budget"}),
                 json!({"reason":"url_authority_uncertain"}),

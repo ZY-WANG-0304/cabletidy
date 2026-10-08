@@ -117,7 +117,7 @@ impl Pipeline {
         } else {
             let id = format!("evidence/{}", uuid::Uuid::new_v4());
             if !self.store.body(text(&self.record["id"]),json!({"id":id,"root":"evidence","source":if snapshot.starts_with("stream/"){ "stream_inspection" }else{"inspection_range"},"sourceSnapshotId":snapshot,
-                "rangeStart":start.saturating_sub(512),"rangeEnd":end,"byteLength":end-start.saturating_sub(512),"format":"text","state":"complete","capturedAt":crate::config::now()})){self.failed=true;self.rules.reasons.insert("evidence_storage_unavailable");}
+                "rangeStart":start.saturating_sub(512),"rangeEnd":end,"byteLength":end-start.saturating_sub(512),"format":"text","contentMode":"original","state":"complete","capturedAt":crate::config::now()})){self.failed=true;self.rules.reasons.insert("evidence_storage_unavailable");}
             id
         };
         for finding in &mut self.rules.findings[before..] {
@@ -126,7 +126,7 @@ impl Pipeline {
             finding["requestId"] = self.record["id"].clone();
             finding["evidence"]["bodyRef"] = json!({"snapshotId":evidence,"sourceSnapshotId":snapshot,"start":start,"end":end,"unit":"utf8_bytes"});
             if hit.is_some() {
-                finding["evidence"]["bodyRef"]["matchKind"] = json!("redaction");
+                finding["evidence"]["bodyRef"]["matchKind"] = json!("sensitive");
             }
         }
     }
@@ -232,7 +232,7 @@ impl Pipeline {
         inspect: bool,
         complete: bool,
     ) -> Result<()> {
-        let mut masker = StreamText::new(!self.redactor.available())?;
+        let mut masker = StreamText::new(false)?;
         let mut reader = Utf8Reader::new(spool.reader());
         let mut previous = String::new();
         while let Some(part) = reader.next()? {
@@ -248,7 +248,7 @@ impl Pipeline {
             }
         }
         if !complete {
-            masker.hide_tail();
+            masker.mark_incomplete();
             self.rules.reasons.insert("incomplete_body_fragment");
         }
         for piece in masker.feed("", &self.redactor, true) {
@@ -272,9 +272,9 @@ impl Pipeline {
             "response_content"
         };
         if inspect {
-            let window = format!("{previous}{}", piece.raw);
+            let window = format!("{previous}{}", piece.text);
             self.rules.content(&window, stage, root);
-            self.rules.redactions(&piece.marks, stage, root);
+            self.rules.annotations(&piece.marks, stage, root);
             *previous = tail(&window, 1024).into();
         }
         for mark in &piece.marks {
@@ -322,7 +322,7 @@ pub struct BodyWriter {
 }
 impl BodyWriter {
     pub fn new(store: Arc<Store>, audit: &str, id: &str, source: &str) -> Result<Self> {
-        if !store.body(audit,json!({"id":id,"source":source,"root":id,"format":"text","state":"receiving","byteLength":0,"capturedAt":crate::config::now()})){bail!("body_storage_unavailable");}
+        if !store.body(audit,json!({"id":id,"source":source,"root":id,"format":"text","contentMode":"original","state":"receiving","byteLength":0,"capturedAt":crate::config::now()})){bail!("body_storage_unavailable");}
         Ok(Self {
             store,
             audit: audit.into(),
@@ -357,8 +357,16 @@ impl BodyWriter {
         Ok(())
     }
     pub(super) fn mark(&mut self, reason: &str, start: u64, end: u64) {
-        self.marks
-            .push(json!({"reason":reason,"start":start,"end":end,"unit":"utf8_bytes"}));
+        if start < end {
+            let kind = if credential_mark(&json!({"reason":reason})) {
+                "sensitive"
+            } else {
+                "coverage"
+            };
+            self.marks.push(
+                json!({"kind":kind,"reason":reason,"start":start,"end":end,"unit":"utf8_bytes"}),
+            );
+        }
     }
     pub fn flush(&mut self) -> Result<()> {
         if self.buffer.is_empty() {
@@ -378,7 +386,7 @@ impl BodyWriter {
         self.marks.retain(|m| m["end"].as_u64().unwrap_or(0) > to);
         if !self.store.body(
             &self.audit,
-            json!({"id":self.id,"start":self.offset,"end":to,"content":content,"redactions":marks}),
+            json!({"id":self.id,"start":self.offset,"end":to,"content":content,"annotations":marks}),
         ) {
             self.failed = true;
             bail!("body_storage_budget_or_failure");
@@ -389,7 +397,7 @@ impl BodyWriter {
     pub fn finish(&mut self, state: &str, observed: u64) -> Result<()> {
         let result = self.flush();
         let state = if self.failed { "gap" } else { state };
-        if !self.store.body(&self.audit,json!({"id":self.id,"source":self.source,"root":self.id,"format":"text","state":state,"byteLength":self.offset,"observedBytes":observed,"capturedAt":crate::config::now()})){bail!("body_manifest_storage_failure");}
+        if !self.store.body(&self.audit,json!({"id":self.id,"source":self.source,"root":self.id,"format":"text","contentMode":"original","state":state,"byteLength":self.offset,"observedBytes":observed,"capturedAt":crate::config::now()})){bail!("body_manifest_storage_failure");}
         result
     }
 }
@@ -399,8 +407,7 @@ struct Frame {
     field: String,
     kind: u8,
     start: u64,
-    hidden: bool,
-    masked_container: bool,
+    credential: bool,
     stage: String,
     tools: bool,
     meta: Value,
@@ -436,7 +443,7 @@ impl BodyVisitor<'_> {
             let frame = self.frames.last_mut().unwrap();
             let before = self.pipeline.rules.findings.len();
             if self.inspect {
-                let window = format!("{}{}", frame.previous, piece.raw);
+                let window = format!("{}{}", frame.previous, piece.text);
                 self.pipeline
                     .rules
                     .content(&window, &frame.stage, &frame.path);
@@ -447,47 +454,37 @@ impl BodyVisitor<'_> {
                 frame.previous = tail(&window, 1024).into();
                 self.pipeline
                     .rules
-                    .redactions(&piece.marks, &frame.stage, &frame.path);
+                    .annotations(&piece.marks, &frame.stage, &frame.path);
             }
             let start = self.writer.position();
             let mut credential_hit = None;
-            if !frame.hidden {
-                let escaped = serde_json::to_string(&piece.text)?;
-                for mark in &piece.marks {
-                    let byte = |at: u64| {
-                        let mut at = (at as usize).min(piece.text.len());
-                        while !piece.text.is_char_boundary(at) {
-                            at -= 1;
-                        }
-                        serde_json::to_string(&piece.text[..at]).unwrap().len() - 2
-                    };
-                    let from = start + byte(mark["start"].as_u64().unwrap_or(0)) as u64;
-                    let to = start
-                        + byte(mark["end"].as_u64().unwrap_or(piece.text.len() as u64)) as u64;
-                    self.writer.mark(text(&mark["reason"]), from, to);
-                    if credential_hit.is_none() && credential_mark(mark) {
-                        credential_hit = Some((from, to));
+            let escaped = serde_json::to_string(&piece.text)?;
+            for mark in &piece.marks {
+                let byte = |at: u64| {
+                    let mut at = (at as usize).min(piece.text.len());
+                    while !piece.text.is_char_boundary(at) {
+                        at -= 1;
                     }
+                    serde_json::to_string(&piece.text[..at]).unwrap().len() - 2
+                };
+                let from = start + byte(mark["start"].as_u64().unwrap_or(0)) as u64;
+                let to =
+                    start + byte(mark["end"].as_u64().unwrap_or(piece.text.len() as u64)) as u64;
+                self.writer.mark(text(&mark["reason"]), from, to);
+                if credential_hit.is_none() && credential_mark(mark) && from < to {
+                    credential_hit = Some((from, to));
                 }
-                self.writer.push(&escaped[1..escaped.len() - 1])?;
             }
+            self.writer.push(&escaped[1..escaped.len() - 1])?;
             let end = self.writer.position();
             if self.inspect {
-                let stage = frame.stage.clone();
-                let hidden = frame.hidden;
-                let (start, end) = if hidden {
-                    self.frames
-                        .iter()
-                        .find(|f| f.masked_container)
-                        .map_or((start, end), |f| (f.start + 1, f.start + 11))
-                } else {
-                    (start, end)
-                };
-                if hidden {
-                    credential_hit = Some((start, end));
-                }
-                self.pipeline
-                    .findings(before, &self.root, (start, end), &stage, credential_hit);
+                self.pipeline.findings(
+                    before,
+                    &self.root,
+                    (start, end),
+                    &frame.stage,
+                    credential_hit,
+                );
             }
             if self.writer.position() - self.last_progress >= 1024 * 1024 {
                 self.writer.flush()?;
@@ -501,7 +498,8 @@ impl BodyVisitor<'_> {
 impl Visitor for BodyVisitor<'_> {
     fn start(&mut self, path: &str, field: &str, kind: u8, at: u64) -> Result<()> {
         let parent = self.frames.last();
-        let hidden = parent.is_some_and(|p| p.hidden || p.masked_container);
+        let credential =
+            kind != b'k' && (credential_field(field) || parent.is_some_and(|p| p.credential));
         let tools = parent.map(|p| p.tools).unwrap_or(self.root != "request")
             || self.root == "request"
                 && self.frames.len() == 1
@@ -537,16 +535,9 @@ impl Visitor for BodyVisitor<'_> {
             &inherited
         }
         .to_owned();
-        let forced = credential_field(field) || !self.pipeline.redactor.available();
-        let masked_container = forced && kind != b'"' && kind != b'k';
         let start = self.writer.position();
-        if !hidden {
-            if masked_container {
-                self.writer.mark("credential_field", start + 1, start + 11);
-                self.writer.push("\"[REDACTED]\"")?;
-            } else if kind == b'"' || kind == b'k' {
-                self.writer.push("\"")?;
-            }
+        if kind == b'"' || kind == b'k' {
+            self.writer.push("\"")?;
         }
         let tools = tools
             && !matches!(
@@ -558,8 +549,7 @@ impl Visitor for BodyVisitor<'_> {
             field: field.into(),
             kind,
             start,
-            hidden,
-            masked_container,
+            credential,
             stage,
             tools,
             meta,
@@ -567,7 +557,7 @@ impl Visitor for BodyVisitor<'_> {
             input_start: 0,
             input_end: 0,
             text: if kind == b'"' || kind == b'k' {
-                Some(StreamText::new(forced || hidden)?)
+                Some(StreamText::new(credential)?)
             } else {
                 None
             },
@@ -590,24 +580,30 @@ impl Visitor for BodyVisitor<'_> {
         self.pieces(pieces)
     }
     fn scalar(&mut self, s: &str) -> Result<()> {
-        if !self
-            .frames
-            .last()
-            .is_some_and(|p| p.hidden || p.masked_container)
-        {
-            self.writer.push(s)?;
+        let frame = self.frames.last().unwrap();
+        let before = self.pipeline.rules.findings.len();
+        let start = self.writer.position();
+        let end = start + s.len() as u64;
+        // JSON null means the credential is absent, but must still be retained.
+        let credential = frame.credential && s != "null";
+        let hit = credential.then_some((start, end));
+        if credential {
+            self.writer.mark("credential_field", start, end);
+            if self.inspect {
+                self.pipeline
+                    .rules
+                    .credential(&frame.stage, &frame.path, true);
+            }
+        }
+        self.writer.push(s)?;
+        if self.inspect {
+            self.pipeline
+                .findings(before, &self.root, (start, end), &frame.stage, hit);
         }
         Ok(())
     }
     fn punctuation(&mut self, s: &str) -> Result<()> {
-        if !self
-            .frames
-            .last()
-            .is_some_and(|p| p.hidden || p.masked_container)
-        {
-            self.writer.push(s)?;
-        }
-        Ok(())
+        self.writer.push(s)
     }
     fn end(&mut self, node: &Node) -> Result<()> {
         let incomplete_payload = self.pipeline.incomplete
@@ -617,13 +613,13 @@ impl Visitor for BodyVisitor<'_> {
             );
         if let Some(text) = self.frames.last_mut().unwrap().text.as_mut() {
             if incomplete_payload {
-                text.hide_tail();
+                text.mark_incomplete();
             }
             let pieces = text.feed("", &self.pipeline.redactor, true);
             self.pieces(pieces)?;
         }
         let frame = self.frames.pop().unwrap();
-        if !frame.hidden && (frame.kind == b'"' || frame.kind == b'k') {
+        if frame.kind == b'"' || frame.kind == b'k' {
             self.writer.push("\"")?;
         }
         let end = self.writer.position();
@@ -664,9 +660,9 @@ impl Visitor for BodyVisitor<'_> {
                         );
                         if before < self.pipeline.rules.findings.len() {
                             let id = format!("evidence/{}", uuid::Uuid::new_v4());
-                            let mut safe = parsed;
-                            self.pipeline.redactor.sanitize(&mut safe);
-                            let content = serde_json::to_string(&safe)?;
+                            let mut content = Spool::new()?;
+                            serde_json::to_writer(&mut content, &parsed)?;
+                            let content = content.seal()?;
                             let mut evidence = BodyWriter::new(
                                 self.pipeline.store.clone(),
                                 text(&self.pipeline.record["id"]),
@@ -677,20 +673,15 @@ impl Visitor for BodyVisitor<'_> {
                                     "tool_inspection"
                                 },
                             )?;
-                            for (at, _) in content.match_indices("[REDACTED]") {
-                                evidence.mark(
-                                    "credential_in_arguments",
-                                    at as u64,
-                                    (at + 10) as u64,
-                                );
-                            }
-                            // The evidence contains only recognized semantic arguments. The body reference
-                            // also retains the complete original parameter range for contextual review.
-                            evidence.push(&content)?;
+                            // Keep the semantic arguments and their sensitive ranges in the
+                            // immutable evidence snapshot, with a link to the full parameters.
+                            self.pipeline
+                                .render_json(&mut evidence, content, &id, false)?;
+                            let length = evidence.position();
                             evidence.finish("complete", input.end - input.start)?;
                             for finding in &mut self.pipeline.rules.findings[before..] {
                                 finding["requestId"] = self.pipeline.record["id"].clone();
-                                finding["evidence"]["bodyRef"] = json!({"snapshotId":id,"start":0,"end":content.len(),"unit":"utf8_bytes","sourceSnapshotId":self.root,"sourceStart":frame.input_start,"sourceEnd":frame.input_end});
+                                finding["evidence"]["bodyRef"] = json!({"snapshotId":id,"start":0,"end":length,"unit":"utf8_bytes","sourceSnapshotId":self.root,"sourceStart":frame.input_start,"sourceEnd":frame.input_end});
                             }
                         }
                     }
@@ -976,7 +967,7 @@ pub(super) fn run(
             learn_credentials(spool, &mut p.redactor);
         }
     }
-    super::sanitize_labels(&mut p.record, &p.redactor);
+    super::limit_labels(&mut p.record);
     if !p.record["captureGap"].is_null() {
         p.rules.reasons.insert("shared_encrypted_spool_budget");
     }

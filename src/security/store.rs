@@ -407,7 +407,12 @@ fn persist(db: &mut Connection, mut record: Value) -> Result<()> {
 fn persist_body(db: &Connection, audit: &str, value: &Value) -> Result<()> {
     let id = config::text(&value["id"]);
     if let Some(content) = value["content"].as_str() {
-        let redactions = value["redactions"].to_string();
+        // Reuse the existing column; tagged annotations distinguish original-content
+        // ranges from redactions written by older versions.
+        let redactions = value
+            .get("annotations")
+            .unwrap_or(&value["redactions"])
+            .to_string();
         let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         // Leave database pages available for terminal states, findings and gap records.
         let additional = (content.len() + redactions.len()) as u64 + 4 * page_size;
@@ -488,7 +493,10 @@ fn read_body_page(db: &Connection, audit: &str, snapshot: &str, offset: u64) -> 
                     && m["end"].as_u64().unwrap_or(0) > at + left as u64
             })
             .collect();
-        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"redactions":marks}));
+        let sensitive: Vec<_> = marks.iter().filter(|m| m["kind"] == "sensitive").collect();
+        let coverage: Vec<_> = marks.iter().filter(|m| m["kind"] == "coverage").collect();
+        let legacy: Vec<_> = marks.iter().filter(|m| m["kind"].is_null()).collect();
+        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"sensitiveRanges":sensitive,"coverageRanges":coverage,"redactions":legacy}));
     }
     let first = items
         .first()

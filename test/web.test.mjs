@@ -213,7 +213,7 @@ test("security page filters, paginates and renders evidence as text without cont
   assert.equal(app.read("state.security.filters.hours"), "168");
   await app.action("security-reset", { dataset: {} });
   html = app.read("renderSecurity()");
-  assert.match(html, /审计日志/);
+  assert.match(html, /审计记录/);
   assert.match(html, /name="confidence"/);
   assert.doesNotMatch(html, /security-view|data-view="findings"/);
   assert.equal(app.read("state.security.filters.hours"), "24");
@@ -235,7 +235,7 @@ test("security reads distinguish empty results from failures and refresh visible
   assert.equal(app.read("state.security.detail.outcome"), "completed");
   fail = true;
   await app.action("refresh", {});
-  assert.match(app.read("renderSecurityDetailPage()"), /审计存储暂不可用|返回审计日志/);
+  assert.match(app.read("renderSecurityDetailPage()"), /审计存储暂不可用|返回审计记录/);
   await app.action("security-back", {});
   await app.action("refresh", {});
   const html = app.read("renderSecurity()");
@@ -321,7 +321,7 @@ test("a direct audit detail URL loads independently and failed reads retain list
   await setImmediate();
   assert.equal(app.read("state.page"), "security-detail");
   assert.match(app.node("#page-content").innerHTML, /记录已清理/);
-  assert.match(app.node("#page-content").innerHTML, /返回审计日志/);
+  assert.match(app.node("#page-content").innerHTML, /返回审计记录/);
   assert.doesNotMatch(app.node("#page-content").innerHTML, /security-table|security-filter-form/);
   await app.action("security-back", {});
   assert.equal(app.read("state.page"), "security");
@@ -352,6 +352,41 @@ test("old credential windows locate the annotated hit across pages without highl
   assert.equal(app.read("state.security.detail.findings[0].evidence.bodyRef.start"), 80000, "historical evidence is immutable");
   assert.match(app.node("#page-content").innerHTML, /<mark[^>]+>\[REDACTED\]<\/mark> retained context/);
   assert.doesNotMatch(app.node("#page-content").innerHTML, /<mark[^>]+>普通上下文/);
+});
+
+test("original sensitive content is highlighted automatically across UTF-8 chunks and remains escaped", async () => {
+  const credential = '秘密<&"key';
+  const prefix = "普通上下文 ";
+  const content = prefix + credential + " tail";
+  const start = Buffer.byteLength(prefix);
+  const end = start + Buffer.byteLength(credential);
+  const split = start + Buffer.byteLength("秘密");
+  const bytes = Buffer.from(content);
+  const range = { start, end, reason: "known_credential" };
+  const chunks = [
+    { start: 0, end: split, content: bytes.subarray(0, split).toString(), sensitiveRanges: [range] },
+    { start: split, end: bytes.length, content: bytes.subarray(split).toString(), sensitiveRanges: [range] },
+  ];
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) return { body: { chunks, nextOffset: null } };
+    if (url.includes("/audit/original")) return { body: { record: { id: "original", schemaVersion: 4,
+      bodySnapshots: [{ id: "request", contentMode: "original" }],
+      findings: [{ id: "secret", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: "request", start, end, matchKind: "sensitive" } } }],
+    } } };
+  } });
+  assert.equal(app.read('PAGE_META.security'), "审计记录");
+  await app.action("security-detail", { dataset: { id: "original" } });
+  let html = app.read("securityPageText(state.security.bodyPage, state.security.bodySelection)");
+  assert.match(html, /security-sensitive-hit/);
+  assert.doesNotMatch(html, /security-body-hit/);
+  assert.equal(html.replace(/<mark[^>]*>|<\/mark>/g, ""), app.read(`esc(${JSON.stringify(content)})`));
+  assert.match(app.node("#page-content").innerHTML, /敏感内容保留原文并高亮显示/);
+  assert.match(app.node("#page-content").innerHTML, /本页敏感位置 · 1/);
+  await app.action("security-finding", { dataset: { id: "secret" } });
+  html = app.read("securityPageText(state.security.bodyPage, state.security.bodySelection)");
+  assert.equal([...html.matchAll(/<mark[^>]*security-body-hit[^>]*>(.*?)<\/mark>/g)].map(match => match[1]).join(""), app.read(`esc(${JSON.stringify(credential)})`));
+  assert.equal(app.read("state.security.bodySelection.hitUnavailable"), false);
+  assert.doesNotMatch(html, /�|\[REDACTED\]/);
 });
 
 test("missing credential annotations show a location gap instead of highlighting a whole window", async () => {
@@ -438,6 +473,49 @@ test("stream findings map to the response body and expose a separate event timel
   const unmappedHtml = app.read("renderSecurityDetailPage()");
   const responsePanel = unmappedHtml.match(/data-security-snapshot="response"[\s\S]*?<\/details><section class="security-event-timeline"/)?.[0] || "";
   assert.doesNotMatch(responsePanel, /security-body-hit/);
+});
+
+for (const streamed of [false, true]) test(`original ${streamed ? "stream" : "response"} evidence opens the actual credential at its source offsets`, async () => {
+  const credential = "original-response-credential";
+  const start = 1200000;
+  const end = start + Buffer.byteLength(credential);
+  const source = streamed ? "stream/one" : "response";
+  const evidence = "evidence/one";
+  const snapshots = [
+    { id: "request", contentMode: "original" },
+    { id: "response", contentMode: "original" },
+    ...(streamed ? [{ id: source, contentMode: "original" }] : []),
+    { id: evidence, sourceSnapshotId: source, rangeStart: start - 10, rangeEnd: end, contentMode: "original" },
+  ];
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) {
+      const id = new URL(url, "http://test").searchParams.get("snapshot");
+      if (streamed && id === "response") return { body: { chunks: [{ start: 0, end: 34, content: '{"contentSnapshotId":"stream/one"}' }] } };
+      return { body: { chunks: [{ start, end, content: credential, sensitiveRanges: [{ start, end, reason: "known_credential" }] }], nextOffset: end } };
+    }
+    if (url.includes("/audit/original-response")) return { body: { record: { id: "original-response", bodySnapshots: snapshots,
+      findings: [{ id: "secret", ruleId: "SEC-SECRET-001", evidence: { bodyRef: { snapshotId: evidence, sourceSnapshotId: source, start, end, matchKind: "sensitive" } } }],
+    } } };
+  } });
+  await app.action("security-detail", { dataset: { id: "original-response" } });
+  await app.action("security-finding", { dataset: { id: "secret" } });
+  let html = app.read("renderSecurityDetailPage()");
+  assert.match(html, /<mark[^>]*security-body-hit[^>]*>original-response-credential<\/mark>/);
+  assert.ok(app.requests.some(r => r.url.includes(`offset=${start - 512}`)));
+  assert.doesNotMatch(html, /未保留可定位的凭据命中点/);
+  if (streamed) {
+    assert.match(html, /class="security-event" open/);
+    assert.match(html, /aria-label="检测快照"/);
+    assert.match(html, /data-action="security-body" data-id="stream\/one"/);
+    await app.action("security-event-page", { dataset: { offset: String(end) } });
+    assert.ok(app.requests.at(-1).url.includes(`offset=${end}`));
+    await app.action("security-body", { dataset: { id: source } });
+    assert.equal(app.read("state.security.streamPageSnapshotId"), source);
+    html = app.read("renderSecurityDetailPage()");
+    assert.match(html, /<mark[^>]*security-sensitive-hit[^>]*>original-response-credential<\/mark>/);
+  } else {
+    assert.equal(app.read("state.security.bodySelection.start"), start);
+  }
 });
 
 test("late stream evidence cannot replace the currently selected event", async () => {
