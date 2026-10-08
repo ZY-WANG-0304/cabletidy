@@ -40,7 +40,7 @@ const upstream = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ model: body.model, output: body.reviewCase ? [{ type: "output_text", text }] : [] }));
 });
 await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
-let app, browser, page, releaseRaceRefresh;
+let app, browser, page, releaseRaceRefresh, releaseBodyExpansion;
 const report = { viewport: { width: 1440, height: 1000 }, screenshots: [], hits: [], checks: [] };
 try {
   app = await createApplication({ paths: getPaths(home), loadCodexCatalog: async () => catalogFixture() });
@@ -201,6 +201,75 @@ try {
   assert.equal(await page.locator(".security-event-timeline").count(), 1);
   assert.match(await page.locator(".security-event-timeline").innerText(), /流式事件/);
   report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
+  const bodyRequests = [];
+  const trackBodyRequest = request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith(`/security/audit/${audit.id}/body`)) bodyRequests.push(url.searchParams.get("snapshot"));
+  };
+  page.on("request", trackBodyRequest);
+  for (const id of ["request/headers", "request", "response/headers", "response"]) {
+    const panel = page.locator(`[data-security-snapshot="${id}"]`);
+    assert.equal(await panel.getAttribute("open"), null);
+    const before = bodyRequests.length;
+    await panel.locator("summary").first().click();
+    await panel.locator(".security-body-content").first().waitFor();
+    assert.ok((await panel.locator(".security-body-content").first().innerText()).length > 0);
+    await delay(100);
+    assert.deepEqual(bodyRequests.slice(before), [id], "expanding loads exactly once despite rerendering");
+    const content = await panel.innerText();
+    await panel.locator("summary").first().click();
+    await panel.locator("summary").first().click();
+    await delay(100);
+    assert.equal(await panel.innerText(), content);
+    assert.equal(bodyRequests.length, before + 1, "reopening loaded content avoids duplicate requests");
+  }
+  const eventId = await page.locator("[data-security-event]").first().getAttribute("data-security-event");
+  const eventIndex = await page.locator(".security-event").evaluateAll((nodes, id) => nodes.findIndex(node => node.dataset.securityEvent === id), eventId);
+  const eventPanel = page.locator(".security-event").nth(eventIndex);
+  const beforeEvent = bodyRequests.length;
+  await eventPanel.locator("summary").click();
+  await eventPanel.getByLabel("检测快照").waitFor();
+  assert.ok((await eventPanel.getByLabel("检测快照").innerText()).length > 0);
+  await delay(100);
+  assert.deepEqual(bodyRequests.slice(beforeEvent), [eventId]);
+  await eventPanel.locator("summary").click();
+  await eventPanel.locator("summary").click();
+  await delay(100);
+  assert.equal(bodyRequests.length, beforeEvent + 1);
+  const bodyGate = new Promise(resolve => { releaseBodyExpansion = resolve; });
+  let bodyEntered;
+  const bodyPrefetched = new Promise(resolve => { bodyEntered = resolve; });
+  const delayedBody = url => url.pathname.endsWith(`/security/audit/${audit.id}/body`) && url.searchParams.get("snapshot") === "request/headers";
+  await page.route(delayedBody, async route => {
+    const response = await route.fetch();
+    bodyEntered();
+    await bodyGate;
+    await route.fulfill({ response });
+  });
+  const headerPanel = page.locator('[data-security-snapshot="request/headers"]');
+  const beforeInterleaved = bodyRequests.length;
+  await headerPanel.locator("summary").first().click();
+  await bodyPrefetched;
+  assert.match(await headerPanel.innerText(), /正在加载正文片段/);
+  const concurrentEventId = await page.locator("[data-security-event]").first().getAttribute("data-security-event");
+  const concurrentEventIndex = await page.locator(".security-event").evaluateAll((nodes, id) => nodes.findIndex(node => node.dataset.securityEvent === id), concurrentEventId);
+  const concurrentEventPanel = page.locator(".security-event").nth(concurrentEventIndex);
+  await concurrentEventPanel.locator("summary").click();
+  await concurrentEventPanel.getByLabel("检测快照").waitFor();
+  const eventContent = await concurrentEventPanel.getByLabel("检测快照").innerText();
+  releaseBodyExpansion();
+  await headerPanel.locator(".security-body-content").first().waitFor();
+  assert.ok((await headerPanel.locator(".security-body-content").first().innerText()).length > 0);
+  assert.doesNotMatch(await headerPanel.innerText(), /正在加载正文片段/);
+  assert.equal(await concurrentEventPanel.getByLabel("检测快照").innerText(), eventContent);
+  await headerPanel.locator("summary").first().click();
+  await headerPanel.locator("summary").first().click();
+  await delay(100);
+  assert.deepEqual(bodyRequests.slice(beforeInterleaved), ["request/headers", concurrentEventId]);
+  await page.unroute(delayedBody);
+  report.checks.push("expanding a stream event while headers are loading preserves both responses and avoids restarting the stream request when headers arrive");
+  page.off("request", trackBodyRequest);
+  report.checks.push("collapsed request/response headers, bodies and stream events load on expansion without rerender request loops; reopening preserves loaded content");
   await page.goBack();
   await checkList(savedScroll);
   await page.goForward();
@@ -289,6 +358,7 @@ try {
   throw error;
 } finally {
   releaseRaceRefresh?.();
+  releaseBodyExpansion?.();
   await browser?.close();
   await app?.close();
   upstream.closeAllConnections();

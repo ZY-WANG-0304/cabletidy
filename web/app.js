@@ -620,10 +620,14 @@ pageContent.addEventListener("change", (event) => {
 
 pageContent.addEventListener("toggle", (event) => {
   const panel = event.target;
-  if (panel.matches("[data-security-snapshot]") && panel.open) {
+  if (!panel.open || !pageContent.contains(panel)) return;
+  // Rendering an already-selected panel also fires toggle; preserve its page and risk selection.
+  if (panel.matches("[data-security-snapshot]") && panel.dataset.securitySnapshot !== state.security.bodySelection?.snapshotId) {
     securityAction("security-body", { dataset: { id: panel.dataset.securitySnapshot } });
+  } else if (panel.matches("[data-security-event]")) {
+    securityAction("security-event", { dataset: { id: panel.dataset.securityEvent } });
   }
-});
+}, true);
 
 pageContent.addEventListener("input", (event) => {
   if (event.target.matches('#suite-create-form [data-create-field="clientModelId"]')) {
@@ -1404,7 +1408,7 @@ function renderSecurityBody(record) {
     const previous = streamSnapshots[i - 1]?.id;
     const next = streamSnapshots[i + 1]?.id;
     const navigation = active ? `<nav class="security-event-nav" aria-label="流式事件导航"><button class="mini-button" data-action="security-event" data-id="${esc(previous || "")}" ${previous ? "" : "disabled"}>上一事件</button><button class="mini-button" data-action="security-event" data-id="${esc(next || "")}" ${next ? "" : "disabled"}>下一事件</button></nav>` : "";
-    return `<details class="security-event" ${active ? "open" : ""}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<div class="security-pagination"><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.previousOffset ?? "")}" ${streamPage.previousOffset == null ? "disabled" : ""}>上一段上下文</button><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.nextOffset ?? "")}" ${streamPage.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div><pre class="code-preview security-body-content" aria-label="检测快照">${streamContent}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "点击风险定位后加载该事件证据。"}</p>`}</details>`;
+    return `<details class="security-event" ${active ? "open" : `data-security-event="${esc(item.id)}"`}><summary><span>${esc(item.eventType || item.type || `流式事件 ${i + 1}`)}</span>${item.state ? ` · ${esc(SECURITY_BODY_LABELS.state[item.state] || item.state)}` : ""}</summary>${active && streamPage ? `${navigation}<div class="security-pagination"><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.previousOffset ?? "")}" ${streamPage.previousOffset == null ? "disabled" : ""}>上一段上下文</button><button class="mini-button" data-action="security-event-page" data-offset="${esc(streamPage.nextOffset ?? "")}" ${streamPage.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div><pre class="code-preview security-body-content" aria-label="检测快照">${streamContent}</pre>` : `${navigation}<p class="muted">${active && s.streamError ? esc(s.streamError) : active && s.streamLoading ? "正在加载检测证据…" : "展开后加载该事件证据。"}</p>`}</details>`;
   }).join("")}</section>` : "";
   return `<section aria-label="正文复核"><h3>正文复核</h3>${panels || `<p class="muted">当前记录没有可展示的请求或响应内容。</p>`}${timeline}</section>`;
 }
@@ -1541,7 +1545,9 @@ async function securityAction(action, element) {
     }
     if (action === "security-event") {
       if (!element.dataset.id) return;
-      s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
+      // Stream navigation leaves the pending body selection and its request valid.
+      s.bodySelection ||= {};
+      s.bodySelection.detectionSnapshotId = element.dataset.id;
       delete s.bodySelection.detectionStart;
       delete s.bodySelection.detectionEnd;
       await loadSecurityStream(element.dataset.id);
@@ -1570,8 +1576,11 @@ async function securityAction(action, element) {
     const mappedStream = s.bodySelection.detectionSnapshotId != null;
     const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null || s.bodySelection.snapshotId === s.bodySelection.sourceSnapshotId);
     const offset = action === "security-body-page" ? Number(element.dataset.offset) : Math.max(0, (s.bodySelection.start || 0) - 512);
+    const detectionSnapshotId = s.bodySelection.detectionSnapshotId;
+    const streamSequence = s.streamSequence;
     if (!await loadSecurityBody(offset, locateCredential)) return;
-    if (s.bodySelection.detectionSnapshotId) await loadSecurityStream(s.bodySelection.detectionSnapshotId);
+    // A stream event opened during the body request owns its own load and pagination.
+    if (detectionSnapshotId && s.streamSequence === streamSequence) await loadSecurityStream(detectionSnapshotId);
     const target = pageContent.querySelector(".security-body-hit") || pageContent.querySelector(".security-body-review");
     target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     target?.focus?.({ preventScroll: true });
