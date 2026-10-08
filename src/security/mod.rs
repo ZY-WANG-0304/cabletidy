@@ -37,7 +37,7 @@ impl Security {
         json!({"mode":"record_only","ruleVersion":"2","categories":rules::CATEGORIES,"storage":self.store.status(),
             "resources":streaming::usage(),"limits":{"bodyPageBytes":4*streaming::PAGE,"concurrentInspections":4},
             "pendingInspections":self.jobs.load(Ordering::Acquire),
-            "coverage":["known_credentials","credential_patterns_before_redaction","structured_tool_calls","literal_shell_commands","external_instruction_heuristics"]})
+            "coverage":["known_credentials","credential_patterns","structured_tool_calls","literal_shell_commands","external_instruction_heuristics"]})
     }
     pub async fn flush(&self) {
         while self.jobs.load(Ordering::Acquire) > 0 {
@@ -47,11 +47,11 @@ impl Security {
     }
     pub fn audit(&self, mut metadata: Value, secrets: &Value) -> Arc<Audit> {
         let redactor = Redactor::new(secrets);
-        sanitize_labels(&mut metadata, &redactor);
+        limit_labels(&mut metadata);
         metadata["id"] = json!(uuid::Uuid::new_v4().to_string());
         metadata["at"] = json!(config::now());
         metadata["atMs"] = json!(chrono::Utc::now().timestamp_millis());
-        metadata["schemaVersion"] = json!(3);
+        metadata["schemaVersion"] = json!(4);
         metadata["mode"] = json!("record_only");
         metadata["outcome"] = json!("started");
         metadata["ruleVersion"] = json!("2");
@@ -83,7 +83,7 @@ impl Security {
         audit
     }
 }
-fn sanitize_labels(record: &mut Value, redactor: &Redactor) {
+fn limit_labels(record: &mut Value) {
     for key in [
         "providerId",
         "configurationId",
@@ -93,7 +93,6 @@ fn sanitize_labels(record: &mut Value, redactor: &Redactor) {
         "bindingId",
     ] {
         if let Some(v) = record.get_mut(key) {
-            redactor.sanitize(v);
             if v.as_str().is_some_and(|s| s.len() > 1024) {
                 *v = json!("[metadata omitted: audit envelope budget]");
             }
@@ -219,21 +218,10 @@ impl Audit {
     pub fn publish(&self) {
         self.store.write(self.state.lock().unwrap().record.clone());
     }
-    pub fn set(&self, key: &str, mut value: Value) {
+    pub fn set(&self, key: &str, value: Value) {
         let mut s = self.state.lock().unwrap();
-        if matches!(
-            key,
-            "clientModelId" | "upstreamModelId" | "upstreamId" | "bindingId" | "providerId"
-        ) {
-            if let Some(r) = &s.redactor {
-                r.sanitize(&mut value);
-            }
-        }
         s.record[key] = value;
-        if let Some(r) = s.redactor.take() {
-            sanitize_labels(&mut s.record, &r);
-            s.redactor = Some(r);
-        }
+        limit_labels(&mut s.record);
     }
     pub fn response(&self, status: u16, sse: bool, headers: &axum::http::HeaderMap) {
         let mut s = self.state.lock().unwrap();

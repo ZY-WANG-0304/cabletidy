@@ -28,7 +28,7 @@
 - 工具由 Codex / Claude Code 等客户端执行。代理只能在后续模型请求中看到客户端带回的工具结果，不能直接验证本机进程、文件或网络变化。
 - `proxy.request` 在取得上游响应头时写入，现有 `latencyMs` 不能当作完整响应耗时；连接失败、流中断与正常结束需要另行形成审计结果。
 - `AppState.events` 是最多 200 条的内存队列，`/api/v1/events` 返回最近 100 条；重启后丢失，不能承担持久审计。
-- 普通诊断日志只保留路由、模型和状态元数据。安全审计独立保存定向脱敏后的正文与检测快照，凭据不能进入持久化队列。
+- 普通诊断日志只保留路由、模型和状态元数据。审计记录独立保存正文与检测快照，包括凭据原文及其检测位置；普通诊断事件继续脱敏。
 - 当前纯透传路径也必须纳入监测；不能仅在发生模型改名的分支检测响应。
 
 因此，V1 的覆盖范围是“经过 CableTidy 的模型交互与 CableTidy 自身管理操作”。跨代理通信、宿主机真实执行、上游训练数据和模型内部状态均不在此观察范围内。
@@ -197,7 +197,7 @@ CableTidy 自身的配置操作使用独立的 `kind = management` 审计记录�
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 4,
   "requestId": "request-example",
   "category": "destructive_action",
   "ruleId": "SEC-DELETE-001",
@@ -222,7 +222,7 @@ CableTidy 自身的配置操作使用独立的 `kind = management` 审计记录�
 }
 ```
 
-这是 CableTidy 内部格式示意，不是 OCSF 标准事件；实际记录还需时间、配置快照标识及关联对象。风险发现保存结构化判断与正文定位引用，正文单独存储；秘密值在入队前定向脱敏。
+这是 CableTidy 内部格式示意，不是 OCSF 标准事件；实际记录还需时间、配置快照标识及关联对象。风险发现保存结构化判断与正文定位引用，正文单独存储，保留秘密值原文及敏感位置。
 
 ## 7. 对第一版监测与审计设计的约束
 
@@ -241,7 +241,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 建议保存两类关联数据：
 
 - 请求审计：已知配置入口的推理和 token counting 请求，包含成功、路由/解析失败、上游连接失败、响应中断；记录请求 ID、时间、配置修订、CLI 类型、模型、上游标识、状态和阶段耗时。
-- 管理操作审计：配置提交、配置启停、客户端配置应用/恢复的成功与失败；记录操作对象及脱敏字段变化，不声称识别出某个自然人操作者。
+- 管理操作审计：配置提交、配置启停、客户端配置应用/恢复的成功与失败；记录操作对象及字段变化，不声称识别出某个自然人操作者。
 
 风险 finding 关联请求或操作审计。页面读取、静态资源和自动刷新不产生审计记录，避免查询自身不断增加日志。模型列表等本地发现接口可以继续使用普通诊断信息。
 
@@ -251,15 +251,15 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 队列满、磁盘错误或数据库不可用时，监测退化状态、丢弃计数和最近成功写入时间通过内存运行状态展示；存储恢复后补记缺口摘要。数据库未能打开时保持 `unavailable`，后续正文写入失败或队列丢弃不能将其改成 `degraded`；实际恢复后才按历史缺口显示降级。不能在失败时继续显示“完整审计”。重启时将未结束的请求标为结果未知，不能自动补成成功。
 
-### 7.3 正文、脱敏与来源
+### 7.3 正文、敏感位置与来源
 
 保留网关实际读取的客户端请求、上游响应和网关本地响应，包括对话、模型输出、工具参数与客户端带回的工具结果。保留位置在模型名或其他代理字段改写之前。JSON 保留可读结构，SSE 保留事件顺序、data 和其他事件行，普通非 JSON 内容以文本保留；这不是字节级抓包，不承诺保留 JSON 空白和传输编码。
 
 每次响应风险首次命中时，冻结实际检查的文本或工具参数作为独立检测快照。流式快照明确标记为网关重组内容，后续 done / 最终输出不得覆盖它；原始事件上下文从同记录的响应正文查看。请求风险定位到该次请求快照。正文与检测不再按单条长度或前缀截断；共享资源预算和不可解析的结构仍可能造成明确的覆盖缺口。检测不完整并不意味着没有保留正文。
 
-只对凭据做定向脱敏：本地已知密钥、认证头、Cookie、API Key / password / token 等凭据字段、内嵌 JSON 凭据、私钥、常见令牌格式及 URL 认证信息和凭据查询参数。普通对话、命令、目标路径、非凭据 URL 参数保持可读。凭据字段整体替换，文本凭据替换对应片段，显示 `[REDACTED]` 并记录位置与原因。跨 SSE 片段先重组匹配，事件中的原始分片用重组内容的快照引用替换；未完成的分片和截断文本末尾可能隐藏，以免保留半个凭据。未知编码或未支持协议中的隐藏秘密不在确定覆盖范围内。
+定向检测凭据：本地已知密钥、认证头、Cookie、API Key / password / token 等凭据字段、内嵌 JSON 凭据、私钥、常见令牌格式及 URL 认证信息和凭据查询参数。普通对话、命令、目标路径、非凭据 URL 参数保持可读。凭据字段、字段名及文本中的凭据保留原值，记录命中片段的位置与原因，页面自动高亮敏感内容。跨 SSE 片段先重组匹配，事件中的原始分片用重组内容的快照引用替换；已接收的未完成文本仍保留原文，并标记检查覆盖不足。未知编码或未支持协议中的隐藏秘密不在确定覆盖范围内。
 
-脱敏发生在持久化队列之前，不改变真实代理请求和响应。字段名本身也可能含秘密，规则位置使用不包含原始键名的序数路径，正文复核使用脱敏后文本的 UTF-8 字节偏移。JSON 字段按观察顺序输出，不依赖浏览器重新枚举对象键。页面统一转义正文，不能把内容作为 HTML 执行。脱敏工作区不足时隐藏无法安全保留的内容，并记录 `credential_redaction_budget` / `redaction_buffer_budget`，不把未脱敏内容落盘。长 URL 认证区或令牌前缀暂时无法确认时也保守隐藏，分别标注 `url_authority_uncertain` / `credential_prefix_uncertain`；仅隐藏不代表已确认凭据风险，后续片段确认格式后才生成对应风险。
+审计保留和检测不改变真实代理请求和响应。字段名本身也可能含秘密，规则位置使用不包含原始键名的序数路径，正文复核使用已保存原文的 UTF-8 字节偏移（JSON 字符串按持久化的转义形式计数）。JSON 字段按观察顺序输出，不依赖浏览器重新枚举对象键。页面统一转义正文，不能把内容作为 HTML 执行。凭据检测工作区不足时保留可存储的原文并报告检测不完整，沿用 `credential_redaction_budget` / `redaction_buffer_budget` 原因代码。长 URL 认证区或令牌前缀暂时无法确认时保留原文，分别标注 `url_authority_uncertain` / `credential_prefix_uncertain`；不确定的片段记录在 `coverageRanges`，后续片段确认格式后才生成对应风险。
 
 客户端提供的会话 ID、用户信息和工具结果只是客户端报告。没有可靠会话标识时按请求展示，不把同一 provider 下的不同流量拼成会话，也不把调用提议视作真实执行。
 
@@ -269,7 +269,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 统一筛选包含时间、配置、仅看有风险、最高严重程度、分类、置信度、证据阶段、操作类型、结果、检查状态。按审计记录去重；分类、置信度和阶段组合匹配同一个关联 finding。详情始终返回该记录的全部风险，不受列表筛选隐藏。分别显示全部匹配记录数、有风险记录数、关联风险发现数，以及高 / 严重记录数。
 
-详情保留元数据、覆盖状态、Token 用量，逐项显示全部关联风险的等级、阶段、判断依据和规则映射。点击风险切换到相应正文或检测快照，高亮命中字段 / 工具参数并滚动定位；凭据风险只高亮实际的 `[REDACTED]` 命中点，同时滚动正文容器和页面使其可见，前后文继续可读。旧分段记录的宽检测范围通过逐页查询脱敏位置定位，不改写历史证据；无法找到精确命中点时展示定位缺口和上下文，不把整段正文伪装成命中点。也可切换请求、响应和检测快照，查看凭据脱敏位置并定位。找不到关联正文时明确提示缺失；旧记录显示未保留正文，超限、中断和未观察状态独立显示。
+详情保留元数据、覆盖状态、Token 用量，逐项显示全部关联风险的等级、阶段、判断依据和规则映射。点击风险切换到相应正文或检测快照，高亮命中字段 / 工具参数并滚动定位；凭据风险定位到敏感原文的实际命中点，同时滚动正文容器和页面使其可见，前后文继续可读。流式风险展开其对应的检测快照并定位敏感原文；响应正文中的关联引用也可打开重组内容，快照支持上下文分页。旧分段记录的宽检测范围通过逐页查询脱敏位置定位，不改写历史证据；无法找到精确命中点时展示定位缺口和上下文，不把整段正文伪装成命中点。也可切换请求、响应和检测快照，查看敏感位置并定位。找不到关联正文时明确提示缺失；旧记录显示未保留正文，超限、中断和未观察状态独立显示。
 
 默认最近 24 小时，详情展示时区和实际保留范围。页面手动刷新，保留筛选条件与当前复核快照；过期查询不能覆盖新的筛选或详情选择。无数据、读取失败和记录缺口有不同提示。页面固定为“仅记录”，不提供通知、阻断或授权动作。
 
@@ -296,7 +296,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 支持 Bash / shell / exec_command 等常见名称、Read/Write/Edit 类工具，以及 apply_patch。shell 检查只解析有限的字面量参数、分隔符和直接管道；变量展开、重定向、未知包装和动态脚本不做效果推断。构建或包管理命令不直接产生风险，其脚本行为标记为未覆盖。规则是有限的结构匹配，不等价于完整 shell / PowerShell 解释器或漏洞扫描器。
 
-请求中的工具定义仅作为内容检查，历史调用标记为 `tool_call_replayed`；工具结果标记为客户端报告。Responses 的 function/custom tool call 和 Messages 的 tool_use 按输出索引拼接。同一位置的工具风险按完整参数内容指纹和工具名区分版本，只有内容相同的 done / 最终对象合并风险发现；参数或上下文改变后分别保留命中依据与快照，记录最高等级取所有版本中的最高值。去重状态只保留增量计算的内存指纹，正文和证据仍仅保存脱敏内容。不同请求中的历史调用保留为独立观察，不跨请求猜测会话或执行次数。
+请求中的工具定义仅作为内容检查，历史调用标记为 `tool_call_replayed`；工具结果标记为客户端报告。Responses 的 function/custom tool call 和 Messages 的 tool_use 按输出索引拼接。同一位置的工具风险按完整参数内容指纹和工具名区分版本，只有内容相同的 done / 最终对象合并风险发现；参数或上下文改变后分别保留命中依据与快照，记录最高等级取所有版本中的最高值。去重状态只保留增量计算的内存指纹，正文和证据保留原文与敏感位置。不同请求中的历史调用保留为独立观察，不跨请求猜测会话或执行次数。
 
 请求的额外 JSON 字段也纳入有界凭据检查。响应检查聚焦支持的文本与工具输出项，错误文本只作凭据检查；推理内容、图片、加密数据、未知工具和超限情况保留覆盖不足原因。`previous_response_id` 引用的未见上下文也明确标记。
 
@@ -306,7 +306,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 | 资源 | 当前共享预算与行为 |
 | --- | --- |
-| 正文处理工作区 | 256 MiB；页缓冲、脱敏窗口、凭据字典、索引、工具参数解析和 finding 去重状态申请额度并随生命周期释放 |
+| 正文处理工作区 | 256 MiB；页缓冲、检测窗口、凭据字典、索引、工具参数解析和 finding 去重状态申请额度并随生命周期释放 |
 | 临时加密文件 | 512 MiB，按实际暂存字节及认证标签计费；所有请求、响应、路由改写与流式重组共享 |
 | 后台检测并发 | 4 个工作槽；排队中的正文仍占用共享暂存预算 |
 | 段大小 / 正文查询页 | UTF-8 安全边界的约 32 KiB / 最多 4 段；页面不拼装完整正文 |
@@ -319,9 +319,9 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 流程如下：
 
 1. 接收时以固定页写入匿名临时文件，内容由每文件随机密钥以 ChaCha20-Poly1305 加密，每页使用独立 nonce；密钥只在内存中。请求路由、模型名改写、流式事件重组均从加密暂存读取，不建立完整明文正文缓冲，不把原始凭据写进临时文件。
-2. 请求结束或中断后进入后台队列。先学习结构化 / 内嵌凭据，再逐段执行原始内容检测与脱敏，只把脱敏文本、判断依据和偏移交给 SQLite worker。跨页模式使用重叠窗口及连续凭据状态；跨 SSE delta 的内容按条目重组后处理。
+2. 请求结束或中断后进入后台队列。先学习结构化 / 内嵌凭据，再逐段执行原始内容检测，把原文、判断依据和敏感位置偏移交给 SQLite worker。跨页模式使用重叠窗口及连续凭据状态；跨 SSE delta 的内容按条目重组后处理。
 3. 规则结果随检查进度分批保存。`inspectionStatus` 为 `pending`、`running`、`complete`、`partial`、`failed` 或管理操作的 `skipped`；`inspectionProgress` 提供 `state`、`phase`、`active`、`processedBytes`、`observedBytes`、`updatedAt`。`active` 从正文接收、排队到全部检测与风险批次完成前均为 `true`，最终更新才设为 `false`、`phase: finished`。某阶段失败后可能继续检测其余正文，因此 `failed` 不代表任务已结束；页面对 `failed + active` 显示“部分步骤失败，仍在检测”。接收阶段总量继续增长；检查结束后已扫描字节与捕获字节对齐，语义覆盖不足仍可为 `partial`。这是经过正文扫描的进度，不能解释为所有语义均被识别。
-4. 保存失败或不可解析内容标明缺口，释放临时文件和预算。完整扫描已保留内容不等于支持所有工具、编码、脚本或模型内部语义。长 URL 认证区或令牌前缀无法在脱敏工作区中确认时保守隐藏，明确记录原因。
+4. 保存失败或不可解析内容标明缺口，释放临时文件和预算。完整扫描已保留内容不等于支持所有工具、编码、脚本或模型内部语义。长 URL 认证区或令牌前缀无法在检测工作区中确认时保留原文，明确记录检测覆盖不足。
 
 临时文件只保存密文，退出后删除；进程重启不能恢复内存中的密钥，因此不能重启续扫未完成的原始正文。正常退出等待后台检测和持久写入完成。强制退出后，未结束请求恢复为 `unknown`；已结束 HTTP 请求保留原结果，未完成的检测标为 `partial`（已失败的检测保留 `failed`），进度标为失败、`active: false` 并增加 `daemon_restarted`；未封口的正文清单标为 `gap`。已经保存的风险与证据继续保留，任务异常退出也会结束活跃状态。
 
@@ -340,7 +340,7 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 | `/api/v1/security/status` | 仅记录模式、规则版本、覆盖与限制、存储健康和丢弃/失败次数 |
 | `/api/v1/security/audit` | 请求、管理操作和缺口摘要列表 |
 | `/api/v1/security/audit/<UUID>` | `record`、全部 `findings` 与 `bodySnapshots` 清单，不含正文 |
-| `/api/v1/security/audit/<UUID>/body?snapshot=<id>&offset=<UTF-8字节>` | 指定正文或检测快照的一页内容、脱敏位置与上下页偏移 |
+| `/api/v1/security/audit/<UUID>/body?snapshot=<id>&offset=<UTF-8字节>` | 指定正文或检测快照的一页内容、敏感位置与上下页偏移 |
 
 列表接受 `hours`（1-720，默认 24）、`limit`（1-100，默认 50）、`cursor`（上一页返回的 `nextCursor`）。统一筛选为 `hasRisk=true|false`、`provider`、`severity`、`inspection`、`outcome`、`kind`、`category`、`confidence`、`stage`。`severity` 比较记录的最高等级；风险属性通过同一个 EXISTS 子查询匹配，多个 finding 不会生成重复行。使用严格校验和 SQL 绑定参数，无正文全文搜索。原 `/security/findings` 路由移除，返回 404。
 
@@ -348,11 +348,11 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 
 参数无效返回 400；详情不存在或被清理返回 404；存储忙、损坏或不可用返回 503。读取不会产生新的审计记录。
 
-请求结果 `outcome` 与检查状态分开：`started` / `streaming` 表示尚未结束；完成结果包括 `completed`、`local_error`、`upstream_error`、`connection_error`、`stream_error`、`interrupted`、`unknown`。`httpStatus` 在有上游响应时为其状态，否则为本地返回状态；HTTP 200 中的协议错误仍可为 `stream_error`。这些都不表示工具已执行。管理操作保存进入时修订与操作后观察到的修订、固定配置区段名、是否提交凭据变更，以及定向脱敏后的请求 / 本地响应；配置中的非凭据内容保留。
+请求结果 `outcome` 与检查状态分开：`started` / `streaming` 表示尚未结束；完成结果包括 `completed`、`local_error`、`upstream_error`、`connection_error`、`stream_error`、`interrupted`、`unknown`。`httpStatus` 在有上游响应时为其状态，否则为本地返回状态；HTTP 200 中的协议错误仍可为 `stream_error`。这些都不表示工具已执行。管理操作保存进入时修订与操作后观察到的修订、固定配置区段名、是否提交凭据变更，以及请求 / 本地响应原文；配置中的非凭据内容保留。
 
 ### 9.4 正文与证据接口
 
-新记录 `schemaVersion = 3`，列表与详情含 `requestBodyState` / `responseBodyState`。正文接口按需获取内容；省略 offset 时从当前快照范围起点读取，offset 必须为非负整数。快照 ID 按查询参数编码，允许 `stream/`、`evidence/` 等命名。
+新记录 `schemaVersion = 4`，正文快照带 `contentMode: original`；旧记录保留原有脱敏文本，无法恢复已替换的凭据。新旧记录的列表与详情均含 `requestBodyState` / `responseBodyState`。正文接口按需获取内容；省略 offset 时从当前快照范围起点读取，offset 必须为非负整数。快照 ID 按查询参数编码，允许 `stream/`、`evidence/` 等命名。
 
 详情的 `bodySnapshots` 清单包含：
 
@@ -362,19 +362,19 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 | `source` | 客户端请求、上游响应、本地响应、观察到的头、流式重组、工具语义参数或检测时范围 |
 | `format` | 新分段正文为可读 `text`，JSON 使用规范化字符串表示，SSE 保留有序事件及分片引用 |
 | `state` | `receiving`、`complete`、`interrupted`、`gap`；未观察的正文通过记录字段 `not_observed` 表达 |
-| `byteLength` | 已保存的脱敏 UTF-8 字节数；检测范围清单为固定范围长度 |
+| `byteLength` | 已保存原文的 UTF-8 字节数；检测范围清单为固定范围长度 |
 | `observedBytes` / `capturedAt` | 观察或重组对象字节数与快照时间 |
 | `sourceSnapshotId` / `rangeStart` / `rangeEnd` | 固定检测范围指向原正文的绝对字节边界，后续正文追加不会扩大该快照 |
 
-正文页返回 `snapshotId`、`chunks`（每段 `start`、`end`、`content`、`redactions`）、`offset`、`nextOffset`、`previousOffset`、`rangeStart`、`rangeEnd`、`state`、`gap`。每个 redaction 含 `reason`、`start`、`end`、`unit: utf8_bytes`。所有位置以**脱敏后持久文本**为准。范围视图只返回检测时固定范围内的字节，并在 UTF-8 字符边界裁剪；不能读出后来追加的内容。
+正文页返回 `snapshotId`、`chunks`（每段 `start`、`end`、`content`、`sensitiveRanges`、`coverageRanges`、`redactions`）、`offset`、`nextOffset`、`previousOffset`、`rangeStart`、`rangeEnd`、`state`、`gap`。每个位置含 `reason`、`start`、`end`、`unit: utf8_bytes`。`sensitiveRanges` 是确认的敏感位置，`coverageRanges` 是不确定或检查不完整的范围，`redactions` 仅用于旧记录的脱敏标记；新位置带 `kind: sensitive | coverage`。SQLite 复用原 `redactions` 列保存带类型的标注，无需改写旧记录。所有位置以**实际持久化文本**为准。范围视图只返回检测时固定范围内的字节，并在 UTF-8 字符边界裁剪；不能读出后来追加的内容。
 
-`finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向脱敏标记，并附 `matchKind: redaction`，检测快照仍保留其周围上下文。其他风险的高亮可表示检测窗口或语义参数，凭据只能看到脱敏证据，无法还原秘密值。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
+`finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向敏感原文，并附 `matchKind: sensitive`，检测快照仍保留其周围上下文。其他风险的高亮可表示检测窗口或语义参数。旧记录仍按 `matchKind: redaction` 定位已保存的脱敏标记。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
 
-流式事件的 `data` 中，原始参数、初始文本和后续文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。`response.content_part.added`、`response.reasoning_summary_part.added`、初始输出项及响应对象中的文本，按同一输出 / 内容索引加入后续 delta 的重组通道；非空初始文本不能逐事件提前落盘。done / 最终对象保留为独立快照，初始文本后中断则隐藏无法确认完整性的末尾；若新初始值替换了尚未结束的旧通道，旧通道按不完整内容封口。这是网关观察片段到重组快照的关联；观察片段偏移不是脱敏正文偏移，不能用于正文高亮。重组快照保存完整脱敏参数 / 文本，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件内容隐藏并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已安全脱敏的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；中断的尾部可能隐藏以避免落盘半个凭据。
+流式事件的 `data` 中，原始参数、初始文本和后续文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。`response.content_part.added`、`response.reasoning_summary_part.added`、初始输出项及响应对象中的文本，按同一输出 / 内容索引加入后续 delta 的重组通道；非空初始文本不能逐事件提前落盘。done / 最终对象保留为独立快照，初始文本后中断仍保留已观察的末尾并标记不完整；若新初始值替换了尚未结束的旧通道，旧通道按不完整内容封口。这是网关观察片段到重组快照的关联；观察片段偏移不是持久化 JSON 正文偏移，不能用于正文高亮。重组快照保存参数 / 文本原文和敏感位置，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件按原始文本保留并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已输出的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；解析器尚未输出的尾部可能缺失。
 
-`response.reasoning_summary_text.delta/done` 和 `response.reasoning_text.delta/done` 同样先重组再脱敏，分别按输出索引与摘要 / 内容索引隔离，交错分片不会混入其他条目。推理文本仍执行凭据检查与精确定位，但推理语义标记 `reasoning_content_not_inspected`。未知事件或未知 Messages delta 的 payload 整体隐藏为 `[REDACTED]`，正文页以 `unsupported_stream_fragment` 标注位置，记录带 `unsupported_response_event`；隐藏本身不产生凭据风险发现，也不改变转发给客户端的内容。
+`response.reasoning_summary_text.delta/done` 和 `response.reasoning_text.delta/done` 同样先重组再检测敏感位置，分别按输出索引与摘要 / 内容索引隔离，交错分片不会混入其他条目。推理文本仍执行凭据检查与精确定位，但推理语义标记 `reasoning_content_not_inspected`。未知事件或未知 Messages delta 的 payload 保留原文，记录带 `unsupported_response_event`；仍执行可用的凭据文本检测，不因协议未知而生成凭据风险，也不改变转发给客户端的内容。
 
-`complete` 表示对应内容完成保留，不表示检测语义完整。检查进度、失败和覆盖原因独立于正文状态。`coverageGaps` 可含 `snapshotId`、`reason`、`observedBytes`、`retainedBytes` 或 `retainedForProcessingBytes`，分别说明脱敏持久内容和加密捕获的缺口。未读取请求、缺失正文和写入失败不从后来流量重建。
+`complete` 表示对应内容完成保留，不表示检测语义完整。检查进度、失败和覆盖原因独立于正文状态。`coverageGaps` 可含 `snapshotId`、`reason`、`observedBytes`、`retainedBytes` 或 `retainedForProcessingBytes`，分别说明持久化原文和加密捕获的缺口。未读取请求、缺失正文和写入失败不从后来流量重建。
 
 版本 2 的既有完整快照不在详情里直接返回，按页端点以 `legacySnapshot` 兼容读取旧的有界对象，旧序数路径仍可高亮；版本 1 没有正文时明确提示无法复核。主列表始终不加载正文，详情的全部关联风险不受列表分类筛选裁剪。
 
@@ -388,12 +388,12 @@ Responses 应覆盖普通响应中的 function/custom tool call，以及 SSE 的
 - 管理操作成功与失败、本地解析失败、配置暂停、连接失败；读取接口不自增日志。
 - SQLite 重启保留、未结束状态恢复、过期级联清理、损坏/新版本保留、共享预算和队列退化、存储失败后的恢复缺口。
 - 筛选去重、最高等级语义、同一 finding 的组合属性、记录数与发现数独立统计，以及稳定游标分页。
-- 凭据、认证头、Cookie、嵌套参数、跨 SSE 分片脱敏；普通正文可读、HTML 转义、UTF-8 字节定位、超长正文与非法 JSON、本地错误正文。
+- 凭据、认证头、Cookie、嵌套参数、跨 SSE 分片的原文保留与敏感位置；普通正文可读、HTML 转义、UTF-8 字节定位、超长正文与非法 JSON、本地错误正文。
 - 旧库迁移、正文快照不可覆盖、后续最终内容改变仍可复核命中时参数、正文级联清理，以及详情关闭和筛选后的过期响应防覆盖。
 
 补充验证覆盖超过 8 MiB 请求、1 MiB 之后的风险、超长工具参数与 SSE 事件、9,000 多个节点、超过 32 个 finding、密文暂存及认证校验、跨页 / 跨事件凭据、资源预算耗尽仍转发可转发的响应、按页加载和过期正文请求防覆盖。
 
-Review 回归覆盖交错的推理摘要 / 推理文本分片、未知片段与中断尾部不写入明文凭据、正文定位对应真实脱敏标记、约 84 MiB 已用页面且磁盘文件未到 96 MiB 时的在线 / 重启容量回收、活跃记录保护，以及同一调用从中风险升级为严重风险后所有参数版本的独立证据和最高等级。
+Review 回归覆盖交错的推理摘要 / 推理文本分片、未知片段与中断尾部保留原文并标记覆盖不足、正文定位对应真实敏感内容、约 84 MiB 已用页面且磁盘文件未到 96 MiB 时的在线 / 重启容量回收、活跃记录保护，以及同一调用从中风险升级为严重风险后所有参数版本的独立证据和最高等级。
 
 另覆盖非空初始文本与后续 delta 跨边界的凭据、初始文本后断连或收到 error / incomplete 终止事件、初始输出项内嵌文本，以及请求 A 已保存严重风险并出现阶段失败、仍在处理长响应时，请求 B 触发容量回收的并发场景。验证 A 的风险与证据在检测期间和最终失败后均保持，重启能结束遗留活跃状态，页面区分阶段失败与任务结束。
 
