@@ -7,6 +7,7 @@ import path from "node:path";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+import { namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const credentialFields = [
   "secret", "apiKey", "api_key", "token", "accessToken", "access_token",
@@ -15,6 +16,75 @@ const credentialFields = [
 ];
 const names = [...credentialFields, "secretConfigured"];
 const providerId = "cabletidy_claude-main";
+
+for (const sharedSecret of [false, true]) {
+  test(`deleting a configuration persists and ${sharedSecret ? "preserves shared" : "removes unused"} credentials`, async (t) => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-delete-config-"));
+    let app;
+    t.after(async () => { await app?.close(); await fs.rm(home, { recursive: true, force: true }); });
+    const paths = getPaths(home);
+    const initial = namedCodexConfigFixture({ first: "first", second: "second" });
+    initial.web = { listenHost: "127.0.0.1", port: await freePort() };
+    const firstRef = "secret://upstreams/first";
+    const secondRef = sharedSecret ? firstRef : "secret://upstreams/second";
+    initial.upstreams.first.secretRef = firstRef;
+    initial.upstreams.second.secretRef = secondRef;
+    initial.virtualProviders.cabletidy_first.models = {};
+    initial.virtualProviders.cabletidy_second.models = {};
+    const secrets = { [firstRef]: "first-key", [secondRef]: "second-key", unrelated: "preserved-key" };
+    await fs.writeFile(paths.config, JSON.stringify(initial));
+    await fs.writeFile(paths.secrets, JSON.stringify(secrets));
+    app = await createApplication({ paths });
+    const get = async (endpoint) => {
+      const response = await fetch(`${app.url}${endpoint}`);
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const commit = async (config, baseRevision, status = 200) => {
+      const response = await fetch(`${app.url}api/v1/config/commit`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config, baseRevision }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, status, JSON.stringify(body));
+      return body;
+    };
+    const current = (await get("api/v1/config")).config;
+    const invalid = structuredClone(current);
+    delete invalid.upstreams.first;
+    await commit(invalid, current.revision, 422);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), secrets);
+    assert.deepEqual((await get("api/v1/config")).config, current);
+
+    const candidate = structuredClone(current);
+    for (const key of ["bindings", "routes", "upstreams"]) delete candidate[key].first;
+    delete candidate.virtualProviders.cabletidy_first;
+    await commit(candidate, current.revision + 1, 409);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), secrets);
+    assert.deepEqual((await get("api/v1/config")).config, current);
+
+    const deleted = await commit(candidate, current.revision);
+    assert.equal(deleted.revision, current.revision + 1);
+    assert.deepEqual(Object.keys(deleted.config.bindings), ["second"]);
+    assert.deepEqual(deleted.config.upstreams.second, current.upstreams.second);
+    assert.deepEqual(deleted.runtime.virtualProviders.map(({ id }) => id), ["cabletidy_second"]);
+    assert.equal((await fetch(`${app.url}first/v1/models`)).status, 404);
+    await get("second/v1/models");
+    const saved = JSON.parse(await fs.readFile(paths.config, "utf8"));
+    for (const key of ["bindings", "routes", "upstreams"]) assert.equal(saved[key].first, undefined);
+    assert.equal(saved.virtualProviders.cabletidy_first, undefined);
+    assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
+      [secondRef]: "second-key", unrelated: "preserved-key",
+    });
+
+    const recreated = structuredClone(deleted.config);
+    for (const key of ["bindings", "routes", "upstreams"]) recreated[key].first = initial[key].first;
+    recreated.virtualProviders.cabletidy_first = initial.virtualProviders.cabletidy_first;
+    const result = await commit(recreated, deleted.revision);
+    assert.equal(result.config.upstreams.first.secretConfigured, sharedSecret);
+    assert.equal(result.config.upstreams.second.secretConfigured, true);
+  });
+}
 
 async function freePort() {
   const server = http.createServer();
