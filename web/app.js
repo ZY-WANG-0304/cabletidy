@@ -1054,7 +1054,7 @@ async function restoreSecurityNavigation() {
 
 function securityDetailVisible() { return ["security-detail", "security-session"].includes(state.page); }
 
-async function loadSecurityDetail(id, reset = true, embedded = false) {
+async function loadSecurityDetail(id, reset = true, embedded = false, prefetched = null) {
   const s = state.security;
   const sequence = ++s.detailSequence;
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
@@ -1062,10 +1062,11 @@ async function loadSecurityDetail(id, reset = true, embedded = false) {
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
   if (reset) { s.detail = null; s.bodyPage = null; s.streamSequence = (s.streamSequence || 0) + 1; s.streamPage = null; s.streamPageSnapshotId = null; s.streamError = null; s.bodySelection = { snapshotId: "request" }; }
   if (!embedded) state.page = "security-detail";
+  else window.history.replaceState({ ...window.history.state, sessionRequestId: id }, "");
   render();
   if (reset && !embedded) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
   try {
-    const result = await api(`/security/audit/${encodeURIComponent(id)}`);
+    const result = prefetched || await api(`/security/audit/${encodeURIComponent(id)}`);
     if (sequence !== s.detailSequence || !securityDetailVisible()) return;
     s.detail = result.record;
   } catch (error) {
@@ -1144,28 +1145,48 @@ async function loadSecuritySession(id, reset = true) {
   const t = state.trace, s = state.security;
   const sequence = ++t.sequence;
   const retainedCount = reset ? 50 : Math.max(50, t.result?.items.length || 0);
+  const rememberedId = reset ? window.history.state?.sessionRequestId : s.detailId;
   s.sequence++; s.detailSequence++; s.bodySequence = (s.bodySequence || 0) + 1;
   if (reset) { Object.assign(t, { id, tab: "overview", search: "", riskOnly: false, summary: null, result: null }); s.detail = null; }
   t.loading = true; t.error = null; t.loadingMore = false; t.moreError = null; state.page = "security-session"; render();
   const current = () => sequence === t.sequence && state.page === "security-session";
   try {
-    const params = new URLSearchParams({ session: id });
-    const [result, summary] = await Promise.all([api(`/security/audit?${params}`), api(`/security/sessions?${params}`)]);
+    let summary = await api(`/security/sessions?${new URLSearchParams({ session: id })}`);
     if (!current()) return;
+    let sessionId = summary.sessionId || id;
+    const result = await api(`/security/audit?${new URLSearchParams({ session: sessionId })}`);
+    if (!current()) return;
+    // Inspection can finish between the two reads. Use the request query's
+    // resolved identity and reload the summary if it changed in that interval.
+    if (result.sessionId && result.sessionId !== sessionId) {
+      sessionId = result.sessionId;
+      summary = await api(`/security/sessions?${new URLSearchParams({ session: sessionId })}`);
+      if (!current()) return;
+    }
+    const preferredId = rememberedId || (sessionId !== id ? id : null);
     // Refresh the already-read portion without losing the selected request or scroll position.
-    while (!reset && result.nextCursor && result.items.length < retainedCount) {
-      const page = await api(`/security/audit?${new URLSearchParams({ session: id, cursor: result.nextCursor })}`);
+    while (result.nextCursor && (!reset && result.items.length < retainedCount || preferredId && !result.items.some(item => item.id === preferredId))) {
+      const page = await api(`/security/audit?${new URLSearchParams({ session: sessionId, cursor: result.nextCursor })}`);
       if (!current()) return;
       result.items.push(...page.items); result.nextCursor = page.nextCursor; result.total = page.total;
     }
+    const selected = result.items.find(item => item.id === preferredId) || result.items[0];
+    // Keep the prior view intact if any part of a refresh, including the
+    // selected request's detail, fails before its replacement is ready.
+    const detail = !reset && selected ? await api(`/security/audit/${encodeURIComponent(selected.id)}`) : null;
+    if (!current()) return;
+    const redirected = sessionId !== id;
+    if (renderedTraceId === t.id) renderedTraceId = sessionId;
+    t.id = sessionId;
+    window.history.replaceState({ ...window.history.state, page: "security-session", sessionRequestId: selected?.id }, "", `#security/session/${encodeURIComponent(sessionId)}`);
     t.result = result; t.summary = summary.items[0] || null;
     t.loading = false; render();
-    const selected = result.items.find(item => item.id === s.detailId) || result.items[0];
-    if (selected) await loadSecurityDetail(selected.id, reset || selected.id !== s.detailId, true);
+    if (selected) await loadSecurityDetail(selected.id, reset || selected.id !== s.detailId, true, detail);
     else { s.detail = null; render(); }
+    if (current() && selected && (redirected || reset && preferredId)) pageContent.querySelector(".trace-event-row.is-selected")?.scrollIntoView({ block: "nearest", behavior: "instant" });
   } catch (error) {
     if (!current()) return;
-    t.error = error.message; t.loading = false; t.result = null; s.detail = null; render();
+    t.error = error.message; t.loading = false; render();
   }
 }
 

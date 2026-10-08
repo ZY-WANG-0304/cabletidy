@@ -25,6 +25,7 @@ struct Frame {
     kind: u8,
     value: String,
     preview: String,
+    response_preview: String,
     role: String,
     item_type: String,
 }
@@ -63,7 +64,9 @@ impl Capture {
         }
     }
     pub fn end(&mut self, record: &mut Value, root: &str) {
-        let Some(f) = self.frames.pop() else { return };
+        let Some(mut f) = self.frames.pop() else {
+            return;
+        };
         if f.kind == b'k' {
             return;
         }
@@ -87,6 +90,15 @@ impl Capture {
                 }
             }
         }
+        let tool = matches!(
+            f.item_type.as_str(),
+            "tool_result"
+                | "function_call_output"
+                | "custom_tool_call_output"
+                | "tool_use"
+                | "function_call"
+                | "custom_tool_call"
+        );
         let content = if f.kind == b'"' && matches!(f.field.as_str(), "text" | "content" | "input")
         {
             &f.value
@@ -111,21 +123,24 @@ impl Capture {
                 }
                 record["requestPreview"] = json!(preview);
             }
-        } else if (root == "response" || root.starts_with("stream/"))
-            && f.kind == b'{'
-            && (matches!(f.item_type.as_str(), "text" | "output_text")
-                || root.starts_with("stream/") && self.frames.is_empty() && f.item_type.is_empty())
-            && !content.trim().is_empty()
-            && !self.frames.iter().any(|p| {
-                matches!(
-                    p.item_type.as_str(),
-                    "tool_use" | "tool_result" | "function_call" | "custom_tool_call"
-                )
-            })
-        {
-            let mut preview = String::new();
-            append(&mut preview, content.trim(), 480);
-            record["responsePreview"] = json!(preview);
+        } else if root == "response" || root.starts_with("stream/") {
+            if tool {
+                f.response_preview.clear();
+            } else if f.kind == b'{'
+                && (matches!(f.item_type.as_str(), "text" | "output_text")
+                    || root.starts_with("stream/")
+                        && self.frames.is_empty()
+                        && f.item_type.is_empty())
+                && !content.trim().is_empty()
+            {
+                f.response_preview.clear();
+                append(&mut f.response_preview, content.trim(), 480);
+            }
+            // Propagate a bounded candidate through completed parents. Their
+            // type may follow the text in JSON, so only the root can commit it.
+            if self.frames.is_empty() && !f.response_preview.is_empty() {
+                record["responsePreview"] = json!(f.response_preview);
+            }
         }
         if let Some(parent) = self.frames.last_mut() {
             if f.field == "type" {
@@ -136,21 +151,14 @@ impl Capture {
             }
             // Anthropic reports tool results inside a user-role message. Do not
             // present that content as a new instruction from the person.
-            if !content.is_empty()
-                && !matches!(
-                    f.item_type.as_str(),
-                    "tool_result"
-                        | "function_call_output"
-                        | "custom_tool_call_output"
-                        | "tool_use"
-                        | "function_call"
-                        | "custom_tool_call"
-                )
-            {
+            if !content.is_empty() && !tool {
                 if !parent.preview.is_empty() {
                     append(&mut parent.preview, "\n", 480);
                 }
                 append(&mut parent.preview, content, 480);
+            }
+            if !f.response_preview.is_empty() {
+                parent.response_preview = f.response_preview;
             }
         }
     }
@@ -241,6 +249,48 @@ mod tests {
             "request",
         );
         assert!(record["sessionKey"].is_null());
+    }
+
+    #[test]
+    fn response_previews_wait_for_ancestor_types_in_any_field_order() {
+        for kind in [
+            "tool_use",
+            "function_call",
+            "custom_tool_call",
+            "tool_result",
+        ] {
+            for type_first in [true, false] {
+                let mut tool = json!({});
+                if type_first {
+                    tool["type"] = json!(kind);
+                }
+                tool["input"] = json!({"nested":{"type":"text","text":"工具参数，不是模型输出"}});
+                if !type_first {
+                    tool["type"] = json!(kind);
+                }
+                for root in ["response", "stream/test"] {
+                    let mut record = json!({});
+                    capture(&mut record, tool.clone(), root);
+                    assert!(
+                        record["responsePreview"].is_null(),
+                        "{kind}, {type_first}, {root}"
+                    );
+                    capture(
+                        &mut record,
+                        json!({"content":[
+                            {"text":"真实模型输出", "type":"text"}, tool.clone()
+                        ]}),
+                        root,
+                    );
+                    assert_eq!(record["responsePreview"], "真实模型输出");
+                    capture(&mut record, tool.clone(), root);
+                    assert_eq!(
+                        record["responsePreview"], "真实模型输出",
+                        "a tool-only snapshot cannot replace model text"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -527,7 +527,7 @@ fn read_body_page(db: &Connection, audit: &str, snapshot: &str, offset: u64) -> 
     )
 }
 
-fn read(db: &Connection, query: Query) -> Result<Value> {
+fn read(db: &Connection, mut query: Query) -> Result<Value> {
     if let Some(id) = query.detail {
         let visible: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM audit WHERE id=? AND kind != 'management')",
@@ -579,8 +579,15 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
         chrono::Utc::now().timestamp_millis() - query.hours * 3_600_000,
     )];
     if let Some(session) = &query.session {
+        // A request UUID remains a valid entry after body inspection identifies
+        // its session. Resolve it before applying filters or pagination.
+        let session: String = db.query_row(
+            "SELECT coalesce((SELECT json_extract(data,'$.sessionKey') FROM audit WHERE id=?1 AND kind='request'),?1)",
+            [session], |r| r.get(0),
+        )?;
         conditions = vec!["coalesce(json_extract(a.data,'$.sessionKey'),a.id) = ?".into()];
         args = vec![session.clone().into()];
+        query.session = Some(session);
     }
     // Historical configuration records are outside content auditing. Keep their
     // retention lifecycle, but do not expose them through audit reads.
@@ -692,7 +699,7 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
-        json!({"items":items,"total":total,"riskRecordCount":risky,"findingCount":finding_count,"counts":counts,"nextCursor":next,"oldestAtMs":oldest,"providers":providers}),
+        json!({"items":items,"sessionId":query.session,"total":total,"riskRecordCount":risky,"findingCount":finding_count,"counts":counts,"nextCursor":next,"oldestAtMs":oldest,"providers":providers}),
     )
 }
 
@@ -797,7 +804,7 @@ fn read_sessions(
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
-        json!({"items":items,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
+        json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
     )
 }
 

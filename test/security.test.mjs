@@ -65,6 +65,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
       assert.fail("Audit state did not settle");
     },
     async restart(env) { await app.close(); app = await createApplication({ ...applicationOptions, env }); },
+    close: () => app.close(),
   };
 }
 
@@ -291,6 +292,7 @@ test("configuration operations stay outside auditing; agent failures are recorde
   assert.equal((await f.list("sessions")).recordCount, 4);
   assert.equal((await f.list()).items.every(item => item.kind === "request"), true);
   // Verify collection is disabled, rather than relying on the read filter.
+  await f.close(); // Release SQLite's file locks before inspecting persisted bytes on Windows.
   assert.doesNotMatch((await auditBytes(f.home)).toString(), /config\.commit|target\.apply|virtual_provider\.(start|pause)/);
 
 });
@@ -966,4 +968,61 @@ test("Claude sessions use session metadata, never the shared user account", asyn
   assert.equal(sessions.total, 3);
   assert.equal(sessions.items.find(item => item.identified).requestCount, 2);
   assert.equal(sessions.items.find(item => item.identified).sessionTitle, "检查 Claude 接入");
+});
+
+test("request UUID session links resolve after streamed body metadata is inspected", async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (req, res, body) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(event({ type: "message_start", message: { model: body.model, role: "assistant", content: [] } }));
+    await gate;
+    res.end(event({ type: "message_stop" }));
+  }, { claude: true });
+  const user_id = JSON.stringify({ session_id: "late-session", account_uuid: "shared-account" });
+  const responses = await Promise.all([0, 1].map(i => f.request({ stream: true, metadata: { user_id }, messages: [{ role: "user", content: `请求 ${i}` }] })));
+  const pending = responses.map(response => response.text());
+  const before = await f.list("sessions");
+  assert.equal(before.total, 2);
+  assert.equal(before.items.every(item => !item.identified), true);
+  const ids = before.items.map(item => item.id);
+  for (const id of ids) assert.equal((await f.list("audit", `session=${id}`)).total, 1);
+  release(); await Promise.all(pending);
+  await f.waitFor(result => result.total === 2 && result.items.every(item => item.sessionKey));
+  const canonical = (await f.list("sessions")).items[0].id;
+  for (const id of ids) {
+    const summary = await f.list("sessions", `session=${id}`);
+    assert.equal(summary.sessionId, canonical);
+    assert.equal(summary.items[0].id, canonical);
+    assert.equal(summary.items[0].requestCount, 2);
+    const page = await f.list("audit", `session=${id}&limit=1`);
+    assert.equal(page.sessionId, canonical);
+    assert.equal(page.total, 2);
+    const next = await f.list("audit", `session=${id}&limit=1&cursor=${page.nextCursor}`);
+    assert.equal(next.sessionId, canonical);
+    assert.notEqual(next.items[0].id, page.items[0].id);
+    assert.deepEqual(new Set([page.items[0].id, next.items[0].id]), new Set(ids));
+  }
+  await f.restart();
+  assert.equal((await f.list("sessions", `session=${ids[0]}`)).sessionId, canonical);
+});
+
+test("Claude response summaries exclude tool input regardless of JSON field order", async t => {
+  const f = await fixture(t, (req, res, body) => {
+    const input = { type: "text", text: "工具参数不能作为模型输出" };
+    const tool = body.typeFirst ? { type: "tool_use", input, name: "test", id: "tool-1" } : { input, name: "test", type: "tool_use", id: "tool-1" };
+    const content = body.toolOnly ? [tool] : [{ type: "text", text: "准备调用工具" }, tool];
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ type: "message", model: body.model, role: "assistant", content }));
+  }, { claude: true });
+  let count = 0;
+  for (const typeFirst of [false, true]) for (const toolOnly of [false, true]) {
+    await (await f.request({ typeFirst, toolOnly, messages: [{ role: "user", content: "检查工具摘要" }] })).text();
+    count++;
+    const audit = (await f.waitFor(result => result.total === count)).items[0];
+    assert.equal(audit.responsePreview, toolOnly ? undefined : "准备调用工具");
+    const detail = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+    assert.equal(detail.responsePreview, audit.responsePreview);
+  }
 });

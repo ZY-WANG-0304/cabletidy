@@ -2067,3 +2067,98 @@ test("pending scroll pages cannot append to a different session", async () => {
   assert.equal(app.read("state.trace.result.items.length"), 0);
   assert.equal(app.read("state.trace.id"), "second");
 });
+
+test("session UUID redirects retain the selected request across refresh, old links and history", async () => {
+  const records = Array.from({ length: 120 }, (_, i) => ({ id: `r${i}`, kind: "request", requestPreview: `request ${i}`, findings: [], bodySnapshots: [] }));
+  let grouped = false;
+  const onSecurity = url => {
+    const parsed = new URL(url, "http://test");
+    const sessionId = grouped ? "canonical" : "r80";
+    if (url.includes("/sessions?")) return { body: { sessionId, items: [{ id: sessionId, requestCount: grouped ? 120 : 1 }], total: 1 } };
+    if (url.includes("/audit?")) {
+      const offset = Number(parsed.searchParams.get("cursor") || 0);
+      return { body: { sessionId, items: grouped ? records.slice(offset, offset + 50) : [records[80]], total: grouped ? 120 : 1, nextCursor: grouped && offset + 50 < 120 ? String(offset + 50) : null } };
+    }
+    if (url.includes("/audit/")) return { body: { record: records.find(record => parsed.pathname.endsWith(`/${record.id}`)) } };
+  };
+  const app = await controller(undefined, { onSecurity });
+  app.read('navigatePage("security")'); await setImmediate();
+  app.read('window.scrollY = 400');
+  await app.action("security-session", { dataset: { id: "r80" } });
+  assert.equal(app.read("state.security.detailId"), "r80");
+  grouped = true;
+  await app.action("security-session-refresh", {});
+  assert.equal(app.read("state.trace.id"), "canonical");
+  assert.equal(app.read("window.location.hash"), "#security/session/canonical");
+  assert.equal(app.read("window.history.state.sessionRequestId"), "r80");
+  assert.equal(app.read("state.trace.result.items.length"), 100, "load enough canonical context to include the selected request");
+  assert.equal(app.read("state.security.detailId"), "r80");
+  await app.back();
+  assert.equal(app.read("state.page"), "security", "redirect replaces history instead of adding a dead UUID entry");
+  assert.equal(app.read("window.scrollY"), 400);
+  await app.forward();
+  assert.equal(app.read("state.security.detailId"), "r80");
+  await app.read('restoreSecurityNavigation()');
+  assert.equal(app.read("state.security.detailId"), "r80", "reload uses the request stored in this history entry");
+  await app.action("security-trace-select", { dataset: { id: "r90" } });
+  await app.back(); await app.forward();
+  assert.equal(app.read("state.security.detailId"), "r90");
+  const reopened = await controller(undefined, { url: "http://test/#security/session/r80", onSecurity });
+  assert.equal(reopened.read("window.location.hash"), "#security/session/canonical");
+  assert.equal(reopened.read("state.security.detailId"), "r80");
+});
+
+test("session redirect handles grouping that finishes between summary and request reads", async () => {
+  let summaries = 0;
+  const record = { id: "original", kind: "request", findings: [], bodySnapshots: [] };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/sessions?")) {
+      const sessionId = summaries++ ? "canonical" : "original";
+      return { body: { sessionId, items: [{ id: sessionId }], total: 1 } };
+    }
+    if (url.includes("/audit?")) return { body: { sessionId: "canonical", items: [record], total: 1 } };
+    if (url.endsWith("/audit/original")) return { body: { record } };
+  } });
+  await app.read('loadSecuritySession("original")');
+  assert.equal(summaries, 2);
+  assert.equal(app.read("state.trace.id"), "canonical");
+  assert.equal(app.read("state.trace.summary.id"), "canonical");
+  assert.equal(app.read("state.security.detailId"), "original");
+  assert.equal(app.read("window.location.hash"), "#security/session/canonical");
+});
+
+test("failed refreshes retain the full previous view until a complete replacement succeeds", async () => {
+  const records = Array.from({ length: 120 }, (_, i) => ({ id: `r${i}`, kind: "request", requestPreview: `request ${i}`, findings: [], bodySnapshots: [] }));
+  let failAt = null;
+  const app = await controller(undefined, { onSecurity(url) {
+    const parsed = new URL(url, "http://test");
+    const stage = url.includes("/sessions?") ? "summary" : url.includes("/audit?") ? (parsed.searchParams.has("cursor") ? "later-page" : "first-page") : "detail";
+    if (stage === failAt) return { status: 503, body: { error: { message: "临时读取失败" } } };
+    if (stage === "summary") return { body: { items: [{ id: "session", requestCount: 120 }], total: 1 } };
+    if (stage.endsWith("page")) {
+      const offset = Number(parsed.searchParams.get("cursor") || 0);
+      return { body: { items: records.slice(offset, offset + 50), total: 120, nextCursor: offset + 50 < 120 ? String(offset + 50) : null } };
+    }
+    return { body: { record: records.find(record => parsed.pathname.endsWith(`/${record.id}`)) } };
+  } });
+  await app.read('loadSecuritySession("session")');
+  await app.action("security-trace-more", {});
+  await app.action("security-trace-select", { dataset: { id: "r80" } });
+  await app.action("security-trace-tab", { dataset: { tab: "risks" } });
+  for (const stage of ["summary", "first-page", "later-page", "detail"]) {
+    const result = app.read("state.trace.result"), summary = app.read("state.trace.summary"), detail = app.read("state.security.detail");
+    failAt = stage;
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.trace.result"), result, stage);
+    assert.equal(app.read("state.trace.summary"), summary, stage);
+    assert.equal(app.read("state.security.detail"), detail, stage);
+    assert.equal(app.read("state.security.detailId"), "r80");
+    assert.equal(app.read("state.trace.tab"), "risks");
+    assert.match(app.read("renderSecuritySession()"), /临时读取失败/);
+    failAt = null;
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.trace.result.items.length"), 100);
+    assert.equal(app.read("state.security.detailId"), "r80");
+    assert.equal(app.read("state.trace.error"), null);
+  }
+});
