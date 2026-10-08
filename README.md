@@ -48,7 +48,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用原生进程 API 查询进程身份；Codex 目录查询仍需要系统 Windows PowerShell，并允许 `Add-Type` 调用 Windows Job Object API。
 
-当前源码版本为 `0.3.0-rc.3`，已发布到 GitHub Pre-release 和 npm 的 `next`；本页的原生程序、后台运行和安全审计说明对应此版本。npm 的 `latest` 仍为 Node 实现的 `0.2.0`，默认安装命令不会选择候选版。可按 [发布说明](docs/releases/0.3.0-rc.3.md) 指定版本安装候选版。历史版本见 [0.2.0 发布说明](docs/releases/0.2.0.md)。
+当前源码版本为 `0.3.0-rc.4`，正在准备发布，尚未确认 GitHub Pre-release 或 npm 可用；本页的原生程序、后台运行和安全审计说明对应此版本。上一候选版 `0.3.0-rc.3` 已发布到 GitHub Pre-release 和 npm 的 `next`；npm 的 `latest` 仍为 Node 实现的 `0.2.0`，默认安装命令不会选择候选版。新版本的发布状态与升级步骤见 [发布说明](docs/releases/0.3.0-rc.4.md)。历史版本见 [0.2.0 发布说明](docs/releases/0.2.0.md)。
 
 ### 从 npm 官方源安装
 
@@ -101,7 +101,7 @@ cabletidy stop
 `status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前配置套装列表；每套配置包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
 `status` 和不带参数的命令只读取状态，不创建数据目录、配置、密钥或备份。尚未初始化时，只提示未启动以及运行 `cabletidy start`，不返回预设的管理台地址。
 
-升级时先停止服务，再安装目标版本并重新启动。从 `0.2.0` 升级时，先在原运行终端按 Ctrl+C，或通过原进程管理器停止；该版本没有 `stop` 命令。以下命令适用于已经支持 `stop` 的版本，且 `latest` 只选择稳定版；候选版升级步骤见 [发布说明](docs/releases/0.3.0-rc.3.md)：
+升级时先停止服务，再安装目标版本并重新启动。从 `0.2.0` 升级时，先在原运行终端按 Ctrl+C，或通过原进程管理器停止；该版本没有 `stop` 命令。以下命令适用于已经支持 `stop` 的版本，且 `latest` 只选择稳定版；候选版升级步骤见 [发布说明](docs/releases/0.3.0-rc.4.md)：
 
 ```bash
 cabletidy stop

@@ -1,6 +1,6 @@
 {
   "name": "cabletidy",
-  "version": "0.3.0-rc.3",
+  "version": "0.3.0-rc.4",
   "description": "A local multi-target coding CLI gateway and provider manager.",
   "license": "MIT",
   "repository": {
