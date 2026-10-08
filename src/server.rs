@@ -584,13 +584,10 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
     {
         Some(state.security.audit(json!({"kind":"request","action":if remainder.ends_with("count_tokens") {"tokens.count"} else {"model.request"},
             "providerId":pid,"configurationId":id,"protocol":protocol,"path":remainder,"revision":snapshot.config["revision"],
-            "target":if protocol == "anthropic.messages" {"claude-code"} else {"codex"}}), &snapshot.secrets))
+            "target":if protocol == "anthropic.messages" {"claude-code"} else {"codex"}}), &snapshot.secrets, &parts.headers))
     } else {
         None
     };
-    if let Some(audit) = &audit {
-        audit.request_headers(&parts.headers);
-    }
     let _audit_guard = security::RequestGuard(audit.clone());
     if !config::enabled(provider) {
         return audited_local_result(
@@ -1567,6 +1564,7 @@ mod tests {
         let audit = security.audit(
             json!({"kind":"request","action":"model.request"}),
             &json!({"relay":"test-error-credential"}),
+            &HeaderMap::new(),
         );
         let response = audited_local_result(
             Err(anyhow::anyhow!("write failed: test-error-credential")),

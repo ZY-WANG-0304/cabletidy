@@ -323,9 +323,72 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
             )?;
         }
         db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.state','gap','$.gapReason','daemon_restarted') WHERE json_extract(data,'$.state')='receiving'",[])?;
+        restore_codex_sessions(&db)?;
     }
     maintain(&db, path)?;
     Ok(db)
+}
+
+fn restore_codex_sessions(db: &Connection) -> Result<()> {
+    // Repair only missing navigation metadata from complete original headers.
+    // Run on startup, before queued writes, and leave bodies/findings untouched.
+    let tx = db.unchecked_transaction()?;
+    {
+        let mut records = tx.prepare(
+            "SELECT a.id,a.data,json_extract(s.data,'$.byteLength') FROM audit a
+             JOIN audit_snapshots s ON s.audit_id=a.id AND s.id='request/headers'
+             WHERE a.kind='request' AND json_extract(a.data,'$.target')='codex'
+             AND json_extract(a.data,'$.sessionKey') IS NULL
+             AND json_extract(s.data,'$.source')='observed_headers'
+             AND json_extract(s.data,'$.contentMode')='original'
+             AND json_extract(s.data,'$.state')='complete'
+             AND json_extract(s.data,'$.byteLength') BETWEEN 1 AND ?
+             ORDER BY a.seq",
+        )?;
+        let mut chunks = tx.prepare(
+            "SELECT start,end,content FROM audit_body_chunks
+             WHERE audit_id=? AND snapshot_id='request/headers' ORDER BY start",
+        )?;
+        let rows = records.query_map([4 * crate::streaming::PAGE], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, usize>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, data, length) = row?;
+            let mut text = String::new();
+            let mut contiguous = true;
+            let mut parts = chunks.query([&id])?;
+            while let Some(part) = parts.next()? {
+                let start: usize = part.get(0)?;
+                let end: usize = part.get(1)?;
+                let content: String = part.get(2)?;
+                if start != text.len() || end != start + content.len() || end > length {
+                    contiguous = false;
+                    break;
+                }
+                text.push_str(&content);
+            }
+            if !contiguous || text.len() != length {
+                continue;
+            }
+            let Ok(headers) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            let mut record: Value = serde_json::from_str(&data)?;
+            super::session::identify_headers(&mut record, &headers);
+            if record["sessionKey"].is_string() {
+                tx.execute(
+                    "UPDATE audit SET data=? WHERE id=?",
+                    params![record.to_string(), id],
+                )?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 fn disk_bytes(path: &Path) -> u64 {
@@ -1062,6 +1125,144 @@ mod tests {
             "inspectionStatus":"complete","severity":"high","findingCount":1,
             "findings":[{"id":format!("f-{id}"),"requestId":id,"atMs":chrono::Utc::now().timestamp_millis(),
                 "category":"destructive_action","severity":"high","confidence":"high","evidenceStage":"tool_call_proposed"}]})
+    }
+
+    #[test]
+    fn startup_restores_codex_sessions_from_complete_original_headers_only() {
+        fn seed(db: &mut Connection, id: &str, content: &str) {
+            let mut audit = record(id, "completed");
+            audit["target"] = json!("codex");
+            audit["protocol"] = json!("openai.responses");
+            persist(db, audit).unwrap();
+            persist_body(db, id, &json!({"id":"request/headers","state":"receiving"})).unwrap();
+            let mid = content.len() / 2;
+            for (start, end) in [(0, mid), (mid, content.len())] {
+                persist_body(db, id, &json!({"id":"request/headers","start":start,"end":end,"content":&content[start..end],"redactions":[]})).unwrap();
+            }
+            persist_body(db, id, &json!({"id":"request/headers","source":"observed_headers","contentMode":"original","state":"complete","byteLength":content.len()})).unwrap();
+        }
+        fn evidence(db: &Connection) -> Vec<String> {
+            db.prepare("SELECT json_array(audit_id,id,data) FROM audit_snapshots UNION ALL SELECT json_array(audit_id,snapshot_id,start,end,content,redactions) FROM audit_body_chunks UNION ALL SELECT json_array(id,data) FROM findings ORDER BY 1")
+                .unwrap().query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let mut db = open(&path, true).unwrap();
+        for session in ["one", "two"] {
+            for (i, header) in ["session-id", "session_id", "thread-id"].iter().enumerate() {
+                seed(
+                    &mut db,
+                    &format!("{session}-{i}"),
+                    &json!({*header:[session]}).to_string(),
+                );
+            }
+        }
+        let valid = json!({"session-id":["one"]}).to_string();
+        for id in [
+            "other-provider",
+            "already-grouped",
+            "claude",
+            "gap",
+            "redacted",
+            "missing-chunk",
+            "wrong-length",
+            "oversized",
+        ] {
+            seed(&mut db, id, &valid);
+        }
+        seed(&mut db, "invalid-json", "{invalid}");
+        seed(
+            &mut db,
+            "invalid-id",
+            &json!({"session-id":["not a session"]}).to_string(),
+        );
+        seed(
+            &mut db,
+            "no-id",
+            &json!({"x-client-request-id":["one"]}).to_string(),
+        );
+        db.execute("UPDATE audit SET data=json_set(data,'$.providerId','provider_two') WHERE id='other-provider'", []).unwrap();
+        db.execute("UPDATE audit SET data=json_set(data,'$.sessionKey','keep-existing','$.sessionSource','metadata.session_id') WHERE id='already-grouped'", []).unwrap();
+        db.execute(
+            "UPDATE audit SET data=json_set(data,'$.target','claude-code') WHERE id='claude'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE audit_snapshots SET data=json_set(data,'$.state','gap') WHERE audit_id='gap'",
+            [],
+        )
+        .unwrap();
+        db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.contentMode','redacted') WHERE audit_id='redacted'", []).unwrap();
+        db.execute(
+            "DELETE FROM audit_body_chunks WHERE audit_id='missing-chunk' AND start=0",
+            [],
+        )
+        .unwrap();
+        db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.byteLength',999) WHERE audit_id='wrong-length'", []).unwrap();
+        db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.byteLength',999999) WHERE audit_id='oversized'", []).unwrap();
+        let before = evidence(&db);
+        drop(db);
+        let db = open(&path, true).unwrap();
+        for session in ["one", "two"] {
+            let trace = read(&db, Query::parse(&format!("session={session}-0")).unwrap()).unwrap();
+            assert_eq!(trace["total"], 3);
+            let mut expected =
+                json!({"kind":"request","providerId":"provider_one","protocol":"openai.responses"});
+            super::super::session::identify(&mut expected, session, "session-id");
+            assert_eq!(trace["sessionId"], expected["sessionKey"]);
+        }
+        assert_eq!(
+            read(&db, Query::parse("session=other-provider").unwrap()).unwrap()["total"],
+            1
+        );
+        assert_eq!(
+            read(&db, Query::parse("session=already-grouped").unwrap()).unwrap()["sessionId"],
+            "keep-existing"
+        );
+        for id in [
+            "claude",
+            "gap",
+            "redacted",
+            "missing-chunk",
+            "wrong-length",
+            "oversized",
+            "invalid-json",
+            "invalid-id",
+            "no-id",
+        ] {
+            let result = read(&db, Query::parse(&format!("session={id}")).unwrap()).unwrap();
+            assert_eq!(result["total"], 1, "{id}");
+            assert!(result["items"][0]["sessionKey"].is_null(), "{id}");
+        }
+        let mut query = Query::parse("").unwrap();
+        query.sessions = true;
+        let sessions = read(&db, query).unwrap();
+        assert_eq!(
+            sessions["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["requestCount"] == 3)
+                .count(),
+            2
+        );
+        assert_eq!(
+            before,
+            evidence(&db),
+            "snapshots, chunks and findings stay unchanged"
+        );
+        let changes = db.total_changes();
+        restore_codex_sessions(&db).unwrap();
+        assert_eq!(
+            db.total_changes(),
+            changes,
+            "repeated recovery leaves existing identities alone"
+        );
+        assert_eq!(
+            read(&db, Query::parse("session=one-0").unwrap()).unwrap()["total"],
+            3
+        );
     }
 
     #[test]
