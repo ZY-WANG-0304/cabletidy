@@ -201,6 +201,43 @@ try {
   assert.equal(await page.locator(".security-event-timeline").count(), 1);
   assert.match(await page.locator(".security-event-timeline").innerText(), /流式事件/);
   report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
+  const bodyRequests = [];
+  const trackBodyRequest = request => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith(`/security/audit/${audit.id}/body`)) bodyRequests.push(url.searchParams.get("snapshot"));
+  };
+  page.on("request", trackBodyRequest);
+  for (const id of ["request/headers", "request", "response/headers", "response"]) {
+    const panel = page.locator(`[data-security-snapshot="${id}"]`);
+    assert.equal(await panel.getAttribute("open"), null);
+    const before = bodyRequests.length;
+    await panel.locator("summary").first().click();
+    await panel.locator(".security-body-content").first().waitFor();
+    assert.ok((await panel.locator(".security-body-content").first().innerText()).length > 0);
+    await delay(100);
+    assert.deepEqual(bodyRequests.slice(before), [id], "expanding loads exactly once despite rerendering");
+    const content = await panel.innerText();
+    await panel.locator("summary").first().click();
+    await panel.locator("summary").first().click();
+    await delay(100);
+    assert.equal(await panel.innerText(), content);
+    assert.equal(bodyRequests.length, before + 1, "reopening loaded content avoids duplicate requests");
+  }
+  const eventId = await page.locator("[data-security-event]").first().getAttribute("data-security-event");
+  const eventIndex = await page.locator(".security-event").evaluateAll((nodes, id) => nodes.findIndex(node => node.dataset.securityEvent === id), eventId);
+  const eventPanel = page.locator(".security-event").nth(eventIndex);
+  const beforeEvent = bodyRequests.length;
+  await eventPanel.locator("summary").click();
+  await eventPanel.getByLabel("检测快照").waitFor();
+  assert.ok((await eventPanel.getByLabel("检测快照").innerText()).length > 0);
+  await delay(100);
+  assert.deepEqual(bodyRequests.slice(beforeEvent), [eventId]);
+  await eventPanel.locator("summary").click();
+  await eventPanel.locator("summary").click();
+  await delay(100);
+  assert.equal(bodyRequests.length, beforeEvent + 1);
+  page.off("request", trackBodyRequest);
+  report.checks.push("collapsed request/response headers, bodies and stream events load on expansion without rerender request loops; reopening preserves loaded content");
   await page.goBack();
   await checkList(savedScroll);
   await page.goForward();
