@@ -2,6 +2,29 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+pub fn identify_headers(record: &mut Value, headers: &Value) {
+    for key in [
+        "x-claude-code-session-id",
+        "session-id",
+        "session_id",
+        "x-session-id",
+        "x-codex-session-id",
+        "thread-id",
+    ] {
+        // Prefer the native client's session header. Never use per-request or
+        // context-window IDs to group a conversation.
+        if key == "x-claude-code-session-id" && record["target"] != "claude-code" {
+            continue;
+        }
+        if matches!(key, "session-id" | "thread-id") && record["target"] != "codex" {
+            continue;
+        }
+        if let Some(id) = headers[key][0].as_str() {
+            identify(record, id, key);
+        }
+    }
+}
+
 pub fn identify(record: &mut Value, id: &str, source: &str) {
     if record["kind"] != "request"
         || record["sessionKey"].is_string()
@@ -290,6 +313,72 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn codex_headers_validate_fallbacks_and_preserve_other_clients() {
+        let headers = json!({
+            "session-id":["canonical"], "session_id":["legacy"],
+            "x-session-id":["generic"], "x-codex-session-id":["codex-legacy"],
+            "thread-id":["thread"], "x-client-request-id":["request"],
+            "x-codex-window-id":["window"]
+        });
+        let mut codex = json!({"kind":"request","target":"codex"});
+        identify_headers(&mut codex, &headers);
+        assert_eq!(codex["sessionSource"], "session-id");
+        let mut claude = json!({"kind":"request","target":"claude-code"});
+        identify_headers(&mut claude, &headers);
+        assert_eq!(claude["sessionSource"], "session_id");
+        for invalid in ["", "invalid id", &"x".repeat(129)] {
+            let mut record = json!({"kind":"request","target":"codex"});
+            identify_headers(
+                &mut record,
+                &json!({"session-id":[invalid],"thread-id":["valid-thread"]}),
+            );
+            assert_eq!(record["sessionSource"], "thread-id");
+        }
+        for target in ["codex", "claude-code"] {
+            let mut record = json!({"kind":"request","target":target});
+            identify_headers(
+                &mut record,
+                &json!({"x-client-request-id":["request"],"x-codex-window-id":["window"]}),
+            );
+            assert!(record["sessionKey"].is_null());
+        }
+        let mut claude = json!({"kind":"request","target":"claude-code"});
+        identify_headers(
+            &mut claude,
+            &json!({"session-id":["codex"],"thread-id":["thread"]}),
+        );
+        assert!(claude["sessionKey"].is_null());
+    }
+
+    #[test]
+    fn claude_headers_take_precedence_and_invalid_values_allow_body_fallback() {
+        let headers =
+            json!({"x-claude-code-session-id":["claude-session"],"session_id":["legacy"]});
+        let mut claude = json!({"kind":"request","target":"claude-code"});
+        identify_headers(&mut claude, &headers);
+        assert_eq!(claude["sessionSource"], "x-claude-code-session-id");
+        let mut codex = json!({"kind":"request","target":"codex"});
+        identify_headers(&mut codex, &headers);
+        assert_eq!(codex["sessionSource"], "session_id");
+        for invalid in ["", "invalid id", &"x".repeat(129)] {
+            let mut record = json!({"kind":"request","target":"claude-code"});
+            identify_headers(&mut record, &json!({"x-claude-code-session-id":[invalid]}));
+            assert!(record["sessionKey"].is_null());
+            capture(
+                &mut record,
+                json!({"metadata":{"user_id":json!({"session_id":"body-session"}).to_string()}}),
+                "request",
+            );
+            assert_eq!(record["sessionSource"], "metadata.user_id");
+            identify_headers(&mut record, &headers);
+            assert_eq!(
+                record["sessionSource"], "metadata.user_id",
+                "existing identities stay stable"
+            );
         }
     }
 

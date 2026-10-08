@@ -917,10 +917,10 @@ test("instruction evidence spans processing windows and incomplete credential fi
   assert.ok((await auditBytes(f.home)).includes(Buffer.from("encoded-credential")));
 });
 
-test("sessions group before pagination, preserve context under risk filters and survive restart", async t => {
+test("Codex sessions group before pagination, preserve context under risk filters and survive restart", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body, [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "已检查配置，准备修复。" }] }]));
   for (let i = 0; i < 53; i++) {
-    const response = await f.request({ input: [{ role: "user", content: i === 25 ? `修复请求 ${secret}` : `检查配置 ${i}` }] }, { headers: { "content-type": "application/json", session_id: "conversation-a" } });
+    const response = await f.request({ input: [{ role: "user", content: i === 25 ? `修复请求 ${secret}` : `检查配置 ${i}` }] }, { headers: { "content-type": "application/json", "session-id": "conversation-a", "thread-id": "conversation-a", "x-client-request-id": `request-${i}`, "x-codex-window-id": `conversation-a:${Math.floor(i / 10)}` } });
     assert.equal(response.status, 200);
   }
   for (let i = 0; i < 2; i++) await (await f.request({ input: "相同内容不能推断为同一会话" })).text();
@@ -931,7 +931,7 @@ test("sessions group before pagination, preserve context under risk filters and 
   const grouped = sessions.items.find(item => item.requestCount === 53);
   assert.equal(grouped.sessionTitle, "检查配置 0");
   assert.equal(grouped.identified, true);
-  assert.equal(grouped.sessionSource, "session_id");
+  assert.equal(grouped.sessionSource, "session-id");
   assert.equal(grouped.riskRecordCount, 1);
   assert.equal(sessions.items.filter(item => !item.identified).length, 2);
   const page = await f.list("audit", `session=${grouped.id}`);
@@ -956,6 +956,26 @@ test("sessions group before pagination, preserve context under risk filters and 
   assert.equal((await f.call("api/v1/security/sessions?session=x%27%20OR%201=1")).status, 400);
 });
 
+test("Codex header aliases join the same conversation and different conversations stay separate", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  for (const session of ["conversation-a", "conversation-b"]) {
+    for (const header of ["Session-Id", "session_id", "x-session-id", "x-codex-session-id", "Thread-Id"]) {
+      await (await f.request({ input: "相同输入", metadata: { session_id: "shared-body-metadata" } }, {
+        headers: { "content-type": "application/json", [header]: session },
+      })).text();
+    }
+  }
+  await f.waitFor(result => result.total === 10);
+  const sessions = await f.list("sessions");
+  assert.equal(sessions.total, 2);
+  assert.ok(sessions.items.every(item => item.identified && item.requestCount === 5));
+  for (const session of sessions.items) {
+    const trace = await f.list("audit", `session=${session.id}`);
+    assert.equal(trace.total, 5);
+    assert.deepEqual(trace.items.map(item => item.sessionSource), ["session-id", "session_id", "x-session-id", "x-codex-session-id", "thread-id"]);
+  }
+});
+
 test("Claude sessions use session metadata, never the shared user account", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body), { claude: true });
   const session = "f65999e4-4252-49f2-8b90-240405e1c668";
@@ -969,6 +989,72 @@ test("Claude sessions use session metadata, never the shared user account", asyn
   assert.equal(sessions.items.find(item => item.identified).requestCount, 2);
   assert.equal(sessions.items.find(item => item.identified).sessionTitle, "检查 Claude 接入");
 });
+
+for (const claude of [true, false]) {
+  test(`${claude ? "Claude" : "Codex"} session headers group requests before upstream headers and throughout streaming`, { timeout: 15000 }, async t => {
+    let releaseHeaders, releaseEnd, upstreamReady;
+    const headersGate = new Promise(resolve => { releaseHeaders = resolve; });
+    const endGate = new Promise(resolve => { releaseEnd = resolve; });
+    const ready = new Promise(resolve => { upstreamReady = resolve; });
+    t.after(() => { releaseHeaders(); releaseEnd(); });
+    let waiting = 0;
+    const f = await fixture(t, async (req, res, body) => {
+      if (!body.stream) { respond(res, body); return; }
+      if (++waiting === 2) upstreamReady();
+      await headersGate;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(event(claude
+        ? { type: "message_start", message: { model: body.model, role: "assistant", content: [] } }
+        : { type: "response.created", response: { model: body.model, output: [] } }));
+      await endGate;
+      res.end(event(claude ? { type: "message_stop" } : { type: "response.completed", response: { model: body.model, output: [] } }));
+    }, { claude });
+    const metadata = claude
+      ? { user_id: JSON.stringify({ session_id: "conversation-one", account_uuid: "shared-account" }) }
+      : { session_id: "conversation-one" };
+    await (await f.request({ metadata })).text();
+    await f.waitFor(result => result.total === 1);
+    const original = (await f.list("sessions")).items[0];
+    assert.equal(original.identified, true);
+    const header = claude ? "X-Claude-Code-Session-Id" : "Session-Id";
+    const responses = Promise.all(["conversation-one", "conversation-two"].map(session => f.request({ stream: true, metadata }, {
+      headers: { "content-type": "application/json", [header]: session },
+    })));
+    await ready;
+    const check = async outcome => {
+      const sessions = await f.list("sessions");
+      assert.equal(sessions.total, 2);
+      assert.equal(sessions.recordCount, 3);
+      assert.ok(sessions.items.every(item => item.identified));
+      const joined = sessions.items.find(item => item.id === original.id);
+      assert.equal(joined.requestCount, 2);
+      assert.equal(joined.activeCount, 1);
+      const separate = sessions.items.find(item => item.id !== original.id);
+      assert.equal(separate.requestCount, 1);
+      assert.equal(separate.activeCount, 1);
+      const audit = await f.list("audit");
+      const active = audit.items.filter(item => item.outcome === outcome);
+      assert.equal(active.length, 2);
+      assert.ok(active.every(item => item.sessionSource === header.toLowerCase()));
+      return sessions.items.map(item => item.id).sort();
+    };
+    const before = await check("started");
+    releaseHeaders();
+    const bodies = (await responses).map(response => response.text());
+    assert.deepEqual(await check("streaming"), before);
+    releaseEnd();
+    await Promise.all(bodies);
+    await f.waitFor(result => result.total === 3);
+    for (const restarted of [false, true]) {
+      if (restarted) await f.restart();
+      const sessions = await f.list("sessions");
+      assert.equal(sessions.total, 2, "body metadata cannot merge different header sessions");
+      assert.deepEqual(sessions.items.map(item => item.id).sort(), before);
+      assert.equal(sessions.items.find(item => item.id === original.id).requestCount, 2);
+      assert.ok(sessions.items.every(item => item.activeCount === 0));
+    }
+  });
+}
 
 test("request UUID session links resolve after streamed body metadata is inspected", async t => {
   let release;

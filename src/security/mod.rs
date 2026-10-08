@@ -46,9 +46,19 @@ impl Security {
         }
         self.store.flush().await;
     }
-    pub fn audit(&self, mut metadata: Value, secrets: &Value) -> Arc<Audit> {
-        let redactor = Redactor::new(secrets);
+    pub fn audit(
+        &self,
+        mut metadata: Value,
+        secrets: &Value,
+        headers: &axum::http::HeaderMap,
+    ) -> Arc<Audit> {
+        let mut redactor = Redactor::new(secrets);
+        let headers = headers_value(headers);
+        redactor.observe(&headers);
         limit_labels(&mut metadata);
+        // The very first stored record must already carry the header identity,
+        // including while receiving the body or waiting for upstream headers.
+        session::identify_headers(&mut metadata, &headers);
         metadata["id"] = json!(uuid::Uuid::new_v4().to_string());
         metadata["at"] = json!(config::now());
         metadata["atMs"] = json!(chrono::Utc::now().timestamp_millis());
@@ -76,7 +86,10 @@ impl Security {
                 finished: false,
                 response_attached: false,
                 sse: false,
-                request: BodyCapture::default(),
+                request: BodyCapture {
+                    headers,
+                    ..BodyCapture::default()
+                },
                 response: BodyCapture::default(),
             }),
         });
@@ -181,19 +194,6 @@ pub struct Audit {
     started: Instant,
 }
 impl Audit {
-    pub fn request_headers(&self, headers: &axum::http::HeaderMap) {
-        let mut s = self.state.lock().unwrap();
-        for key in ["session_id", "x-session-id", "x-codex-session-id"] {
-            if let Some(id) = headers.get(key).and_then(|v| v.to_str().ok()) {
-                session::identify(&mut s.record, id, key);
-            }
-        }
-        let h = headers_value(headers);
-        if let Some(r) = &mut s.redactor {
-            r.observe(&h);
-        }
-        s.request.headers = h;
-    }
     pub fn request_spool(&self, spool: Arc<Spool>, complete: bool) {
         let mut s = self.state.lock().unwrap();
         if let Some(r) = &mut s.redactor {
