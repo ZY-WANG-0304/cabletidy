@@ -7,7 +7,7 @@ import { normalizeConfig } from "./helpers/native.mjs";
 import { publicCodexCatalog } from "./helpers/native.mjs";
 import { validateConfig } from "./helpers/native.mjs";
 import { buildTargetArtifacts } from "./helpers/native.mjs";
-import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 import { CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES } from "../web/claude-models.js";
 import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
@@ -856,6 +856,147 @@ test("preview and apply follow the selected suite after creation, switching and 
   await app.action("open-suite", { dataset: { id: "development" } });
   await app.action("apply-target", {});
   assert.equal(app.requests.at(-1).body.bindingId, "development");
+});
+
+for (const [target, fixture, id] of [
+  ["Codex", codexConfigFixture, "relay"],
+  ["Claude Code", claudeConfigFixture, "claude-main"],
+]) {
+  test(`${target} configuration deletion removes its dependencies and returns to an empty list`, async () => {
+    const app = await controller(normalizeConfig(fixture()));
+    assert.match(app.read("renderOverview()"), new RegExp(`data-action="delete-suite" data-id="${id}"`));
+    await app.action("open-suite", { dataset: { id } });
+    assert.match(app.read("renderSuiteDetail()"), /data-action="delete-suite"/);
+    const name = app.read("selectedSuite().name");
+    app.read(`state.artifactPreview = { bindingId: ${JSON.stringify(id)} }; state.resolveResult = { ok: true }`);
+    await app.action("delete-suite", { dataset: { id }, closest: () => null });
+
+    const saved = app.persisted();
+    for (const field of ["bindings", "virtualProviders", "routes", "upstreams"]) assert.deepEqual(saved[field], {});
+    assert.equal(validateConfig(saved).ok, true);
+    assert.equal(app.read("state.page"), "overview");
+    assert.equal(app.read("state.selected.suite"), null);
+    assert.equal(app.read("state.selected.virtualProvider"), null);
+    assert.equal(app.read("state.selected.model"), null);
+    assert.equal(app.read("state.artifactPreview"), null);
+    assert.equal(app.read("state.resolveResult"), null);
+    assert.equal(app.read("state.busy"), false);
+    assert.match(app.read("renderOverview()"), /暂无配置/);
+    assert.ok(app.confirmations[0].includes(`「${name}」`));
+    assert.match(app.confirmations[0], /本地地址将停止服务/);
+    if (target === "Claude Code") assert.match(app.confirmations[0], /先撤销接入或切换其他配置/);
+    assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+    assert.ok(!app.requests.some(({ url }) => url.includes("/targets/")));
+    assert.deepEqual(app.messages, ["配置已删除并生效。"]);
+  });
+}
+
+for (const deletedId of ["first", "second"]) {
+  test(`deleting ${deletedId} preserves the other configuration and keeps a valid selection`, async () => {
+    const initial = normalizeConfig(namedCodexConfigFixture({ first: "first", second: "second" }));
+    const app = await controller(initial);
+    await app.action("delete-suite", { dataset: { id: deletedId }, closest: () => null });
+    const remainingId = deletedId === "first" ? "second" : "first";
+    const saved = app.persisted();
+    assert.deepEqual(Object.keys(saved.bindings), [remainingId]);
+    for (const field of ["bindings", "routes", "upstreams"]) {
+      assert.deepEqual(saved[field][remainingId], initial[field][remainingId]);
+      assert.equal(saved[field][deletedId], undefined);
+    }
+    assert.deepEqual(saved.virtualProviders, { [`cabletidy_${remainingId}`]: initial.virtualProviders[`cabletidy_${remainingId}`] });
+    assert.equal(app.read("state.selected.suite"), remainingId);
+    assert.equal(app.read("state.selected.virtualProvider"), `cabletidy_${remainingId}`);
+    assert.equal(app.read("state.selected.model"), "gpt-5.5");
+    assert.equal(validateConfig(saved).ok, true);
+  });
+}
+
+test("deletion after cancelling creation clears stale provider and model selections", async () => {
+  const app = await controller();
+  await app.action("create-suite", {});
+  await app.action("back-overview", {});
+  await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
+  assert.equal(app.read("state.selected.suite"), null);
+  assert.equal(app.read("state.selected.virtualProvider"), null);
+  assert.equal(app.read("state.selected.model"), null);
+});
+
+for (const shared of ["route", "upstream"]) {
+  test(`configuration deletion preserves a shared ${shared} and unrelated unused resources`, async () => {
+    const initial = namedCodexConfigFixture({ first: "first", second: "second", unused: "unused" });
+    delete initial.bindings.unused;
+    delete initial.virtualProviders.cabletidy_unused;
+    if (shared === "route") initial.virtualProviders.cabletidy_second.route = "first";
+    else initial.routes.second.backends[0].upstream = "first";
+    const app = await controller(normalizeConfig(initial));
+    const before = app.persisted();
+    await app.action("delete-suite", { dataset: { id: "first" }, closest: () => null });
+    const saved = app.persisted();
+    assert.equal(saved.bindings.first, undefined);
+    assert.equal(saved.virtualProviders.cabletidy_first, undefined);
+    assert.deepEqual(saved.upstreams, before.upstreams);
+    assert.deepEqual(saved.routes.unused, before.routes.unused);
+    assert.deepEqual(saved.routes.second, before.routes.second);
+    if (shared === "route") assert.deepEqual(saved.routes.first, before.routes.first);
+    else assert.equal(saved.routes.first, undefined);
+    assert.equal(validateConfig(saved).ok, true);
+  });
+}
+
+test("cancelling deletion retains unsaved edits and makes no commit", async () => {
+  const app = await controller(undefined, { confirmLeave: false });
+  app.read('state.page = "suite-detail"');
+  const input = inputNode("name", "Relay");
+  const form = mountTrackedForm(app, "suite-upstream-form", [input]);
+  input.value = "Unsaved relay";
+  const before = app.persisted();
+  await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
+  assert.deepEqual(app.persisted(), before);
+  assert.equal(app.read("state.page"), "suite-detail");
+  assert.equal(app.read("state.selected.suite"), "relay");
+  assert.equal(input.value, "Unsaved relay");
+  assert.equal(app.edited(form), true);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 0);
+  assert.match(app.confirmations[0], /未保存的修改也会丢失/);
+  assert.equal(app.read("state.busy"), false);
+});
+
+for (const status of [409, 422, 500]) {
+  test(`failed deletion (${status}) retains the configuration, selection and unsaved form`, async () => {
+    const app = await controller(undefined, { onCommit: () => ({ status, body: { error: { message: "删除失败" } } }) });
+    app.read('state.page = "suite-detail"; state.artifactPreview = { bindingId: "relay" }');
+    const input = inputNode("name", "Relay");
+    const form = mountTrackedForm(app, "suite-upstream-form", [input]);
+    input.value = "Unsaved relay";
+    const before = app.persisted();
+    await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
+    assert.deepEqual(app.persisted(), before);
+    assert.deepEqual(clone(app.read("state.candidate")), before);
+    assert.equal(app.read("state.selected.suite"), "relay");
+    assert.equal(app.read("state.selected.virtualProvider"), "cabletidy_relay");
+    assert.equal(app.read("state.artifactPreview.bindingId"), "relay");
+    assert.equal(app.read("state.page"), "suite-detail");
+    assert.equal(input.value, "Unsaved relay");
+    assert.equal(app.edited(form), true);
+    assert.equal(app.read("state.busy"), false);
+    assert.deepEqual(app.messages, ["删除失败"]);
+  });
+}
+
+test("a pending deletion cannot submit a second change", async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const app = await controller(undefined, { onCommit: () => pending });
+  const button = { dataset: { id: "relay" }, closest: () => null };
+  const first = app.action("delete-suite", button);
+  await setImmediate();
+  assert.equal(app.read("state.busy"), true);
+  await app.action("delete-suite", button);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+  release();
+  await first;
+  assert.deepEqual(app.persisted().bindings, {});
+  assert.equal(app.read("state.busy"), false);
 });
 
 test("creation commits immediately and clears transient secrets", async () => {

@@ -428,6 +428,7 @@ function suiteRow(suite) {
       <td data-label="模型设置">${suite.modelIds.length ? `${suite.modelIds.length} 项设置` : "直接透传"}</td>
       <td data-label="本地地址" class="mono">${esc(suiteEndpoint(suite))}</td>
       <td data-label="本地服务"><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></td>
+      <td data-label="操作"><button class="button button-danger" type="button" data-action="delete-suite" data-id="${esc(suite.id)}" aria-label="删除配置 ${esc(suite.name)}">删除</button></td>
     </tr>
   `;
 }
@@ -441,7 +442,7 @@ function renderOverview() {
     </div>
     ${
       suites.length
-        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
+        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th><th scope="col">操作</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
         : `<div class="panel"><div class="empty">暂无配置</div></div>`
     }
   `;
@@ -648,7 +649,7 @@ function renderSuiteDetail() {
   return `
     <div class="suite-toolbar">
       <button class="text-button" data-action="back-overview">返回列表</button>
-      <div class="suite-status"><span>${esc(targetLabel(binding.target))} · ${suite.models.length ? `${suite.models.length} 项模型设置` : "模型名直接透传"}</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></div>
+      <div class="suite-status"><span>${esc(targetLabel(binding.target))} · ${suite.models.length ? `${suite.models.length} 项模型设置` : "模型名直接透传"}</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span><button class="button button-danger" type="button" data-action="delete-suite" data-id="${esc(suite.id)}">删除配置</button></div>
     </div>
     <div class="panel suite-editor">
       <section class="suite-section" aria-labelledby="suite-upstream-title">
@@ -1489,6 +1490,15 @@ async function handleAction(action, element) {
     } else if (action === "back-overview") {
       state.page = "overview";
       render();
+    } else if (action === "delete-suite") {
+      const suite = configurationSuites(state.config).find((item) => item.id === element.dataset.id);
+      if (!suite) throw new Error("配置不存在，请刷新列表。");
+      const clientHint = suite.target === "claude-code"
+        ? "如已应用到 Claude Code，请先撤销接入或切换其他配置；删除不会自动恢复客户端设置。"
+        : "如客户端仍在使用此配置，请先切换其他配置；删除不会自动恢复客户端设置。";
+      const unsavedHint = hasUnsavedChanges() ? "\n当前未保存的修改也会丢失。" : "";
+      if (!window.confirm(`确定删除配置「${suite.name}」？删除后立即生效，该配置的本地地址将停止服务。\n${clientHint}${unsavedHint}`)) return;
+      await saveChanges(() => removeSuite(suite.id), undefined, "配置已删除并生效。");
     } else if (action === "select-model") {
       state.selected.model = element.dataset.id;
       state.page = "models";
@@ -1671,6 +1681,34 @@ function syncModelSelections(suite, renames, nextModels) {
     }
     suite.binding.claude.setModel = Boolean(suite.binding.defaultModel || suite.virtualProvider.defaultModel);
   }
+}
+
+function removeSuite(id) {
+  const config = state.candidate;
+  if (!Object.hasOwn(config.bindings, id)) throw new Error("配置不存在，请刷新列表。");
+  const providerId = config.bindings[id].virtualProvider;
+  const routeId = config.virtualProviders[providerId]?.route;
+  delete config.bindings[id];
+
+  // Only remove this configuration's dependencies when no remaining record uses them.
+  if (!values(config.bindings).some((binding) => binding.virtualProvider === providerId)) {
+    delete config.virtualProviders[providerId];
+    if (routeId && !values(config.virtualProviders).some((provider) => provider.route === routeId)) {
+      const upstreamIds = (config.routes[routeId]?.backends || []).map((backend) => backend.upstream);
+      delete config.routes[routeId];
+      for (const upstreamId of upstreamIds) {
+        if (!values(config.routes).some((route) => route.backends?.some((backend) => backend.upstream === upstreamId))) {
+          delete config.upstreams[upstreamId];
+        }
+      }
+    }
+  }
+
+  if (!state.selected.suite || !Object.hasOwn(config.bindings, state.selected.suite)) {
+    state.selected = { suite: null, virtualProvider: null, model: null };
+    selectSuite(firstKey(config.bindings));
+  }
+  state.page = "overview";
 }
 
 function removeModel(id) {
@@ -2024,10 +2062,11 @@ async function applyTarget() {
   render();
 }
 
-async function saveChanges(update, form) {
+async function saveChanges(update, form, successMessage = "配置已保存并生效。") {
   const previous = {
     page: state.page,
     selected: clone(state.selected),
+    artifactPreview: state.artifactPreview,
   };
   const preservedForms = captureEditedForms(form);
   state.candidate = clone(state.config);
@@ -2064,7 +2103,7 @@ async function saveChanges(update, form) {
     state.pendingSecrets = { upstreamSecrets: {} };
   }
   render(state.page === previous.page ? preservedForms : []);
-  toast("配置已保存并生效。");
+  toast(successMessage);
 }
 
 async function refresh(showToast = true) {

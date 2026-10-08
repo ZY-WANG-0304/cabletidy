@@ -961,7 +961,7 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
     }
     let mut candidate = config::normalize(&config::strip_presentation(&body["config"]));
     candidate["revision"] = json!(c["revision"].as_u64().unwrap_or(0) + 1);
-    let secrets = config::apply_secrets(&mut candidate, &previous.secrets, body);
+    let mut secrets = config::apply_secrets(&mut candidate, &previous.secrets, body);
     let mut check = validation::validate(&candidate);
     let diff = config::diff(c, &candidate);
     if check["ok"] == true {
@@ -983,6 +983,17 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
             422,
             json!({"error":{"code":"web_listener_restart_required","message":"Web 管理台监听地址或端口需要重启 daemon 后才能修改"},"diff":diff}),
         ));
+    }
+    // Removed upstreams must not leave credentials that a recreated ID could inherit.
+    // Keep credentials referenced by any remaining upstream, including shared secrets.
+    for (id, upstream) in entries(&c["upstreams"]) {
+        let secret_ref = text(&upstream["secretRef"]);
+        if candidate["upstreams"].get(id).is_none()
+            && !secret_ref.is_empty()
+            && !entries(&candidate["upstreams"]).any(|(_, u)| text(&u["secretRef"]) == secret_ref)
+        {
+            secrets.as_object_mut().unwrap().remove(secret_ref);
+        }
     }
     let next = Snapshot {
         config: candidate,
