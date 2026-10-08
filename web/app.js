@@ -1545,7 +1545,9 @@ async function securityAction(action, element) {
     }
     if (action === "security-event") {
       if (!element.dataset.id) return;
-      s.bodySelection = { ...s.bodySelection, detectionSnapshotId: element.dataset.id };
+      // Stream navigation leaves the pending body selection and its request valid.
+      s.bodySelection ||= {};
+      s.bodySelection.detectionSnapshotId = element.dataset.id;
       delete s.bodySelection.detectionStart;
       delete s.bodySelection.detectionEnd;
       await loadSecurityStream(element.dataset.id);
@@ -1574,8 +1576,11 @@ async function securityAction(action, element) {
     const mappedStream = s.bodySelection.detectionSnapshotId != null;
     const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null || s.bodySelection.snapshotId === s.bodySelection.sourceSnapshotId);
     const offset = action === "security-body-page" ? Number(element.dataset.offset) : Math.max(0, (s.bodySelection.start || 0) - 512);
+    const detectionSnapshotId = s.bodySelection.detectionSnapshotId;
+    const streamSequence = s.streamSequence;
     if (!await loadSecurityBody(offset, locateCredential)) return;
-    if (s.bodySelection.detectionSnapshotId) await loadSecurityStream(s.bodySelection.detectionSnapshotId);
+    // A stream event opened during the body request owns its own load and pagination.
+    if (detectionSnapshotId && s.streamSequence === streamSequence) await loadSecurityStream(detectionSnapshotId);
     const target = pageContent.querySelector(".security-body-hit") || pageContent.querySelector(".security-body-review");
     target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
     target?.focus?.({ preventScroll: true });

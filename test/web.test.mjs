@@ -550,6 +550,43 @@ test("late stream evidence cannot replace the currently selected event", async (
   assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /t one/);
 });
 
+for (const firstCompleted of ["body", "stream"]) test(`body and stream loads complete independently when ${firstCompleted} finishes first`, async () => {
+  let releaseBody, releaseStream;
+  const app = await controller(undefined, { onSecurity(url) {
+    const snapshot = url.includes("/body?") ? new URL(url, "http://test").searchParams.get("snapshot") : null;
+    if (snapshot === "request/headers") return new Promise(resolve => { releaseBody = resolve; });
+    if (snapshot === "stream/one") return new Promise(resolve => { releaseStream = resolve; });
+    if (snapshot) return { body: { chunks: [{ start: 0, end: 7, content: "request" }] } };
+    if (url.includes("/audit/interleaved")) return { body: { record: { id: "interleaved", bodySnapshots: [
+      { id: "request" }, { id: "request/headers" }, { id: "stream/one" },
+    ] } } };
+  } });
+  await app.action("security-detail", { dataset: { id: "interleaved" } });
+  const body = app.action("security-body", { dataset: { id: "request/headers" } });
+  const stream = app.action("security-event", { dataset: { id: "stream/one" } });
+  const completeBody = async () => {
+    releaseBody({ body: { chunks: [{ start: 0, end: 7, content: "headers" }] } });
+    await body;
+    assert.equal(app.read("state.security.bodyLoading"), false);
+    assert.equal(app.read("state.security.bodyPage.chunks[0].content"), "headers");
+  };
+  const completeStream = async () => {
+    releaseStream({ body: { chunks: [{ start: 0, end: 5, content: "event" }] } });
+    await stream;
+    assert.equal(app.read("state.security.streamLoading"), false);
+    assert.equal(app.read("state.security.streamPage.chunks[0].content"), "event");
+  };
+  if (firstCompleted === "body") { await completeBody(); await completeStream(); }
+  else { await completeStream(); await completeBody(); }
+  assert.equal(app.read("state.security.bodySelection.snapshotId"), "request/headers");
+  assert.equal(app.read("state.security.bodySelection.detectionSnapshotId"), "stream/one");
+  assert.equal(app.requests.filter(r => r.url.includes("snapshot=stream%2Fone")).length, 1);
+  const html = app.read("renderSecurityDetailPage()");
+  assert.match(html, />headers<\/pre>/);
+  assert.match(html, />event<\/pre>/);
+  assert.doesNotMatch(html, /正在加载正文片段|正在加载检测证据/);
+});
+
 test("late body pages cannot replace a new snapshot or closed detail", async () => {
   let release;
   const app = await controller(undefined, { onSecurity(url) {
