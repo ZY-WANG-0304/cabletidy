@@ -468,6 +468,47 @@ test("headers and nested credentials are retained while body positions remain re
   }
 });
 
+test("null credentials retain their original values without sensitive ranges or risk counts", async t => {
+  const f = await fixture(t, (req, res, body) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ type: "response", model: body.model, metadata: body.metadata, output: [] }));
+  });
+  const empty = { token: null, password: "", api_key: { primary: null, alternatives: [null, ""] } };
+  const response = await f.request({ metadata: empty });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).metadata, empty);
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  assert.equal(audit.inspectionStatus, "complete");
+  assert.equal(audit.findingCount, 0);
+  assert.equal(audit.severity, "informational");
+  const record = (await review(f, audit.id)).record;
+  assert.deepEqual(record.findings, []);
+  for (const id of ["request", "response"]) {
+    const snapshot = record.bodySnapshots.find(s => s.id === id);
+    assert.equal(snapshot.state, "complete");
+    assert.deepEqual(snapshot.body.metadata, empty);
+    assert.deepEqual(snapshot.sensitiveRanges, []);
+    assert.deepEqual(snapshot.redactions, []);
+  }
+  const filtered = await f.list("audit", "kind=request&hasRisk=true");
+  assert.equal(filtered.total, 0);
+  assert.equal(filtered.riskRecordCount, 0);
+  assert.equal(filtered.findingCount, 0);
+
+  // A literal string "null" and non-null scalar values remain filled credentials.
+  const filled = { token: "null", password: 0, api_key: false };
+  assert.deepEqual((await (await f.request({ metadata: filled })).json()).metadata, filled);
+  const next = (await f.waitFor(r => r.total === 2 && r.items[0]?.outcome === "completed")).items[0];
+  assert.equal(next.severity, "high");
+  const detected = (await review(f, next.id)).record;
+  for (const id of ["request", "response"]) {
+    const snapshot = detected.bodySnapshots.find(s => s.id === id);
+    assert.deepEqual(snapshot.body.metadata, filled);
+    const hits = snapshot.sensitiveRanges.map(mark => Buffer.from(snapshot.text).subarray(mark.start, mark.end).toString());
+    assert.deepEqual(hits.sort(), ["0", "false", "null"]);
+  }
+});
+
 test("original nested, escaped and scalar credentials have exact sensitive ranges after restart", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body));
   const credential = '秘密 "<tag>&\\value';

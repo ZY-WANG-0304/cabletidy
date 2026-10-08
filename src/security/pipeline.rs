@@ -584,8 +584,10 @@ impl Visitor for BodyVisitor<'_> {
         let before = self.pipeline.rules.findings.len();
         let start = self.writer.position();
         let end = start + s.len() as u64;
-        let hit = frame.credential.then_some((start, end));
-        if frame.credential {
+        // JSON null means the credential is absent, but must still be retained.
+        let credential = frame.credential && s != "null";
+        let hit = credential.then_some((start, end));
+        if credential {
             self.writer.mark("credential_field", start, end);
             if self.inspect {
                 self.pipeline
