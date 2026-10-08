@@ -40,7 +40,7 @@ const upstream = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ model: body.model, output: body.reviewCase ? [{ type: "output_text", text }] : [] }));
 });
 await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
-let app, browser, page;
+let app, browser, page, releaseRaceRefresh;
 const report = { viewport: { width: 1440, height: 1000 }, screenshots: [], hits: [], checks: [] };
 try {
   app = await createApplication({ paths: getPaths(home), loadCodexCatalog: async () => catalogFixture() });
@@ -252,6 +252,31 @@ try {
   await page.waitForFunction(id => document.querySelector(".trace-event-row.is-selected")?.dataset.id === id && document.querySelector(".trace-inspector-heading"), lastRequest.id);
   assert.equal(new URL(page.url()).hash, `#security/session/${audit.sessionKey}`);
   report.checks.push("old UUID links redirect to the canonical session and preserve a selection beyond the first page through reload and history; failed refreshes preserve rows, detail and scroll until retry succeeds");
+  const refreshGate = new Promise(resolve => { releaseRaceRefresh = resolve; });
+  let refreshEntered;
+  const refreshPrefetched = new Promise(resolve => { refreshEntered = resolve; });
+  const delayedDetail = `**/api/v1/security/audit/${lastRequest.id}`;
+  await page.route(delayedDetail, async route => {
+    const response = await route.fetch();
+    refreshEntered();
+    await refreshGate;
+    await route.fulfill({ response });
+  });
+  await page.getByRole("button", { name: "刷新会话", exact: true }).click();
+  await refreshPrefetched;
+  const newerRequest = sessionRecords.items.at(-2);
+  await page.locator(`.trace-event-row[data-id="${newerRequest.id}"]`).click();
+  await page.waitForFunction(id => document.querySelector(".trace-event-row.is-selected")?.dataset.id === id && document.querySelector(".trace-inspector-heading"), newerRequest.id);
+  const newerDetail = await page.locator(".trace-inspector-body").innerText();
+  releaseRaceRefresh();
+  await page.waitForFunction(() => !document.querySelector('[data-action="security-session-refresh"]').disabled);
+  assert.equal(await page.locator(".trace-event-row.is-selected").getAttribute("data-id"), newerRequest.id);
+  assert.equal(await page.locator(".trace-inspector-body").innerText(), newerDetail);
+  assert.equal(await page.evaluate(() => history.state.sessionRequestId), newerRequest.id);
+  await page.unroute(delayedDetail);
+  await page.reload();
+  await page.waitForFunction(id => document.querySelector(".trace-event-row.is-selected")?.dataset.id === id && document.querySelector(".trace-inspector-heading"), newerRequest.id);
+  report.checks.push("selecting another request during a delayed refresh preserves its detail and history after the old response arrives and after reload");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;
@@ -263,6 +288,7 @@ try {
   if (page) await page.screenshot({ path: path.join(output, "failure-full-page.png"), fullPage: true }).catch(() => {});
   throw error;
 } finally {
+  releaseRaceRefresh?.();
   await browser?.close();
   await app?.close();
   upstream.closeAllConnections();

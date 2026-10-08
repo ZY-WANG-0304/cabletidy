@@ -2162,3 +2162,46 @@ test("failed refreshes retain the full previous view until a complete replacemen
     assert.equal(app.read("state.trace.error"), null);
   }
 });
+
+for (const scenario of ["selected", "pending", "reselected", "failed"]) {
+  test(`late session refresh preserves newer request selection (${scenario})`, async () => {
+    const records = ["a", "b"].map(id => ({ id, kind: "request", requestPreview: `request ${id}`, responsePreview: `output ${id}`, findings: [], bodySnapshots: [] }));
+    let deferRefresh = false, releaseRefresh, releaseSelection;
+    const app = await controller(undefined, { onSecurity(url) {
+      if (url.includes("/sessions?")) return { body: { sessionId: "session", items: [{ id: "session", requestCount: 2 }], total: 1 } };
+      if (url.includes("/audit?")) return { body: { sessionId: "session", items: records, total: 2 } };
+      const record = records.find(item => url.endsWith(`/${item.id}`));
+      if (record?.id === "a" && deferRefresh) {
+        deferRefresh = false;
+        return new Promise(resolve => { releaseRefresh = () => resolve(scenario === "failed"
+          ? { status: 503, body: { error: { message: "旧请求刷新失败" } } }
+          : { body: { record: { ...record, responsePreview: "stale refresh" } } }); });
+      }
+      if (record?.id === "b" && scenario === "pending" && !releaseSelection) return new Promise(resolve => { releaseSelection = () => resolve({ body: { record } }); });
+      return { body: { record } };
+    } });
+    await app.read('loadSecuritySession("session")');
+    deferRefresh = true;
+    const refresh = app.action("security-session-refresh", {});
+    await setImmediate();
+    assert.equal(typeof releaseRefresh, "function");
+    const selecting = app.action("security-trace-select", { dataset: { id: "b" } });
+    if (scenario !== "pending") await selecting;
+    if (scenario === "reselected") await app.action("security-trace-select", { dataset: { id: "a" } });
+    const expectedId = scenario === "reselected" ? "a" : "b";
+    const selectedDetail = app.read("state.security.detail");
+    releaseRefresh(); await refresh;
+    assert.equal(app.read("state.security.detailId"), expectedId);
+    assert.equal(app.read("state.security.detail"), selectedDetail);
+    assert.equal(app.read("window.history.state.sessionRequestId"), expectedId);
+    assert.equal(app.read("state.trace.loading"), false);
+    assert.equal(app.read("state.trace.error"), null);
+    if (scenario === "pending") {
+      assert.equal(app.read("state.security.detailLoading"), true);
+      releaseSelection(); await selecting;
+    }
+    assert.equal(app.read("state.security.detail.responsePreview"), `output ${expectedId}`);
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.security.detailId"), expectedId, "a subsequent refresh still works for the new selection");
+  });
+}

@@ -1147,9 +1147,11 @@ async function loadSecuritySession(id, reset = true) {
   const retainedCount = reset ? 50 : Math.max(50, t.result?.items.length || 0);
   const rememberedId = reset ? window.history.state?.sessionRequestId : s.detailId;
   s.sequence++; s.detailSequence++; s.bodySequence = (s.bodySequence || 0) + 1;
+  const detailSequence = s.detailSequence;
   if (reset) { Object.assign(t, { id, tab: "overview", search: "", riskOnly: false, summary: null, result: null }); s.detail = null; }
   t.loading = true; t.error = null; t.loadingMore = false; t.moreError = null; state.page = "security-session"; render();
   const current = () => sequence === t.sequence && state.page === "security-session";
+  const selectionCurrent = () => reset || detailSequence === s.detailSequence;
   try {
     let summary = await api(`/security/sessions?${new URLSearchParams({ session: id })}`);
     if (!current()) return;
@@ -1175,6 +1177,9 @@ async function loadSecuritySession(id, reset = true) {
     // selected request's detail, fails before its replacement is ready.
     const detail = !reset && selected ? await api(`/security/audit/${encodeURIComponent(selected.id)}`) : null;
     if (!current()) return;
+    // A newer selection owns the detail and history, even if the user has
+    // switched back to the same request. Discard this obsolete refresh.
+    if (!selectionCurrent()) { t.loading = false; render(); return; }
     const redirected = sessionId !== id;
     if (renderedTraceId === t.id) renderedTraceId = sessionId;
     t.id = sessionId;
@@ -1186,7 +1191,8 @@ async function loadSecuritySession(id, reset = true) {
     if (current() && selected && (redirected || reset && preferredId)) pageContent.querySelector(".trace-event-row.is-selected")?.scrollIntoView({ block: "nearest", behavior: "instant" });
   } catch (error) {
     if (!current()) return;
-    t.error = error.message; t.loading = false; render();
+    if (selectionCurrent()) t.error = error.message;
+    t.loading = false; render();
   }
 }
 
