@@ -65,6 +65,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
       assert.fail("Audit state did not settle");
     },
     async restart(env) { await app.close(); app = await createApplication({ ...applicationOptions, env }); },
+    close: () => app.close(),
   };
 }
 
@@ -263,8 +264,9 @@ test("stream failures, missing terminal events and cancellation retain honest ou
   assert.equal(canceled, true, "downstream cancellation closes upstream");
 });
 
-test("management success and failures, local rejections and connection errors are audited; reads do not create records", async t => {
+test("configuration operations stay outside auditing; agent failures are recorded and reads do not create records", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body));
+  assert.equal((await f.list()).total, 0, "configuration commit does not create an audit");
   await (await f.request({ input: "hello" })).json();
   assert.equal((await f.list("audit", "hasRisk=true")).total, 0, "saved authentication is not a content leak");
   const initial = (await f.list()).total;
@@ -286,11 +288,13 @@ test("management success and failures, local rejections and connection errors ar
   await new Promise(resolve => f.upstream.close(resolve));
   assert.equal((await f.request()).status, 502);
   assert.equal((await f.list("audit", "outcome=connection_error")).total, 1);
-  const management = await f.list("audit", "kind=management");
-  assert.ok(management.items.some(item => item.action === "config.commit" && item.credentialsSubmitted && item.resultRevision === 1));
-  assert.ok(management.items.some(item => item.action === "target.apply" && item.outcome === "local_error"));
-  assert.equal((await f.list("audit", `kind=management&provider=${f.provider}`)).total, 2);
-  assert.doesNotMatch(JSON.stringify(management), /known-security-secret-value/);
+  assert.equal((await f.list("audit", "kind=management")).total, 0);
+  assert.equal((await f.list("sessions")).recordCount, 4);
+  assert.equal((await f.list()).items.every(item => item.kind === "request"), true);
+  // Verify collection is disabled, rather than relying on the read filter.
+  await f.close(); // Release SQLite's file locks before inspecting persisted bytes on Windows.
+  assert.doesNotMatch((await auditBytes(f.home)).toString(), /config\.commit|target\.apply|virtual_provider\.(start|pause)/);
+
 });
 
 test("an unavailable audit database leaves proxy traffic intact and reports the recovery gap", async t => {
@@ -911,4 +915,114 @@ test("instruction evidence spans processing windows and incomplete credential fi
   assert.equal(record.requestBodyState, "gap"); assert.equal(record.inspectionStatus, "failed");
   assert.match(JSON.stringify(record), /encoded-credential/);
   assert.ok((await auditBytes(f.home)).includes(Buffer.from("encoded-credential")));
+});
+
+test("sessions group before pagination, preserve context under risk filters and survive restart", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body, [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "已检查配置，准备修复。" }] }]));
+  for (let i = 0; i < 53; i++) {
+    const response = await f.request({ input: [{ role: "user", content: i === 25 ? `修复请求 ${secret}` : `检查配置 ${i}` }] }, { headers: { "content-type": "application/json", session_id: "conversation-a" } });
+    assert.equal(response.status, 200);
+  }
+  for (let i = 0; i < 2; i++) await (await f.request({ input: "相同内容不能推断为同一会话" })).text();
+  await f.waitFor(result => result.total === 55);
+  let sessions = await f.list("sessions", "kind=request");
+  assert.equal(sessions.total, 3);
+  assert.equal(sessions.recordCount, 55);
+  const grouped = sessions.items.find(item => item.requestCount === 53);
+  assert.equal(grouped.sessionTitle, "检查配置 0");
+  assert.equal(grouped.identified, true);
+  assert.equal(grouped.sessionSource, "session_id");
+  assert.equal(grouped.riskRecordCount, 1);
+  assert.equal(sessions.items.filter(item => !item.identified).length, 2);
+  const page = await f.list("audit", `session=${grouped.id}`);
+  assert.equal(page.items.length, 50);
+  assert.equal(page.items[0].requestPreview, "检查配置 0");
+  assert.equal(page.items[0].responsePreview, "已检查配置，准备修复。");
+  assert.equal(page.items[49].requestPreview, "检查配置 49");
+  const next = await f.list("audit", `session=${grouped.id}&cursor=${page.nextCursor}`);
+  assert.equal(next.items.length, 3);
+  assert.equal(next.items[0].requestPreview, "检查配置 50");
+  assert.equal(next.nextCursor, null);
+  sessions = await f.list("sessions", "kind=request&hasRisk=true");
+  assert.equal(sessions.total, 1);
+  assert.equal(sessions.items[0].requestCount, 53, "risk filtering preserves non-risk context");
+  const first = await f.list("sessions", "kind=request&limit=1");
+  const second = await f.list("sessions", `kind=request&limit=1&cursor=${first.nextCursor}`);
+  assert.notEqual(first.items[0].id, second.items[0].id);
+  await f.restart();
+  const restored = await f.list("sessions", `session=${grouped.id}`);
+  assert.equal(restored.items[0].requestCount, 53);
+  assert.equal(restored.items[0].id, grouped.id);
+  assert.equal((await f.call("api/v1/security/sessions?session=x%27%20OR%201=1")).status, 400);
+});
+
+test("Claude sessions use session metadata, never the shared user account", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body), { claude: true });
+  const session = "f65999e4-4252-49f2-8b90-240405e1c668";
+  for (const user_id of [`user_account_account_org_session_${session}`, JSON.stringify({ device_id: "device", account_uuid: "org", session_id: session })]) {
+    await (await f.request({ metadata: { user_id }, messages: [{ role: "user", content: [{ type: "text", text: "检查 Claude 接入" }] }] })).text();
+  }
+  for (let i = 0; i < 2; i++) await (await f.request({ metadata: { user_id: "same-account" } })).text();
+  await f.waitFor(result => result.total === 4);
+  const sessions = await f.list("sessions", "kind=request");
+  assert.equal(sessions.total, 3);
+  assert.equal(sessions.items.find(item => item.identified).requestCount, 2);
+  assert.equal(sessions.items.find(item => item.identified).sessionTitle, "检查 Claude 接入");
+});
+
+test("request UUID session links resolve after streamed body metadata is inspected", async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, async (req, res, body) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write(event({ type: "message_start", message: { model: body.model, role: "assistant", content: [] } }));
+    await gate;
+    res.end(event({ type: "message_stop" }));
+  }, { claude: true });
+  const user_id = JSON.stringify({ session_id: "late-session", account_uuid: "shared-account" });
+  const responses = await Promise.all([0, 1].map(i => f.request({ stream: true, metadata: { user_id }, messages: [{ role: "user", content: `请求 ${i}` }] })));
+  const pending = responses.map(response => response.text());
+  const before = await f.list("sessions");
+  assert.equal(before.total, 2);
+  assert.equal(before.items.every(item => !item.identified), true);
+  const ids = before.items.map(item => item.id);
+  for (const id of ids) assert.equal((await f.list("audit", `session=${id}`)).total, 1);
+  release(); await Promise.all(pending);
+  await f.waitFor(result => result.total === 2 && result.items.every(item => item.sessionKey));
+  const canonical = (await f.list("sessions")).items[0].id;
+  for (const id of ids) {
+    const summary = await f.list("sessions", `session=${id}`);
+    assert.equal(summary.sessionId, canonical);
+    assert.equal(summary.items[0].id, canonical);
+    assert.equal(summary.items[0].requestCount, 2);
+    const page = await f.list("audit", `session=${id}&limit=1`);
+    assert.equal(page.sessionId, canonical);
+    assert.equal(page.total, 2);
+    const next = await f.list("audit", `session=${id}&limit=1&cursor=${page.nextCursor}`);
+    assert.equal(next.sessionId, canonical);
+    assert.notEqual(next.items[0].id, page.items[0].id);
+    assert.deepEqual(new Set([page.items[0].id, next.items[0].id]), new Set(ids));
+  }
+  await f.restart();
+  assert.equal((await f.list("sessions", `session=${ids[0]}`)).sessionId, canonical);
+});
+
+test("Claude response summaries exclude tool input regardless of JSON field order", async t => {
+  const f = await fixture(t, (req, res, body) => {
+    const input = { type: "text", text: "工具参数不能作为模型输出" };
+    const tool = body.typeFirst ? { type: "tool_use", input, name: "test", id: "tool-1" } : { input, name: "test", type: "tool_use", id: "tool-1" };
+    const content = body.toolOnly ? [tool] : [{ type: "text", text: "准备调用工具" }, tool];
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ type: "message", model: body.model, role: "assistant", content }));
+  }, { claude: true });
+  let count = 0;
+  for (const typeFirst of [false, true]) for (const toolOnly of [false, true]) {
+    await (await f.request({ typeFirst, toolOnly, messages: [{ role: "user", content: "检查工具摘要" }] })).text();
+    count++;
+    const audit = (await f.waitFor(result => result.total === count)).items[0];
+    assert.equal(audit.responsePreview, toolOnly ? undefined : "准备调用工具");
+    const detail = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+    assert.equal(detail.responsePreview, audit.responsePreview);
+  }
 });

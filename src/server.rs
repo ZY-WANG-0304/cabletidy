@@ -524,62 +524,18 @@ async fn dispatch(state: Arc<AppState>, request: Request<Body>) -> Result<Respon
             );
             return Ok(r);
         }
-        let audit = if parts.method == Method::POST {
-            security::management_action(path).map(|action| state.security.audit(
-                json!({"kind":"management","action":action,"providerId":"","revision":snapshot.config["revision"]}),
-                &snapshot.secrets,
-            ))
-        } else {
-            None
-        };
-        if let Some(audit) = &audit {
-            audit.request_headers(&parts.headers);
-        }
-        let _audit_guard = security::RequestGuard(audit.clone());
         let (body, _body_memory) = if parts.method == Method::POST || parts.method == Method::PATCH
         {
-            match read_body(body, audit.as_ref()).await {
+            match read_body(body, None).await {
                 Ok(v) => v,
-                Err((s, c, m)) => {
-                    return audited_local_result(Ok(error(s, c, m)), audit.as_ref()).await;
-                }
+                Err((s, c, m)) => return Ok(error(s, c, m)),
             }
         } else {
             (json!({}), Reservation::memory())
         };
-        if let Some(audit) = &audit {
-            if let Some(id) = body["bindingId"].as_str() {
-                audit.set("bindingId", json!(id));
-            }
-            if let Some(rest) = path.strip_prefix("/api/v1/virtual-providers/") {
-                if let Some((id, _)) = rest.rsplit_once('/') {
-                    audit.set("providerId", json!(id));
-                }
-            }
-            if path == "/api/v1/config/commit" {
-                let changed: Vec<_> =
-                    ["upstreams", "routes", "virtualProviders", "bindings", "web"]
-                        .into_iter()
-                        .filter(|k| body["config"][k] != snapshot.config[k])
-                        .collect();
-                audit.set("changedSections", json!(changed));
-                audit.set(
-                    "credentialsSubmitted",
-                    json!(body["upstreamSecrets"]
-                        .as_object()
-                        .is_some_and(|secrets| !secrets.is_empty())),
-                );
-            }
-        }
-        let result = api(state.clone(), &parts.method, &parts.uri, body).await;
-        if let Some(audit) = &audit {
-            audit.set(
-                "resultRevision",
-                state.snapshot().config["revision"].clone(),
-            );
-        }
-        return audited_local_result(result, audit.as_ref()).await;
+        return api(state.clone(), &parts.method, &parts.uri, body).await;
     }
+
     let mut split = path.trim_start_matches('/').splitn(2, '/');
     let id = split.next().unwrap_or("");
     let remainder = split
@@ -735,9 +691,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 query.body = Some((snapshot, offset));
             }
             query
-        } else if path == "/api/v1/security/audit" {
+        } else if path == "/api/v1/security/audit" || path == "/api/v1/security/sessions" {
             match security::store::Query::parse(uri.query().unwrap_or("")) {
-                Ok(q) => q,
+                Ok(mut q) => {
+                    q.sessions = path.ends_with("/sessions");
+                    q
+                }
                 Err(_) => return Ok(error(400, "invalid_audit_query", "审计筛选参数无效")),
             }
         } else {
@@ -1606,7 +1565,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let security = security::Security::new(dir.path());
         let audit = security.audit(
-            json!({"kind":"management","action":"config.commit"}),
+            json!({"kind":"request","action":"model.request"}),
             &json!({"relay":"test-error-credential"}),
         );
         let response = audited_local_result(

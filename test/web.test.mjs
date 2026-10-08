@@ -183,7 +183,7 @@ test("security page filters, paginates and renders evidence as text without cont
   const finding = { id: "finding-one", requestId: "request-one", severity: "high", category: "sensitive_data", ruleId: "SEC-SECRET-001", ruleVersion: "1", evidenceStage: "tool_call_proposed", confidence: "low", inspectionStatus: "partial", outcome: "completed", at: "2026-09-26T10:00:00Z", evidence: { location: '<script>alert("x")</script>' } };
   const app = await controller(undefined, { onSecurity(url) {
     if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", kind: "request", inspectionStatus: "partial", coverageReasons: ["unsupported_tool"], findings: [finding] } } };
-    if (url.includes("/audit?")) return { body: { items: [{ id: "request-one", severity: "high", kind: "request", action: "model.request", findingCount: 6 }], total: 60, riskRecordCount: 10, findingCount: 60, counts: { high: 60 }, providers: ["retired_provider"], nextCursor: url.includes("cursor=") ? null : "12", storage: { state: "degraded", droppedWrites: 3 } } };
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "request-one", severity: "high", kind: "request", action: "model.request", findingCount: 6 }], total: 60, riskRecordCount: 10, findingCount: 60, counts: { high: 60 }, providers: ["retired_provider"], nextCursor: url.includes("cursor=") ? null : "12", storage: { state: "degraded", droppedWrites: 3 } } };
   } });
   app.read('navigatePage("security")');
   await setImmediate();
@@ -196,7 +196,7 @@ test("security page filters, paginates and renders evidence as text without cont
   assert.doesNotMatch(html, /data-action="(?:block|approve|notify)/);
   const form = formNode("security-filter-form", { hours: "168", severity: "high", stage: "tool_call_proposed" });
   await app.submit(form);
-  assert.ok(app.requests.some(r => r.url === "/api/v1/security/audit?hours=168&severity=high&stage=tool_call_proposed"));
+  assert.ok(app.requests.some(r => r.url === "/api/v1/security/sessions?hours=168&severity=high&stage=tool_call_proposed"));
   await app.action("security-next", { dataset: {} });
   assert.equal(app.read("state.security.cursor"), "12");
   await app.action("security-prev", { dataset: {} });
@@ -251,11 +251,11 @@ test("failed audit stages remain visibly active until the inspection task finish
     const record = { id: "one", kind: "request", outcome: "completed", severity: "critical", inspectionStatus: "failed", findings: [],
       inspectionProgress: { state: "failed", active, phase: active ? "detecting" : "finished", processedBytes: 128, observedBytes: 4096 } };
     if (url.includes("/audit/one")) return { body: { record } };
-    if (url.includes("/audit?")) return { body: { items: [record], total: 1 } };
+    if (url.includes("/sessions?")) return { body: { items: [{ ...record, requestCount: 1, incompleteCount: 1 }], total: 1 } };
   } });
   app.read('state.page = "security"');
   await app.read("loadSecurity()");
-  assert.match(app.read("renderSecurity()"), /部分步骤失败，仍在检测/);
+  assert.match(app.read("renderSecurity()"), /1 条待检查 \/ 不完整/);
   await app.action("security-detail", { dataset: { id: "one" } });
   assert.match(app.read("renderSecurityDetailPage()"), /检测进度：128 \/ 4096 字节 · 部分步骤失败，仍在检测/);
   active = false;
@@ -264,7 +264,7 @@ test("failed audit stages remain visibly active until the inspection task finish
   assert.doesNotMatch(app.read("renderSecurityDetailPage()"), /仍在检测/);
   await app.action("security-back", {});
   await app.action("refresh", {});
-  assert.match(app.read("renderSecurity()"), /检测失败/);
+  assert.match(app.read("renderSecurity()"), /1 条待检查 \/ 不完整/);
   assert.doesNotMatch(app.read("renderSecurity()"), /仍在检测/);
 });
 
@@ -272,7 +272,7 @@ test("late security responses cannot replace a newer filter result", async () =>
   let release;
   const app = await controller(undefined, { onSecurity(url) {
     if (url.includes("hours=1&")) return new Promise(resolve => { release = resolve; });
-    if (url.includes("/audit?")) return { body: { items: [], total: 2 } };
+    if (url.includes("/sessions?")) return { body: { items: [], total: 2 } };
   } });
   app.read('state.page = "security"; state.security.filters = { hours: "1", severity: "high" }');
   const first = app.read("loadSecurity()");
@@ -286,13 +286,13 @@ test("late security responses cannot replace a newer filter result", async () =>
 test("audit detail navigation restores filters, pagination and scroll through back and forward", async () => {
   const app = await controller(undefined, { onSecurity(url) {
     if (url.includes("/audit/request-one")) return { body: { record: { id: "request-one", findings: [] } } };
-    if (url.includes("/audit?")) return { body: { items: [{ id: "request-one" }], total: 60, nextCursor: url.includes("cursor=") ? null : "page-two" } };
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "request-one" }], total: 60, nextCursor: url.includes("cursor=") ? null : "page-two" } };
   } });
   app.read('navigatePage("security")'); await setImmediate();
   await app.submit(formNode("security-filter-form", { hours: "168", hasRisk: "true", category: "sensitive_data" }));
   await app.action("security-next", { dataset: {} });
   app.read('window.scrollTo({ top: 1380, left: 0 })');
-  const listReads = app.requests.filter(r => r.url.includes("/audit?")).length;
+  const listReads = app.requests.filter(r => r.url.includes("/sessions?")).length;
   const checkList = () => {
     assert.equal(app.read("state.page"), "security");
     assert.equal(app.read("state.security.filters.category"), "sensitive_data");
@@ -300,7 +300,7 @@ test("audit detail navigation restores filters, pagination and scroll through ba
     assert.equal(app.read("state.security.cursor"), "page-two");
     assert.equal(app.read("state.security.history.length"), 1);
     assert.equal(app.read("window.scrollY"), 1380);
-    assert.equal(app.requests.filter(r => r.url.includes("/audit?")).length, listReads, "return uses the retained list page");
+    assert.equal(app.requests.filter(r => r.url.includes("/sessions?")).length, listReads, "return uses the retained list page");
     assert.doesNotMatch(app.node("#page-content").innerHTML, /aria-label="审计详情"/);
   };
   await app.action("security-detail", { dataset: { id: "request-one" } });
@@ -1947,3 +1947,261 @@ test("merged local model selection keeps its matching security hint", async () =
   assert.match(merged.hint.textContent, /防御性安全工作/);
   assert.equal(merged.hint.hidden, false);
 });
+
+test("session trace preserves context, selects steps lazily, filters summaries and restores navigation", async () => {
+  const records = [
+    { id: "a", sessionKey: "session-one", kind: "request", outcome: "completed", inspectionStatus: "complete", requestPreview: "检查输入状态", responsePreview: "<script>literal</script>", clientModelId: "gpt-5.5", upstreamModelId: "<vendor-gpt>", findingCount: 0, findings: [], bodySnapshots: [] },
+    { id: "b", sessionKey: "session-one", kind: "request", outcome: "completed", inspectionStatus: "partial", requestPreview: "保留上下文", toolNames: ["exec_command"], findingCount: 1, findings: [], bodySnapshots: [] },
+  ];
+  const summary = { id: "session-one", identified: true, kind: "request", sessionTitle: "检查输入状态", requestCount: 2, findingCount: 1 };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/sessions?")) return { body: { items: [summary], total: 1 } };
+    if (url.includes("/audit?")) return { body: { items: records, total: 2 } };
+    if (url.includes("/audit/")) return { body: { record: records.find(r => url.endsWith(`/${r.id}`)) } };
+  } });
+  app.read('navigatePage("security")'); await setImmediate();
+  app.read('window.scrollY = 400');
+  await app.action("security-session", { dataset: { id: "session-one" } });
+  assert.equal(app.read("state.page"), "security-session");
+  assert.equal(app.read("state.security.detail.id"), "a");
+  assert.equal(app.requests.some(r => r.url.includes("/body?")), false, "overview never fetches bodies");
+  let html = app.read("renderSecuritySession()");
+  assert.match(html, /&lt;script&gt;literal/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /模型<\/span><strong[^>]*>gpt-5\.5 → &lt;vendor-gpt&gt;<\/strong>/);
+  assert.doesNotMatch(html, /<vendor-gpt>/);
+  assert.match(app.read("renderTraceInspector()"), /模型<\/dt><dd>gpt-5\.5 → &lt;vendor-gpt&gt;<\/dd>/);
+  assert.equal(app.read("traceItems().length"), 2);
+  await app.submit(formNode("security-trace-search", { search: "VENDOR-GPT" }));
+  assert.equal(app.read("traceItems().length"), 1);
+  assert.equal(app.read("traceItems()[0].id"), "a");
+  await app.submit(formNode("security-trace-search", { search: "" }));
+  await app.action("security-trace-risk", { dataset: {} });
+  assert.equal(app.read("traceItems().length"), 1);
+  await app.submit(formNode("security-trace-search", { search: "missing" }));
+  assert.match(app.read("renderSecuritySession()"), /已加载的轨迹中没有匹配的步骤/);
+  await app.submit(formNode("security-trace-search", { search: "exec_command" }));
+  assert.equal(app.read("traceItems()[0].id"), "b");
+  await app.action("security-trace-select", { dataset: { id: "b" } });
+  assert.equal(app.read("state.security.detail.id"), "b");
+  assert.match(app.read("renderTraceInspector()"), /模型<\/dt><dd>未记录 → 未记录<\/dd>/);
+  assert.equal(app.read("state.page"), "security-session");
+  await app.back();
+  assert.equal(app.read("state.page"), "security");
+  assert.equal(app.read("window.scrollY"), 400);
+  await app.forward();
+  assert.equal(app.read("state.page"), "security-session");
+  assert.equal(app.read("state.trace.summary.requestCount"), 2);
+});
+
+test("late session loads cannot overwrite another session or the list", async () => {
+  let resolve;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/audit?session=slow")) return new Promise(r => { resolve = r; });
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "fast", kind: "request" }], total: 1 } };
+    if (url.includes("/audit?")) return { body: { items: [], total: 0 } };
+  } });
+  const slow = app.read('loadSecuritySession("slow")');
+  await setImmediate();
+  await app.read('loadSecuritySession("fast")');
+  resolve({ body: { items: [{ id: "stale" }], total: 1 } });
+  await slow;
+  assert.equal(app.read("state.trace.id"), "fast");
+  assert.equal(app.read("state.trace.result.total"), 0);
+  await app.action("security-back", {});
+  assert.equal(app.read("state.page"), "security");
+});
+
+test("scroll loading appends requests without replacing selection and refresh retains the loaded range", async () => {
+  const records = Array.from({ length: 120 }, (_, i) => ({ id: `r${i}`, kind: "request", clientModelId: "gpt-5.5", requestPreview: `request ${i}`, findings: [], bodySnapshots: [] }));
+  let fail = true, release;
+  const app = await controller(undefined, { onSecurity(url) {
+    const parsed = new URL(url, "http://test");
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "session", requestCount: 120 }], total: 1 } };
+    if (url.includes("/audit?")) {
+      const offset = Number(parsed.searchParams.get("cursor") || 0);
+      if (offset === 50 && fail) return { status: 503, body: { error: { message: "暂时无法加载后续请求" } } };
+      const result = { body: { items: records.slice(offset, offset + 50), total: 120, nextCursor: offset + 50 < 120 ? String(offset + 50) : null } };
+      if (offset === 100 && !release) return new Promise(resolve => { release = () => resolve(result); });
+      return result;
+    }
+    if (url.includes("/audit/")) return { body: { record: records.find(r => parsed.pathname.endsWith(`/${r.id}`)) } };
+  } });
+  await app.read('loadSecuritySession("session")');
+  assert.equal(app.read("state.trace.result.items.length"), 50);
+  assert.doesNotMatch(app.read("renderSecuritySession()"), /上一页请求|下一页请求|trace-pagination/);
+  await app.action("security-trace-more", {});
+  assert.match(app.read("renderSecuritySession()"), /重试加载/);
+  assert.equal(app.read("state.trace.result.items.length"), 50);
+  fail = false;
+  await app.action("security-trace-more", {});
+  assert.equal(app.read("state.trace.result.items.length"), 100);
+  assert.equal(app.read("state.security.detail.id"), "r0");
+  await app.action("security-trace-select", { dataset: { id: "r80" } });
+  const pending = app.read("loadMoreSecurityTrace()");
+  await setImmediate();
+  await app.read("loadMoreSecurityTrace()");
+  assert.equal(app.requests.filter(r => r.url.includes("cursor=100")).length, 1, "concurrent scrolls share one in-flight fetch");
+  release(); await pending;
+  assert.equal(app.read("state.trace.result.items.length"), 120);
+  assert.equal(app.read("state.security.detail.id"), "r80");
+  assert.match(app.read("renderSecuritySession()"), /已显示全部请求/);
+  assert.ok(app.read("traceSegments(state.trace.result.items).length") <= 60);
+  await app.action("security-session-refresh", {});
+  assert.equal(app.read("state.trace.result.items.length"), 120);
+  assert.equal(app.read("state.security.detail.id"), "r80");
+});
+
+test("pending scroll pages cannot append to a different session", async () => {
+  let release;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("cursor=")) return new Promise(resolve => { release = resolve; });
+    if (url.includes("/audit?")) return { body: { items: [], total: 1, nextCursor: "1" } };
+    if (url.includes("/sessions?")) return { body: { items: [], total: 0 } };
+  } });
+  await app.read('loadSecuritySession("first")');
+  const pending = app.read("loadMoreSecurityTrace()"); await setImmediate();
+  await app.read('loadSecuritySession("second")');
+  release({ body: { items: [{ id: "stale" }], total: 1, nextCursor: null } });
+  await pending;
+  assert.equal(app.read("state.trace.result.items.length"), 0);
+  assert.equal(app.read("state.trace.id"), "second");
+});
+
+test("session UUID redirects retain the selected request across refresh, old links and history", async () => {
+  const records = Array.from({ length: 120 }, (_, i) => ({ id: `r${i}`, kind: "request", requestPreview: `request ${i}`, findings: [], bodySnapshots: [] }));
+  let grouped = false;
+  const onSecurity = url => {
+    const parsed = new URL(url, "http://test");
+    const sessionId = grouped ? "canonical" : "r80";
+    if (url.includes("/sessions?")) return { body: { sessionId, items: [{ id: sessionId, requestCount: grouped ? 120 : 1 }], total: 1 } };
+    if (url.includes("/audit?")) {
+      const offset = Number(parsed.searchParams.get("cursor") || 0);
+      return { body: { sessionId, items: grouped ? records.slice(offset, offset + 50) : [records[80]], total: grouped ? 120 : 1, nextCursor: grouped && offset + 50 < 120 ? String(offset + 50) : null } };
+    }
+    if (url.includes("/audit/")) return { body: { record: records.find(record => parsed.pathname.endsWith(`/${record.id}`)) } };
+  };
+  const app = await controller(undefined, { onSecurity });
+  app.read('navigatePage("security")'); await setImmediate();
+  app.read('window.scrollY = 400');
+  await app.action("security-session", { dataset: { id: "r80" } });
+  assert.equal(app.read("state.security.detailId"), "r80");
+  grouped = true;
+  await app.action("security-session-refresh", {});
+  assert.equal(app.read("state.trace.id"), "canonical");
+  assert.equal(app.read("window.location.hash"), "#security/session/canonical");
+  assert.equal(app.read("window.history.state.sessionRequestId"), "r80");
+  assert.equal(app.read("state.trace.result.items.length"), 100, "load enough canonical context to include the selected request");
+  assert.equal(app.read("state.security.detailId"), "r80");
+  await app.back();
+  assert.equal(app.read("state.page"), "security", "redirect replaces history instead of adding a dead UUID entry");
+  assert.equal(app.read("window.scrollY"), 400);
+  await app.forward();
+  assert.equal(app.read("state.security.detailId"), "r80");
+  await app.read('restoreSecurityNavigation()');
+  assert.equal(app.read("state.security.detailId"), "r80", "reload uses the request stored in this history entry");
+  await app.action("security-trace-select", { dataset: { id: "r90" } });
+  await app.back(); await app.forward();
+  assert.equal(app.read("state.security.detailId"), "r90");
+  const reopened = await controller(undefined, { url: "http://test/#security/session/r80", onSecurity });
+  assert.equal(reopened.read("window.location.hash"), "#security/session/canonical");
+  assert.equal(reopened.read("state.security.detailId"), "r80");
+});
+
+test("session redirect handles grouping that finishes between summary and request reads", async () => {
+  let summaries = 0;
+  const record = { id: "original", kind: "request", findings: [], bodySnapshots: [] };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/sessions?")) {
+      const sessionId = summaries++ ? "canonical" : "original";
+      return { body: { sessionId, items: [{ id: sessionId }], total: 1 } };
+    }
+    if (url.includes("/audit?")) return { body: { sessionId: "canonical", items: [record], total: 1 } };
+    if (url.endsWith("/audit/original")) return { body: { record } };
+  } });
+  await app.read('loadSecuritySession("original")');
+  assert.equal(summaries, 2);
+  assert.equal(app.read("state.trace.id"), "canonical");
+  assert.equal(app.read("state.trace.summary.id"), "canonical");
+  assert.equal(app.read("state.security.detailId"), "original");
+  assert.equal(app.read("window.location.hash"), "#security/session/canonical");
+});
+
+test("failed refreshes retain the full previous view until a complete replacement succeeds", async () => {
+  const records = Array.from({ length: 120 }, (_, i) => ({ id: `r${i}`, kind: "request", requestPreview: `request ${i}`, findings: [], bodySnapshots: [] }));
+  let failAt = null;
+  const app = await controller(undefined, { onSecurity(url) {
+    const parsed = new URL(url, "http://test");
+    const stage = url.includes("/sessions?") ? "summary" : url.includes("/audit?") ? (parsed.searchParams.has("cursor") ? "later-page" : "first-page") : "detail";
+    if (stage === failAt) return { status: 503, body: { error: { message: "临时读取失败" } } };
+    if (stage === "summary") return { body: { items: [{ id: "session", requestCount: 120 }], total: 1 } };
+    if (stage.endsWith("page")) {
+      const offset = Number(parsed.searchParams.get("cursor") || 0);
+      return { body: { items: records.slice(offset, offset + 50), total: 120, nextCursor: offset + 50 < 120 ? String(offset + 50) : null } };
+    }
+    return { body: { record: records.find(record => parsed.pathname.endsWith(`/${record.id}`)) } };
+  } });
+  await app.read('loadSecuritySession("session")');
+  await app.action("security-trace-more", {});
+  await app.action("security-trace-select", { dataset: { id: "r80" } });
+  await app.action("security-trace-tab", { dataset: { tab: "risks" } });
+  for (const stage of ["summary", "first-page", "later-page", "detail"]) {
+    const result = app.read("state.trace.result"), summary = app.read("state.trace.summary"), detail = app.read("state.security.detail");
+    failAt = stage;
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.trace.result"), result, stage);
+    assert.equal(app.read("state.trace.summary"), summary, stage);
+    assert.equal(app.read("state.security.detail"), detail, stage);
+    assert.equal(app.read("state.security.detailId"), "r80");
+    assert.equal(app.read("state.trace.tab"), "risks");
+    assert.match(app.read("renderSecuritySession()"), /临时读取失败/);
+    failAt = null;
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.trace.result.items.length"), 100);
+    assert.equal(app.read("state.security.detailId"), "r80");
+    assert.equal(app.read("state.trace.error"), null);
+  }
+});
+
+for (const scenario of ["selected", "pending", "reselected", "failed"]) {
+  test(`late session refresh preserves newer request selection (${scenario})`, async () => {
+    const records = ["a", "b"].map(id => ({ id, kind: "request", requestPreview: `request ${id}`, responsePreview: `output ${id}`, findings: [], bodySnapshots: [] }));
+    let deferRefresh = false, releaseRefresh, releaseSelection;
+    const app = await controller(undefined, { onSecurity(url) {
+      if (url.includes("/sessions?")) return { body: { sessionId: "session", items: [{ id: "session", requestCount: 2 }], total: 1 } };
+      if (url.includes("/audit?")) return { body: { sessionId: "session", items: records, total: 2 } };
+      const record = records.find(item => url.endsWith(`/${item.id}`));
+      if (record?.id === "a" && deferRefresh) {
+        deferRefresh = false;
+        return new Promise(resolve => { releaseRefresh = () => resolve(scenario === "failed"
+          ? { status: 503, body: { error: { message: "旧请求刷新失败" } } }
+          : { body: { record: { ...record, responsePreview: "stale refresh" } } }); });
+      }
+      if (record?.id === "b" && scenario === "pending" && !releaseSelection) return new Promise(resolve => { releaseSelection = () => resolve({ body: { record } }); });
+      return { body: { record } };
+    } });
+    await app.read('loadSecuritySession("session")');
+    deferRefresh = true;
+    const refresh = app.action("security-session-refresh", {});
+    await setImmediate();
+    assert.equal(typeof releaseRefresh, "function");
+    const selecting = app.action("security-trace-select", { dataset: { id: "b" } });
+    if (scenario !== "pending") await selecting;
+    if (scenario === "reselected") await app.action("security-trace-select", { dataset: { id: "a" } });
+    const expectedId = scenario === "reselected" ? "a" : "b";
+    const selectedDetail = app.read("state.security.detail");
+    releaseRefresh(); await refresh;
+    assert.equal(app.read("state.security.detailId"), expectedId);
+    assert.equal(app.read("state.security.detail"), selectedDetail);
+    assert.equal(app.read("window.history.state.sessionRequestId"), expectedId);
+    assert.equal(app.read("state.trace.loading"), false);
+    assert.equal(app.read("state.trace.error"), null);
+    if (scenario === "pending") {
+      assert.equal(app.read("state.security.detailLoading"), true);
+      releaseSelection(); await selecting;
+    }
+    assert.equal(app.read("state.security.detail.responsePreview"), `output ${expectedId}`);
+    await app.action("security-session-refresh", {});
+    assert.equal(app.read("state.security.detailId"), expectedId, "a subsequent refresh still works for the new selection");
+  });
+}
