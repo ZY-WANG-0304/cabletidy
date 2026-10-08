@@ -29,6 +29,8 @@ pub struct Store {
 #[derive(Default)]
 pub struct Query {
     pub detail: Option<String>,
+    pub sessions: bool,
+    pub session: Option<String>,
     pub body: Option<(String, u64)>,
     filters: BTreeMap<String, String>,
     hours: i64,
@@ -48,6 +50,12 @@ impl Query {
                 continue;
             }
             match k.as_ref() {
+                "session" => {
+                    if v.len() > 128 || !v.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+                        bail!("invalid session");
+                    }
+                    q.session = Some(v.into_owned());
+                }
                 "hours" => {
                     q.hours = v.parse()?;
                     if !(1..=720).contains(&q.hours) {
@@ -221,9 +229,9 @@ impl Store {
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
         let sender = self.sender.clone();
-        if tokio::task::spawn_blocking(move || sender.send(Job::Flush(tx)))
+        if tokio::task::spawn_blocking(move || sender.send(Job::Flush(tx)).is_ok())
             .await
-            .is_ok()
+            .unwrap_or(false)
         {
             let _ = rx.await;
         }
@@ -261,6 +269,7 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
           inspection TEXT NOT NULL, severity TEXT NOT NULL, data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS audit_time ON audit(at);
         CREATE INDEX IF NOT EXISTS audit_provider ON audit(provider, at);
+        CREATE INDEX IF NOT EXISTS audit_session ON audit(coalesce(json_extract(data,'$.sessionKey'),id),seq);
         CREATE TABLE IF NOT EXISTS findings (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
           audit_id TEXT NOT NULL REFERENCES audit(id) ON DELETE CASCADE,
@@ -520,6 +529,14 @@ fn read_body_page(db: &Connection, audit: &str, snapshot: &str, offset: u64) -> 
 
 fn read(db: &Connection, query: Query) -> Result<Value> {
     if let Some(id) = query.detail {
+        let visible: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM audit WHERE id=? AND kind != 'management')",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if !visible {
+            return Ok(Value::Null);
+        }
         if let Some((snapshot, offset)) = query.body {
             return read_body_page(db, &id, &snapshot, offset);
         }
@@ -561,6 +578,20 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
     let mut args = vec![rusqlite::types::Value::Integer(
         chrono::Utc::now().timestamp_millis() - query.hours * 3_600_000,
     )];
+    if let Some(session) = &query.session {
+        conditions = vec!["coalesce(json_extract(a.data,'$.sessionKey'),a.id) = ?".into()];
+        args = vec![session.clone().into()];
+    }
+    // Historical configuration records are outside content auditing. Keep their
+    // retention lifecycle, but do not expose them through audit reads.
+    conditions.push(
+        if query.sessions || query.session.is_some() {
+            "a.kind = 'request'"
+        } else {
+            "a.kind != 'management'"
+        }
+        .into(),
+    );
     let mut finding_conditions = Vec::new();
     let mut finding_args = Vec::new();
     for (key, value) in &query.filters {
@@ -595,6 +626,9 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
         args.extend(finding_args);
     }
     let filter = conditions.join(" AND ");
+    if query.sessions {
+        return read_sessions(db, &query, &filter, &args);
+    }
     let (total, risky, finding_count): (i64, i64, i64) = db.query_row(
         &format!("SELECT count(*), coalesce(sum(EXISTS (SELECT 1 FROM findings f WHERE f.audit_id=a.id)),0),
             coalesce(sum((SELECT count(*) FROM findings f WHERE f.audit_id=a.id)),0) FROM audit a WHERE {filter}"),
@@ -611,10 +645,17 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
         counts[severity] = json!(count);
     }
     if query.cursor > 0 {
-        conditions.push("a.seq < ?".into());
+        conditions.push(
+            if query.session.is_some() {
+                "a.seq > ?"
+            } else {
+                "a.seq < ?"
+            }
+            .into(),
+        );
         args.push(query.cursor.into());
     }
-    let sql = format!("SELECT a.seq,a.data,(SELECT count(*) FROM findings f WHERE f.audit_id=a.id) FROM audit a WHERE {} ORDER BY a.seq DESC LIMIT ?", conditions.join(" AND "));
+    let sql = format!("SELECT a.seq,a.data,(SELECT count(*) FROM findings f WHERE f.audit_id=a.id) FROM audit a WHERE {} ORDER BY a.seq {} LIMIT ?", conditions.join(" AND "), if query.session.is_some() { "ASC" } else { "DESC" });
     args.push(((query.limit + 1) as i64).into());
     let mut stmt = db.prepare(&sql)?;
     let rows = stmt
@@ -639,15 +680,124 @@ fn read(db: &Connection, query: Query) -> Result<Value> {
     } else {
         None
     };
-    let oldest: Option<i64> = db.query_row("SELECT min(at) FROM audit", [], |r| r.get(0))?;
+    let oldest: Option<i64> = db.query_row(
+        "SELECT min(at) FROM audit WHERE kind != 'management'",
+        [],
+        |r| r.get(0),
+    )?;
     let mut stmt = db.prepare(
-        "SELECT DISTINCT provider FROM audit WHERE provider != '' ORDER BY provider LIMIT 200",
+        "SELECT DISTINCT provider FROM audit WHERE kind='request' AND provider != '' ORDER BY provider LIMIT 200",
     )?;
     let providers = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
         json!({"items":items,"total":total,"riskRecordCount":risky,"findingCount":finding_count,"counts":counts,"nextCursor":next,"oldestAtMs":oldest,"providers":providers}),
+    )
+}
+
+// Filters select sessions; summaries include all retained requests in those sessions.
+// Grouping happens before pagination, so one session never splits across list pages.
+fn read_sessions(
+    db: &Connection,
+    query: &Query,
+    filter: &str,
+    args: &[rusqlite::types::Value],
+) -> Result<Value> {
+    let cte = format!("WITH matching AS (
+        SELECT DISTINCT coalesce(json_extract(a.data,'$.sessionKey'),a.id) AS key FROM audit a WHERE {filter}
+    ), grouped AS (
+        SELECT coalesce(json_extract(a.data,'$.sessionKey'),a.id) AS key,
+        min(a.seq) AS first_seq, max(a.seq) AS last_seq, min(a.at) AS first_at, max(a.at) AS last_at,
+        count(*) AS requests,
+        sum(coalesce(json_extract(a.data,'$.findingCount'),0)) AS findings,
+        sum(CASE WHEN coalesce(json_extract(a.data,'$.findingCount'),0)>0 THEN 1 ELSE 0 END) AS risky,
+        sum(CASE WHEN a.outcome IN ('started','streaming') THEN 1 ELSE 0 END) AS active,
+        sum(CASE WHEN a.outcome NOT IN ('started','streaming','completed') THEN 1 ELSE 0 END) AS errors,
+        sum(CASE WHEN a.inspection != 'complete' AND a.inspection != 'skipped' THEN 1 ELSE 0 END) AS incomplete,
+        sum(json_extract(a.data,'$.durationMs')) AS duration,
+        max(CASE a.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END) AS severity
+        FROM audit a JOIN matching m ON m.key=coalesce(json_extract(a.data,'$.sessionKey'),a.id) WHERE a.kind = 'request' GROUP BY m.key
+    )");
+    let (total, records, risky, findings): (i64,i64,i64,i64) = db.query_row(
+        &format!("{cte} SELECT count(*),coalesce(sum(requests),0),coalesce(sum(risky>0),0),coalesce(sum(findings),0) FROM grouped"),
+        params_from_iter(args), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    let mut page_args = args.to_vec();
+    let cursor = if query.cursor > 0 {
+        page_args.push(query.cursor.into());
+        "WHERE g.last_seq < ?"
+    } else {
+        ""
+    };
+    page_args.push(((query.limit + 1) as i64).into());
+    let sql = format!("{cte} SELECT g.key,g.last_seq,first.data,
+        json_object('firstAtMs',g.first_at,'lastAtMs',g.last_at,'requestCount',g.requests,'findingCount',g.findings,
+        'riskRecordCount',g.risky,'activeCount',g.active,'errorCount',g.errors,'incompleteCount',g.incomplete,
+        'durationMs',g.duration,'severityRank',g.severity),
+        (SELECT json_extract(t.data,'$.sessionTitle') FROM audit t WHERE t.kind='request' AND coalesce(json_extract(t.data,'$.sessionKey'),t.id)=g.key AND json_extract(t.data,'$.sessionTitle') IS NOT NULL ORDER BY t.seq LIMIT 1)
+        FROM grouped g JOIN audit first ON first.seq=g.first_seq {cursor} ORDER BY g.last_seq DESC LIMIT ?");
+    let mut stmt = db.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(&page_args), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let more = rows.len() > query.limit;
+    let mut items = Vec::new();
+    for (key, cursor, first, aggregate, title) in rows.into_iter().take(query.limit) {
+        let first: Value = serde_json::from_str(&first)?;
+        let mut item: Value = serde_json::from_str(&aggregate)?;
+        for field in [
+            "providerId",
+            "target",
+            "clientModelId",
+            "sessionSource",
+            "sessionTitle",
+            "kind",
+            "action",
+        ] {
+            item[field] = first[field].clone();
+        }
+        item["sessionTitle"] = json!(title);
+        item["id"] = json!(key);
+        item["cursor"] = json!(cursor.to_string());
+        item["identified"] = json!(first["sessionKey"].is_string());
+        item["severity"] = json!(
+            [
+                "informational",
+                "informational",
+                "low",
+                "medium",
+                "high",
+                "critical"
+            ][item["severityRank"].as_u64().unwrap_or(1) as usize]
+        );
+        items.push(item);
+    }
+    let next = if more {
+        items.last().map(|v| v["cursor"].clone())
+    } else {
+        None
+    };
+    let oldest: Option<i64> = db.query_row(
+        "SELECT min(at) FROM audit WHERE kind != 'management'",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = db.prepare(
+        "SELECT DISTINCT provider FROM audit WHERE kind='request' AND provider != '' ORDER BY provider LIMIT 200",
+    )?;
+    let providers = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(
+        json!({"items":items,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
     )
 }
 
@@ -768,6 +918,61 @@ fn update_health(health: &Mutex<Value>, path: &Path, ready: bool, error: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configuration_history_is_excluded_without_removing_integrity_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut management = record("legacy-config", "completed");
+        management["kind"] = json!("management");
+        management["providerId"] = json!("legacy-config-only");
+        management["action"] = json!("config.commit");
+        persist(&mut db, management).unwrap();
+        let mut gap = record("storage-gap", "completed");
+        gap["kind"] = json!("system");
+        gap["action"] = json!("audit.gap");
+        persist(&mut db, gap).unwrap();
+        persist(&mut db, record("agent-request", "completed")).unwrap();
+        assert_eq!(read(&db, Query::parse("").unwrap()).unwrap()["total"], 2);
+        assert_eq!(
+            read(&db, Query::parse("kind=management").unwrap()).unwrap()["total"],
+            0
+        );
+        assert_eq!(
+            read(&db, Query::parse("kind=system").unwrap()).unwrap()["total"],
+            1
+        );
+        let mut sessions = Query::parse("").unwrap();
+        sessions.sessions = true;
+        let result = read(&db, sessions).unwrap();
+        assert_eq!(result["total"], 1);
+        assert_eq!(result["items"][0]["id"], "agent-request");
+        assert!(!result["providers"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("legacy-config-only")));
+        assert_eq!(
+            read(&db, Query::parse("session=legacy-config").unwrap()).unwrap()["total"],
+            0
+        );
+        for body in [None, Some(("request".into(), 0))] {
+            assert!(read(
+                &db,
+                Query {
+                    detail: Some("legacy-config".into()),
+                    body,
+                    ..Query::default()
+                }
+            )
+            .unwrap()
+            .is_null());
+        }
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            3
+        );
+    }
 
     #[test]
     fn segmented_snapshots_are_lazy_contiguous_immutable_and_range_bounded() {

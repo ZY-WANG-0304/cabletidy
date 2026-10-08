@@ -1,6 +1,7 @@
 mod capture;
 mod pipeline;
 mod rules;
+mod session;
 mod sse;
 pub mod store;
 
@@ -182,6 +183,11 @@ pub struct Audit {
 impl Audit {
     pub fn request_headers(&self, headers: &axum::http::HeaderMap) {
         let mut s = self.state.lock().unwrap();
+        for key in ["session_id", "x-session-id", "x-codex-session-id"] {
+            if let Some(id) = headers.get(key).and_then(|v| v.to_str().ok()) {
+                session::identify(&mut s.record, id, key);
+            }
+        }
         let h = headers_value(headers);
         if let Some(r) = &mut s.redactor {
             r.observe(&h);
@@ -341,20 +347,5 @@ impl Drop for ResponseGuard {
         if let Some(a) = &self.0 {
             a.finish("interrupted");
         }
-    }
-}
-
-pub fn management_action(path: &str) -> Option<&'static str> {
-    match path {
-        "/api/v1/config/commit" => Some("config.commit"),
-        "/api/v1/targets/apply" => Some("target.apply"),
-        "/api/v1/targets/restore" => Some("target.restore"),
-        _ if path.starts_with("/api/v1/virtual-providers/") && path.ends_with("/start") => {
-            Some("virtual_provider.start")
-        }
-        _ if path.starts_with("/api/v1/virtual-providers/") && path.ends_with("/pause") => {
-            Some("virtual_provider.pause")
-        }
-        _ => None,
     }
 }

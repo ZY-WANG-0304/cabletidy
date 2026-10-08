@@ -221,6 +221,7 @@ impl Pipeline {
             inspect,
             root: root.into(),
             last_progress: 0,
+            navigation: super::session::Capture::default(),
         };
         JsonStream::new(spool.reader()).parse(&mut visitor, root)
     }
@@ -427,6 +428,7 @@ struct BodyVisitor<'a> {
     inspect: bool,
     root: String,
     last_progress: u64,
+    navigation: super::session::Capture,
 }
 fn index_at(spool: &Arc<Spool>, at: u64) -> Result<Index> {
     let mut reader = spool.reader();
@@ -497,6 +499,7 @@ impl BodyVisitor<'_> {
 }
 impl Visitor for BodyVisitor<'_> {
     fn start(&mut self, path: &str, field: &str, kind: u8, at: u64) -> Result<()> {
+        self.navigation.start(field, kind);
         let parent = self.frames.last();
         let credential =
             kind != b'k' && (credential_field(field) || parent.is_some_and(|p| p.credential));
@@ -568,6 +571,7 @@ impl Visitor for BodyVisitor<'_> {
         Ok(())
     }
     fn text(&mut self, s: &str) -> Result<()> {
+        self.navigation.text(s);
         if self.pipeline.count_progress {
             self.pipeline.inspected += s.len() as u64;
         }
@@ -618,7 +622,25 @@ impl Visitor for BodyVisitor<'_> {
             let pieces = text.feed("", &self.pipeline.redactor, true);
             self.pieces(pieces)?;
         }
+        self.navigation.end(&mut self.pipeline.record, &self.root);
         let frame = self.frames.pop().unwrap();
+        if (self.root == "response" || self.root.starts_with("stream/"))
+            && matches!(
+                text(&frame.meta["type"]),
+                "function_call" | "custom_tool_call" | "tool_use"
+            )
+        {
+            let name: String = text(&frame.meta["name"]).chars().take(80).collect();
+            if !name.is_empty() {
+                if !self.pipeline.record["toolNames"].is_array() {
+                    self.pipeline.record["toolNames"] = json!([]);
+                }
+                let names = self.pipeline.record["toolNames"].as_array_mut().unwrap();
+                if names.len() < 12 && !names.contains(&json!(name)) {
+                    names.push(json!(name));
+                }
+            }
+        }
         if frame.kind == b'"' || frame.kind == b'k' {
             self.writer.push("\"")?;
         }
@@ -956,7 +978,6 @@ pub(super) fn run(
     let mut p = Pipeline::new(store, record, &secrets);
     p.redactor = redactor;
     p.record["usage"] = json!({});
-    let inspect = p.record["kind"] != "management";
     p.redactor.observe(&request.headers);
     p.redactor.observe(&response.headers);
     if let Some(spool) = &request.sealed {
@@ -1010,7 +1031,7 @@ pub(super) fn run(
             let result = if id == "response" && sse {
                 super::sse::inspect(&mut p, spool, body.complete && !body.gap)
             } else {
-                p.body(id, source, spool, body.complete && !body.gap, inspect)
+                p.body(id, source, spool, body.complete && !body.gap, true)
             };
             if let Err(error) = result {
                 p.failed = true;
@@ -1030,9 +1051,5 @@ pub(super) fn run(
             p.rules.reasons.insert("body_not_complete");
         }
     }
-    if !inspect {
-        p.publish("skipped");
-    } else {
-        p.publish("complete");
-    }
+    p.publish("complete");
 }
