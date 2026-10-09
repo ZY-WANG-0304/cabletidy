@@ -327,6 +327,15 @@ impl<R: Read> JsonStream<R> {
     pub fn one(&mut self, visitor: &mut impl Visitor, root: &str) -> Result<()> {
         self.value(visitor, root, "", 0)
     }
+    // Parse an indexed subtree with its original field/path and byte offset.
+    pub fn one_item(&mut self, visitor: &mut impl Visitor, path: &str, field: &str) -> Result<()> {
+        self.value(visitor, path, field, 0)?;
+        self.ws()?;
+        if self.peek()?.is_some() {
+            bail!("invalid_json");
+        }
+        Ok(())
+    }
     fn string(&mut self, mut chunk: impl FnMut(&str) -> Result<()>) -> Result<()> {
         self.expect(b'"')?;
         let mut decoded = Vec::with_capacity(PAGE + 8);

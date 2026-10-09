@@ -1,9 +1,13 @@
 //! Read-only, paged projections of retained Responses and Messages request bodies.
 use crate::streaming::{JsonStream, Node, Visitor};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::io::{self, Read};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::VecDeque,
+    io::{self, Read},
+};
 
 const PAGE_ITEMS: usize = 40;
 
@@ -12,6 +16,7 @@ struct BodyReader<'a> {
     db: &'a Connection,
     audit: &'a str,
     next: u64,
+    limit: u64,
     chunk: Vec<u8>,
     position: usize,
 }
@@ -21,19 +26,39 @@ impl Read for BodyReader<'_> {
             return Ok(0);
         }
         if self.position == self.chunk.len() {
+            if self.next >= self.limit {
+                return Ok(0);
+            }
             let row: Option<(u64, u64, String)> = self.db.query_row(
-                "SELECT start,end,content FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='request' AND start>=? ORDER BY start LIMIT 1",
+                "SELECT start,end,content FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='request' AND start<=? ORDER BY start DESC LIMIT 1",
                 params![self.audit, self.next], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).optional().map_err(io::Error::other)?;
             let Some((start, end, content)) = row else {
                 return Ok(0);
             };
-            if start != self.next || end != start + content.len() as u64 || end <= start {
+            if start > self.next
+                || end != start + content.len() as u64
+                || end <= start
+                || end < self.next
+            {
                 return Err(io::Error::other("retained_body_gap"));
             }
-            self.next = end;
+            if end == self.next {
+                let gap: bool = self.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='request' AND start>=? AND start<?)",
+                    params![self.audit, self.next, self.limit], |r| r.get(0),
+                ).map_err(io::Error::other)?;
+                return if gap {
+                    Err(io::Error::other("retained_body_gap"))
+                } else {
+                    Ok(0)
+                };
+            }
+            let position = (self.next - start) as usize;
+            self.next = end.min(self.limit);
             self.chunk = content.into_bytes();
-            self.position = 0;
+            self.chunk.truncate((self.next - start) as usize);
+            self.position = position;
         }
         let n = bytes.len().min(self.chunk.len() - self.position);
         bytes[..n].copy_from_slice(&self.chunk[self.position..self.position + n]);
@@ -64,6 +89,7 @@ struct Frame {
     content_blocks: usize,
     content_array: bool,
     role_items: u64,
+    items_start: usize,
 }
 
 struct Projection {
@@ -72,12 +98,11 @@ struct Projection {
     total: usize,
     counts: Value,
     items: Vec<Value>,
-    // On a second pass, retain only metadata needed to associate this page.
-    relations: Option<Vec<Value>>,
+    index_only: bool,
 }
 impl Projection {
     fn selected(&self) -> bool {
-        self.relations.is_none() && self.total >= self.offset && self.items.len() < PAGE_ITEMS
+        !self.index_only && self.total >= self.offset && self.items.len() < PAGE_ITEMS
     }
     fn new(offset: usize) -> Self {
         Self {
@@ -86,41 +111,15 @@ impl Projection {
             total: 0,
             counts: json!({}),
             items: Vec::new(),
-            relations: None,
+            index_only: false,
         }
     }
     fn item(&mut self, mut item: Value) {
         item["index"] = json!(self.total);
         self.total += 1;
-        if let Some(selected) = &mut self.relations {
-            for target in selected {
-                let opposite = matches!(
-                    (target["kind"].as_str(), item["kind"].as_str()),
-                    (Some("tool_call"), Some("tool_result"))
-                        | (Some("tool_result"), Some("tool_call"))
-                );
-                if !target["callId"].is_string() || target["callId"] != item["callId"] {
-                    continue;
-                }
-                if target["index"] != item["index"] && target["kind"] == item["kind"] {
-                    target["ambiguousRelation"] = json!(true);
-                }
-                if opposite {
-                    if target["relatedIndex"].is_null() {
-                        target["relatedIndex"] = item["index"].clone();
-                        if target["kind"] == "tool_result" {
-                            target["name"] = item["name"].clone();
-                        }
-                    } else {
-                        target["ambiguousRelation"] = json!(true);
-                    }
-                }
-            }
-            return;
-        }
         let kind = item["kind"].as_str().unwrap_or("other");
         self.counts[kind] = json!(self.counts[kind].as_u64().unwrap_or(0) + 1);
-        if self.total > self.offset && self.items.len() < PAGE_ITEMS {
+        if self.index_only || self.total > self.offset && self.items.len() < PAGE_ITEMS {
             self.items.push(item);
         }
     }
@@ -167,6 +166,7 @@ impl Visitor for Projection {
             start: at,
             raw: if capture { raw.into() } else { String::new() },
             capture,
+            items_start: self.items.len(),
             ..Frame::default()
         });
         Ok(())
@@ -409,7 +409,7 @@ impl Visitor for Projection {
             };
             // role may follow content in JSON. Resolve only after the whole message
             // has ended, without buffering its unbounded number of content blocks.
-            if self.relations.is_none() && f.role_items > 0 {
+            if f.role_items > 0 {
                 self.counts["message"] = json!(self.counts["message"]
                     .as_u64()
                     .unwrap_or(0)
@@ -420,7 +420,7 @@ impl Visitor for Projection {
                     self.counts.as_object_mut().unwrap().remove("message");
                 }
             }
-            for item in &mut self.items {
+            for item in &mut self.items[f.items_start..] {
                 if item["messageIndex"] == f.path.rsplit('/').next().unwrap_or("") {
                     item["role"] = json!(f.role);
                     if item["kind"] == "message" {
@@ -515,36 +515,131 @@ impl Visitor for Projection {
     }
 }
 
-pub(super) fn read(db: &Connection, audit: &str, offset: usize) -> Result<Value> {
-    let manifest: Option<String> = db
-        .query_row(
-            "SELECT data FROM audit_snapshots WHERE audit_id=? AND id='request'",
-            [audit],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(manifest) = manifest else {
-        return Ok(json!({"items":[],"total":0,"counts":{},"offset":offset,"state":"unavailable"}));
-    };
-    let manifest: Value = serde_json::from_str(&manifest)?;
-    let legacy = manifest.get("body").map(serde_json::to_vec).transpose()?;
-    let parse = |projection: &mut Projection| -> Result<()> {
-        if let Some(bytes) = &legacy {
-            JsonStream::new(&bytes[..]).parse(projection, "request")
-        } else {
-            JsonStream::new(BodyReader {
-                db,
-                audit,
-                next: 0,
-                chunk: Vec::new(),
-                position: 0,
-            })
-            .parse(projection, "request")
+// Check between parser buffers, including long strings and ignored fields. A
+// disconnected HTTP caller must not leave expensive scans running in the queue.
+struct CheckedReader<'a, R> {
+    reader: R,
+    cancelled: &'a dyn Fn() -> bool,
+}
+impl<R: Read> Read for CheckedReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if (self.cancelled)() {
+            return Err(io::Error::other("overview_cancelled"));
         }
+        self.reader.read(bytes)
+    }
+}
+
+struct ContentIndex {
+    items: Vec<Value>,
+    counts: Value,
+    parsed: bool,
+}
+struct CachedIndex {
+    audit: String,
+    manifest: [u8; 32],
+    index: ContentIndex,
+    bytes: usize,
+}
+
+// Cache positions/roles/tool associations, never full item text. Immutable bodies
+// reuse the index across detail loads and pages; changing manifests invalidate it.
+#[derive(Default)]
+pub(super) struct Cache {
+    entries: VecDeque<CachedIndex>,
+}
+const INDEX_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const INDEX_CACHE_ENTRIES: usize = 8;
+
+fn parse_range(
+    db: &Connection,
+    audit: &str,
+    legacy: Option<&[u8]>,
+    start: u64,
+    end: u64,
+    projection: &mut Projection,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<()> {
+    let reader: Box<dyn Read + '_> = if let Some(bytes) = legacy {
+        Box::new(&bytes[start as usize..end.min(bytes.len() as u64) as usize])
+    } else {
+        Box::new(BodyReader {
+            db,
+            audit,
+            next: start,
+            limit: end,
+            chunk: Vec::new(),
+            position: 0,
+        })
     };
-    let mut projection = Projection::new(offset);
-    let parsed = parse(&mut projection).is_ok();
-    // An incomplete message may end before its role arrives. Preserve completed
+    let mut parser = JsonStream::new(CheckedReader { reader, cancelled });
+    parser.at = start;
+    parser.parse(projection, "request")
+}
+
+fn associate_index(items: &mut [Value], cancelled: &dyn Fn() -> bool) -> Result<()> {
+    use std::collections::HashMap;
+    // Duplicates stay explicit; retain one opposite index without guessing names.
+    let mut calls: HashMap<String, (Vec<usize>, Vec<usize>)> = HashMap::new();
+    for (i, item) in items.iter().enumerate() {
+        if cancelled() {
+            bail!("overview_cancelled");
+        }
+        if let Some(id) = item["callId"].as_str() {
+            let relation = calls.entry(id.into()).or_default();
+            match item["kind"].as_str() {
+                Some("tool_call") => relation.0.push(i),
+                Some("tool_result") => relation.1.push(i),
+                _ => {}
+            }
+        }
+    }
+    for (call_indices, result_indices) in calls.values() {
+        for (own, opposite) in [
+            (call_indices, result_indices),
+            (result_indices, call_indices),
+        ] {
+            for &i in own {
+                if cancelled() {
+                    bail!("overview_cancelled");
+                }
+                if own.len() > 1 || opposite.len() > 1 {
+                    items[i]["ambiguousRelation"] = json!(true);
+                }
+                if let Some(&related) = opposite.first() {
+                    items[i]["relatedIndex"] = items[related]["index"].clone();
+                    if items[i]["kind"] == "tool_result" {
+                        items[i]["name"] = items[related]["name"].clone();
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_index(
+    db: &Connection,
+    audit: &str,
+    legacy: Option<&[u8]>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ContentIndex> {
+    let mut projection = Projection::new(0);
+    projection.index_only = true;
+    let parsed = parse_range(
+        db,
+        audit,
+        legacy,
+        0,
+        i64::MAX as u64,
+        &mut projection,
+        cancelled,
+    )
+    .is_ok();
+    if cancelled() {
+        bail!("overview_cancelled");
+    }
+    // An incomplete message may end before its role arrives. Keep completed
     // blocks as unknown content rather than inventing a user/assistant role.
     if let Some(count) = projection.counts.as_object_mut().unwrap().remove("message") {
         projection.counts["other"] =
@@ -555,22 +650,164 @@ pub(super) fn read(db: &Connection, audit: &str, offset: usize) -> Result<Value>
             }
         }
     }
-    if projection
-        .items
-        .iter()
-        .any(|item| item["callId"].is_string())
-    {
-        let mut lookup = Projection::new(0);
-        lookup.relations = Some(std::mem::take(&mut projection.items));
-        let _ = parse(&mut lookup);
-        projection.items = lookup.relations.unwrap();
+    associate_index(&mut projection.items, cancelled)?;
+    Ok(ContentIndex {
+        items: projection.items,
+        counts: projection.counts,
+        parsed,
+    })
+}
+
+fn page(
+    db: &Connection,
+    audit: &str,
+    offset: usize,
+    manifest: &Value,
+    legacy: Option<&[u8]>,
+    index: &ContentIndex,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Value> {
+    let mut items = Vec::new();
+    for metadata in index.items.iter().skip(offset).take(PAGE_ITEMS) {
+        if cancelled() {
+            bail!("overview_cancelled");
+        }
+        let path = metadata["location"].as_str().unwrap();
+        // Reconstruct only the parser context for this item; the indexed role
+        // resolves Claude messages even when role followed content in the body.
+        let mut projection = Projection::new(0);
+        let source = metadata["source"].as_str().unwrap();
+        let depth = if source.contains(".content[") {
+            4
+        } else if source.contains('[') {
+            2
+        } else {
+            1
+        };
+        projection.frames.resize_with(depth, Frame::default);
+        if depth == 2 {
+            projection.frames[1].field = source.split('[').next().unwrap().into();
+        } else if depth == 4 {
+            projection.frames[1].field = "messages".into();
+            projection.frames[2].path =
+                format!("request/0/{}", metadata["messageIndex"].as_str().unwrap());
+            projection.frames[2].role = metadata["role"].as_str().unwrap_or("").into();
+            projection.frames[3].field = "content".into();
+        }
+        let start = metadata["start"].as_u64().unwrap();
+        let end = metadata["end"].as_u64().unwrap();
+        let reader: Box<dyn Read + '_> = if let Some(bytes) = legacy {
+            Box::new(&bytes[start as usize..end as usize])
+        } else {
+            Box::new(BodyReader {
+                db,
+                audit,
+                next: start,
+                limit: end,
+                chunk: Vec::new(),
+                position: 0,
+            })
+        };
+        let mut parser = JsonStream::new(CheckedReader { reader, cancelled });
+        parser.at = start;
+        parser.one_item(&mut projection, path, if depth == 1 { source } else { "" })?;
+        let mut item = projection
+            .items
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("overview_item_missing"))?;
+        for (key, value) in metadata.as_object().unwrap() {
+            if !matches!(key.as_str(), "preview" | "structure" | "cacheControl") {
+                item[key] = value.clone();
+            }
+        }
+        items.push(item);
     }
-    let complete = parsed && (manifest["state"] == "complete" || legacy.is_some());
+    let total = index.items.len();
     Ok(
-        json!({"items":projection.items,"total":projection.total,"counts":projection.counts,"offset":offset,
-        "nextOffset":if offset.saturating_add(PAGE_ITEMS) < projection.total { Some(offset.saturating_add(PAGE_ITEMS)) } else { None },
-        "state":if complete { "complete" } else { "partial" },"bodyState":manifest["state"]}),
+        json!({"items":items,"total":total,"counts":index.counts,"offset":offset,
+        "nextOffset":if offset.saturating_add(PAGE_ITEMS) < total { Some(offset.saturating_add(PAGE_ITEMS)) } else { None },
+        "state":if index.parsed && manifest["state"] == "complete" { "complete" } else { "partial" },
+        "bodyState":manifest["state"]}),
     )
+}
+
+impl Cache {
+    pub(super) fn read(
+        &mut self,
+        db: &Connection,
+        audit: &str,
+        offset: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value> {
+        let manifest: Option<String> = db
+            .query_row(
+                "SELECT data FROM audit_snapshots WHERE audit_id=? AND id='request'",
+                [audit],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(raw) = manifest else {
+            self.entries.retain(|entry| entry.audit != audit);
+            return Ok(
+                json!({"items":[],"total":0,"counts":{},"offset":offset,"state":"unavailable"}),
+            );
+        };
+        let manifest: Value = serde_json::from_str(&raw)?;
+        // Legacy manifests contain the body itself; retain only its fingerprint.
+        let fingerprint: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+        let legacy = manifest.get("body").map(serde_json::to_vec).transpose()?;
+        let cached = self
+            .entries
+            .iter()
+            .position(|entry| entry.audit == audit && entry.manifest == fingerprint);
+        let entry = if let Some(position) = cached {
+            self.entries.remove(position).unwrap()
+        } else {
+            self.entries.retain(|entry| entry.audit != audit);
+            let index = build_index(db, audit, legacy.as_deref(), cancelled)?;
+            let mut bytes = fingerprint.len() + audit.len() + index.counts.to_string().len();
+            for item in &index.items {
+                if cancelled() {
+                    bail!("overview_cancelled");
+                }
+                bytes = bytes.saturating_add(item.to_string().len());
+                if bytes > INDEX_CACHE_BYTES {
+                    break;
+                }
+            }
+            CachedIndex {
+                audit: audit.into(),
+                manifest: fingerprint,
+                index,
+                bytes,
+            }
+        };
+        let result = page(
+            db,
+            audit,
+            offset,
+            &manifest,
+            legacy.as_deref(),
+            &entry.index,
+            cancelled,
+        );
+        if entry.bytes <= INDEX_CACHE_BYTES {
+            while self.entries.len() >= INDEX_CACHE_ENTRIES
+                || self.entries.iter().map(|entry| entry.bytes).sum::<usize>() + entry.bytes
+                    > INDEX_CACHE_BYTES
+            {
+                self.entries.pop_front();
+            }
+            self.entries.push_back(entry);
+        }
+        result
+    }
+}
+
+#[cfg(test)]
+pub(super) fn read(db: &Connection, audit: &str, offset: usize) -> Result<Value> {
+    Cache::default().read(db, audit, offset, &|| false)
 }
 
 #[cfg(test)]
@@ -585,13 +822,136 @@ mod tests {
         projection
     }
 
-    fn associate(body: &Value, projection: Projection) -> Vec<Value> {
-        let mut lookup = Projection::new(0);
-        lookup.relations = Some(projection.items);
-        JsonStream::new(&serde_json::to_vec(body).unwrap()[..])
-            .parse(&mut lookup, "request")
+    fn associate(_body: &Value, projection: Projection) -> Vec<Value> {
+        let mut items = projection.items;
+        associate_index(&mut items, &|| false).unwrap();
+        items
+    }
+
+    #[test]
+    fn legacy_parseability_does_not_override_retention_state() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT)")
             .unwrap();
-        lookup.relations.unwrap()
+        for state in [
+            Some("complete"),
+            Some("truncated"),
+            Some("partial"),
+            Some("interrupted"),
+            None,
+        ] {
+            let mut manifest = json!({"body":{"messages":[{"role":"user","content":[{"type":"text","text":"retained"}]}]}});
+            if let Some(state) = state {
+                manifest["state"] = json!(state);
+            }
+            db.execute("DELETE FROM audit_snapshots", []).unwrap();
+            db.execute(
+                "INSERT INTO audit_snapshots VALUES('old','request',?)",
+                [manifest.to_string()],
+            )
+            .unwrap();
+            let content = read(&db, "old", 0).unwrap();
+            assert_eq!(content["items"][0]["preview"], "retained");
+            assert_eq!(
+                content["state"],
+                if state == Some("complete") {
+                    "complete"
+                } else {
+                    "partial"
+                }
+            );
+            assert_eq!(content["bodyState"], json!(state));
+        }
+    }
+
+    #[test]
+    fn cached_pages_read_only_indexed_ranges_and_invalidate_on_manifest_changes() {
+        use std::cell::Cell;
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
+        let mut input = vec![
+            json!({"type":"function_call","call_id":"across-pages","name":"read","arguments":"{}"}),
+        ];
+        input.extend((0..40).map(|i| json!({"role":"user","content":format!("message {i}")})));
+        input.push(
+            json!({"type":"function_call_output","call_id":"across-pages","output":"result"}),
+        );
+        let encoded = json!({"ignored":"x".repeat(2*1024*1024),"input":input}).to_string();
+        db.execute(
+            "INSERT INTO audit_snapshots VALUES('cached','request',?)",
+            [json!({"state":"complete","byteLength":encoded.len()}).to_string()],
+        )
+        .unwrap();
+        for (i, chunk) in encoded
+            .as_bytes()
+            .chunks(crate::streaming::PAGE)
+            .enumerate()
+        {
+            db.execute(
+                "INSERT INTO audit_body_chunks VALUES('cached','request',?,?,?)",
+                params![
+                    i * crate::streaming::PAGE,
+                    i * crate::streaming::PAGE + chunk.len(),
+                    std::str::from_utf8(chunk).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let mut cache = Cache::default();
+        let checks = Cell::new(0);
+        let count = || {
+            checks.set(checks.get() + 1);
+            false
+        };
+        let first = cache.read(&db, "cached", 0, &count).unwrap();
+        assert!(checks.get() > 64);
+        assert_eq!(first["items"][0]["relatedIndex"], 41);
+        assert!(cache.entries[0]
+            .index
+            .items
+            .iter()
+            .all(|item| item["preview"] == "" && item["structure"].is_null()));
+        checks.set(0);
+        let second = cache.read(&db, "cached", 40, &count).unwrap();
+        assert!(
+            checks.get() < 10,
+            "cached page must not rescan ignored megabytes"
+        );
+        assert_eq!(second["items"][1]["name"], "read");
+        assert_eq!(second["items"][1]["relatedIndex"], 0);
+        checks.set(0);
+        db.execute(
+            "UPDATE audit_snapshots SET data=json_set(data,'$.state','partial')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            cache.read(&db, "cached", 40, &count).unwrap()["state"],
+            "partial"
+        );
+        assert!(
+            checks.get() > 64,
+            "manifest change must invalidate the index"
+        );
+        let cancelled_checks = Cell::new(0);
+        let cancelled = || {
+            cancelled_checks.set(cancelled_checks.get() + 1);
+            cancelled_checks.get() > 3
+        };
+        let mut fresh = Cache::default();
+        assert!(fresh.read(&db, "cached", 0, &cancelled).is_err());
+        assert!(
+            cancelled_checks.get() < 10,
+            "cancelled scan must stop promptly"
+        );
+        assert!(
+            fresh.entries.is_empty(),
+            "cancelled index must not be cached"
+        );
+        assert!(
+            cache.read(&db, "cached", 0, &|| true).is_err(),
+            "cached page reads also cancel"
+        );
     }
 
     #[test]
@@ -818,12 +1178,8 @@ mod tests {
                 assert_eq!(value["name"], "exec_command");
             }
         }
-        let mut lookup = Projection::new(0);
-        lookup.relations = Some(projection.items);
-        JsonStream::new(encoded.as_bytes())
-            .parse(&mut lookup, "request")
-            .unwrap();
-        let items = lookup.relations.unwrap();
+        let mut items = projection.items;
+        associate_index(&mut items, &|| false).unwrap();
         assert_eq!(items[5]["relatedIndex"], 6);
         assert_eq!(items[6]["relatedIndex"], 5);
         assert_eq!(items[6]["name"], "exec_command");
