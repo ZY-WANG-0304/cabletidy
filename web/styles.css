@@ -1219,15 +1219,21 @@ button.list-row:hover,
 .trace-toolbar { display: flex; gap: 16px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 .trace-toolbar > button { margin-left: auto; }
 .trace-overview { padding: 12px 18px 10px; background: var(--paper); border-bottom: 1px solid var(--line); }
-.trace-scale { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
-.trace-scale button { background: transparent; border: 0; border-radius: 3px; padding: 3px 7px; color: inherit; }
-.trace-scale button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
-.trace-minimap { display: flex; gap: 2px; align-items: stretch; height: 26px; margin-top: 10px; }
+.trace-scale-row { display: flex; justify-content: flex-start; margin-bottom: 4px; }
+.trace-minimap { display: flex; gap: 2px; align-items: stretch; height: 26px; }
 .trace-segment { min-width: 1px; flex-basis: 0; padding: 0; background: #90b6a5; border: 0; border-radius: 2px; }
 .trace-segment.has-risk { background: #d4a452; }
 .trace-segment.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; }
 .trace-segment:hover { filter: brightness(.9); }
-.trace-overview > p { margin: 8px 0 0; font-size: 11px; }
+.trace-overview-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.trace-overview-caption > strong { color: var(--ink); font-weight: 600; }
+.trace-legend { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.trace-legend-swatch { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 2px; }
+.trace-request-swatch { background: #90b6a5; }
+.trace-risk-swatch { background: #d4a452; }
+.trace-scale-toggle { flex: 0 0 auto; min-height: 0; padding: 3px 7px; border: 0; border-radius: 3px; color: var(--muted); background: transparent; font-size: 12px; }
+.trace-scale-toggle:hover { color: var(--ink); }
+.trace-scale-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .trace-columns { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(340px, 1fr); min-height: 430px; height: min(680px, 64dvh); }
 .trace-events { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .trace-search { padding: 12px 14px; display: flex; gap: 8px; border-bottom: 1px solid var(--line); }
