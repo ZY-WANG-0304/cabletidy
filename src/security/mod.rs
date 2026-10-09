@@ -1,6 +1,7 @@
 mod capture;
 mod content;
 mod pipeline;
+mod response;
 mod rules;
 mod session;
 mod sse;

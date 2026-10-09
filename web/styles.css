@@ -1257,8 +1257,8 @@ button.list-row:hover,
 .trace-event-tools { color: var(--warning); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trace-event-status { color: var(--muted); font-size: 11px; }
 .trace-inspector { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); }
-.trace-tabs { display: flex; gap: 22px; padding: 0 18px; border-bottom: 1px solid var(--line); min-height: 57px; flex-shrink: 0; }
-.trace-tabs button { border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; padding: 12px 0; white-space: nowrap; }
+.trace-tabs { display: flex; gap: clamp(10px, 1.3vw, 18px); padding: 0 14px; overflow-x: auto; border-bottom: 1px solid var(--line); min-height: 57px; flex-shrink: 0; }
+.trace-tabs button { flex-shrink: 0; font-size: 12px; border: 0; border-bottom: 2px solid transparent; color: var(--muted); background: transparent; padding: 12px 0; white-space: nowrap; }
 .trace-tabs button[aria-pressed="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .trace-inspector-body { overflow: auto; overscroll-behavior: contain; padding: 18px; flex: 1; min-height: 0; }
 .trace-inspector-heading { display: flex; justify-content: space-between; gap: 12px; }
@@ -1269,6 +1269,7 @@ button.list-row:hover,
 .trace-preview h3 { font-size: 12px; color: var(--muted); margin: 0 0 10px; font-weight: 500; }
 .trace-preview p { margin: 0; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .trace-request-content { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+.trace-inspector-body > .trace-request-content:first-child, .trace-inspector-body > .trace-preview:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .trace-request-content h3 { display: flex; justify-content: space-between; margin: 0 0 12px; font-size: 13px; }
 .trace-request-content h3 > span { color: var(--muted); font-weight: 400; }
 .trace-content-counts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; font-size: 11px; color: var(--muted); }

@@ -2053,6 +2053,7 @@ test("Codex request overview shows every role, links tool results, paginates and
     if (url.includes("/sessions?")) return { body: { items: [{ id: "mixed-session", kind: "request", requestCount: 1 }], total: 1 } };
   } });
   await app.action("security-session", { dataset: { id: "mixed-session" } });
+  await app.action("security-trace-tab", { dataset: { tab: "request" } });
   let html = app.read("renderTraceInspector()");
   for (const label of ["系统提示词", "开发者指令", "用户输入", "历史模型消息", "历史工具调用", "工具结果", "推理 / 压缩上下文", "可用工具定义"]) assert.match(html, new RegExp(label));
   assert.match(html, /First question/);
@@ -2060,8 +2061,7 @@ test("Codex request overview shows every role, links tool results, paginates and
   assert.match(html, /对应第 5 项 · 客户端报告的结果/);
   assert.match(html, /仅保留加密或不透明内容/);
   assert.match(html, /图片 · 非文本内容见完整结构或原文/);
-  assert.match(html, /本轮模型输出/);
-  assert.match(html, /工具调用提议/);
+  assert.doesNotMatch(html, /本轮模型输出|工具调用提议/);
   assert.match(html, /System &lt;script&gt;literal/);
   assert.doesNotMatch(html, /<script>/);
   assert.equal(app.requests.some(request => request.url.includes("/body?")), false);
@@ -2070,7 +2070,7 @@ test("Codex request overview shows every role, links tool results, paginates and
   assert.equal(app.read("state.security.bodySelection.navigation.start"), 200);
   assert.equal(app.read("state.security.bodySelection.start"), undefined);
   assert.equal(app.read("state.security.bodySelection.end"), undefined);
-  await app.action("security-trace-tab", { dataset: { tab: "overview" } });
+  await app.action("security-trace-tab", { dataset: { tab: "request" } });
   await app.action("security-content-page", { dataset: { offset: "40" } });
   html = app.read("renderTraceInspector()");
   assert.match(html, /Later message/);
@@ -2082,6 +2082,7 @@ test("Codex overview distinguishes missing, partial and empty request content", 
   const app = await controller();
   for (const [state, text] of [["unavailable", "请求正文未保留"], ["partial", "请求正文存在缺口"], ["complete", "本次请求未包含提示词"]]) {
     app.read(`state.security.detail = { requestContent: { state: ${JSON.stringify(state)}, total: 0, offset: 0, counts: {}, items: [] } }`);
+    await app.action("security-trace-tab", { dataset: { tab: "request" } });
     const html = app.read("renderTraceInspector()");
     assert.match(html, new RegExp(text));
     assert.doesNotMatch(html, /最近用户输入/);
@@ -2176,6 +2177,7 @@ test("Claude overview separates mixed tool results from user blocks and exposes 
     if (url.includes("/sessions?")) return { body: { items: [{ id: "claude-session", kind: "request", requestCount: 1 }], total: 1 } };
   } });
   await app.action("security-session", { dataset: { id: "claude-session" } });
+  await app.action("security-trace-tab", { dataset: { tab: "request" } });
   const html = app.read("renderTraceInspector()");
   assert.match(html, /按消息内容块展示/);
   assert.match(html, /用户输入 <strong>2<\/strong>/);
@@ -2211,6 +2213,7 @@ test("request items display complete long content with the source action in the 
     { index: 0, kind: "system", preview: text, truncated: true },
     { index: 1, kind: "reasoning", preview: text, structure },
   ] } })}`);
+  await app.action("security-trace-tab", { dataset: { tab: "request" } });
   const html = app.read("renderTraceInspector()");
   assert.ok(html.includes(`<pre>${text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;")}</pre>`));
   assert.match(html, /完整内容结构/);
@@ -2431,3 +2434,78 @@ for (const scenario of ["selected", "pending", "reselected", "failed"]) {
     assert.equal(app.read("state.security.detailId"), expectedId, "a subsequent refresh still works for the new selection");
   });
 }
+
+test("response overview shows full content with independent pagination and response source navigation", async () => {
+  const text = "完整模型输出🙂\n".repeat(10000) + "<script>literal</script>";
+  const record = { id: "response", protocol: "anthropic.messages", bodySnapshots: [{ id: "response", state: "complete" }],
+    requestContent: { state: "complete", total: 1, offset: 0, counts: { user: 1 }, items: [{ index: 0, kind: "user", preview: "Keep request page" }] },
+    responseContent: { state: "complete", total: 42, offset: 0, nextOffset: 40, counts: { assistant: 40, tool_call: 1, reasoning: 1 }, items: [
+      { index: 0, kind: "assistant", preview: text, snapshotId: "response", start: 200, end: 400, state: "complete" },
+      { index: 1, kind: "tool_call", name: "Read", callId: "read-id", preview: '{"file_path":"src/lib.rs"}', state: "complete" },
+      { index: 2, kind: "reasoning", preview: "Thinking", structure: '{"thinking":"Thinking","signature":"signature"}', state: "partial" },
+    ] } };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/response-content?")) return { body: { state: "complete", total: 42, offset: 40, nextOffset: null, counts: record.responseContent.counts, items: [{ index: 40, kind: "assistant", preview: "Next response page" }] } };
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: 400, content: "retained response" }] } };
+  } });
+  app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}`);
+  const overview = app.read("renderTraceInspector()");
+  assert.deepEqual([...overview.matchAll(/data-action="security-trace-tab" data-tab="([^"]+)" aria-pressed=/g)].map(match => match[1]), ["overview", "risks", "request", "response", "body"]);
+  assert.doesNotMatch(overview, /trace-content-timeline|完整模型输出|Keep request page/);
+  await app.action("security-trace-tab", { dataset: { tab: "response" } });
+  let html = app.read("renderTraceInspector()");
+  assert.match(html, /aria-label="响应内容"/);
+  assert.ok(html.includes(app.read(`esc(${JSON.stringify(text)})`)));
+  assert.match(html, /本轮工具调用/);
+  assert.match(html, /实际执行状态未知/);
+  assert.match(html, /此项尚未完整返回/);
+  assert.doesNotMatch(html, /<script>|本次请求未包含对应结果/);
+  await app.action("security-response-content-source", { dataset: { index: "0" } });
+  assert.equal(app.read("state.security.bodySelection.snapshotId"), "response");
+  assert.equal(app.read("state.security.bodySelection.navigation.start"), 200);
+  assert.equal(app.read("state.security.bodySelection.start"), undefined);
+  assert.ok(app.requests.some(r => r.url.includes("snapshot=response")));
+  await app.action("security-trace-tab", { dataset: { tab: "response" } });
+  await app.action("security-response-content-page", { dataset: { offset: "40" } });
+  html = app.read("renderTraceInspector()");
+  assert.match(html, /Next response page/);
+  assert.doesNotMatch(html, /Keep request page/);
+  await app.action("security-trace-tab", { dataset: { tab: "request" } });
+  assert.match(app.read("renderTraceInspector()"), /Keep request page/);
+  await app.action("security-trace-tab", { dataset: { tab: "response" } });
+  assert.match(app.read("renderTraceInspector()"), /Next response page/);
+  assert.equal(app.read("state.security.detail.requestContent.offset"), 0);
+});
+
+test("response overview distinguishes empty, unavailable and partial retained output", async () => {
+  const app = await controller();
+  for (const [state, text] of [["unavailable", "响应正文未保留"], ["partial", "响应正文存在缺口"], ["complete", "本次响应未包含输出内容"]]) {
+    const html = app.read(`renderResponseContent({ responseContent: { state: ${JSON.stringify(state)}, total: 0, offset: 0, counts: {}, items: [] } })`);
+    assert.match(html, new RegExp(text));
+  }
+});
+
+test("late response pages and failures remain isolated from request pagination and newer selection", async () => {
+  let release;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/response-content?")) return new Promise(resolve => { release = resolve; });
+    if (url.includes("/content?")) return { body: { state: "complete", total: 41, offset: 40, counts: {}, items: [{ index: 40, kind: "user", preview: "New request page" }] } };
+  } });
+  const record = { id: "first", requestContent: { offset: 0, items: [] }, responseContent: { offset: 0, items: [] } };
+  app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}`);
+  const pending = app.action("security-response-content-page", { dataset: { offset: "40" } });
+  await setImmediate();
+  await app.action("security-content-page", { dataset: { offset: "40" } });
+  assert.equal(app.read("state.security.detail.requestContent.offset"), 40);
+  release({ status: 503, body: { error: { message: "Response busy" } } });
+  await pending;
+  assert.equal(app.read("state.security.responseContentError"), "Response busy");
+  assert.equal(app.read("state.security.contentError"), null);
+  const stale = app.action("security-response-content-page", { dataset: { offset: "40" } });
+  await setImmediate();
+  app.read('state.security.detailSequence++; state.security.detail = { id: "newer", responseContent: { offset: 0 } }; state.security.responseContentLoading = false; state.security.responseContentError = null');
+  release({ body: { offset: 40, items: [] } });
+  await stale;
+  assert.equal(app.read("state.security.detail.responseContent.offset"), 0);
+  assert.equal(app.read("state.security.responseContentError"), null);
+});

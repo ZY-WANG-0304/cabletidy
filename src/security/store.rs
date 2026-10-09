@@ -24,6 +24,8 @@ enum Job {
 struct ContentJob {
     audit: String,
     offset: usize,
+    response: bool,
+    detail: bool,
     deadline: Instant,
     done: oneshot::Sender<Result<Value>>,
 }
@@ -41,6 +43,7 @@ pub struct Query {
     pub session: Option<String>,
     pub body: Option<(String, u64)>,
     pub content_offset: Option<usize>,
+    pub response_content: bool,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -234,13 +237,13 @@ impl Store {
             .detail
             .as_ref()
             .filter(|_| query.body.is_none())
-            .map(|id| (id.clone(), query.content_offset));
+            .map(|id| (id.clone(), query.content_offset, query.response_content));
         let (tx, rx) = oneshot::channel();
         self.sender
             .try_send(Job::Query(query, tx))
             .map_err(|_| anyhow::anyhow!("audit_busy"))?;
         let mut value = tokio::time::timeout(Duration::from_secs(5), rx).await???;
-        if let Some((audit, offset)) = content.filter(|_| !value.is_null()) {
+        if let Some((audit, offset, response)) = content.filter(|_| !value.is_null()) {
             let protocol = value["record"]["protocol"].as_str().unwrap_or("");
             if offset.is_some() || matches!(protocol, "openai.responses" | "anthropic.messages") {
                 let (done, result) = oneshot::channel();
@@ -248,6 +251,8 @@ impl Store {
                     .try_send(ContentJob {
                         audit,
                         offset: offset.unwrap_or(0),
+                        response,
+                        detail: offset.is_none(),
                         deadline: Instant::now() + Duration::from_secs(30),
                         done,
                     })
@@ -258,7 +263,8 @@ impl Store {
                 if offset.is_some() || page.is_null() {
                     value = page;
                 } else {
-                    value["record"]["requestContent"] = page;
+                    value["record"]["requestContent"] = page["requestContent"].clone();
+                    value["record"]["responseContent"] = page["responseContent"].clone();
                 }
             }
         }
@@ -919,9 +925,12 @@ fn read_sessions(
 
 fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
     let mut cache = super::content::Cache::default();
+    let mut responses = super::response::Cache::default();
     while let Ok(ContentJob {
         audit,
         offset,
+        response,
+        detail,
         deadline,
         done,
     }) = receiver.recv()
@@ -943,7 +952,13 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
                 |r| r.get(0),
             )?;
             let value = if visible {
-                cache.read(&tx, &audit, offset, &cancelled)?
+                if detail {
+                    json!({"requestContent":cache.read(&tx, &audit, 0, &cancelled)?,"responseContent":responses.read(&tx, &audit, 0, &cancelled)?})
+                } else if response {
+                    responses.read(&tx, &audit, offset, &cancelled)?
+                } else {
+                    cache.read(&tx, &audit, offset, &cancelled)?
+                }
             } else {
                 Value::Null
             };
@@ -1708,6 +1723,8 @@ mod tests {
                 .try_send(ContentJob {
                     audit: "reading".into(),
                     offset: 0,
+                    response: false,
+                    detail: false,
                     deadline: Instant::now() + Duration::from_secs(30),
                     done,
                 })
