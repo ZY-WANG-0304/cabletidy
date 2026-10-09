@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig } from "./helpers/native.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
+import { claudeRequestFixture } from "./helpers/claude-request-fixture.mjs";
 import { catalogFixture, codexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 const secret = "known-security-secret-value";
@@ -99,6 +100,182 @@ function respond(res, body, output = []) {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ type: "response", model: body.model, output, usage: { input_tokens: 12, output_tokens: 8 } }));
 }
+
+function respondClaude(res, body) {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify({ id: "msg_overview", type: "message", role: "assistant", model: body.model,
+    content: [{ type: "text", text: "Overview checked" }], stop_reason: "end_turn", stop_sequence: null,
+    usage: { input_tokens: 12, output_tokens: 8 } }));
+}
+
+test("Claude overview projects content blocks, preserves Messages payloads and associates tools across pages and restart", async t => {
+  const f = await fixture(t, (_req, res, body) => respondClaude(res, body), { claude: true });
+  const body = claudeRequestFixture({ history: 45 });
+  const response = await f.request(body);
+  assert.equal(response.status, 200);
+  await response.text();
+  const audit = (await f.waitFor(result => result.total === 1)).items[0];
+  assert.equal(audit.protocol, "anthropic.messages");
+  assert.equal(audit.requestContent, undefined);
+  assert.deepEqual(f.calls[0].body, { model: "vendor-sonnet", max_tokens: 100, ...body });
+  const detail = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  const content = detail.requestContent;
+  assert.equal(content.state, "complete");
+  assert.equal(content.total, 64);
+  assert.equal(content.items.length, 40);
+  assert.equal(content.nextOffset, 40);
+  assert.deepEqual(content.counts, { system: 2, user: 4, assistant: 46, reasoning: 2, tool_call: 3, tool_result: 4, other: 1, tool_definition: 2 });
+  assert.equal(content.items[0].preview, body.system[0].text);
+  assert.deepEqual(JSON.parse(content.items[0].cacheControl), body.system[0].cache_control);
+  assert.equal(content.items[3].preview, body.messages[1].content[0].thinking);
+  assert.equal(content.items[4].preview, "");
+  assert.equal(content.items[4].opaque, true);
+  const call = content.items[6];
+  assert.deepEqual(JSON.parse(call.preview), body.messages[1].content[3].input);
+  assert.equal(call.relatedIndex, 55);
+  assert.equal(call.role, "assistant");
+  assert.equal(content.items[9].serverTool, true);
+  assert.equal(content.items[9].relatedIndex, 8);
+  const pageResponse = await f.call(`api/v1/security/audit/${audit.id}/content?offset=40`);
+  assert.equal(pageResponse.status, 200);
+  const page = await pageResponse.json();
+  assert.equal(page.items.length, 24);
+  assert.equal(page.nextOffset, null);
+  assert.deepEqual(page.counts, content.counts);
+  const result = page.items.find(item => item.index === 55);
+  assert.equal(result.kind, "tool_result");
+  assert.equal(result.role, "user");
+  assert.equal(result.name, "Read");
+  assert.equal(result.relatedIndex, call.index);
+  assert.equal(result.isError, false);
+  assert.equal(result.preview, body.messages[2].content[0].content[0].text);
+  assert.deepEqual(result.parts, ["image", "document", "tool_reference"]);
+  assert.equal(result.source, "messages[2].content[0]");
+  assert.equal(page.items.find(item => item.index === 56).isError, true);
+  assert.equal(page.items.find(item => item.index === 61).relatedIndex, undefined);
+  const bodyPage = await (await f.call(`api/v1/security/audit/${audit.id}/body?snapshot=request&offset=${result.start}`)).json();
+  const bytes = Buffer.from(bodyPage.chunks.map(chunk => chunk.content).join(""));
+  const localStart = result.start - bodyPage.chunks[0].start;
+  assert.deepEqual(JSON.parse(bytes.subarray(localStart, localStart + result.end - result.start).toString()), body.messages[2].content[0]);
+  const originalContent = JSON.stringify(content);
+  await f.restart();
+  const reloaded = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.equal(JSON.stringify(reloaded.requestContent), originalContent);
+  assert.equal((await f.list()).total, 1, "overview reads do not create audit records");
+});
+
+test("Claude overview does not invent user input for empty or tool-result-only requests", async t => {
+  const f = await fixture(t, (_req, res, body) => respondClaude(res, body), { claude: true });
+  for (const body of [
+    { messages: [] },
+    { messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "missing", content: "Reported result" }] }] },
+    { system: "System only", messages: [] },
+  ]) await (await f.request(body)).text();
+  const records = (await f.waitFor(result => result.total === 3)).items;
+  const projections = await Promise.all(records.map(async record => (await (await f.call(`api/v1/security/audit/${record.id}`)).json()).record.requestContent));
+  assert.ok(projections.some(content => content.total === 0 && Object.keys(content.counts).length === 0));
+  assert.ok(projections.some(content => content.total === 1 && content.counts.tool_result === 1 && !content.counts.user));
+  assert.ok(projections.some(content => content.total === 1 && content.counts.system === 1 && !content.counts.user));
+});
+
+for (const claude of [false, true]) {
+  test(`${claude ? "Claude" : "Codex"} overview returns complete long item content across retained chunks and pages`, async t => {
+    const f = await fixture(t, (_req, res, body) => claude ? respondClaude(res, body) : respond(res, body), { claude });
+    const text = "汉🙂\\\"\n".repeat(9000) + "完整内容末尾 <script>literal</script>";
+    const id = "complete-id-".repeat(30);
+    const args = { text, nested: { tail: "参数末尾" } };
+    const tools = claude
+      ? [{ name: "Read", description: text, input_schema: { type: "object", properties: { text: { type: "string" } } } }]
+      : [{ type: "function", name: "Read", description: text, parameters: { type: "object", properties: { text: { type: "string" } } } }];
+    const body = claude ? { system: text, messages: [
+      { role: "user", content: text },
+      { content: [{ type: "tool_use", id, name: "Read", input: args }, ...Array.from({ length: 42 }, () => ({ type: "text", text }))], role: "assistant" },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] },
+    ], tools } : { instructions: text, input: [
+      { role: "user", content: text }, { type: "function_call", call_id: id, name: "Read", arguments: args },
+      ...Array.from({ length: 42 }, () => ({ role: "assistant", content: text })),
+      { type: "function_call_output", call_id: id, output: { text, metadata: { tail: "结果末尾" } } },
+    ], tools };
+    await (await f.request(body)).text();
+    const audit = (await f.waitFor(result => result.total === 1)).items[0];
+    const first = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.requestContent;
+    assert.equal(first.state, "complete");
+    assert.equal(first.total, 47);
+    assert.equal(first.items.length, 40);
+    assert.equal(first.items[0].preview, text);
+    assert.equal(first.items[1].preview, text);
+    assert.deepEqual(JSON.parse(first.items[2].preview), args);
+    assert.equal(first.items[2].callId, id);
+    assert.equal(first.items[2].relatedIndex, 45);
+    assert.equal(first.items[39].preview, text);
+    const page = await (await f.call(`api/v1/security/audit/${audit.id}/content?offset=40`)).json();
+    assert.equal(page.items.length, 7);
+    assert.equal(page.items[0].preview, text);
+    const result = page.items.find(item => item.kind === "tool_result");
+    assert.equal(result.relatedIndex, 2);
+    if (claude) assert.equal(result.preview, text);
+    else assert.deepEqual(JSON.parse(result.preview), { text, metadata: { tail: "结果末尾" } });
+    const definition = JSON.parse(page.items.find(item => item.kind === "tool_definition").preview);
+    assert.deepEqual(definition, tools[0]);
+    assert.ok([...first.items, ...page.items].every(item => !item.truncated));
+    const rawPage = await (await f.call(`api/v1/security/audit/${audit.id}/body?snapshot=request&offset=${result.start}`)).json();
+    const localStart = result.start - rawPage.chunks[0].start;
+    assert.match(Buffer.from(rawPage.chunks.map(chunk => chunk.content).join("" )).subarray(localStart, localStart + 150).toString(), /tool_(result|use_id)|function_call_output|call_id/);
+  });
+}
+
+test("Codex overview projects retained mixed request context, associates calls across pages and leaves proxy payloads intact", async t => {
+  const f = await fixture(t, (_req, res, body) => respond(res, body));
+  const input = [
+    { role: "developer", content: [{ type: "input_text", text: "Repository instructions" }] },
+    { role: "user", content: "First question" },
+    { type: "function_call", name: "exec_command", call_id: "cross-page", arguments: '{"cmd":"pwd"}' },
+    ...Array.from({ length: 45 }, (_, i) => ({ role: "assistant", content: [{ type: "output_text", text: `History ${i}` }] })),
+    { type: "function_call_output", call_id: "cross-page", output: "Tool result after many messages" },
+    { type: "custom_tool_call", name: "apply_patch", call_id: "patch", input: "*** Begin Patch\n*** End Patch" },
+    { type: "custom_tool_call_output", call_id: "patch", output: "Patch reported" },
+    { role: "user", content: [{ type: "input_text", text: "Follow up <script>literal</script>" }, { type: "input_image", image_url: "data:image/png;base64,test" }] },
+    { type: "reasoning", summary: [], encrypted_content: "opaque" },
+  ];
+  const body = { instructions: "System prompt", input, tools: [{ type: "function", name: "exec_command", parameters: { type: "object" } }] };
+  await (await f.request(body)).text();
+  const audit = (await f.waitFor(result => result.total === 1)).items[0];
+  assert.deepEqual(f.calls[0].body.input, input);
+  assert.equal(f.calls[0].body.instructions, body.instructions);
+  assert.equal(audit.requestContent, undefined, "list metadata stays lightweight");
+  const detail = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  const content = detail.requestContent;
+  assert.equal(content.state, "complete");
+  assert.equal(content.total, 55);
+  assert.equal(content.items.length, 40);
+  assert.equal(content.nextOffset, 40);
+  assert.deepEqual(content.counts, { system: 1, developer: 1, user: 2, tool_call: 2, assistant: 45, tool_result: 2, reasoning: 1, tool_definition: 1 });
+  assert.equal(content.items[0].preview, "System prompt");
+  const call = content.items.find(item => item.callId === "cross-page");
+  assert.equal(call.relatedIndex, 49);
+  const pageResponse = await f.call(`api/v1/security/audit/${audit.id}/content?offset=40`);
+  assert.equal(pageResponse.status, 200);
+  const page = await pageResponse.json();
+  assert.equal(page.items.length, 15);
+  assert.equal(page.nextOffset, null);
+  const result = page.items.find(item => item.kind === "tool_result");
+  assert.equal(result.relatedIndex, call.index);
+  assert.equal(result.name, "exec_command");
+  assert.equal(result.preview, "Tool result after many messages");
+  assert.deepEqual(page.items.find(item => item.kind === "user").parts, ["input_image"]);
+  const bodyPage = await (await f.call(`api/v1/security/audit/${audit.id}/body?snapshot=request&offset=${result.start}`)).json();
+  const retained = bodyPage.chunks.map(chunk => chunk.content).join("");
+  const localStart = result.start - bodyPage.chunks[0].start;
+  assert.equal(JSON.parse(retained.slice(localStart, localStart + result.end - result.start)).output, result.preview);
+  const originalContent = JSON.stringify(content);
+  await f.restart();
+  const reloaded = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.equal(JSON.stringify(reloaded.requestContent), originalContent, "existing retained records project identically after restart");
+  for (const query of ["offset=-1", "offset=bad", "offset=1&unknown=2"]) {
+    assert.equal((await f.call(`api/v1/security/audit/${audit.id}/content?${query}`)).status, 400);
+  }
+  assert.equal((await f.list()).total, 1, "read-only overview queries do not create audit records");
+});
 
 test("request history, tool results and proposals retain reviewable bodies with original credentials and sensitive ranges", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body, [

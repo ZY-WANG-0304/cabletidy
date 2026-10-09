@@ -6,7 +6,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::oneshot;
 
@@ -21,8 +21,16 @@ enum Job {
     Flush(oneshot::Sender<()>),
 }
 
+struct ContentJob {
+    audit: String,
+    offset: usize,
+    deadline: Instant,
+    done: oneshot::Sender<Result<Value>>,
+}
+
 pub struct Store {
     sender: mpsc::SyncSender<Job>,
+    content_sender: mpsc::SyncSender<ContentJob>,
     health: Arc<Mutex<Value>>,
 }
 
@@ -32,6 +40,7 @@ pub struct Query {
     pub sessions: bool,
     pub session: Option<String>,
     pub body: Option<(String, u64)>,
+    pub content_offset: Option<usize>,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -157,11 +166,14 @@ impl Store {
             "retentionDays":RETENTION_DAYS, "budgetBytes":BUDGET
         })));
         let (sender, receiver) = mpsc::sync_channel(256);
+        let (content_sender, content_receiver) = mpsc::sync_channel(4);
         let store = Arc::new(Self {
             sender,
+            content_sender,
             health: health.clone(),
         });
         let worker_health = health.clone();
+        let content_path = path.clone();
         if std::thread::Builder::new()
             .name("security-audit".into())
             .spawn(move || worker(path, receiver, worker_health))
@@ -169,6 +181,9 @@ impl Store {
         {
             health.lock().unwrap()["state"] = json!("unavailable");
         }
+        let _ = std::thread::Builder::new()
+            .name("security-overview".into())
+            .spawn(move || content_worker(content_path, content_receiver));
         store
     }
 
@@ -215,11 +230,38 @@ impl Store {
     }
 
     pub async fn query(&self, query: Query) -> Result<Value> {
+        let content = query
+            .detail
+            .as_ref()
+            .filter(|_| query.body.is_none())
+            .map(|id| (id.clone(), query.content_offset));
         let (tx, rx) = oneshot::channel();
         self.sender
             .try_send(Job::Query(query, tx))
             .map_err(|_| anyhow::anyhow!("audit_busy"))?;
         let mut value = tokio::time::timeout(Duration::from_secs(5), rx).await???;
+        if let Some((audit, offset)) = content.filter(|_| !value.is_null()) {
+            let protocol = value["record"]["protocol"].as_str().unwrap_or("");
+            if offset.is_some() || matches!(protocol, "openai.responses" | "anthropic.messages") {
+                let (done, result) = oneshot::channel();
+                self.content_sender
+                    .try_send(ContentJob {
+                        audit,
+                        offset: offset.unwrap_or(0),
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        done,
+                    })
+                    .map_err(|_| anyhow::anyhow!("overview_busy"))?;
+                // This queue is independent of audit writes. Dropping the receiver
+                // on timeout or disconnect also cancels queued/active parsing.
+                let page = tokio::time::timeout(Duration::from_secs(30), result).await???;
+                if offset.is_some() || page.is_null() {
+                    value = page;
+                } else {
+                    value["record"]["requestContent"] = page;
+                }
+            }
+        }
         if value.is_object() {
             value["storage"] = self.status();
         }
@@ -603,6 +645,10 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
         if let Some((snapshot, offset)) = query.body {
             return read_body_page(db, &id, &snapshot, offset);
         }
+        if query.content_offset.is_some() {
+            // Only check visibility here; projection belongs to the readonly worker.
+            return Ok(json!({}));
+        }
         let mut stmt = db.prepare("SELECT data FROM audit WHERE id=?")?;
         let mut rows = stmt.query([&id])?;
         let Some(row) = rows.next()? else {
@@ -869,6 +915,43 @@ fn read_sessions(
     Ok(
         json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
     )
+}
+
+fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
+    let mut cache = super::content::Cache::default();
+    while let Ok(ContentJob {
+        audit,
+        offset,
+        deadline,
+        done,
+    }) = receiver.recv()
+    {
+        let cancelled = || done.is_closed() || Instant::now() >= deadline;
+        if cancelled() {
+            continue;
+        }
+        let result = (|| -> Result<Value> {
+            // Opening here tolerates initial database creation/recovery. This
+            // connection never migrates, maintains, or writes audit storage.
+            let db =
+                Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            db.busy_timeout(Duration::from_millis(250))?;
+            let tx = db.unchecked_transaction()?;
+            let visible: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM audit WHERE id=? AND kind != 'management')",
+                [&audit],
+                |r| r.get(0),
+            )?;
+            let value = if visible {
+                cache.read(&tx, &audit, offset, &cancelled)?
+            } else {
+                Value::Null
+            };
+            tx.commit()?;
+            Ok(value)
+        })();
+        let _ = done.send(result);
+    }
 }
 
 fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>>) {
@@ -1554,8 +1637,10 @@ mod tests {
     #[test]
     fn queue_and_record_limits_are_visible_and_queries_reject_unsafe_filters() {
         let (sender, _receiver) = mpsc::sync_channel(1);
+        let (content_sender, _content_receiver) = mpsc::sync_channel(1);
         let store = Store {
             sender,
+            content_sender,
             health: Arc::new(Mutex::new(json!({}))),
         };
         store.write(record("queued", "completed"));
@@ -1574,6 +1659,103 @@ mod tests {
             assert!(Query::parse(query).is_err(), "{query}");
         }
         assert!(Query::parse("stage=tool_call_proposed").is_ok());
+    }
+
+    #[tokio::test]
+    async fn queued_overviews_never_block_audit_queries_or_body_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::start(dir.path());
+        store.write(record("reading", "completed"));
+        store.flush().await;
+        // Hold the overview receiver without running it. This proves isolation
+        // deterministically instead of relying on how fast a machine parses JSON.
+        let (content_sender, content_receiver) = mpsc::sync_channel(4);
+        let isolated = Arc::new(Store {
+            sender: store.sender.clone(),
+            content_sender,
+            health: store.health.clone(),
+        });
+        let mut reads = Vec::new();
+        for _ in 0..4 {
+            let store = isolated.clone();
+            reads.push(tokio::spawn(async move {
+                store
+                    .query(Query {
+                        detail: Some("reading".into()),
+                        content_offset: Some(0),
+                        ..Query::default()
+                    })
+                    .await
+            }));
+        }
+        let (pending, content_receiver) = tokio::task::spawn_blocking(move || {
+            let pending = (0..4)
+                .map(|_| {
+                    content_receiver
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            (pending, content_receiver)
+        })
+        .await
+        .unwrap();
+        // Keep the receiver alive and fill its queue to verify bounded rejection.
+        for _ in 0..4 {
+            let (done, _result) = oneshot::channel();
+            isolated
+                .content_sender
+                .try_send(ContentJob {
+                    audit: "reading".into(),
+                    offset: 0,
+                    deadline: Instant::now() + Duration::from_secs(30),
+                    done,
+                })
+                .unwrap();
+        }
+        let started = Instant::now();
+        let busy = isolated
+            .query(Query {
+                detail: Some("reading".into()),
+                content_offset: Some(0),
+                ..Query::default()
+            })
+            .await;
+        assert!(busy.is_err());
+        let writer = isolated.clone();
+        assert!(tokio::task::spawn_blocking(move || {
+            writer.write(record("new-write", "completed"));
+            writer.body(
+                "new-write",
+                json!({"id":"request","state":"receiving","byteLength":0}),
+            )
+        })
+        .await
+        .unwrap());
+        let listed = isolated.query(Query::parse("").unwrap()).await.unwrap();
+        assert_eq!(listed["total"], 2);
+        let body = isolated
+            .query(Query {
+                detail: Some("new-write".into()),
+                body: Some(("request".into(), 0)),
+                ..Query::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(body["state"], "receiving");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "overview backlog must not delay audit IO"
+        );
+        for job in pending {
+            let _ = job.done.send(Ok(json!({"items":[],"state":"complete"})));
+        }
+        for read in reads {
+            assert!(read.await.unwrap().is_ok());
+        }
+        drop(content_receiver);
+        assert_eq!(store.status()["failedWrites"], 0);
+        assert_eq!(store.status()["droppedWrites"], 0);
     }
 
     #[test]

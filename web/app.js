@@ -356,6 +356,7 @@ window.addEventListener("popstate", () => state.config ? restoreSecurityNavigati
 pageContent.addEventListener("click", (event) => {
   const element = event.target.closest("[data-action], [data-page]");
   if (!element || !pageContent.contains(element) || state.busy) return;
+  if (element.dataset.action === "security-content-source") event.preventDefault();
   if (element.dataset.action) handleAction(element.dataset.action, element);
   else navigatePage(element.dataset.page);
 });
@@ -1061,6 +1062,7 @@ function securityDetailVisible() { return ["security-detail", "security-session"
 async function loadSecurityDetail(id, reset = true, embedded = false, prefetched = null) {
   const s = state.security;
   const sequence = ++s.detailSequence;
+  s.contentLoading = false; s.contentError = null;
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
   s.bodySequence = (s.bodySequence || 0) + 1;
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
@@ -1245,6 +1247,61 @@ function securityModelMapping(record) {
   return `${record.clientModelId || "未记录"} → ${record.upstreamModelId || "未记录"}`;
 }
 
+const REQUEST_CONTENT_LABELS = { system: "系统提示词", developer: "开发者指令", user: "用户输入", assistant: "历史模型消息", tool_call: "历史工具调用", tool_result: "工具结果", reasoning: "推理 / 压缩上下文", reference: "历史上下文引用", tool_definition: "可用工具定义", other: "其他内容" };
+const REQUEST_PART_LABELS = { input_image: "图片", input_file: "文件", input_audio: "音频", input_video: "视频", refusal: "拒绝内容", image: "图片", document: "文档", search_result: "检索结果", tool_reference: "工具引用" };
+
+function renderRequestContent(record) {
+  const content = record.requestContent;
+  if (!content) return `<section class="trace-preview"><h3>最近用户输入</h3><p>${esc(record.requestPreview || "无可用文本摘要，可在原始内容中复核。")}</p></section>`;
+  const items = content.items || [], counts = content.counts || {};
+  const claude = record.protocol === "anthropic.messages";
+  const row = item => {
+    const label = REQUEST_CONTENT_LABELS[item.kind] || REQUEST_CONTENT_LABELS.other;
+    const relation = item.relatedIndex != null ? `对应第 ${item.relatedIndex + 1} 项` : item.kind === "tool_result" ? "本次请求未找到对应调用" : item.kind === "tool_call" ? "本次请求未包含对应结果" : "";
+    const related = `${relation}${item.ambiguousRelation ? "，标识重复，关联存在歧义" : ""}`;
+    return `<details class="trace-content-item" data-content-index="${item.index}" open>
+      <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="security-content-source" data-index="${item.index}">查看此项原文</button></summary>
+      <div class="trace-content-detail">${item.preview ? `<pre>${esc(item.preview)}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
+      ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${esc(item.structure)}</pre></details>` : ""}
+      ${item.parts?.length ? `<p class="trace-content-note">${item.parts.map(part => esc(REQUEST_PART_LABELS[part] || part)).join(" · ")} · 非文本内容见完整结构或原文</p>` : ""}
+      ${item.opaque && item.preview ? `<p class="trace-content-note">同时包含加密或不透明内容。</p>` : ""}
+      ${item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
+      ${item.messageIndex != null ? `<p class="trace-content-note">第 ${Number(item.messageIndex) + 1} 条消息${item.role ? ` · ${esc(item.role)}` : " · 角色未解析"}${item.type ? ` · ${esc(item.type)}` : ""}</p>` : ""}
+      ${related ? `<p class="trace-content-note">${esc(related)}${item.kind === "tool_result" ? item.serverTool ? " · 服务端工具结果" : " · 客户端报告的结果" : " · 实际执行状态未知"}</p>` : ""}
+      ${item.isError != null ? `<p class="trace-content-note">${item.isError ? "客户端报告工具错误" : "客户端未标记工具错误"}</p>` : ""}
+      ${item.cacheControl ? `<p class="trace-content-note">缓存控制：${esc(item.cacheControl)}</p>` : ""}
+      ${item.callId ? `<p class="trace-content-note mono">${esc(item.callId)}</p>` : ""}
+      </div></details>`;
+  };
+  const definitions = items.filter(item => item.kind === "tool_definition");
+  const messages = items.filter(item => item.kind !== "tool_definition");
+  return `<section class="trace-request-content" aria-label="请求内容"><h3>请求内容 <span>${content.total} 项</span></h3>
+    ${claude ? `<p class="trace-content-note">按消息内容块展示；工具结果属于工具上下文，消息角色为 user 也不会计为用户输入。</p>` : ""}
+    <div class="trace-content-counts" aria-label="请求内容组成">${Object.entries(REQUEST_CONTENT_LABELS).map(([kind, label]) => `<span>${label} <strong>${counts[kind] || 0}</strong></span>`).join("")}</div>
+    ${content.state !== "complete" ? `<p class="notice warning">${content.state === "unavailable" ? "请求正文未保留，无法还原内容组成。" : "请求正文存在缺口或尚未解析完整，以下为已保留的内容。"}</p>` : content.total === 0 ? `<p class="muted">本次请求未包含提示词、输入或工具上下文。</p>` : ""}
+    <div class="trace-content-timeline">${messages.map(row).join("")}</div>
+    ${definitions.length ? `<details class="trace-content-tools"><summary>可用工具定义 · 本页 ${definitions.length} 个</summary>${definitions.map(row).join("")}</details>` : ""}
+    ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="security-content-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || state.security.contentLoading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + items.length} / ${content.total}</span><button class="mini-button" data-action="security-content-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || state.security.contentLoading ? "disabled" : ""}>下一组内容</button></div>` : ""}
+    ${state.security.contentLoading ? `<p class="muted" role="status">正在解析请求内容…</p>` : ""}${state.security.contentError ? `<p class="notice warning" role="alert">${esc(state.security.contentError)}</p>` : ""}
+  </section>`;
+}
+
+async function loadRequestContent(offset) {
+  const s = state.security, record = s.detail, sequence = s.detailSequence;
+  if (!record || s.contentLoading) return;
+  const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
+  s.contentLoading = true; s.contentError = null; render();
+  try {
+    const content = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset })}`);
+    if (!current()) return;
+    record.requestContent = content;
+  } catch (error) {
+    if (!current()) return;
+    s.contentError = error.message;
+  }
+  if (current()) { s.contentLoading = false; render(); }
+}
+
 function renderTraceInspector() {
   const s = state.security, t = state.trace, r = s.detail;
   const tabs = `<div class="trace-tabs" aria-label="步骤详情"><button data-action="security-trace-tab" data-tab="overview" aria-pressed="${t.tab === "overview"}">概览</button><button data-action="security-trace-tab" data-tab="risks" aria-pressed="${t.tab === "risks"}">风险 ${r?.findingCount || 0}</button><button data-action="security-trace-tab" data-tab="body" aria-pressed="${t.tab === "body"}">原始内容</button></div>`;
@@ -1259,9 +1316,10 @@ function renderTraceInspector() {
     ${r.inspectionProgress?.active ? `<p role="status" class="muted">检测进度：${esc(r.inspectionProgress.processedBytes || 0)} / ${esc(r.inspectionProgress.observedBytes || r.observedBytes || 0)} 字节 · ${esc(securityInspectionLabel(r))}</p>` : ""}
     ${r.lostWrites ? `<p class="notice warning">记录到 ${esc(r.lostWrites)} 次审计写入缺口。</p>` : ""}
     ${r.coverageReasons?.length ? `<p class="notice warning">覆盖不足：${r.coverageReasons.map(reason => esc(securityLabel("reason", reason))).join("；")}</p>` : ""}
-    ${[["最近用户输入", r.requestPreview], ["模型输出", r.responsePreview]].map(([label,text]) => `<section class="trace-preview"><h3>${label}</h3><p>${esc(text || "无可用文本摘要，可在原始内容中复核。")}</p></section>`).join("")}
+    ${renderRequestContent(r)}
+    <section class="trace-preview"><h3>本轮模型输出</h3><p>${esc(r.responsePreview || "无可用文本摘要，可在原始内容中复核。")}</p></section>
     ${r.toolNames?.length ? `<section class="trace-preview"><h3>工具调用提议</h3><p class="mono">${r.toolNames.map(esc).join(" · ")}</p><span class="muted">实际执行状态未知</span></section>` : ""}
-    <p class="muted">以上为有限长度摘要，完整上下文见原始内容。</p><button class="button" data-action="security-trace-tab" data-tab="body">查看请求与响应原文</button><details class="trace-record-id"><summary>全部记录信息</summary><dl class="trace-facts">${securityRecordFacts(r).map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${r.coverageGaps?.length ? `<p>正文缺口范围</p><pre class="code-preview">${esc(JSON.stringify(r.coverageGaps, null, 2))}</pre>` : ""}</details>`;
+    <p class="muted">请求各项内容完整展示；本轮模型输出为摘要，完整响应见原始内容。</p><button class="button" data-action="security-trace-tab" data-tab="body">查看请求与响应原文</button><details class="trace-record-id"><summary>全部记录信息</summary><dl class="trace-facts">${securityRecordFacts(r).map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${r.coverageGaps?.length ? `<p>正文缺口范围</p><pre class="code-preview">${esc(JSON.stringify(r.coverageGaps, null, 2))}</pre>` : ""}</details>`;
   return `${tabs}<div class="trace-inspector-body">${body}</div>`;
 }
 
@@ -1324,6 +1382,11 @@ function securityHighlighted(value, root, location, fieldOrder) {
   return range ? `${esc(text.slice(0, range.start))}<mark class="security-body-hit" tabindex="-1">${esc(text.slice(range.start, range.end))}</mark>${esc(text.slice(range.end))}` : esc(text);
 }
 
+// An original-content link marks a scroll position, not a selected risk range.
+function securitySourceAnchor(text) {
+  return `<span data-security-body-anchor tabindex="-1">${esc(text)}</span>`;
+}
+
 const SECURITY_BODY_LABELS = {
   source: { observed_headers: "请求 / 响应头", tool_inspection: "检测时的工具参数", inspection_range: "检测时的正文范围", client_request: "客户端请求正文", upstream_response: "上游响应正文", gateway_response: "网关本地响应", stream_inspection: "检测时的流式内容快照", response_inspection: "检测时的响应内容快照" },
   state: { complete: "已完整保留", receiving: "分段保存中", gap: "保留存在缺口", partial: "部分内容不可复核", truncated: "旧版截断记录", interrupted: "接收中断或未观察到协议结束", not_observed: "网关未读取正文", capture_unavailable: "正文保留不可用", redaction_unavailable: "凭据脱敏超限，内容已隐藏", pending: "仍在接收或等待保存" },
@@ -1338,6 +1401,12 @@ function securityPageMarks(page) {
 function securityPageText(page, selection) {
   if (page.legacySnapshot) {
     const snapshot = page.legacySnapshot;
+    if (selection.navigation) {
+      const { text, range } = securityBodyText(snapshot.body, snapshot.root || "request", selection.navigation.location, snapshot.fieldOrder);
+      if (!range) return esc(text);
+      const end = range.start + (text.codePointAt(range.start) > 0xffff ? 2 : 1);
+      return `${esc(text.slice(0, range.start))}${securitySourceAnchor(text.slice(range.start, end))}${esc(text.slice(end))}`;
+    }
     return securityHighlighted(snapshot.body, snapshot.root, selection.location, snapshot.fieldOrder);
   }
   const encoder = new TextEncoder();
@@ -1353,17 +1422,29 @@ function securityPageText(page, selection) {
     };
     for (const range of chunk.sensitiveRanges || []) add(range, "sensitive");
     if (!selection.hitUnavailable) add(selection, "selected");
+    const position = selection.navigation?.start - chunk.start;
+    if (position >= 0 && position < bytes.length) {
+      // Wrap one complete code point so scrollIntoView has a real text box.
+      // This leaves the original text and its existing sensitive marks intact.
+      let start = position;
+      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+      let end = start + 1;
+      while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end++;
+      if (start < bytes.length) add({ start: chunk.start + start, end: chunk.start + end }, "anchor");
+    }
     events.sort((a, b) => a.at - b.at);
-    let at = 0, sensitive = 0, selected = 0, html = "";
+    let at = 0, sensitive = 0, selected = 0, anchor = 0, html = "";
     for (const event of events) {
       if (event.at > at) {
-        const content = esc(decoder.decode(bytes.slice(at, event.at)));
+        const text = decoder.decode(bytes.slice(at, event.at));
+        const content = anchor > 0 ? securitySourceAnchor(text) : esc(text);
         const classes = [sensitive > 0 && "security-sensitive-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
         html += classes ? `<mark class="${classes}"${selected > 0 ? ' tabindex="-1"' : ""}>${content}</mark>` : content;
         at = event.at;
       }
       sensitive += event.sensitive || 0;
       selected += event.selected || 0;
+      anchor += event.anchor || 0;
     }
     return html;
   }).join("");
@@ -1443,6 +1524,11 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
   } catch (error) { if (current()) s.bodyError = error.message; }
   if (!current()) return false;
   s.bodyLoading = false; s.bodyLocating = false; render();
+  if (!s.bodyError && selection.navigation) {
+    const target = pageContent.querySelector("[data-security-body-anchor]");
+    target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    target?.focus({ preventScroll: true });
+  }
   return !s.bodyError;
 }
 
@@ -1530,6 +1616,16 @@ async function securityAction(action, element) {
     if (t.tab === "body" && !s.bodyPage) await loadSecurityBody();
     return;
   }
+  if (action === "security-content-page") {
+    await loadRequestContent(Number(element.dataset.offset)); return;
+  }
+  if (action === "security-content-source") {
+    const item = s.detail?.requestContent?.items?.find(item => item.index === Number(element.dataset.index));
+    if (!item) return;
+    t.tab = "body";
+    s.bodySelection = { snapshotId: "request", navigation: { start: item.start, location: item.location } };
+    render(); await loadSecurityBody(Math.max(0, item.start - 512)); return;
+  }
   if (action === "security-trace-risk") { t.riskOnly = !t.riskOnly; render(); return; }
   if (action === "security-trace-scale") { t.scale = t.scale === "duration" ? "order" : "duration"; render(); return; }
   if (action === "security-trace-more") { await loadMoreSecurityTrace(); return; }
@@ -1574,7 +1670,10 @@ async function securityAction(action, element) {
       const id = element.dataset.id;
       s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), ...(id.startsWith("stream/") ? { detectionSnapshotId: id } : { start: Number(element.dataset.offset || 0) }) };
     }
-    else if (action === "security-location") s.bodySelection = { ...s.bodySelection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
+    else if (action === "security-location") {
+      const { navigation, ...selection } = s.bodySelection;
+      s.bodySelection = { ...selection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
+    }
     const finding = s.detail.findings?.find(item => item.id === s.bodySelection.findingId);
     const mappedStream = s.bodySelection.detectionSnapshotId != null;
     const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null || s.bodySelection.snapshotId === s.bodySelection.sourceSnapshotId);

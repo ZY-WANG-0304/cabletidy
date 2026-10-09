@@ -1,4 +1,5 @@
 mod capture;
+mod content;
 mod pipeline;
 mod rules;
 mod session;
