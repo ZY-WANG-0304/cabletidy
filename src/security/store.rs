@@ -32,6 +32,7 @@ pub struct Query {
     pub sessions: bool,
     pub session: Option<String>,
     pub body: Option<(String, u64)>,
+    pub content_offset: Option<usize>,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -603,12 +604,18 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
         if let Some((snapshot, offset)) = query.body {
             return read_body_page(db, &id, &snapshot, offset);
         }
+        if let Some(offset) = query.content_offset {
+            return super::content::read(db, &id, offset);
+        }
         let mut stmt = db.prepare("SELECT data FROM audit WHERE id=?")?;
         let mut rows = stmt.query([&id])?;
         let Some(row) = rows.next()? else {
             return Ok(Value::Null);
         };
         let mut data: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        if data["protocol"] == "openai.responses" || data["protocol"] == "anthropic.messages" {
+            data["requestContent"] = super::content::read(db, &id, 0)?;
+        }
         let mut stmt = db.prepare("SELECT data FROM findings WHERE audit_id=? ORDER BY seq")?;
         let findings = stmt
             .query_map([&id], |r| r.get::<_, String>(0))?

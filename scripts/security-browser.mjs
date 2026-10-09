@@ -8,16 +8,26 @@ import { chromium } from "playwright";
 import { createApplication } from "../test/helpers/native-app.mjs";
 import { getPaths, normalizeConfig } from "../test/helpers/native.mjs";
 import { catalogFixture, codexConfigFixture } from "../test/helpers/codex-fixture.mjs";
+import { claudeConfigFixture } from "../test/helpers/claude-fixture.mjs";
+import { claudeRequestFixture } from "../test/helpers/claude-request-fixture.mjs";
 
 const output = path.resolve(process.env.CABLETIDY_BROWSER_OUTPUT || ".cabletidy-debug/security-review");
 await fs.mkdir(output, { recursive: true });
 const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-security-browser-"));
 const secret = "browser-review-credential-123456";
+const fullItemText = "逐项完整内容：保留所有行、汉字和 emoji 🙂。\n".repeat(180) + "完整内容末尾 <script>literal</script>";
 const context = "普通上下文：请复核网关实际观察到的内容。<script>literal</script>\n".repeat(24000);
 const upstream = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks));
+  if (req.url === "/v1/messages") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "msg_browser_claude", type: "message", role: "assistant", model: body.model,
+      content: [{ type: "text", text: "已复核 Claude 请求内容。" }], stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 12, output_tokens: 8 } }));
+    return;
+  }
   const text = `${context}响应命中前 ${secret} 响应命中后；继续复核上下文。`;
   if (body.stream) {
     const item = { id: "msg_browser", type: "message", role: "assistant", content: [{ type: "output_text", text: "" }] };
@@ -47,18 +57,38 @@ try {
   const config = normalizeConfig(codexConfigFixture());
   config.web.port = Number(new URL(app.url).port);
   config.upstreams.relay.baseUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
+  const claudeConfig = claudeConfigFixture(config.upstreams.relay.baseUrl);
+  config.upstreams.claude = { ...claudeConfig.upstreams.relay, id: "claude", secretRef: "secret://upstreams/claude" };
+  config.routes.claude = { id: "claude", backends: [{ upstream: "claude" }] };
+  config.virtualProviders["cabletidy_claude-main"] = { ...claudeConfig.virtualProviders["cabletidy_claude-main"], route: "claude" };
+  config.bindings["claude-main"] = claudeConfig.bindings["claude-main"];
   const post = async (route, body) => {
     const response = await fetch(`${app.url}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const text = await response.text();
     assert.equal(response.status, 200, text);
   };
-  await post("api/v1/config/commit", { baseRevision: 0, config, upstreamSecrets: { relay: secret } });
+  await post("api/v1/config/commit", { baseRevision: 0, config, upstreamSecrets: { relay: secret, claude: secret } });
   await post("relay/v1/responses", { model: "gpt-5.5", metadata: { session_id: "review-session" }, reviewCase: true, stream: true, input: `排查候选词提交后仍然高亮的问题。\n${context}请求命中前 ${secret} 请求命中后；继续复核上下文。` });
-  for (let i = 0; i < 52; i++) await post("relay/v1/responses", { model: "gpt-5.5", metadata: { session_id: "review-session" }, input: [
+  const mixedInput = [
+    { role: "developer", content: [{ type: "input_text", text: fullItemText }] },
+    { role: "user", content: [{ type: "input_text", text: "排查候选词提交后仍然高亮的问题。" }] },
+    { role: "assistant", content: [{ type: "output_text", text: "检查输入控制器的状态重置。" }] },
+    { type: "function_call", name: "exec_command", call_id: "browser_call", arguments: '{"cmd":"rg markedRange src"}' },
+    { type: "function_call_output", call_id: "browser_call", output: "InputController.swift:42 · markedRange 未清除" },
+    { type: "custom_tool_call", name: "apply_patch", call_id: "browser_patch", input: "*** Begin Patch\n*** Update File: InputController.swift\n*** End Patch" },
+    { type: "custom_tool_call_output", call_id: "browser_patch", output: "客户端报告：补丁已应用" },
+    { type: "reasoning", summary: [], encrypted_content: "opaque-reasoning" },
+    ...Array.from({ length: 35 }, (_, i) => ({ role: "assistant", content: `已保留历史上下文 ${i + 1}` })),
+    { role: "user", content: [{ type: "input_text", text: "请结合截图继续检查。<script>literal</script>" }, { type: "input_image", image_url: "data:image/png;base64,test" }] },
+  ];
+  for (let i = 0; i < 52; i++) {
+    const input = [
     { role: "user", content: "排查候选词提交后仍然高亮的问题。" },
     { role: "assistant", content: "已定位候选词提交与 markedRange 更新逻辑。" },
     { role: "user", content: `第 ${i + 2} 步：检查输入控制器的状态重置。${i === 4 ? secret : "保留已有输入上下文。"}` }
-  ] });
+    ];
+    await post("relay/v1/responses", { model: "gpt-5.5", metadata: { session_id: "review-session" }, ...(i === 0 ? { instructions: "你是编程助手。保留用户已有修改，使用工具验证代码。", input: mixedInput, tools: [{ type: "function", name: "exec_command", parameters: { type: "object" } }, { type: "custom", name: "apply_patch", description: "按补丁修改文件" }] } : { input }) });
+  }
   for (let i = 0; i < 64; i++) await post("relay/v1/responses", { model: "gpt-5.5", input: `Pagination fixture ${i}: ${secret}` });
   let audits, sessionRecords;
   for (let i = 0; i < 600; i++) {
@@ -66,11 +96,12 @@ try {
     const sessions = await (await fetch(`${app.url}api/v1/security/sessions?limit=100`)).json();
     const session = sessions.items.find(item => item.identified);
     if (session) sessionRecords = await (await fetch(`${app.url}api/v1/security/audit?session=${session.id}&limit=100`)).json();
-    if (audits.total === 117 && sessionRecords?.items.length === 53 && sessionRecords.items.every(item => item.inspectionStatus === "complete") && audits.items.every(item => !["pending", "running"].includes(item.inspectionStatus))) break;
+    if (audits.total === 117 && sessionRecords?.items.length === 53 && sessionRecords.items.every(item => ["complete", "partial"].includes(item.inspectionStatus)) && audits.items.every(item => !["pending", "running"].includes(item.inspectionStatus))) break;
     await delay(100);
   }
   assert.equal(audits.total, 117);
-  assert.equal(audits.items.every(item => item.inspectionStatus === "complete"), true);
+  assert.equal(audits.items.every(item => ["complete", "partial"].includes(item.inspectionStatus)), true);
+  assert.equal(sessionRecords.items[1].inspectionStatus, "partial", "mixed image/reasoning context honestly reports limited semantic inspection");
   const audit = sessionRecords.items[0];
   const record = (await (await fetch(`${app.url}api/v1/security/audit/${audit.id}`)).json()).record;
   assert.equal(audit.clientModelId, "gpt-5.5");
@@ -181,6 +212,43 @@ try {
   assert.equal(await page.locator(".trace-event-row.is-selected").getAttribute("data-id"), audit.id);
   assert.equal(await page.locator(".trace-event-list").evaluate(node => node.scrollTop), scrollAfterAppend);
   report.checks.push("the duration toggle changes and restores segment widths while preserving request order, selection and scroll position");
+  const mixedRequest = sessionRecords.items[1];
+  await page.locator(`.trace-event-row[data-id="${mixedRequest.id}"]`).click();
+  await page.locator('.trace-content-item[data-content-index="0"]').waitFor();
+  const overviewText = await page.locator(".trace-inspector-body").innerText();
+  for (const label of ["系统提示词", "开发者指令", "用户输入", "历史模型消息", "历史工具调用", "工具结果", "推理 / 压缩上下文", "可用工具定义"]) assert.ok(overviewText.includes(label));
+  assert.equal(await page.locator(".trace-content-item").count(), 40);
+  assert.equal(await page.locator('.trace-content-item[data-content-index="1"] > .trace-content-detail > pre').textContent(), fullItemText);
+  assert.match(await page.locator('.trace-content-item[data-content-index="5"]').innerText(), /markedRange 未清除|对应第 5 项 · 客户端报告的结果/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="8"]').innerText(), /没有可读文本/);
+  const checkSourceHeading = async index => {
+    const block = page.locator(`.trace-content-item[data-content-index="${index}"]`);
+    const header = await block.locator(":scope > summary").boundingBox();
+    const title = await block.locator(".trace-content-title").boundingBox();
+    const source = await block.getByRole("button", { name: "查看此项原文", exact: true }).boundingBox();
+    assert.ok(source && header && title);
+    assert.ok(source.x >= title.x + title.width - 1, "source button sits to the right of the title");
+    assert.ok(source.y >= header.y && source.y + source.height <= header.y + header.height + 1, "source button shares the title row");
+  };
+  await checkSourceHeading(0);
+  await screenshot("06-desktop-codex-mixed-overview.png");
+  await page.getByRole("button", { name: "下一组内容", exact: true }).click();
+  await page.locator('.trace-content-item[data-content-index="44"]').waitFor();
+  assert.match(await page.locator('.trace-content-item[data-content-index="44"]').innerText(), /图片 · 非文本内容见完整结构或原文/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await checkSourceHeading(44);
+  await screenshot("07-mobile-codex-mixed-overview.png");
+  await page.setViewportSize(report.viewport);
+  await page.locator('.trace-content-item[data-content-index="44"] > summary .trace-content-title').click();
+  assert.equal(await page.locator('.trace-content-item[data-content-index="44"]').getAttribute("open"), null);
+  await page.locator('.trace-content-item[data-content-index="44"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
+  await page.locator(".security-body-hit").waitFor();
+  assert.match(await page.locator(".security-body-hit").innerText(), /请结合截图继续检查/);
+  assert.equal(await page.locator(".security-body-content script").count(), 0);
+  report.checks.push("Codex mixed contexts retain all roles, tool/result links, opaque reasoning, multimodal markers and paginated source navigation on desktop and mobile");
+  await page.locator(`.trace-event-row[data-id="${audit.id}"]`).click();
+  await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
+  await page.locator(".trace-inspector-heading").waitFor();
   await page.getByLabel("搜索已加载轨迹").fill("第 6 步");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   assert.equal(await page.locator(".trace-event-row").count(), 1);
@@ -345,6 +413,87 @@ try {
   await page.reload();
   await page.waitForFunction(id => document.querySelector(".trace-event-row.is-selected")?.dataset.id === id && document.querySelector(".trace-inspector-heading"), newerRequest.id);
   report.checks.push("selecting another request during a delayed refresh preserves its detail and history after the old response arrives and after reload");
+  const claudeSession = "38e0afcb-b001-43b3-bb62-a6c9f048b77f";
+  const claudeFullBody = claudeRequestFixture();
+  claudeFullBody.system[0].text = fullItemText;
+  claudeFullBody.messages[0].content[0].text = fullItemText;
+  for (const body of [claudeFullBody, claudeRequestFixture({ history: 45 }), {
+    messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "missing", content: "只有工具结果" }] }],
+  }]) await post("claude-main/v1/messages", { model: "claude-sonnet-4-6", max_tokens: 100,
+    metadata: { user_id: JSON.stringify({ session_id: claudeSession, account_uuid: "browser-review" }) }, ...body });
+  let claudeRecords;
+  for (let i = 0; i < 300; i++) {
+    claudeRecords = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=cabletidy_claude-main&limit=10`)).json();
+    if (claudeRecords.total === 3 && claudeRecords.items.every(item => ["complete", "partial"].includes(item.inspectionStatus) && !item.inspectionProgress?.active)) break;
+    await delay(100);
+  }
+  assert.equal(claudeRecords.total, 3);
+  const claudeDetails = await Promise.all(claudeRecords.items.map(async item => (await (await fetch(`${app.url}api/v1/security/audit/${item.id}`)).json()).record));
+  const claudeMixed = claudeDetails.find(item => item.requestContent.total === 19);
+  const claudePaged = claudeDetails.find(item => item.requestContent.total === 64);
+  const claudeToolOnly = claudeDetails.find(item => item.requestContent.total === 1);
+  assert.ok(claudeMixed && claudePaged && claudeToolOnly);
+  await page.goto(`${app.url}#security/session/${claudeMixed.sessionKey}`);
+  await page.locator(`.trace-event-row[data-id="${claudeMixed.id}"]`).waitFor();
+  await page.locator(`.trace-event-row[data-id="${claudeMixed.id}"]`).click();
+  await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
+  await page.locator('.trace-content-item[data-content-index="16"]').waitFor();
+  assert.equal(await page.locator(".trace-content-item").count(), 19);
+  assert.equal(await page.locator('.trace-content-item[data-content-index="0"] > .trace-content-detail > pre').textContent(), fullItemText);
+  assert.equal(await page.locator('.trace-content-item[data-content-index="2"] > .trace-content-detail > pre').textContent(), fullItemText);
+  await checkSourceHeading(0);
+  const claudeCounts = await page.getByLabel("请求内容组成", { exact: true }).innerText();
+  for (const count of ["系统提示词 2", "用户输入 4", "历史工具调用 3", "工具结果 4", "可用工具定义 2"]) assert.ok(claudeCounts.includes(count), count);
+  const openClaudeBlock = async index => {
+    const block = page.locator(`.trace-content-item[data-content-index="${index}"]`);
+    if (await block.getAttribute("open") === null) await block.locator("summary").first().click();
+    return block;
+  };
+  for (const index of [0, 3, 4, 6, 10, 11, 12]) await openClaudeBlock(index);
+  assert.match(await page.locator('.trace-content-item[data-content-index="0"]').innerText(), /缓存控制.*ephemeral.*1h/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="4"]').innerText(), /没有可读文本/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="6"]').innerText(), /保留参数 JSON 的键/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /对应第 7 项 · 客户端报告的结果/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /图片 · 文档 · 工具引用/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /第 3 条消息 · user · tool_result/);
+  assert.match(await page.locator('.trace-content-item[data-content-index="11"]').innerText(), /客户端报告工具错误/);
+  assert.equal(await page.locator(".trace-request-content script").count(), 0);
+  const inspectorScroll = await page.locator(".trace-inspector-body").evaluate(node => {
+    node.scrollTop = node.querySelector(".trace-request-content").offsetTop - node.offsetTop;
+    return node.scrollTop;
+  });
+  assert.ok(inspectorScroll >= 0);
+  await screenshot("08-desktop-claude-mixed-overview.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await checkSourceHeading(10);
+  await page.locator('.trace-content-item[data-content-index="10"]').scrollIntoViewIfNeeded();
+  await screenshot("09-mobile-claude-mixed-overview.png");
+  await page.setViewportSize(report.viewport);
+  await page.locator('.trace-content-item[data-content-index="10"] > summary .trace-content-title').click();
+  assert.equal(await page.locator('.trace-content-item[data-content-index="10"]').getAttribute("open"), null);
+  await page.locator('.trace-content-item[data-content-index="10"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
+  await page.locator(".security-body-hit").waitFor();
+  assert.match(await page.locator(".security-body-hit").innerText(), /tool_result/);
+  assert.match(await page.locator(".security-body-hit").innerText(), /read-source/);
+  await page.locator(`.trace-event-row[data-id="${claudePaged.id}"]`).click();
+  await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
+  await page.locator('.trace-content-item[data-content-index="39"]').waitFor();
+  await page.getByRole("button", { name: "下一组内容", exact: true }).click();
+  await page.locator('.trace-content-item[data-content-index="55"]').waitFor();
+  const pagedResult = await openClaudeBlock(55);
+  assert.match(await pagedResult.innerText(), /对应第 7 项 · 客户端报告的结果/);
+  assert.match(await pagedResult.innerText(), /解析器已经按内容块读取/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await pagedResult.scrollIntoViewIfNeeded();
+  await screenshot("10-mobile-claude-paged-tools.png");
+  await page.setViewportSize(report.viewport);
+  await page.locator(`.trace-event-row[data-id="${claudeToolOnly.id}"]`).click();
+  await page.locator('.trace-content-item[data-content-index="0"]').waitFor();
+  assert.match(await page.getByLabel("请求内容组成", { exact: true }).innerText(), /用户输入 0/);
+  assert.equal(await page.locator(".trace-content-item").count(), 1);
+  assert.match(await (await openClaudeBlock(0)).innerText(), /本次请求未找到对应调用/);
+  report.checks.push("Claude content blocks keep system/cache metadata, thinking, parallel and server tools, multimodal results, errors and cross-page relations; user-role tool results are counted separately; desktop/mobile source navigation is exact");
+  report.checks.push("Codex and Claude long items display their exact full text including the tail; all items open by default and source actions sit on the right of desktop and mobile title rows");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

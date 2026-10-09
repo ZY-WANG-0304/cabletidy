@@ -1268,6 +1268,28 @@ button.list-row:hover,
 .trace-preview { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 18px; }
 .trace-preview h3 { font-size: 12px; color: var(--muted); margin: 0 0 10px; font-weight: 500; }
 .trace-preview p { margin: 0; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.trace-request-content { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 14px; }
+.trace-request-content h3 { display: flex; justify-content: space-between; margin: 0 0 12px; font-size: 13px; }
+.trace-request-content h3 > span { color: var(--muted); font-weight: 400; }
+.trace-content-counts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; font-size: 11px; color: var(--muted); }
+.trace-content-counts strong { color: var(--ink); font-weight: 500; }
+.trace-content-item { border-bottom: 1px solid var(--line); min-width: 0; }
+.trace-content-item > summary { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 44px; padding: 8px 0; cursor: pointer; font-size: 12px; list-style: none; }
+.trace-content-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.trace-content-source { justify-self: end; white-space: nowrap; }
+.trace-content-item > summary::before { content: "›"; color: var(--muted); width: 8px; }
+.trace-content-item[open] > summary::before { content: "⌄"; }
+.trace-content-item > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.trace-content-order { color: var(--muted); font-family: monospace; }
+.trace-content-role { color: var(--accent); }
+.trace-content-item strong { font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.trace-content-structure > summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 6px 0; }
+.trace-content-detail { padding: 0 0 12px 16px; }
+.trace-content-detail pre { margin: 2px 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; font-family: inherit; }
+.trace-content-note { color: var(--muted); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.trace-content-tools { margin-top: 12px; font-size: 12px; }
+.trace-content-tools > summary { color: var(--muted); padding: 8px 0; cursor: pointer; }
+.trace-content-pagination { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; font-size: 11px; color: var(--muted); }
 .trace-record-id { margin-top: 18px; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
 .trace-inspector .security-body-review { margin-top: 14px; }
 .trace-inspector .security-body-content { max-height: 340px; font-size: 12px; }

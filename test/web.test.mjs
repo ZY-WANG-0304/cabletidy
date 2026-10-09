@@ -2031,6 +2031,128 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   assert.equal(app.read("state.trace.summary.requestCount"), 2);
 });
 
+test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {
+  const items = [
+    { index: 0, kind: "system", source: "instructions", preview: "System <script>literal</script>", start: 20, end: 60 },
+    { index: 1, kind: "developer", source: "input[0]", preview: "Repository instructions" },
+    { index: 2, kind: "user", source: "input[1]", preview: "First question" },
+    { index: 3, kind: "assistant", preview: "Historical answer" },
+    { index: 4, kind: "tool_call", name: "exec_command", callId: "call_1", relatedIndex: 5, preview: '{"cmd":"pwd"}' },
+    { index: 5, kind: "tool_result", name: "exec_command", callId: "call_1", relatedIndex: 4, preview: "/project" },
+    { index: 6, kind: "reasoning", preview: "", opaque: true },
+    { index: 7, kind: "user", preview: "Follow up", parts: ["input_image"], start: 200, end: 300 },
+    { index: 8, kind: "reference", preview: '"resp_prior"' },
+    { index: 9, kind: "tool_definition", name: "exec_command", preview: "Available tool" },
+  ];
+  const record = { id: "mixed", kind: "request", outcome: "completed", toolNames: ["apply_patch"], findings: [], bodySnapshots: [{ id: "request", state: "complete", contentMode: "original" }], requestContent: { state: "complete", total: 45, offset: 0, nextOffset: 40, counts: { system: 1, developer: 1, user: 2, assistant: 1, tool_call: 1, tool_result: 1, reasoning: 1, reference: 1, tool_definition: 1 }, items } };
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/content?")) return { body: { state: "complete", total: 45, offset: 40, nextOffset: null, counts: record.requestContent.counts, items: [{ index: 40, kind: "user", preview: "Later message" }] } };
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: 400, content: "retained source" }] } };
+    if (url.includes("/audit?")) return { body: { items: [record], total: 1 } };
+    if (url.includes("/audit/")) return { body: { record: clone(record) } };
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "mixed-session", kind: "request", requestCount: 1 }], total: 1 } };
+  } });
+  await app.action("security-session", { dataset: { id: "mixed-session" } });
+  let html = app.read("renderTraceInspector()");
+  for (const label of ["系统提示词", "开发者指令", "用户输入", "历史模型消息", "历史工具调用", "工具结果", "推理 / 压缩上下文", "可用工具定义"]) assert.match(html, new RegExp(label));
+  assert.match(html, /First question/);
+  assert.match(html, /Follow up/);
+  assert.match(html, /对应第 5 项 · 客户端报告的结果/);
+  assert.match(html, /仅保留加密或不透明内容/);
+  assert.match(html, /图片 · 非文本内容见完整结构或原文/);
+  assert.match(html, /本轮模型输出/);
+  assert.match(html, /工具调用提议/);
+  assert.match(html, /System &lt;script&gt;literal/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.equal(app.requests.some(request => request.url.includes("/body?")), false);
+  await app.action("security-content-source", { dataset: { index: "7" } });
+  assert.equal(app.read("state.trace.tab"), "body");
+  assert.equal(app.read("state.security.bodySelection.start"), 200);
+  assert.equal(app.read("state.security.bodySelection.end"), 300);
+  await app.action("security-trace-tab", { dataset: { tab: "overview" } });
+  await app.action("security-content-page", { dataset: { offset: "40" } });
+  html = app.read("renderTraceInspector()");
+  assert.match(html, /Later message/);
+  assert.doesNotMatch(html, /First question/);
+  assert.equal(app.read("state.security.detail.requestContent.offset"), 40);
+});
+
+test("Codex overview distinguishes missing, partial and empty request content", async () => {
+  const app = await controller();
+  for (const [state, text] of [["unavailable", "请求正文未保留"], ["partial", "请求正文存在缺口"], ["complete", "本次请求未包含提示词"]]) {
+    app.read(`state.security.detail = { requestContent: { state: ${JSON.stringify(state)}, total: 0, offset: 0, counts: {}, items: [] } }`);
+    const html = app.read("renderTraceInspector()");
+    assert.match(html, new RegExp(text));
+    assert.doesNotMatch(html, /最近用户输入/);
+  }
+});
+
+test("Claude overview separates mixed tool results from user blocks and exposes roles, errors and cache metadata", async () => {
+  const items = [
+    { index: 0, kind: "system", type: "text", preview: "System prompt", cacheControl: '{"type":"ephemeral","ttl":"1h"}' },
+    { index: 1, kind: "reasoning", type: "thinking", messageIndex: "1", role: "assistant", preview: "Inspect source" },
+    { index: 2, kind: "reasoning", type: "redacted_thinking", messageIndex: "1", role: "assistant", preview: "", opaque: true },
+    { index: 3, kind: "tool_call", type: "tool_use", name: "Read", messageIndex: "1", role: "assistant", callId: "read", relatedIndex: 4, preview: '{"path":"src/main.rs"}' },
+    { index: 4, kind: "tool_result", type: "tool_result", name: "Read", messageIndex: "2", role: "user", callId: "read", relatedIndex: 3, isError: false, preview: "File content", parts: ["image", "document", "tool_reference"], start: 200, end: 350 },
+    { index: 5, kind: "tool_result", type: "tool_result", messageIndex: "2", role: "user", callId: "missing", isError: true, ambiguousRelation: true, preview: "Read failed" },
+    { index: 6, kind: "user", type: "text", messageIndex: "2", role: "user", preview: "Continue <script>literal</script>" },
+    { index: 7, kind: "tool_result", type: "web_search_tool_result", messageIndex: "1", role: "assistant", name: "web_search", serverTool: true, relatedIndex: 8, preview: "Search result" },
+    { index: 8, kind: "tool_call", type: "server_tool_use", messageIndex: "1", role: "assistant", name: "web_search", serverTool: true, relatedIndex: 7, preview: '{"query":"docs"}' },
+    { index: 9, kind: "reference", type: "tool_reference", name: "Edit", preview: "" },
+    { index: 10, kind: "tool_definition", name: "Read", preview: "Available tool" },
+    { index: 11, kind: "user", type: "document", messageIndex: "2", role: "user", preview: "", parts: ["document"] },
+  ];
+  const record = { id: "claude-blocks", protocol: "anthropic.messages", kind: "request", findings: [], bodySnapshots: [{ id: "request", state: "complete", contentMode: "original" }], requestContent: { state: "complete", total: 12, offset: 0, nextOffset: null, counts: { system: 1, reasoning: 2, user: 2, tool_call: 2, tool_result: 3, reference: 1, tool_definition: 1 }, items } };
+  const app = await controller(claudeConfigFixture(), { onSecurity(url) {
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: 400, content: "retained source" }] } };
+    if (url.includes("/audit?")) return { body: { items: [record], total: 1 } };
+    if (url.includes("/audit/")) return { body: { record: clone(record) } };
+    if (url.includes("/sessions?")) return { body: { items: [{ id: "claude-session", kind: "request", requestCount: 1 }], total: 1 } };
+  } });
+  await app.action("security-session", { dataset: { id: "claude-session" } });
+  const html = app.read("renderTraceInspector()");
+  assert.match(html, /按消息内容块展示/);
+  assert.match(html, /用户输入 <strong>2<\/strong>/);
+  assert.match(html, /工具结果 <strong>3<\/strong>/);
+  assert.match(html, /第 3 条消息 · user · tool_result/);
+  assert.match(html, /第 2 条消息 · assistant · thinking/);
+  assert.match(html, /对应第 4 项 · 客户端报告的结果/);
+  assert.match(html, /客户端报告工具错误/);
+  assert.match(html, /客户端未标记工具错误/);
+  assert.match(html, /本次请求未找到对应调用，标识重复，关联存在歧义/);
+  assert.match(html, /服务端工具结果/);
+  assert.match(html, /缓存控制：.*ephemeral.*1h/);
+  assert.match(html, /图片 · 文档 · 工具引用/);
+  assert.match(html, /工具引用指向可用工具，不表示已经调用/);
+  assert.match(html, /仅保留加密或不透明内容，没有可读文本/);
+  assert.match(html, /Continue &lt;script&gt;literal/);
+  assert.match(html, /data-content-index="6" open/);
+  assert.match(html, /data-content-index="11" open/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.equal(app.requests.some(request => request.url.includes("/body?")), false);
+  await app.action("security-content-source", { dataset: { index: "4" } });
+  assert.equal(app.read("state.trace.tab"), "body");
+  assert.equal(app.read("state.security.bodySelection.start"), 200);
+  assert.equal(app.read("state.security.bodySelection.end"), 350);
+});
+
+test("request items display complete long content with the source action in the title", async () => {
+  const app = await controller();
+  const text = "完整文本 汉🙂\n".repeat(3000) + "END <script>literal</script>";
+  const structure = JSON.stringify({ type: "thinking", thinking: text, signature: "signature-tail" });
+  app.read(`state.security.detail = ${JSON.stringify({ protocol: "anthropic.messages", requestContent: { state: "complete", total: 2, offset: 0, nextOffset: null, counts: { system: 1, reasoning: 1 }, items: [
+    { index: 0, kind: "system", preview: text, truncated: true },
+    { index: 1, kind: "reasoning", preview: text, structure },
+  ] } })}`);
+  const html = app.read("renderTraceInspector()");
+  assert.ok(html.includes(`<pre>${text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#039;")}</pre>`));
+  assert.match(html, /完整内容结构/);
+  assert.match(html, /signature-tail/);
+  assert.match(html, /<summary><span class="trace-content-title">[\s\S]*?data-action="security-content-source" data-index="0">查看此项原文<\/button><\/summary>/);
+  assert.doesNotMatch(html, /END &lt;script&gt;literal&lt;\/script&gt;…/);
+  assert.doesNotMatch(html, /有限长度摘要|<script>/);
+});
+
 test("late session loads cannot overwrite another session or the list", async () => {
   let resolve;
   const app = await controller(undefined, { onSecurity(url) {

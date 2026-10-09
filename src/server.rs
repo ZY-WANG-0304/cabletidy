@@ -659,6 +659,8 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             return Ok(json_response(200, state.security.status()));
         }
         let query = if let Some(rest) = path.strip_prefix("/api/v1/security/audit/") {
+            let content_page = rest.ends_with("/content");
+            let rest = rest.strip_suffix("/content").unwrap_or(rest);
             let (id, body_page) = rest
                 .strip_suffix("/body")
                 .map_or((rest, false), |id| (id, true));
@@ -667,6 +669,16 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             }
             let mut query = security::store::Query::default();
             query.detail = Some(id.into());
+            if content_page {
+                let mut offset = 0;
+                for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
+                    match (k.as_ref(), v.parse::<usize>()) {
+                        ("offset", Ok(n)) if n <= i64::MAX as usize => offset = n,
+                        _ => return Ok(error(400, "invalid_content_query", "内容偏移无效")),
+                    }
+                }
+                query.content_offset = Some(offset);
+            }
             if body_page {
                 let mut snapshot = None;
                 let mut offset = 0;
