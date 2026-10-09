@@ -1,7 +1,7 @@
 //! Read-only response projection. Index source ranges, then materialize one page.
 use super::content::BodyReader;
 use crate::streaming::{JsonStream, Node, Visitor};
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -156,7 +156,10 @@ impl Visitor for Scan {
         Ok(())
     }
     fn text(&mut self, text: &str) -> Result<()> {
-        let f = self.frames.last_mut().unwrap();
+        let f = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| anyhow!("invalid_overview_frame"))?;
         if matches!(
             f.field.as_str(),
             "type"
@@ -174,7 +177,10 @@ impl Visitor for Scan {
         Ok(())
     }
     fn scalar(&mut self, value: &str) -> Result<()> {
-        let f = self.frames.last_mut().unwrap();
+        let f = self
+            .frames
+            .last_mut()
+            .ok_or_else(|| anyhow!("invalid_overview_frame"))?;
         if matches!(
             f.field.as_str(),
             "index"
@@ -189,7 +195,10 @@ impl Visitor for Scan {
         Ok(())
     }
     fn end(&mut self, node: &Node) -> Result<()> {
-        let f = self.frames.pop().unwrap();
+        let f = self
+            .frames
+            .pop()
+            .ok_or_else(|| anyhow!("invalid_overview_frame"))?;
         if node.kind == b'k' {
             return Ok(());
         }
@@ -220,7 +229,8 @@ impl Visitor for Scan {
                         | "input"
                         | "refusal"
                 ) {
-                    parent.nodes[&f.field] = json!({"start":node.start,"end":node.end});
+                    parent.nodes[&f.field] =
+                        json!({"start":node.start,"end":node.end,"kind":node.kind});
                 }
                 if !f.value.is_empty() {
                     parent.meta[&f.field] = if matches!(node.kind, b'0'..=b'9' | b'-') {
@@ -309,6 +319,24 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct Cache {
     entries: VecDeque<Entry>,
+}
+
+fn range(metadata: &Value, start_key: &str, end_key: &str) -> Result<(u64, u64)> {
+    let start = metadata[start_key]
+        .as_u64()
+        .ok_or_else(|| anyhow!("invalid_overview_range"))?;
+    let end = metadata[end_key]
+        .as_u64()
+        .ok_or_else(|| anyhow!("invalid_overview_range"))?;
+    if start >= end || end > i64::MAX as u64 {
+        bail!("invalid_overview_range");
+    }
+    Ok((start, end))
+}
+
+fn fragment_node(node: &Value) -> bool {
+    range(node, "start", "end").is_ok()
+        && matches!(node["kind"].as_u64(), Some(k) if k == u64::from(b'"') || k == u64::from(b'{'))
 }
 
 fn build(
@@ -440,7 +468,7 @@ fn build(
                     "input_json_delta" => "partial_json",
                     _ => "",
                 };
-                if field.is_empty() {
+                if field.is_empty() || !fragment_node(&d["nodes"][field]) || !e["index"].is_u64() {
                     parsed = false;
                     extras.push(source(e.clone(), Some((start, end))));
                     continue;
@@ -511,7 +539,7 @@ fn build(
                 } else {
                     "text"
                 };
-                if part["nodes"][field].is_object() {
+                if fragment_node(&part["nodes"][field]) {
                     let summary = t.starts_with("response.reasoning_summary");
                     let item = outputs.entry(i).or_insert_with(||source(json!({"type":if summary {"reasoning"} else {"message"},"missingStart":true}),Some((start,end))));
                     let block = e[if summary {
@@ -525,8 +553,10 @@ fn build(
                     if !item["fragments"].is_object() {
                         item["fragments"] = json!({});
                     }
-                    item["fragments"][key] =
-                        json!([{"eventStart":start,"eventEnd":end,"node":part["nodes"][field]}]);
+                    item["fragments"][key] = json!([{"eventStart":start,"eventEnd":end,"node":part["nodes"][field],"replace":true}]);
+                } else {
+                    parsed = false;
+                    extras.push(source(e.clone(), Some((start, end))));
                 }
             }
             "response.function_call_arguments.delta"
@@ -541,7 +571,6 @@ fn build(
             | "response.reasoning_summary_text.done"
             | "response.reasoning_text.delta"
             | "response.reasoning_text.done" => {
-                let item = outputs.entry(i).or_insert_with(|| source(json!({"type":if t.contains("reasoning") {"reasoning"} else if t.contains("function_call") {"function_call"} else if t.contains("custom_tool") {"custom_tool_call"} else {"message"},"missingStart":true}),Some((start,end))));
                 let channel = if t.contains("function_call") {
                     "arguments"
                 } else if t.contains("custom_tool") {
@@ -570,7 +599,13 @@ fn build(
                 } else {
                     "text"
                 };
-                let fragment = json!({"eventStart":start,"eventEnd":end,"node":e["nodes"][field]});
+                if !fragment_node(&e["nodes"][field]) || !e["output_index"].is_u64() {
+                    parsed = false;
+                    extras.push(source(e.clone(), Some((start, end))));
+                    continue;
+                }
+                let item = outputs.entry(i).or_insert_with(|| source(json!({"type":if t.contains("reasoning") {"reasoning"} else if t.contains("function_call") {"function_call"} else if t.contains("custom_tool") {"custom_tool_call"} else {"message"},"missingStart":true}),Some((start,end))));
+                let fragment = json!({"eventStart":start,"eventEnd":end,"node":e["nodes"][field],"replace":t.ends_with(".done")});
                 if !item["fragments"].is_object() {
                     item["fragments"] = json!({});
                 }
@@ -630,36 +665,45 @@ fn value_at(
     metadata: &Value,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Value> {
-    if let Some(event_start) = metadata["eventStart"].as_u64() {
+    let (start, end) = range(metadata, "start", "end")?;
+    if metadata.get("eventStart").is_some() {
+        let (event_start, event_end) = range(metadata, "eventStart", "eventEnd")?;
+        if end > event_end - event_start {
+            bail!("invalid_overview_range");
+        }
         let mut payload = Payload::new(reader(
             db,
             audit,
             snapshot,
             legacy,
             event_start,
-            metadata["eventEnd"].as_u64().unwrap(),
+            event_end,
             cancelled,
         ));
-        let start = metadata["start"].as_u64().unwrap_or(0);
         io::copy(&mut payload.by_ref().take(start), &mut io::sink())?;
-        Ok(serde_json::from_reader(
-            payload.take(metadata["end"].as_u64().unwrap() - start),
-        )?)
+        Ok(serde_json::from_reader(payload.take(end - start))?)
     } else {
         Ok(serde_json::from_reader(reader(
-            db,
-            audit,
-            snapshot,
-            legacy,
-            metadata["start"].as_u64().unwrap_or(0),
-            metadata["end"].as_u64().unwrap_or(i64::MAX as u64),
-            cancelled,
+            db, audit, snapshot, legacy, start, end, cancelled,
         ))?)
     }
 }
 
 // Retained stream values refer to original decoded content in independent snapshots.
-fn resolve(
+fn reference_id(value: &Value) -> Option<&str> {
+    let map = value.as_object()?;
+    let id = value["contentSnapshotId"].as_str()?;
+    if map.len() != 4
+        || uuid::Uuid::parse_str(id.strip_prefix("stream/")?).is_err()
+        || value["fragmentUnit"] != "decoded_utf8_bytes"
+        || range(value, "observedFragmentStart", "observedFragmentEnd").is_err()
+    {
+        return None;
+    }
+    Some(id)
+}
+
+fn resolve_reference(
     db: &Connection,
     audit: &str,
     value: &mut Value,
@@ -670,7 +714,7 @@ fn resolve(
     if cancelled() {
         bail!("overview_cancelled");
     }
-    if let Some(id) = value["contentSnapshotId"].as_str() {
+    if let Some(id) = reference_id(value) {
         if !snapshots.contains_key(id) {
             let raw: Option<String> = db
                 .query_row(
@@ -684,6 +728,9 @@ fn resolve(
                 return Ok(false);
             };
             let manifest: Value = serde_json::from_str(&raw)?;
+            if manifest["source"] != "stream_inspection" || manifest["root"] != id {
+                return Ok(true);
+            }
             let content = if let Some(body) = manifest.get("body") {
                 body.clone()
             } else {
@@ -700,10 +747,9 @@ fn resolve(
             "input"
         };
         if let Some(text) = content[text_field].as_str() {
-            let start = value["observedFragmentStart"].as_u64().unwrap_or(0) as usize;
-            let end = value["observedFragmentEnd"]
-                .as_u64()
-                .unwrap_or(text.len() as u64) as usize;
+            let (start, end) = range(value, "observedFragmentStart", "observedFragmentEnd")?;
+            let start = usize::try_from(start)?;
+            let end = usize::try_from(end)?;
             let Some(part) = text.get(start..end) else {
                 return Ok(false);
             };
@@ -720,19 +766,41 @@ fn resolve(
         }
         return Ok(*retained_complete);
     }
+    Ok(true)
+}
+
+// Only fields rewritten by the SSE retention pipeline can contain references.
+// Tool input is an application object: never recurse into its parameters.
+fn resolve_fields(
+    db: &Connection,
+    audit: &str,
+    value: &mut Value,
+    cancelled: &dyn Fn() -> bool,
+    snapshots: &mut BTreeMap<String, (Value, bool)>,
+) -> Result<bool> {
+    let fields: &[&str] = match value["type"].as_str() {
+        Some("function_call") => &["arguments"],
+        Some("custom_tool_call" | "tool_use") => &["input"],
+        Some("thinking") => &["thinking"],
+        Some("text" | "output_text" | "summary_text" | "reasoning_text") => &["text"],
+        Some("message" | "reasoning") => {
+            let mut complete = true;
+            for field in ["content", "summary"] {
+                if let Some(parts) = value[field].as_array_mut() {
+                    for part in parts {
+                        complete &= resolve_fields(db, audit, part, cancelled, snapshots)?;
+                    }
+                }
+            }
+            return Ok(complete);
+        }
+        _ => &[],
+    };
     let mut complete = true;
-    match value {
-        Value::Object(map) => {
-            for (key, value) in map {
-                complete &= resolve(db, audit, value, key, cancelled, snapshots)?;
-            }
+    for field in fields {
+        if let Some(part) = value.get_mut(*field) {
+            complete &= resolve_reference(db, audit, part, field, cancelled, snapshots)?;
         }
-        Value::Array(values) => {
-            for value in values {
-                complete &= resolve(db, audit, value, field, cancelled, snapshots)?;
-            }
-        }
-        _ => {}
     }
     Ok(complete)
 }
@@ -797,27 +865,57 @@ fn materialize(
     } else {
         json!({"type":meta["type"]})
     };
+    if !body.is_object() {
+        bail!("invalid_overview_item");
+    }
     let mut snapshots = BTreeMap::new();
-    let mut complete = resolve(db, audit, &mut body, "", cancelled, &mut snapshots)?;
+    let mut complete = if meta.get("eventStart").is_some() {
+        resolve_fields(db, audit, &mut body, cancelled, &mut snapshots)?
+    } else {
+        true
+    };
     if let Some(channels) = meta["fragments"].as_object() {
+        let mut channels = channels.iter().collect::<Vec<_>>();
+        channels.sort_by_key(|(key, _)| {
+            let (field, block) = key.split_once('/').unwrap_or((key, ""));
+            (field, block.parse::<usize>().unwrap_or(usize::MAX))
+        });
+        let initial_lengths =
+            ["content", "summary"].map(|field| (field, body[field].as_array().map_or(0, Vec::len)));
+        let mut appended = BTreeMap::new();
         for (key, fragments) in channels {
             let mut joined = String::new();
             let mut structured_input = None;
-            for fragment in fragments.as_array().unwrap() {
+            let fragments = fragments
+                .as_array()
+                .ok_or_else(|| anyhow!("invalid_overview_fragments"))?;
+            for fragment in fragments {
                 let mut node = fragment["node"].clone();
+                if !fragment_node(&node) {
+                    bail!("invalid_overview_fragment");
+                }
                 node["eventStart"] = fragment["eventStart"].clone();
                 node["eventEnd"] = fragment["eventEnd"].clone();
                 let mut value = value_at(db, audit, "response", legacy, &node, cancelled)?;
-                complete &= resolve(db, audit, &mut value, "", cancelled, &mut snapshots)?;
+                if value.is_object() && reference_id(&value).is_none() {
+                    complete = false;
+                    continue;
+                }
+                complete &=
+                    resolve_reference(db, audit, &mut value, "", cancelled, &mut snapshots)?;
                 if let Some(s) = value.as_str() {
                     joined.push_str(s);
                 } else if key.starts_with("partial_json/") && value.is_object() {
                     structured_input = Some(value);
                 } else {
-                    joined.push_str(&value.to_string());
+                    complete = false;
                 }
             }
-            let field = key.split('/').next().unwrap();
+            let (field, block) = key
+                .split_once('/')
+                .ok_or_else(|| anyhow!("invalid_overview_channel"))?;
+            let block = block.parse::<usize>()?;
+            let replace = fragments.first().is_some_and(|f| f["replace"] == true);
             if matches!(field, "text" | "thinking" | "signature" | "partial_json")
                 && (meta.get("blockComplete").is_some()
                     || matches!(
@@ -841,12 +939,61 @@ fn materialize(
                     body[field] = json!(format!("{prefix}{joined}"));
                 }
             } else if matches!(field, "arguments" | "input") {
-                body[field] = json!(joined);
+                let prefix = if replace {
+                    ""
+                } else {
+                    body[field].as_str().unwrap_or("")
+                };
+                body[field] = json!(format!("{prefix}{joined}"));
             } else {
-                if !body["content"].is_array() {
-                    body["content"] = json!([]);
+                let array = if field == "summary" {
+                    "summary"
+                } else {
+                    "content"
+                };
+                let part_type = match field {
+                    "summary" => "summary_text",
+                    "reasoning" => "reasoning_text",
+                    "refusal" => "refusal",
+                    _ => "output_text",
+                };
+                let text_field = if field == "refusal" {
+                    "refusal"
+                } else {
+                    "text"
+                };
+                if !body[array].is_array() {
+                    body[array] = json!([]);
                 }
-                body["content"].as_array_mut().unwrap().push(json!({"type":if field == "refusal" {"refusal"} else {"output_text"}, field:joined}));
+                let parts = body[array]
+                    .as_array_mut()
+                    .ok_or_else(|| anyhow!("invalid_overview_parts"))?;
+                let initial_length = initial_lengths
+                    .iter()
+                    .find(|(field, _)| *field == array)
+                    .map_or(0, |(_, len)| *len);
+                // Preserve indexes without allocating gaps for untrusted indexes.
+                let part = if block < initial_length {
+                    &mut parts[block]
+                } else {
+                    let index = *appended.entry((array, block)).or_insert_with(|| {
+                        let index = parts.len();
+                        parts.push(json!({"type":part_type}));
+                        index
+                    });
+                    parts
+                        .get_mut(index)
+                        .ok_or_else(|| anyhow!("invalid_overview_parts"))?
+                };
+                if !part.is_object() {
+                    *part = json!({"type":part_type});
+                }
+                let prefix = if replace {
+                    ""
+                } else {
+                    part[text_field].as_str().unwrap_or("")
+                };
+                part[text_field] = json!(format!("{prefix}{joined}"));
             }
         }
         complete &= meta["blockComplete"] == true; // Claude completes blocks independently; Codex needs its final item.
@@ -1116,5 +1263,27 @@ mod tests {
         assert_eq!(page["state"], "partial");
         assert_eq!(page["items"][0]["preview"], "Initial text");
         assert_eq!(page["items"][1]["preview"], "Future output");
+    }
+
+    #[test]
+    fn invalid_source_ranges_return_errors() {
+        let db = db();
+        for metadata in [
+            json!({}),
+            json!({"start":0}),
+            json!({"start":4,"end":3}),
+            json!({"start":0,"end":0}),
+            json!({"start":-1,"end":3}),
+            json!({"start":0,"end":"3"}),
+            json!({"start":0,"end":u64::MAX}),
+            json!({"start":0,"end":3,"eventStart":0}),
+            json!({"start":0,"end":3,"eventStart":4,"eventEnd":3}),
+            json!({"start":0,"end":30,"eventStart":0,"eventEnd":10}),
+        ] {
+            assert!(
+                value_at(&db, "audit", "response", Some(b"{}"), &metadata, &|| false).is_err(),
+                "{metadata}"
+            );
+        }
     }
 }

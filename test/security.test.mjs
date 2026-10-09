@@ -1478,3 +1478,150 @@ for (const ending of ["interrupted", "error", "unknown"]) test(`Claude response 
   }
   if (ending === "unknown") assert.equal(content.items[1].preview, "Future event content");
 });
+
+test("malformed response deltas stay partial and leave the shared content worker available", async t => {
+  let events;
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  }, { claude: true });
+  for (const delta of [
+    { type: "text_delta" }, { type: "text_delta", text: null },
+    { type: "thinking_delta", thinking: 42 }, { type: "signature_delta", signature: [] },
+    { type: "input_json_delta", partial_json: false },
+  ]) {
+    events = [
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "Retained text" } },
+      { type: "content_block_delta", index: 0, delta },
+      { type: "content_block_stop", index: 0 }, { type: "message_stop" },
+    ];
+    await (await f.request({ messages: [{ role: "user", content: "hello" }], stream: true })).text();
+  }
+  const audits = await f.waitFor(r => r.total === 5);
+  for (const audit of audits.items) {
+    for (let i = 0; i < 2; i++) {
+      const response = await f.call(`api/v1/security/audit/${audit.id}`);
+      assert.equal(response.status, 200);
+      const content = (await response.json()).record.responseContent;
+      assert.equal(content.state, "partial");
+      assert.equal(content.items[0].preview, "Retained text");
+      assert.equal((await f.call(`api/v1/security/audit/${audit.id}/content?offset=0`)).status, 200);
+    }
+  }
+  events = [
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Healthy response" } },
+    { type: "content_block_stop", index: 0 }, { type: "message_stop" },
+  ];
+  await (await f.request({ messages: [{ role: "user", content: "healthy" }], stream: true })).text();
+  const healthy = (await f.waitFor(r => r.total === 6)).items.find(item => !audits.items.some(old => old.id === item.id));
+  const content = (await (await f.call(`api/v1/security/audit/${healthy.id}`)).json()).record.responseContent;
+  assert.equal(content.state, "complete");
+  assert.equal(content.items[0].preview, "Healthy response");
+});
+
+for (const done of [false, true]) test(`Codex response tool deltas retain initial input with done=${done}`, async t => {
+  const items = [
+    { type: "function_call", name: "exec_command", call_id: "fn", arguments: '{"cmd":' },
+    { type: "custom_tool_call", name: "apply_patch", call_id: "custom", input: "Initial " },
+  ];
+  const f = await fixture(t, (_req, res) => {
+    const events = items.flatMap((item, i) => {
+      const channel = i === 0 ? "function_call_arguments" : "custom_tool_call_input";
+      const field = i === 0 ? "arguments" : "input";
+      return [
+        { type: "response.output_item.added", output_index: i, item },
+        { type: `response.${channel}.delta`, output_index: i, delta: i === 0 ? '"pwd"}' : "continuation" },
+        ...(done ? [{ type: `response.${channel}.done`, output_index: i, [field]: i === 0 ? '{"cmd":"final"}' : "Final input" }] : []),
+      ];
+    });
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  await (await f.request({ input: "hello", stream: true })).text();
+  const audit = (await f.waitFor(r => r.total === 1)).items[0];
+  const content = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent;
+  assert.equal(content.state, "partial");
+  assert.equal(content.items[0].preview, done ? '{"cmd":"final"}' : '{"cmd":"pwd"}');
+  assert.equal(content.items[1].preview, done ? "Final input" : "Initial continuation");
+  assert.equal(JSON.parse(content.items[0].structure).arguments, content.items[0].preview);
+  assert.equal(JSON.parse(content.items[1].structure).input, content.items[1].preview);
+});
+
+for (const done of [false, true]) test(`Codex response reasoning deltas use indexed readable text with done=${done}`, async t => {
+  const item = { type: "reasoning", encrypted_content: "opaque", summary: [
+    { type: "summary_text", text: "Initial summary", extra: "preserved" },
+    { type: "summary_text", text: "" },
+  ], content: [{ type: "reasoning_text", text: "Initial reasoning" }] };
+  const f = await fixture(t, (_req, res) => {
+    const events = [{ type: "response.output_item.added", output_index: 0, item }];
+    for (const [channel, index, initial] of [["reasoning_summary_text", 0, "Initial summary"], ["reasoning_summary_text", 1, ""], ["reasoning_text", 0, "Initial reasoning"]]) {
+      const field = channel === "reasoning_summary_text" ? "summary_index" : "content_index";
+      events.push({ type: `response.${channel}.delta`, output_index: 0, [field]: index, delta: " continuation" });
+      if (done) events.push({ type: `response.${channel}.done`, output_index: 0, [field]: index, text: `${initial} final` });
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  await (await f.request({ input: "hello", stream: true })).text();
+  const audit = (await f.waitFor(r => r.total === 1)).items[0];
+  const content = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent;
+  const output = content.items[0];
+  const structure = JSON.parse(output.structure);
+  const suffix = done ? " final" : " continuation";
+  assert.equal(output.preview, `Initial summary${suffix}\n${suffix}\nInitial reasoning${suffix}`);
+  assert.equal(output.opaque, true);
+  assert.equal(structure.summary[0].type, "summary_text");
+  assert.equal(structure.summary[0].text, `Initial summary${suffix}`);
+  assert.equal(structure.summary[0].extra, "preserved");
+  assert.equal(structure.summary[1].text, suffix);
+  assert.equal(structure.content[0].type, "reasoning_text");
+  assert.equal(structure.content[0].text, `Initial reasoning${suffix}`);
+});
+
+for (const stream of [false, true]) test(`custom tool input preserves business snapshot fields with stream=${stream}`, async t => {
+  const input = { contentSnapshotId: "snapshot-to-query", path: "src/lib.rs", nested: {
+    contentSnapshotId: "stream/00000000-0000-4000-8000-000000000000", observedFragmentStart: 0, observedFragmentEnd: 10, fragmentUnit: "decoded_utf8_bytes",
+  } };
+  const tool = { type: "tool_use", id: "query", name: "query_snapshot", input };
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": stream ? "text/event-stream" : "application/json" });
+    res.end(stream ? [
+      { type: "content_block_start", index: 0, content_block: { ...tool, input: {} } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(input) } },
+      { type: "content_block_stop", index: 0 }, { type: "message_stop" },
+    ].map(event).join("") : JSON.stringify({ type: "message", content: [tool], stop_reason: "tool_use" }));
+  }, { claude: true });
+  await (await f.request({ messages: [{ role: "user", content: "hello" }], stream })).text();
+  const audit = (await f.waitFor(r => r.total === 1)).items[0];
+  const content = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent;
+  assert.equal(content.state, "complete");
+  assert.deepEqual(JSON.parse(content.items[0].preview), input);
+  assert.deepEqual(JSON.parse(content.items[0].structure).input, input);
+});
+
+test("malformed Codex deltas preserve initial content and keep request pagination available", async t => {
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item: { type: "message", content: [{ type: "output_text", text: "Initial text" }] } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0 },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: null },
+    { type: "response.reasoning_summary_text.delta", output_index: 0, summary_index: 0, delta: 42 },
+    { type: "response.custom_tool_call_input.delta", output_index: 0, delta: [] },
+    { type: "response.function_call_arguments.delta", output_index: 0, delta: { unexpected: true } },
+    { type: "response.completed", response: { status: "completed" } },
+  ];
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  assert.equal(await (await f.request({ input: "hello", stream: true })).text(), events.map(event).join(""));
+  const audit = (await f.waitFor(r => r.total === 1)).items[0];
+  for (let i = 0; i < 2; i++) {
+    const response = await f.call(`api/v1/security/audit/${audit.id}`);
+    assert.equal(response.status, 200);
+    const content = (await response.json()).record.responseContent;
+    assert.equal(content.state, "partial");
+    assert.equal(content.items[0].preview, "Initial text");
+    assert.equal((await f.call(`api/v1/security/audit/${audit.id}/content?offset=0`)).status, 200);
+  }
+});
