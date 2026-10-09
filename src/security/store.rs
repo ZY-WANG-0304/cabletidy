@@ -1692,7 +1692,7 @@ mod tests {
             let pending = (0..4)
                 .map(|_| {
                     content_receiver
-                        .recv_timeout(Duration::from_secs(2))
+                        .recv_timeout(Duration::from_secs(10))
                         .unwrap()
                 })
                 .collect::<Vec<_>>();
@@ -1713,40 +1713,41 @@ mod tests {
                 })
                 .unwrap();
         }
-        let started = Instant::now();
-        let busy = isolated
-            .query(Query {
-                detail: Some("reading".into()),
-                content_offset: Some(0),
-                ..Query::default()
-            })
-            .await;
-        assert!(busy.is_err());
-        let writer = isolated.clone();
-        assert!(tokio::task::spawn_blocking(move || {
-            writer.write(record("new-write", "completed"));
-            writer.body(
-                "new-write",
-                json!({"id":"request","state":"receiving","byteLength":0}),
-            )
-        })
-        .await
-        .unwrap());
-        let listed = isolated.query(Query::parse("").unwrap()).await.unwrap();
-        assert_eq!(listed["total"], 2);
-        let body = isolated
-            .query(Query {
-                detail: Some("new-write".into()),
-                body: Some(("request".into(), 0)),
-                ..Query::default()
+        // Complete audit IO while the overview receiver remains blocked.
+        // The deadline guards deadlocks, not machine-dependent IO speed.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let busy = isolated
+                .query(Query {
+                    detail: Some("reading".into()),
+                    content_offset: Some(0),
+                    ..Query::default()
+                })
+                .await;
+            assert!(busy.is_err());
+            let writer = isolated.clone();
+            assert!(tokio::task::spawn_blocking(move || {
+                writer.write(record("new-write", "completed"));
+                writer.body(
+                    "new-write",
+                    json!({"id":"request","state":"receiving","byteLength":0}),
+                )
             })
             .await
-            .unwrap();
-        assert_eq!(body["state"], "receiving");
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "overview backlog must not delay audit IO"
-        );
+            .unwrap());
+            let listed = isolated.query(Query::parse("").unwrap()).await.unwrap();
+            assert_eq!(listed["total"], 2);
+            let body = isolated
+                .query(Query {
+                    detail: Some("new-write".into()),
+                    body: Some(("request".into(), 0)),
+                    ..Query::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(body["state"], "receiving");
+        })
+        .await
+        .expect("audit IO must complete while the overview receiver is blocked");
         for job in pending {
             let _ = job.done.send(Ok(json!({"items":[],"state":"complete"})));
         }

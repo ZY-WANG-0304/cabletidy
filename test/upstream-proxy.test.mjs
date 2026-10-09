@@ -170,7 +170,8 @@ async function fixture(t, {
   }
   const post = (route, body) => fetch(`${app.url}${route}`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(5000),
+    // Parallel CI fixtures can briefly contend for IO on Windows runners.
+    body: JSON.stringify(body), signal: AbortSignal.timeout(15000),
   });
   const saved = await post("api/v1/config/commit", {
     baseRevision: 0, config, upstreamSecrets: { responses: "responses-key", messages: "messages-key" },

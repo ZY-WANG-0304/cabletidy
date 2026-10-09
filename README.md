@@ -28,7 +28,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 检查使用本地规则和有界缓冲。未知工具、动态脚本、未覆盖的推理内容、图片、加密内容以及超限情况会显示覆盖不足。数据库不可用或队列满时代理继续运行，页面显示审计退化状态；正常退出会排空已接收的写入，强制退出可能丢失未提交记录。它是本地可追溯日志，不提供零丢失或防篡改保证。
 
-分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0-rc.1`，发布与验收状态见 [候选版发布说明](docs/releases/0.4.0-rc.1.md)。
+分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0-rc.1`，发布与验收状态见 [候选版发布说明](docs/releases/0.4.0-rc.2.md)。
 
 ## 模型透传与可选设置
 
@@ -51,7 +51,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用原生进程 API 查询进程身份；Codex 目录查询仍需要系统 Windows PowerShell，并允许 `Add-Type` 调用 Windows Job Object API。
 
-当前源码版本为 `0.4.0-rc.1`，新增配置删除、审计原文与敏感内容高亮、会话轨迹。候选版使用 npm `next`；默认 npm 安装命令仍选择 `latest` 指向的稳定版 `0.3.0`。候选版的发布状态、验收范围与升级步骤见 [0.4.0-rc.1 发布说明](docs/releases/0.4.0-rc.1.md)；GitHub Release 与 npm 分别发布。稳定版见 [0.3.0 发布说明](docs/releases/0.3.0.md)。
+当前源码版本为 `0.4.0-rc.2`，在首个候选版基础上修复审计内容加载与会话归组，新增 Codex / Claude 完整请求上下文展示，并优化模型保存与轨迹概览。候选版使用 npm `next`；默认 npm 安装命令仍选择 `latest` 指向的稳定版 `0.3.0`。候选版的发布状态、验收范围与升级步骤见 [0.4.0-rc.2 发布说明](docs/releases/0.4.0-rc.2.md)；GitHub Release 与 npm 分别发布。稳定版见 [0.3.0 发布说明](docs/releases/0.3.0.md)。
 
 ### 从 npm 官方源安装
 
@@ -67,10 +67,10 @@ cabletidy start
 npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cabletidy start
 ```
 
-试用 `0.4.0` 候选版时，先按[候选版升级说明](docs/releases/0.4.0-rc.1.md)停止服务并备份数据，再安装指定版本：
+试用 `0.4.0` 候选版时，先按[候选版升级说明](docs/releases/0.4.0-rc.2.md)停止服务并备份数据，再安装指定版本：
 
 ```bash
-npm install -g cabletidy@0.4.0-rc.1 --registry=https://registry.npmjs.org/
+npm install -g cabletidy@0.4.0-rc.2 --registry=https://registry.npmjs.org/
 ```
 
 ### 从本地安装包使用
