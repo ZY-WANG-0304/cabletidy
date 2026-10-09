@@ -844,7 +844,7 @@ function claudeClientForm(suite) {
         ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
       </div>
       <p class="field-hint">模型发现只列出已配置模型，不限制其他模型请求。Claude Code 可能过滤不含 claude 或 anthropic 的模型 ID。保存后需重新应用客户端配置。</p>
-      <div class="form-actions"><button class="button" type="submit">保存客户端设置</button></div>
+      <div class="form-actions"><button class="button" type="submit">保存模型选择</button></div>
     </form>
   </section>`;
 }
@@ -1270,6 +1270,9 @@ function renderSecuritySession() {
   const all = t.result?.items || [], items = traceItems();
   const segments = traceSegments(all);
   const maxDuration = Math.max(1, ...segments.map(item => item.duration));
+  const segmentDescription = all.length > 60
+    ? "相邻请求合并显示，点击定位该组首条请求"
+    : "每格对应一条请求";
   const positions = new Map(all.map((item, i) => [item.id, i]));
   return `<nav class="security-detail-nav"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 会话轨迹</span><span class="status-badge">仅记录</span></nav>
     <header class="trace-heading"><div><h2>${esc(summary ? securitySessionTitle(summary) : "会话轨迹")}</h2><p class="muted">${esc(summary?.providerId || "未记录配置")} · ${summary?.identified ? "按客户端会话标识归组" : "独立记录 · 未获取会话标识"}${summary ? ` · ${esc(securityTime(summary.firstAtMs))}` : ""}</p></div>
@@ -1277,7 +1280,7 @@ function renderSecuritySession() {
     ${t.error ? `<p class="notice warning" role="alert">${esc(t.error)}<button class="button" data-action="security-session-refresh">重试</button></p>` : ""}
     <section class="trace-workspace" aria-label="会话轨迹">
       <div class="trace-toolbar"><strong>轨迹</strong><span class="muted">按请求顺序 · 已加载 ${all.length} 条 / 共 ${esc(t.result?.total ?? "—")} 条</span><button class="mini-button" data-action="security-session-refresh" ${t.loading ? "disabled" : ""}>${t.loading ? "读取中…" : "刷新会话"}</button></div>
-      <div class="trace-overview"><div class="trace-scale"><span>已加载轨迹概览</span><button data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.findings ? "has-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${item.findings} 项风险" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="muted">绿色：请求 · 琥珀色：发现风险 · ${t.scale === "duration" ? "宽度表示已记录的请求耗时（最小宽度便于点击）" : all.length > 60 ? "相邻请求合并显示，点击定位该组首条请求" : "每格对应一条请求"}</p></div>
+      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.findings ? "has-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${item.findings} 项风险" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>${segmentDescription}</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>请求</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>发现风险</span>${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击）</span>" : ""}</p></div>
       <div class="trace-columns"><section class="trace-events" aria-label="请求列表"><form id="security-trace-search" class="trace-search"><input name="search" aria-label="搜索已加载轨迹" placeholder="搜索已加载输入、输出、工具或模型" value="${esc(t.search)}"><button class="mini-button" type="submit">搜索</button><button class="mini-button" type="button" data-action="security-trace-risk" aria-pressed="${t.riskOnly}">仅看风险</button></form>
         <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span>${item.findingCount ? `<span class="trace-risk-count">${esc(item.findingCount)} 项风险</span>` : ""}</span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span>${item.toolNames?.length ? `<span class="trace-event-tools">工具提议 · ${item.toolNames.map(esc).join(" · ")}</span>` : ""}<span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
       </section><aside class="trace-inspector" aria-label="选中步骤详情">${renderTraceInspector()}</aside></div>
@@ -1902,7 +1905,10 @@ async function handleFormSubmit(event, form) {
       "model-form": () => saveModel(data, form),
     };
     if (!handlers[formId]) throw new Error("无法保存此表单，请刷新页面后重试。");
-    await saveChanges(handlers[formId], form);
+    const successAlert = formId === "claude-client-form"
+      ? "模型选择已保存。请点击“应用到 Claude Code”，重新应用配置后才会生效。"
+      : "";
+    await saveChanges(handlers[formId], form, undefined, successAlert);
   } catch (error) {
     showFormError(form, error);
   } finally {
@@ -2311,7 +2317,7 @@ async function applyTarget() {
   render();
 }
 
-async function saveChanges(update, form, successMessage = "配置已保存并生效。") {
+async function saveChanges(update, form, successMessage = "配置已保存并生效。", successAlert = "") {
   const previous = {
     page: state.page,
     selected: clone(state.selected),
@@ -2352,7 +2358,8 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
     state.pendingSecrets = { upstreamSecrets: {} };
   }
   render(state.page === previous.page ? preservedForms : []);
-  toast(successMessage);
+  if (successAlert) window.alert?.(successAlert);
+  else toast(successMessage);
 }
 
 async function refresh(showToast = true) {

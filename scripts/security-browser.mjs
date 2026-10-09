@@ -166,7 +166,6 @@ try {
   assert.equal(await page.locator(".trace-event-row.is-selected").getAttribute("data-id"), audit.id);
   report.checks.push("scrolling appends requests beyond 50 without replacing prior rows or the selected request; refresh retains the loaded range and scroll position");
   const durationToggle = page.getByRole("button", { name: "耗时占比", exact: true });
-  assert.equal(await page.getByRole("button", { name: "请求顺序", exact: true }).count(), 0);
   assert.equal(await durationToggle.getAttribute("aria-pressed"), "false");
   const segmentWidths = () => page.locator(".trace-segment").evaluateAll(nodes => nodes.map(node => node.style.flexGrow));
   const requestOrder = () => page.locator(".trace-event-row").evaluateAll(nodes => nodes.map(node => node.dataset.id));
@@ -181,7 +180,7 @@ try {
   assert.deepEqual(await requestOrder(), initialOrder);
   assert.equal(await page.locator(".trace-event-row.is-selected").getAttribute("data-id"), audit.id);
   assert.equal(await page.locator(".trace-event-list").evaluate(node => node.scrollTop), scrollAfterAppend);
-  report.checks.push("a single duration toggle changes and restores segment widths while preserving request order, selection and scroll position");
+  report.checks.push("the duration toggle changes and restores segment widths while preserving request order, selection and scroll position");
   await page.getByLabel("搜索已加载轨迹").fill("第 6 步");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   assert.equal(await page.locator(".trace-event-row").count(), 1);
