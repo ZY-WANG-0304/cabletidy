@@ -757,7 +757,9 @@ fn resolve_reference(
         } else {
             *value = content[text_field].clone();
         }
-        if field == "input" {
+        // Claude tool_use has structured input; Codex custom_tool_call keeps
+        // free-form text even when that text is valid JSON.
+        if field == "input" && content["type"] == "tool_use" {
             if let Some(s) = value.as_str() {
                 if let Ok(json) = serde_json::from_str::<Value>(s) {
                     *value = json;

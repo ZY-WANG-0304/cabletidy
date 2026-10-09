@@ -1548,6 +1548,69 @@ for (const done of [false, true]) test(`Codex response tool deltas retain initia
   assert.equal(JSON.parse(content.items[1].structure).input, content.items[1].preview);
 });
 
+test("Codex custom text tools retain JSON-looking initial input across deltas", async t => {
+  const cases = [
+    { initial: "123", delta: "4" }, { initial: "123", delta: "" },
+    { initial: ' { "text": "keep spaces" } ', delta: "\n" },
+    { initial: '"quoted"', delta: " continuation" },
+  ];
+  const tools = [{ type: "custom", name: "echo", format: { type: "text" } }];
+  let current;
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end([
+      { type: "response.output_item.added", output_index: 0, item: { type: "custom_tool_call", name: "echo", call_id: "echo", input: current.initial } },
+      { type: "response.custom_tool_call_input.delta", output_index: 0, delta: current.delta },
+    ].map(event).join(""));
+  });
+  for (const [i, value] of cases.entries()) {
+    current = value;
+    await (await f.request({ input: "hello", tools, stream: true })).text();
+    const audit = (await f.waitFor(r => r.total === i + 1)).items[0];
+    const page = await (await f.call(`api/v1/security/audit/${audit.id}/response-content?offset=0`)).json();
+    const expected = value.initial + value.delta;
+    assert.equal(page.state, "partial");
+    assert.equal(page.items[0].preview, expected);
+    assert.equal(JSON.parse(page.items[0].structure).input, expected);
+  }
+  assert.deepEqual(f.calls[0].body.tools, tools);
+});
+
+test("Codex custom text tools retain input strings in every final output form", async t => {
+  const tools = [{ type: "custom", name: "echo", format: { type: "text" } }];
+  let current, ending;
+  const f = await fixture(t, (_req, res, body) => {
+    const tool = { type: "custom_tool_call", name: "echo", call_id: "echo", input: current };
+    if (ending === "json") { respond(res, body, [tool]); return; }
+    const events = [
+      { type: "response.output_item.added", output_index: 0, item: { ...tool, input: "Initial " } },
+      { type: "response.custom_tool_call_input.delta", output_index: 0, delta: "continuation" },
+      { type: "response.custom_tool_call_input.done", output_index: 0, input: current },
+    ];
+    if (ending === "item" || ending === "response") events.push({ type: "response.output_item.done", output_index: 0, item: tool });
+    if (ending === "response") events.push({ type: "response.completed", response: { status: "completed", output: [tool] } });
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end(events.map(event).join(""));
+  });
+  let count = 0, lastId;
+  for (const value of ["123", ' { "text": "keep spaces" } ']) {
+    for (const form of ["field", "item", "response", "json"]) {
+      current = value; ending = form;
+      await (await f.request({ input: "hello", tools, stream: form !== "json" })).text();
+      count++;
+      const audit = (await f.waitFor(r => r.total === count)).items[0];
+      lastId = audit.id;
+      const content = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent;
+      assert.equal(content.items[0].preview, value, form);
+      assert.equal(JSON.parse(content.items[0].structure).input, value, form);
+      if (form === "response" || form === "json") assert.equal(content.state, "complete");
+    }
+  }
+  await f.restart();
+  const content = (await (await f.call(`api/v1/security/audit/${lastId}`)).json()).record.responseContent;
+  assert.equal(JSON.parse(content.items[0].structure).input, current);
+});
+
 for (const done of [false, true]) test(`Codex response reasoning deltas use indexed readable text with done=${done}`, async t => {
   const item = { type: "reasoning", encrypted_content: "opaque", summary: [
     { type: "summary_text", text: "Initial summary", extra: "preserved" },
