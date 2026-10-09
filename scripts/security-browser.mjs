@@ -153,6 +153,42 @@ try {
     assert.equal(await page.locator(".security-body-content script").count(), 0);
     report.hits.push({ stage, ...geometry });
   };
+  const visibleSource = async expected => {
+    await page.waitForFunction(expected => {
+      const target = document.querySelector("[data-security-body-anchor]");
+      if (!target) return false;
+      const rect = target.getBoundingClientRect();
+      if (!rect.width || !rect.height) return false;
+      let top = 0, bottom = innerHeight, left = 0, right = innerWidth;
+      for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+        if (!/(auto|scroll|hidden)/.test(getComputedStyle(parent).overflow)) continue;
+        const box = parent.getBoundingClientRect();
+        top = Math.max(top, box.top); bottom = Math.min(bottom, box.bottom);
+        left = Math.max(left, box.left); right = Math.min(right, box.right);
+      }
+      if (rect.top < top || rect.bottom > bottom || rect.left < left || rect.right > right) return false;
+      const body = target.closest("pre");
+      const prefix = document.createRange();
+      prefix.selectNodeContents(body);
+      prefix.setEnd(target, 0);
+      const index = body.textContent.indexOf(expected, prefix.toString().length);
+      if (index < 0) return false;
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      let at = 0, started = false, node;
+      while ((node = walker.nextNode())) {
+        const end = at + node.textContent.length;
+        if (!started && index < end) { range.setStart(node, index - at); started = true; }
+        if (started && index + expected.length <= end) { range.setEnd(node, index + expected.length - at); break; }
+        at = end;
+      }
+      return [...range.getClientRects()].every(rect => rect.top >= top && rect.bottom <= bottom && rect.left >= left && rect.right <= right);
+    }, expected);
+    const body = page.getByLabel("保留正文", { exact: true });
+    assert.ok((await body.textContent()).includes(expected));
+    assert.equal(await body.locator(".security-body-hit").count(), 0, "source links must not add risk highlighting");
+    assert.equal(await body.locator("script").count(), 0);
+  };
   const checkList = async savedScroll => {
     await page.waitForFunction(y => document.querySelectorAll(".security-session-row").length === 15 && Math.abs(scrollY - y) <= 2, savedScroll);
     assert.equal(await page.getByLabel("仅看有风险").isChecked(), true);
@@ -242,8 +278,7 @@ try {
   await page.locator('.trace-content-item[data-content-index="44"] > summary .trace-content-title').click();
   assert.equal(await page.locator('.trace-content-item[data-content-index="44"]').getAttribute("open"), null);
   await page.locator('.trace-content-item[data-content-index="44"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
-  await page.locator(".security-body-hit").waitFor();
-  assert.match(await page.locator(".security-body-hit").innerText(), /请结合截图继续检查/);
+  await visibleSource("请结合截图继续检查");
   assert.equal(await page.locator(".security-body-content script").count(), 0);
   report.checks.push("Codex mixed contexts retain all roles, tool/result links, opaque reasoning, multimodal markers and paginated source navigation on desktop and mobile");
   await page.locator(`.trace-event-row[data-id="${audit.id}"]`).click();
@@ -472,9 +507,7 @@ try {
   await page.locator('.trace-content-item[data-content-index="10"] > summary .trace-content-title').click();
   assert.equal(await page.locator('.trace-content-item[data-content-index="10"]').getAttribute("open"), null);
   await page.locator('.trace-content-item[data-content-index="10"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
-  await page.locator(".security-body-hit").waitFor();
-  assert.match(await page.locator(".security-body-hit").innerText(), /tool_result/);
-  assert.match(await page.locator(".security-body-hit").innerText(), /read-source/);
+  await visibleSource("read-source");
   await page.locator(`.trace-event-row[data-id="${claudePaged.id}"]`).click();
   await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
   await page.locator('.trace-content-item[data-content-index="39"]').waitFor();
@@ -494,6 +527,47 @@ try {
   assert.match(await (await openClaudeBlock(0)).innerText(), /本次请求未找到对应调用/);
   report.checks.push("Claude content blocks keep system/cache metadata, thinking, parallel and server tools, multimodal results, errors and cross-page relations; user-role tool results are counted separately; desktop/mobile source navigation is exact");
   report.checks.push("Codex and Claude long items display their exact full text including the tail; all items open by default and source actions sit on the right of desktop and mobile title rows");
+  // A source item's offset can be deep inside the first returned storage chunk.
+  // Loading that chunk alone does not make its target visible in the nested pane.
+  for (const claude of [false, true]) {
+    const target = `${claude ? "Claude" : "Codex"} 原文导航目标 <script>literal</script>`;
+    const preceding = "前置🙂".repeat(12000);
+    await post(claude ? "claude-main/v1/messages" : "relay/v1/responses", claude ? {
+      model: "claude-sonnet-4-6", max_tokens: 100,
+      messages: [{ role: "user", content: preceding }, { role: "user", content: [{ type: "text", text: target }] }],
+    } : { model: "gpt-5.5", input: [{ role: "user", content: preceding }, { role: "user", content: target }] });
+    let detail;
+    for (let i = 0; i < 300; i++) {
+      const latest = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=${claude ? "cabletidy_claude-main" : "cabletidy_relay"}&limit=1`)).json();
+      const record = latest.items[0];
+      if (record && !record.inspectionProgress?.active && ["complete", "partial"].includes(record.inspectionStatus)) {
+        detail = (await (await fetch(`${app.url}api/v1/security/audit/${record.id}`)).json()).record;
+        if (detail.requestContent.items[1]?.preview === target) break;
+      }
+      await delay(100);
+    }
+    assert.equal(detail.requestContent.items[1].preview, target);
+    assert.ok(detail.requestContent.items[1].start > 120000);
+    await page.goto(`${app.url}#security/session/${detail.sessionKey || detail.id}`);
+    for (const mobile of [false, true]) {
+      await page.setViewportSize(mobile ? { width: 390, height: 844 } : report.viewport);
+      await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
+      const item = page.locator('.trace-content-item[data-content-index="1"]');
+      await item.waitFor();
+      await item.locator(":scope > summary .trace-content-title").click();
+      assert.equal(await item.getAttribute("open"), null);
+      await item.getByRole("button", { name: "查看此项原文", exact: true }).click();
+      await visibleSource(target);
+      const body = page.getByLabel("保留正文", { exact: true });
+      assert.ok(await body.evaluate(node => node.scrollTop) > 0, "long preceding content requires scrolling the body itself");
+      const geometry = await body.locator("[data-security-body-anchor]").evaluate(node => ({
+        anchor: node.getBoundingClientRect().toJSON(), bodyScrollTop: node.closest("pre").scrollTop,
+      }));
+      report.hits.push({ stage: `${claude ? "claude" : "codex"}-source-${mobile ? "mobile" : "desktop"}`, ...geometry });
+      await screenshot(`${claude ? "13" : "11"}-${mobile ? "mobile" : "desktop"}-${claude ? "claude" : "codex"}-source-navigation.png`);
+    }
+  }
+  report.checks.push("Codex and Claude source links scroll to the exact visible position after 120 KB of preceding UTF-8 text on desktop/mobile, including collapsed items, without adding risk highlighting");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

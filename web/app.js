@@ -1382,6 +1382,11 @@ function securityHighlighted(value, root, location, fieldOrder) {
   return range ? `${esc(text.slice(0, range.start))}<mark class="security-body-hit" tabindex="-1">${esc(text.slice(range.start, range.end))}</mark>${esc(text.slice(range.end))}` : esc(text);
 }
 
+// An original-content link marks a scroll position, not a selected risk range.
+function securitySourceAnchor(text) {
+  return `<span data-security-body-anchor tabindex="-1">${esc(text)}</span>`;
+}
+
 const SECURITY_BODY_LABELS = {
   source: { observed_headers: "请求 / 响应头", tool_inspection: "检测时的工具参数", inspection_range: "检测时的正文范围", client_request: "客户端请求正文", upstream_response: "上游响应正文", gateway_response: "网关本地响应", stream_inspection: "检测时的流式内容快照", response_inspection: "检测时的响应内容快照" },
   state: { complete: "已完整保留", receiving: "分段保存中", gap: "保留存在缺口", partial: "部分内容不可复核", truncated: "旧版截断记录", interrupted: "接收中断或未观察到协议结束", not_observed: "网关未读取正文", capture_unavailable: "正文保留不可用", redaction_unavailable: "凭据脱敏超限，内容已隐藏", pending: "仍在接收或等待保存" },
@@ -1396,6 +1401,12 @@ function securityPageMarks(page) {
 function securityPageText(page, selection) {
   if (page.legacySnapshot) {
     const snapshot = page.legacySnapshot;
+    if (selection.navigation) {
+      const { text, range } = securityBodyText(snapshot.body, snapshot.root || "request", selection.navigation.location, snapshot.fieldOrder);
+      if (!range) return esc(text);
+      const end = range.start + (text.codePointAt(range.start) > 0xffff ? 2 : 1);
+      return `${esc(text.slice(0, range.start))}${securitySourceAnchor(text.slice(range.start, end))}${esc(text.slice(end))}`;
+    }
     return securityHighlighted(snapshot.body, snapshot.root, selection.location, snapshot.fieldOrder);
   }
   const encoder = new TextEncoder();
@@ -1411,17 +1422,29 @@ function securityPageText(page, selection) {
     };
     for (const range of chunk.sensitiveRanges || []) add(range, "sensitive");
     if (!selection.hitUnavailable) add(selection, "selected");
+    const position = selection.navigation?.start - chunk.start;
+    if (position >= 0 && position < bytes.length) {
+      // Wrap one complete code point so scrollIntoView has a real text box.
+      // This leaves the original text and its existing sensitive marks intact.
+      let start = position;
+      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+      let end = start + 1;
+      while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end++;
+      if (start < bytes.length) add({ start: chunk.start + start, end: chunk.start + end }, "anchor");
+    }
     events.sort((a, b) => a.at - b.at);
-    let at = 0, sensitive = 0, selected = 0, html = "";
+    let at = 0, sensitive = 0, selected = 0, anchor = 0, html = "";
     for (const event of events) {
       if (event.at > at) {
-        const content = esc(decoder.decode(bytes.slice(at, event.at)));
+        const text = decoder.decode(bytes.slice(at, event.at));
+        const content = anchor > 0 ? securitySourceAnchor(text) : esc(text);
         const classes = [sensitive > 0 && "security-sensitive-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
         html += classes ? `<mark class="${classes}"${selected > 0 ? ' tabindex="-1"' : ""}>${content}</mark>` : content;
         at = event.at;
       }
       sensitive += event.sensitive || 0;
       selected += event.selected || 0;
+      anchor += event.anchor || 0;
     }
     return html;
   }).join("");
@@ -1501,6 +1524,11 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
   } catch (error) { if (current()) s.bodyError = error.message; }
   if (!current()) return false;
   s.bodyLoading = false; s.bodyLocating = false; render();
+  if (!s.bodyError && selection.navigation) {
+    const target = pageContent.querySelector("[data-security-body-anchor]");
+    target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    target?.focus({ preventScroll: true });
+  }
   return !s.bodyError;
 }
 
@@ -1595,7 +1623,7 @@ async function securityAction(action, element) {
     const item = s.detail?.requestContent?.items?.find(item => item.index === Number(element.dataset.index));
     if (!item) return;
     t.tab = "body";
-    s.bodySelection = { snapshotId: "request", start: item.start, end: item.end, location: item.location };
+    s.bodySelection = { snapshotId: "request", navigation: { start: item.start, location: item.location } };
     render(); await loadSecurityBody(Math.max(0, item.start - 512)); return;
   }
   if (action === "security-trace-risk") { t.riskOnly = !t.riskOnly; render(); return; }
@@ -1642,7 +1670,10 @@ async function securityAction(action, element) {
       const id = element.dataset.id;
       s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), ...(id.startsWith("stream/") ? { detectionSnapshotId: id } : { start: Number(element.dataset.offset || 0) }) };
     }
-    else if (action === "security-location") s.bodySelection = { ...s.bodySelection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
+    else if (action === "security-location") {
+      const { navigation, ...selection } = s.bodySelection;
+      s.bodySelection = { ...selection, hitUnavailable: false, ...(element.dataset.location ? { location: element.dataset.location } : { start: Number(element.dataset.start), end: Number(element.dataset.end) }) };
+    }
     const finding = s.detail.findings?.find(item => item.id === s.bodySelection.findingId);
     const mappedStream = s.bodySelection.detectionSnapshotId != null;
     const locateCredential = ["security-finding", "security-source"].includes(action) && finding?.ruleId === "SEC-SECRET-001" && (!mappedStream || s.bodySelection.sourceStart != null || s.bodySelection.snapshotId === s.bodySelection.sourceSnapshotId);

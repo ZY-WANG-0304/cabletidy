@@ -2067,8 +2067,9 @@ test("Codex request overview shows every role, links tool results, paginates and
   assert.equal(app.requests.some(request => request.url.includes("/body?")), false);
   await app.action("security-content-source", { dataset: { index: "7" } });
   assert.equal(app.read("state.trace.tab"), "body");
-  assert.equal(app.read("state.security.bodySelection.start"), 200);
-  assert.equal(app.read("state.security.bodySelection.end"), 300);
+  assert.equal(app.read("state.security.bodySelection.navigation.start"), 200);
+  assert.equal(app.read("state.security.bodySelection.start"), undefined);
+  assert.equal(app.read("state.security.bodySelection.end"), undefined);
   await app.action("security-trace-tab", { dataset: { tab: "overview" } });
   await app.action("security-content-page", { dataset: { offset: "40" } });
   html = app.read("renderTraceInspector()");
@@ -2085,6 +2086,71 @@ test("Codex overview distinguishes missing, partial and empty request content", 
     assert.match(html, new RegExp(text));
     assert.doesNotMatch(html, /最近用户输入/);
   }
+});
+
+test("source navigation anchors the exact UTF-8 position without selecting a risk range", async () => {
+  const app = await controller();
+  const text = "前置🙂\n".repeat(4000) + "TARGET <script>literal</script> 敏感值";
+  const start = 65536;
+  const position = start + Buffer.byteLength(text.slice(0, text.indexOf("TARGET")));
+  const sensitive = start + Buffer.byteLength(text.slice(0, text.indexOf("敏感值")));
+  const page = { chunks: [{ start, end: start + Buffer.byteLength(text), content: text, sensitiveRanges: [{ start: sensitive, end: sensitive + Buffer.byteLength("敏感值") }] }] };
+  let html = app.read(`securityPageText(${JSON.stringify(page)}, { navigation: { start: ${position} } })`);
+  assert.match(html, /<span data-security-body-anchor tabindex="-1">T<\/span>ARGET/);
+  assert.doesNotMatch(html, /security-body-hit/);
+  assert.match(html, /<mark class="security-sensitive-hit">敏感值<\/mark>/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.equal(html.replace(/<[^>]*>/g, ""), app.read(`esc(${JSON.stringify(text)})`), "anchor preserves all original text");
+  const emoji = start + Buffer.byteLength(text.slice(0, text.indexOf("🙂")));
+  html = app.read(`securityPageText(${JSON.stringify(page)}, { navigation: { start: ${emoji} } })`);
+  assert.match(html, /<span data-security-body-anchor tabindex="-1">🙂<\/span>/);
+  assert.doesNotMatch(html, /�|security-body-hit/);
+  html = app.read(`securityPageText(${JSON.stringify(page)}, { navigation: { start: ${page.chunks[0].end} } })`);
+  assert.doesNotMatch(html, /data-security-body-anchor|security-body-hit/);
+});
+
+test("legacy source navigation uses structural positions without adding risk highlighting", async () => {
+  const app = await controller();
+  const body = { input: [{ role: "user", content: "long preceding content ".repeat(1000) }, { role: "user", content: "TARGET <script>literal</script>" }] };
+  const page = { legacySnapshot: { body, root: "request" } };
+  const html = app.read(`securityPageText(${JSON.stringify(page)}, { navigation: { start: 1, location: "request/field/0/1" } })`);
+  assert.match(html, /<span data-security-body-anchor tabindex="-1">\{<\/span>\n\s+&quot;role&quot;:/);
+  assert.match(html, /TARGET &lt;script&gt;literal/);
+  assert.doesNotMatch(html, /security-body-hit|<script>/);
+  assert.equal(html.replace(/<[^>]*>/g, ""), app.read(`esc(securityBodyText(${JSON.stringify(body)}, "request").text)`));
+});
+
+test("source navigation scrolls after loading and cannot scroll a newer request", async () => {
+  let release, fail = false, scrolled = 0, focused = 0;
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.includes("/body?")) {
+      if (fail) return { status: 503, body: { error: { message: "body unavailable" } } };
+      return new Promise(resolve => { release = () => resolve({ body: { chunks: [{ start: 0, end: 100, content: "retained source" }] } }); });
+    }
+  } });
+  app.node("#page-content").querySelector = selector => selector === "[data-security-body-anchor]" ? {
+    scrollIntoView() { scrolled++; }, focus() { focused++; },
+  } : null;
+  const record = { id: "source", bodySnapshots: [{ id: "request", state: "complete" }], requestContent: { items: [{ index: 1, start: 80, end: 100, location: "request/field/0/1" }] } };
+  app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}`);
+  app.read('state.security.bodySelection = { snapshotId: "request", start: 0, end: 10, findingId: "previous-risk" }');
+  let pending = app.action("security-content-source", { dataset: { index: "1" } });
+  await setImmediate();
+  assert.equal(scrolled, 0, "do not scroll before the body is loaded");
+  assert.equal(app.read("state.security.bodySelection.findingId"), undefined);
+  assert.equal(app.read("state.security.bodySelection.start"), undefined);
+  release(); await pending;
+  assert.equal(scrolled, 1);
+  assert.equal(focused, 1);
+  pending = app.action("security-content-source", { dataset: { index: "1" } });
+  await setImmediate();
+  app.read('state.security.detail = { id: "newer", bodySnapshots: [] }');
+  release(); await pending;
+  assert.equal(scrolled, 1, "stale body completion must not scroll a newer request");
+  app.read(`state.security.detail = ${JSON.stringify(record)}`);
+  fail = true;
+  await app.action("security-content-source", { dataset: { index: "1" } });
+  assert.equal(scrolled, 1, "failed loads must not scroll");
 });
 
 test("Claude overview separates mixed tool results from user blocks and exposes roles, errors and cache metadata", async () => {
@@ -2132,8 +2198,9 @@ test("Claude overview separates mixed tool results from user blocks and exposes 
   assert.equal(app.requests.some(request => request.url.includes("/body?")), false);
   await app.action("security-content-source", { dataset: { index: "4" } });
   assert.equal(app.read("state.trace.tab"), "body");
-  assert.equal(app.read("state.security.bodySelection.start"), 200);
-  assert.equal(app.read("state.security.bodySelection.end"), 350);
+  assert.equal(app.read("state.security.bodySelection.navigation.start"), 200);
+  assert.equal(app.read("state.security.bodySelection.start"), undefined);
+  assert.equal(app.read("state.security.bodySelection.end"), undefined);
 });
 
 test("request items display complete long content with the source action in the title", async () => {
