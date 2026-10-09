@@ -12,6 +12,7 @@ const lockedControls = new WeakMap();
 let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
+let renderedTraceTab = null;
 
 // Explicit product guidance; catalog visibility does not indicate authorization.
 const SECURITY_MODELS = new Map([
@@ -181,13 +182,14 @@ function render(preservedForms = []) {
     })) : [];
   pageContent.innerHTML = renderers[state.page]();
   for (const pane of paneScroll) {
-    if (pane.selector === ".trace-inspector-body" && renderedTraceDetailId !== state.security.detailId) continue;
+    if (pane.selector === ".trace-inspector-body" && (renderedTraceDetailId !== state.security.detailId || renderedTraceTab !== state.trace.tab)) continue;
     const node = pageContent.querySelector(pane.selector);
     if (node) node.scrollTop = pane.top;
   }
   if (traceListFocused) pageContent.querySelector(".trace-event-list")?.focus({ preventScroll: true });
   renderedTraceId = state.page === "security-session" ? state.trace.id : null;
   renderedTraceDetailId = state.security.detailId;
+  renderedTraceTab = state.trace.tab;
   if (state.page === "security-session") {
     pageContent.querySelector(".trace-event-list")?.addEventListener("scroll", event => {
       const list = event.currentTarget;
@@ -1062,7 +1064,7 @@ function securityDetailVisible() { return ["security-detail", "security-session"
 async function loadSecurityDetail(id, reset = true, embedded = false, prefetched = null) {
   const s = state.security;
   const sequence = ++s.detailSequence;
-  s.contentLoading = false; s.contentError = null;
+  s.contentLoading = false; s.contentError = null; s.responseContentLoading = false; s.responseContentError = null;
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
   s.bodySequence = (s.bodySequence || 0) + 1;
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
@@ -1250,76 +1252,93 @@ function securityModelMapping(record) {
 const REQUEST_CONTENT_LABELS = { system: "系统提示词", developer: "开发者指令", user: "用户输入", assistant: "历史模型消息", tool_call: "历史工具调用", tool_result: "工具结果", reasoning: "推理 / 压缩上下文", reference: "历史上下文引用", tool_definition: "可用工具定义", other: "其他内容" };
 const REQUEST_PART_LABELS = { input_image: "图片", input_file: "文件", input_audio: "音频", input_video: "视频", refusal: "拒绝内容", image: "图片", document: "文档", search_result: "检索结果", tool_reference: "工具引用" };
 
-function renderRequestContent(record) {
-  const content = record.requestContent;
-  if (!content) return `<section class="trace-preview"><h3>最近用户输入</h3><p>${esc(record.requestPreview || "无可用文本摘要，可在原始内容中复核。")}</p></section>`;
+const RESPONSE_STATUS_LABELS = { completed: "已完成", failed: "失败", incomplete: "模型输出未完成", in_progress: "生成中", end_turn: "本轮结束", tool_use: "请求调用工具", max_tokens: "达到输出上限", stop_sequence: "命中停止序列", pause_turn: "轮次暂停", refusal: "拒绝响应" };
+const RESPONSE_CONTENT_LABELS = { assistant: "模型输出", reasoning: "推理 / 思考", tool_call: "本轮工具调用", tool_result: "服务端工具结果", refusal: "拒绝内容", error: "响应错误", other: "其他内容" };
+function renderRequestContent(record) { return renderRetainedContent(record, false); }
+function renderResponseContent(record) { return renderRetainedContent(record, true); }
+function renderRetainedContent(record, response) {
+  const content = response ? record.responseContent : record.requestContent;
+  const title = response ? "响应内容" : "请求内容";
+  const labels = response ? RESPONSE_CONTENT_LABELS : REQUEST_CONTENT_LABELS;
+  const loading = response ? state.security.responseContentLoading : state.security.contentLoading;
+  const error = response ? state.security.responseContentError : state.security.contentError;
+  const action = response ? "security-response-content" : "security-content";
+  if (!content) return `<section class="trace-preview"><h3>${response ? "本轮模型输出" : "最近用户输入"}</h3><p>${esc((response ? record.responsePreview : record.requestPreview) || "无可用文本摘要，可在原始内容中复核。")}</p></section>`;
   const items = content.items || [], counts = content.counts || {};
   const claude = record.protocol === "anthropic.messages";
   const row = item => {
-    const label = REQUEST_CONTENT_LABELS[item.kind] || REQUEST_CONTENT_LABELS.other;
-    const relation = item.relatedIndex != null ? `对应第 ${item.relatedIndex + 1} 项` : item.kind === "tool_result" ? "本次请求未找到对应调用" : item.kind === "tool_call" ? "本次请求未包含对应结果" : "";
+    const label = labels[item.kind] || labels.other;
+    const relation = response ? "" : item.relatedIndex != null ? `对应第 ${item.relatedIndex + 1} 项` : item.kind === "tool_result" ? "本次请求未找到对应调用" : item.kind === "tool_call" ? "本次请求未包含对应结果" : "";
     const related = `${relation}${item.ambiguousRelation ? "，标识重复，关联存在歧义" : ""}`;
     return `<details class="trace-content-item" data-content-index="${item.index}" open>
-      <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="security-content-source" data-index="${item.index}">查看此项原文</button></summary>
+      <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="${action}-source" data-index="${item.index}">查看此项原文</button></summary>
       <div class="trace-content-detail">${item.preview ? `<pre>${esc(item.preview)}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
       ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${esc(item.structure)}</pre></details>` : ""}
       ${item.parts?.length ? `<p class="trace-content-note">${item.parts.map(part => esc(REQUEST_PART_LABELS[part] || part)).join(" · ")} · 非文本内容见完整结构或原文</p>` : ""}
       ${item.opaque && item.preview ? `<p class="trace-content-note">同时包含加密或不透明内容。</p>` : ""}
-      ${item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
+      ${!response && item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
       ${item.messageIndex != null ? `<p class="trace-content-note">第 ${Number(item.messageIndex) + 1} 条消息${item.role ? ` · ${esc(item.role)}` : " · 角色未解析"}${item.type ? ` · ${esc(item.type)}` : ""}</p>` : ""}
       ${related ? `<p class="trace-content-note">${esc(related)}${item.kind === "tool_result" ? item.serverTool ? " · 服务端工具结果" : " · 客户端报告的结果" : " · 实际执行状态未知"}</p>` : ""}
       ${item.isError != null ? `<p class="trace-content-note">${item.isError ? "客户端报告工具错误" : "客户端未标记工具错误"}</p>` : ""}
       ${item.cacheControl ? `<p class="trace-content-note">缓存控制：${esc(item.cacheControl)}</p>` : ""}
       ${item.callId ? `<p class="trace-content-note mono">${esc(item.callId)}</p>` : ""}
+      ${response && item.kind === "tool_call" ? `<p class="trace-content-note">${item.serverTool ? "服务端工具调用" : "模型提出的工具调用 · 实际执行状态未知"}</p>` : ""}
+      ${response && item.state === "partial" ? `<p class="notice warning">此项尚未完整返回或留存内容存在缺口。</p>` : ""}
+      ${response && item.status ? `<p class="trace-content-note">条目状态：${esc(RESPONSE_STATUS_LABELS[item.status] || item.status)}</p>` : ""}
+      ${response && item.kind === "tool_result" && item.serverTool ? `<p class="trace-content-note">上游返回的服务端工具结果。</p>` : ""}
       </div></details>`;
   };
   const definitions = items.filter(item => item.kind === "tool_definition");
   const messages = items.filter(item => item.kind !== "tool_definition");
-  return `<section class="trace-request-content" aria-label="请求内容"><h3>请求内容 <span>${content.total} 项</span></h3>
-    ${claude ? `<p class="trace-content-note">按消息内容块展示；工具结果属于工具上下文，消息角色为 user 也不会计为用户输入。</p>` : ""}
-    <div class="trace-content-counts" aria-label="请求内容组成">${Object.entries(REQUEST_CONTENT_LABELS).map(([kind, label]) => `<span>${label} <strong>${counts[kind] || 0}</strong></span>`).join("")}</div>
-    ${content.state !== "complete" ? `<p class="notice warning">${content.state === "unavailable" ? "请求正文未保留，无法还原内容组成。" : "请求正文存在缺口或尚未解析完整，以下为已保留的内容。"}</p>` : content.total === 0 ? `<p class="muted">本次请求未包含提示词、输入或工具上下文。</p>` : ""}
+  return `<section class="trace-request-content" aria-label="${title}"><h3>${title} <span>${content.total} 项</span></h3>
+    ${response && content.status ? `<p class="trace-content-note">${claude ? "结束原因" : "响应状态"}：${esc(RESPONSE_STATUS_LABELS[content.status] || content.status)}</p>` : ""}
+    ${claude && !response ? `<p class="trace-content-note">按消息内容块展示；工具结果属于工具上下文，消息角色为 user 也不会计为用户输入。</p>` : ""}
+    <div class="trace-content-counts" aria-label="${title}组成">${Object.entries(labels).map(([kind, label]) => `<span>${label} <strong>${counts[kind] || 0}</strong></span>`).join("")}</div>
+    ${content.state !== "complete" ? `<p class="notice warning">${content.state === "unavailable" ? `${response ? "响应" : "请求"}正文未保留，无法还原内容组成。` : `${response ? "响应" : "请求"}正文存在缺口或尚未解析完整，以下为已保留的内容。`}</p>` : content.total === 0 ? `<p class="muted">${response ? "本次响应未包含输出内容。" : "本次请求未包含提示词、输入或工具上下文。"}</p>` : ""}
     <div class="trace-content-timeline">${messages.map(row).join("")}</div>
     ${definitions.length ? `<details class="trace-content-tools"><summary>可用工具定义 · 本页 ${definitions.length} 个</summary>${definitions.map(row).join("")}</details>` : ""}
-    ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="security-content-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || state.security.contentLoading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + items.length} / ${content.total}</span><button class="mini-button" data-action="security-content-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || state.security.contentLoading ? "disabled" : ""}>下一组内容</button></div>` : ""}
-    ${state.security.contentLoading ? `<p class="muted" role="status">正在解析请求内容…</p>` : ""}${state.security.contentError ? `<p class="notice warning" role="alert">${esc(state.security.contentError)}</p>` : ""}
+    ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="${action}-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || loading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + items.length} / ${content.total}</span><button class="mini-button" data-action="${action}-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || loading ? "disabled" : ""}>下一组内容</button></div>` : ""}
+    ${loading ? `<p class="muted" role="status">正在解析${title}…</p>` : ""}${error ? `<p class="notice warning" role="alert">${esc(error)}</p>` : ""}
   </section>`;
 }
 
-async function loadRequestContent(offset) {
+async function loadRequestContent(offset) { return loadRetainedContent(offset, false); }
+async function loadRetainedContent(offset, response) {
+  const loadingKey = response ? "responseContentLoading" : "contentLoading";
+  const errorKey = response ? "responseContentError" : "contentError";
   const s = state.security, record = s.detail, sequence = s.detailSequence;
-  if (!record || s.contentLoading) return;
+  if (!record || s[loadingKey]) return;
   const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
-  s.contentLoading = true; s.contentError = null; render();
+  s[loadingKey] = true; s[errorKey] = null; render();
   try {
-    const content = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset })}`);
+    const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
     if (!current()) return;
-    record.requestContent = content;
+    record[response ? "responseContent" : "requestContent"] = content;
   } catch (error) {
     if (!current()) return;
-    s.contentError = error.message;
+    s[errorKey] = error.message;
   }
-  if (current()) { s.contentLoading = false; render(); }
+  if (current()) { s[loadingKey] = false; render(); }
 }
 
 function renderTraceInspector() {
   const s = state.security, t = state.trace, r = s.detail;
-  const tabs = `<div class="trace-tabs" aria-label="步骤详情"><button data-action="security-trace-tab" data-tab="overview" aria-pressed="${t.tab === "overview"}">概览</button><button data-action="security-trace-tab" data-tab="risks" aria-pressed="${t.tab === "risks"}">风险 ${r?.findingCount || 0}</button><button data-action="security-trace-tab" data-tab="body" aria-pressed="${t.tab === "body"}">原始内容</button></div>`;
+  const tabs = `<div class="trace-tabs" aria-label="步骤详情"><button data-action="security-trace-tab" data-tab="overview" aria-pressed="${t.tab === "overview"}">概览</button><button data-action="security-trace-tab" data-tab="risks" aria-pressed="${t.tab === "risks"}">风险 ${r?.findingCount || 0}</button><button data-action="security-trace-tab" data-tab="request" aria-pressed="${t.tab === "request"}">请求内容</button><button data-action="security-trace-tab" data-tab="response" aria-pressed="${t.tab === "response"}">响应内容</button><button data-action="security-trace-tab" data-tab="body" aria-pressed="${t.tab === "body"}">原始内容</button></div>`;
   if (s.detailLoading) return `${tabs}<p class="empty" role="status">正在加载步骤详情…</p>`;
   if (s.detailError) return `${tabs}<p class="notice warning" role="alert">${esc(s.detailError)}</p>`;
   if (!r) return `${tabs}<p class="empty">选择一条请求查看详情。</p>`;
   let body;
   if (t.tab === "body") body = renderSecurityBody(r);
   else if (t.tab === "risks") body = `<p class="muted">工具真实执行状态未知；工具结果来自客户端报告。</p>${renderSecurityFindings(r)}`;
+  else if (t.tab === "request") body = renderRequestContent(r);
+  else if (t.tab === "response") body = renderResponseContent(r);
   else body = `<div class="trace-inspector-heading"><strong>${esc(securityLabel("outcome", r.outcome))}</strong>${r.findingCount ? securityBadge(r.severity) : ""}</div>
     <dl class="trace-facts">${[["模型", securityModelMapping(r)], ["开始", securityTime(r.at)], ["耗时", securityDuration(r.durationMs)], ["HTTP", r.httpStatus ?? "未知"], ["检查", securityInspectionLabel(r)], ["Token", r.usage ? `${r.usage.input_tokens ?? "—"} 输入 / ${r.usage.output_tokens ?? "—"} 输出` : "未报告"]].map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
     ${r.inspectionProgress?.active ? `<p role="status" class="muted">检测进度：${esc(r.inspectionProgress.processedBytes || 0)} / ${esc(r.inspectionProgress.observedBytes || r.observedBytes || 0)} 字节 · ${esc(securityInspectionLabel(r))}</p>` : ""}
     ${r.lostWrites ? `<p class="notice warning">记录到 ${esc(r.lostWrites)} 次审计写入缺口。</p>` : ""}
     ${r.coverageReasons?.length ? `<p class="notice warning">覆盖不足：${r.coverageReasons.map(reason => esc(securityLabel("reason", reason))).join("；")}</p>` : ""}
-    ${renderRequestContent(r)}
-    <section class="trace-preview"><h3>本轮模型输出</h3><p>${esc(r.responsePreview || "无可用文本摘要，可在原始内容中复核。")}</p></section>
     ${r.toolNames?.length ? `<section class="trace-preview"><h3>工具调用提议</h3><p class="mono">${r.toolNames.map(esc).join(" · ")}</p><span class="muted">实际执行状态未知</span></section>` : ""}
-    <p class="muted">请求各项内容完整展示；本轮模型输出为摘要，完整响应见原始内容。</p><button class="button" data-action="security-trace-tab" data-tab="body">查看请求与响应原文</button><details class="trace-record-id"><summary>全部记录信息</summary><dl class="trace-facts">${securityRecordFacts(r).map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${r.coverageGaps?.length ? `<p>正文缺口范围</p><pre class="code-preview">${esc(JSON.stringify(r.coverageGaps, null, 2))}</pre>` : ""}</details>`;
+    <p class="muted">请求与响应的详细内容可在对应页签中查看。</p><button class="button" data-action="security-trace-tab" data-tab="body">查看请求与响应原文</button><details class="trace-record-id"><summary>全部记录信息</summary><dl class="trace-facts">${securityRecordFacts(r).map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${r.coverageGaps?.length ? `<p>正文缺口范围</p><pre class="code-preview">${esc(JSON.stringify(r.coverageGaps, null, 2))}</pre>` : ""}</details>`;
   return `${tabs}<div class="trace-inspector-body">${body}</div>`;
 }
 
@@ -1616,14 +1635,15 @@ async function securityAction(action, element) {
     if (t.tab === "body" && !s.bodyPage) await loadSecurityBody();
     return;
   }
-  if (action === "security-content-page") {
-    await loadRequestContent(Number(element.dataset.offset)); return;
+  if (["security-content-page", "security-response-content-page"].includes(action)) {
+    await loadRetainedContent(Number(element.dataset.offset), action === "security-response-content-page"); return;
   }
-  if (action === "security-content-source") {
-    const item = s.detail?.requestContent?.items?.find(item => item.index === Number(element.dataset.index));
+  if (["security-content-source", "security-response-content-source"].includes(action)) {
+    const response = action === "security-response-content-source";
+    const item = s.detail?.[response ? "responseContent" : "requestContent"]?.items?.find(item => item.index === Number(element.dataset.index));
     if (!item) return;
     t.tab = "body";
-    s.bodySelection = { snapshotId: "request", navigation: { start: item.start, location: item.location } };
+    s.bodySelection = { snapshotId: response ? item.snapshotId || "response" : "request", navigation: { start: item.start, location: item.location } };
     render(); await loadSecurityBody(Math.max(0, item.start - 512)); return;
   }
   if (action === "security-trace-risk") { t.riskOnly = !t.riskOnly; render(); return; }

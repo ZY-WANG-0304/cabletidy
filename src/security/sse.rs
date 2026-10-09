@@ -309,7 +309,7 @@ impl Streams {
                 }
                 "response.function_call_arguments.delta"
                 | "response.custom_tool_call_input.delta" => {
-                    if let Some(part) = node(&info, "delta") {
+                    if let Some(part) = node(&info, "delta").filter(|n| n.kind == b'"') {
                         if !self.groups.contains_key(&key) {
                             p.rules.reasons.insert("stream_item_metadata_missing");
                             self.start(&key, "text", "")?;
@@ -329,7 +329,9 @@ impl Streams {
                             } else {
                                 "input"
                             },
-                        ) {
+                        )
+                        .filter(|n| n.kind == b'"')
+                        {
                             self.append(&key, &data.payload, part, &mut edits)?;
                         }
                         self.finish(p, &key, true)?;
@@ -376,7 +378,9 @@ impl Streams {
                         } else {
                             "delta"
                         },
-                    ) {
+                    )
+                    .filter(|n| n.kind == b'"')
+                    {
                         self.append(&key, &data.payload, part, &mut edits)?;
                     }
                     if kind.ends_with("done") {
@@ -409,7 +413,7 @@ impl Streams {
                         if !self.groups.contains_key(&content) {
                             self.start(&content, "text", "")?;
                         }
-                        if let Some(part) = node(&d, field) {
+                        if let Some(part) = node(&d, field).filter(|n| n.kind == b'"') {
                             self.append(&content, &data.payload, part, &mut edits)?;
                         }
                     }

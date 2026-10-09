@@ -24,7 +24,7 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === "/v1/messages") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ id: "msg_browser_claude", type: "message", role: "assistant", model: body.model,
-      content: [{ type: "text", text: "已复核 Claude 请求内容。" }], stop_reason: "end_turn", stop_sequence: null,
+      content: body.responseBlocks || [{ type: "text", text: "已复核 Claude 请求内容。" }], stop_reason: "end_turn", stop_sequence: null,
       usage: { input_tokens: 12, output_tokens: 8 } }));
     return;
   }
@@ -47,7 +47,7 @@ const upstream = http.createServer(async (req, res) => {
     return;
   }
   res.writeHead(200, { "content-type": "application/json" });
-  res.end(JSON.stringify({ model: body.model, output: body.reviewCase ? [{ type: "output_text", text }] : [] }));
+  res.end(JSON.stringify({ model: body.model, output: body.responseBlocks || (body.reviewCase ? [{ type: "output_text", text }] : []) }));
 });
 await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
 let app, browser, page, releaseRaceRefresh, releaseBodyExpansion;
@@ -250,15 +250,16 @@ try {
   report.checks.push("the duration toggle changes and restores segment widths while preserving request order, selection and scroll position");
   const mixedRequest = sessionRecords.items[1];
   await page.locator(`.trace-event-row[data-id="${mixedRequest.id}"]`).click();
-  await page.locator('.trace-content-item[data-content-index="0"]').waitFor();
+  await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="0"]').waitFor();
   const overviewText = await page.locator(".trace-inspector-body").innerText();
   for (const label of ["系统提示词", "开发者指令", "用户输入", "历史模型消息", "历史工具调用", "工具结果", "推理 / 压缩上下文", "可用工具定义"]) assert.ok(overviewText.includes(label));
-  assert.equal(await page.locator(".trace-content-item").count(), 40);
-  assert.equal(await page.locator('.trace-content-item[data-content-index="1"] > .trace-content-detail > pre').textContent(), fullItemText);
-  assert.match(await page.locator('.trace-content-item[data-content-index="5"]').innerText(), /markedRange 未清除|对应第 5 项 · 客户端报告的结果/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="8"]').innerText(), /没有可读文本/);
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item').count(), 40);
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="1"] > .trace-content-detail > pre').textContent(), fullItemText);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="5"]').innerText(), /markedRange 未清除|对应第 5 项 · 客户端报告的结果/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="8"]').innerText(), /没有可读文本/);
   const checkSourceHeading = async index => {
-    const block = page.locator(`.trace-content-item[data-content-index="${index}"]`);
+    const block = page.locator(`[aria-label="请求内容"] .trace-content-item[data-content-index="${index}"]`);
     const header = await block.locator(":scope > summary").boundingBox();
     const title = await block.locator(".trace-content-title").boundingBox();
     const source = await block.getByRole("button", { name: "查看此项原文", exact: true }).boundingBox();
@@ -268,16 +269,16 @@ try {
   };
   await checkSourceHeading(0);
   await screenshot("06-desktop-codex-mixed-overview.png");
-  await page.getByRole("button", { name: "下一组内容", exact: true }).click();
-  await page.locator('.trace-content-item[data-content-index="44"]').waitFor();
-  assert.match(await page.locator('.trace-content-item[data-content-index="44"]').innerText(), /图片 · 非文本内容见完整结构或原文/);
+  await page.getByLabel("请求内容", { exact: true }).getByRole("button", { name: "下一组内容", exact: true }).click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="44"]').waitFor();
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="44"]').innerText(), /图片 · 非文本内容见完整结构或原文/);
   await page.setViewportSize({ width: 390, height: 844 });
   await checkSourceHeading(44);
   await screenshot("07-mobile-codex-mixed-overview.png");
   await page.setViewportSize(report.viewport);
-  await page.locator('.trace-content-item[data-content-index="44"] > summary .trace-content-title').click();
-  assert.equal(await page.locator('.trace-content-item[data-content-index="44"]').getAttribute("open"), null);
-  await page.locator('.trace-content-item[data-content-index="44"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="44"] > summary .trace-content-title').click();
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="44"]').getAttribute("open"), null);
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="44"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
   await visibleSource("请结合截图继续检查");
   assert.equal(await page.locator(".security-body-content script").count(), 0);
   report.checks.push("Codex mixed contexts retain all roles, tool/result links, opaque reasoning, multimodal markers and paginated source navigation on desktop and mobile");
@@ -471,27 +472,27 @@ try {
   await page.goto(`${app.url}#security/session/${claudeMixed.sessionKey}`);
   await page.locator(`.trace-event-row[data-id="${claudeMixed.id}"]`).waitFor();
   await page.locator(`.trace-event-row[data-id="${claudeMixed.id}"]`).click();
-  await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
-  await page.locator('.trace-content-item[data-content-index="16"]').waitFor();
-  assert.equal(await page.locator(".trace-content-item").count(), 19);
-  assert.equal(await page.locator('.trace-content-item[data-content-index="0"] > .trace-content-detail > pre').textContent(), fullItemText);
-  assert.equal(await page.locator('.trace-content-item[data-content-index="2"] > .trace-content-detail > pre').textContent(), fullItemText);
+  await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="16"]').waitFor();
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item').count(), 19);
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="0"] > .trace-content-detail > pre').textContent(), fullItemText);
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="2"] > .trace-content-detail > pre').textContent(), fullItemText);
   await checkSourceHeading(0);
   const claudeCounts = await page.getByLabel("请求内容组成", { exact: true }).innerText();
   for (const count of ["系统提示词 2", "用户输入 4", "历史工具调用 3", "工具结果 4", "可用工具定义 2"]) assert.ok(claudeCounts.includes(count), count);
   const openClaudeBlock = async index => {
-    const block = page.locator(`.trace-content-item[data-content-index="${index}"]`);
+    const block = page.locator(`[aria-label="请求内容"] .trace-content-item[data-content-index="${index}"]`);
     if (await block.getAttribute("open") === null) await block.locator("summary").first().click();
     return block;
   };
   for (const index of [0, 3, 4, 6, 10, 11, 12]) await openClaudeBlock(index);
-  assert.match(await page.locator('.trace-content-item[data-content-index="0"]').innerText(), /缓存控制.*ephemeral.*1h/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="4"]').innerText(), /没有可读文本/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="6"]').innerText(), /保留参数 JSON 的键/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /对应第 7 项 · 客户端报告的结果/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /图片 · 文档 · 工具引用/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="10"]').innerText(), /第 3 条消息 · user · tool_result/);
-  assert.match(await page.locator('.trace-content-item[data-content-index="11"]').innerText(), /客户端报告工具错误/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="0"]').innerText(), /缓存控制.*ephemeral.*1h/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="4"]').innerText(), /没有可读文本/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="6"]').innerText(), /保留参数 JSON 的键/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').innerText(), /对应第 7 项 · 客户端报告的结果/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').innerText(), /图片 · 文档 · 工具引用/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').innerText(), /第 3 条消息 · user · tool_result/);
+  assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="11"]').innerText(), /客户端报告工具错误/);
   assert.equal(await page.locator(".trace-request-content script").count(), 0);
   const inspectorScroll = await page.locator(".trace-inspector-body").evaluate(node => {
     node.scrollTop = node.querySelector(".trace-request-content").offsetTop - node.offsetTop;
@@ -501,18 +502,18 @@ try {
   await screenshot("08-desktop-claude-mixed-overview.png");
   await page.setViewportSize({ width: 390, height: 844 });
   await checkSourceHeading(10);
-  await page.locator('.trace-content-item[data-content-index="10"]').scrollIntoViewIfNeeded();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').scrollIntoViewIfNeeded();
   await screenshot("09-mobile-claude-mixed-overview.png");
   await page.setViewportSize(report.viewport);
-  await page.locator('.trace-content-item[data-content-index="10"] > summary .trace-content-title').click();
-  assert.equal(await page.locator('.trace-content-item[data-content-index="10"]').getAttribute("open"), null);
-  await page.locator('.trace-content-item[data-content-index="10"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"] > summary .trace-content-title').click();
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').getAttribute("open"), null);
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="10"]').getByRole("button", { name: "查看此项原文", exact: true }).click();
   await visibleSource("read-source");
   await page.locator(`.trace-event-row[data-id="${claudePaged.id}"]`).click();
-  await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
-  await page.locator('.trace-content-item[data-content-index="39"]').waitFor();
-  await page.getByRole("button", { name: "下一组内容", exact: true }).click();
-  await page.locator('.trace-content-item[data-content-index="55"]').waitFor();
+  await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="39"]').waitFor();
+  await page.getByLabel("请求内容", { exact: true }).getByRole("button", { name: "下一组内容", exact: true }).click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="55"]').waitFor();
   const pagedResult = await openClaudeBlock(55);
   assert.match(await pagedResult.innerText(), /对应第 7 项 · 客户端报告的结果/);
   assert.match(await pagedResult.innerText(), /解析器已经按内容块读取/);
@@ -521,9 +522,10 @@ try {
   await screenshot("10-mobile-claude-paged-tools.png");
   await page.setViewportSize(report.viewport);
   await page.locator(`.trace-event-row[data-id="${claudeToolOnly.id}"]`).click();
-  await page.locator('.trace-content-item[data-content-index="0"]').waitFor();
+  await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+  await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="0"]').waitFor();
   assert.match(await page.getByLabel("请求内容组成", { exact: true }).innerText(), /用户输入 0/);
-  assert.equal(await page.locator(".trace-content-item").count(), 1);
+  assert.equal(await page.locator('[aria-label="请求内容"] .trace-content-item').count(), 1);
   assert.match(await (await openClaudeBlock(0)).innerText(), /本次请求未找到对应调用/);
   report.checks.push("Claude content blocks keep system/cache metadata, thinking, parallel and server tools, multimodal results, errors and cross-page relations; user-role tool results are counted separately; desktop/mobile source navigation is exact");
   report.checks.push("Codex and Claude long items display their exact full text including the tail; all items open by default and source actions sit on the right of desktop and mobile title rows");
@@ -551,8 +553,8 @@ try {
     await page.goto(`${app.url}#security/session/${detail.sessionKey || detail.id}`);
     for (const mobile of [false, true]) {
       await page.setViewportSize(mobile ? { width: 390, height: 844 } : report.viewport);
-      await page.locator('[data-action="security-trace-tab"][data-tab="overview"]').click();
-      const item = page.locator('.trace-content-item[data-content-index="1"]');
+      await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+      const item = page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="1"]');
       await item.waitFor();
       await item.locator(":scope > summary .trace-content-title").click();
       assert.equal(await item.getAttribute("open"), null);
@@ -568,6 +570,53 @@ try {
     }
   }
   report.checks.push("Codex and Claude source links scroll to the exact visible position after 120 KB of preceding UTF-8 text on desktop/mobile, including collapsed items, without adding risk highlighting");
+  for (const claude of [false, true]) {
+    const text = `${claude ? "Claude" : "Codex"} 完整响应🙂\n`.repeat(600) + "响应末尾 <script>literal</script>";
+    const target = `${claude ? "Claude" : "Codex"} 响应原文目标`;
+    const responseBlocks = claude ? [{ type: "thinking", thinking: "思考正文", signature: "sig" }, { type: "text", text }, { type: "tool_use", id: "read-response", name: "Read", input: { file_path: "src/lib.rs" } }, ...Array.from({length: 40}, (_, i) => ({type: "text", text: i === 39 ? target : `响应片段 ${i}`}))] : [{type: "reasoning", summary: [{type: "summary_text",text:"推理摘要"}]}, {type:"message",role:"assistant",content:[{type:"output_text",text}]}, {type:"custom_tool_call",call_id:"patch-response",name:"apply_patch",input:"*** Begin Patch\n*** End Patch"}, ...Array.from({length:40}, (_,i) => ({type:"message",role:"assistant",content:[{type:"output_text",text:i===39?target:`响应片段 ${i}`}]}))];
+    await post(claude ? "claude-main/v1/messages" : "relay/v1/responses", { model: claude ? "claude-sonnet-4-6" : "gpt-5.5", max_tokens: 100, responseBlocks, ...(claude ? {messages:[{role:"user",content:"响应展示验收"}]} : {input:"响应展示验收"}) });
+    let detail;
+    for (let i=0;i<300;i++) {
+      const latest = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=${claude?"cabletidy_claude-main":"cabletidy_relay"}&limit=1`)).json();
+      const record = latest.items[0];
+      if (record && !record.inspectionProgress?.active && ["complete","partial"].includes(record.inspectionStatus)) {
+        detail = (await (await fetch(`${app.url}api/v1/security/audit/${record.id}`)).json()).record;
+        if (detail.responseContent?.total===43) break;
+      }
+      await delay(100);
+    }
+    assert.equal(detail.responseContent.total,43);
+    await page.goto(`${app.url}#security/session/${detail.sessionKey || detail.id}`);
+    for (const mobile of [false,true]) {
+      await page.setViewportSize(mobile?{width:390,height:844}:report.viewport);
+      await page.locator('[data-action="security-trace-tab"][data-tab="response"]').click();
+      const response = page.getByLabel("响应内容",{exact:true});
+      await response.waitFor();
+      const tabs = page.locator('.trace-tabs');
+      assert.deepEqual(await tabs.locator('button').allTextContents(), ["概览","风险 0","请求内容","响应内容","原始内容"]);
+      assert.equal(await tabs.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, "five tabs fit the inspector width");
+      if (mobile) {
+        await response.getByRole("button",{name:"上一组内容",exact:true}).click();
+      }
+      await response.locator('.trace-content-item[data-content-index="1"]').waitFor();
+      if (await response.locator('.trace-content-item[data-content-index="1"]').count()) {
+        assert.equal(await response.locator('.trace-content-item[data-content-index="1"] > .trace-content-detail > pre').textContent(),text);
+        await response.getByRole("button",{name:"下一组内容",exact:true}).click();
+      }
+      await response.locator('.trace-content-item[data-content-index="42"]').waitFor();
+      assert.match(await response.innerText(),new RegExp(target));
+      assert.equal(await page.getByLabel("请求内容",{exact:true}).count(),0);
+      await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+      assert.equal(await page.getByLabel("请求内容",{exact:true}).locator('.trace-content-item[data-content-index="0"]').count(),1);
+      await page.locator('[data-action="security-trace-tab"][data-tab="response"]').click();
+      assert.match(await response.innerText(),new RegExp(target));
+      await response.scrollIntoViewIfNeeded();
+      await screenshot(`${claude?"16":"15"}-${mobile?"mobile":"desktop"}-${claude?"claude":"codex"}-response-overview.png`);
+      await response.locator('.trace-content-item[data-content-index="42"]').getByRole("button",{name:"查看此项原文",exact:true}).click();
+      await visibleSource(target);
+    }
+  }
+  report.checks.push("Codex and Claude responses show complete long text, thinking and tools, paginate independently, and navigate to response source on desktop and 390px mobile");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

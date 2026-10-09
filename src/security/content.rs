@@ -12,13 +12,14 @@ use std::{
 const PAGE_ITEMS: usize = 40;
 
 // Read one stored chunk at a time. Never assemble a potentially large request in RAM.
-struct BodyReader<'a> {
-    db: &'a Connection,
-    audit: &'a str,
-    next: u64,
-    limit: u64,
-    chunk: Vec<u8>,
-    position: usize,
+pub(super) struct BodyReader<'a> {
+    pub(super) db: &'a Connection,
+    pub(super) audit: &'a str,
+    pub(super) snapshot: &'a str,
+    pub(super) next: u64,
+    pub(super) limit: u64,
+    pub(super) chunk: Vec<u8>,
+    pub(super) position: usize,
 }
 impl Read for BodyReader<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -30,8 +31,8 @@ impl Read for BodyReader<'_> {
                 return Ok(0);
             }
             let row: Option<(u64, u64, String)> = self.db.query_row(
-                "SELECT start,end,content FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='request' AND start<=? ORDER BY start DESC LIMIT 1",
-                params![self.audit, self.next], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT start,end,content FROM audit_body_chunks WHERE audit_id=? AND snapshot_id=? AND start<=? ORDER BY start DESC LIMIT 1",
+                params![self.audit, self.snapshot, self.next], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             ).optional().map_err(io::Error::other)?;
             let Some((start, end, content)) = row else {
                 return Ok(0);
@@ -45,8 +46,8 @@ impl Read for BodyReader<'_> {
             }
             if end == self.next {
                 let gap: bool = self.db.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='request' AND start>=? AND start<?)",
-                    params![self.audit, self.next, self.limit], |r| r.get(0),
+                    "SELECT EXISTS(SELECT 1 FROM audit_body_chunks WHERE audit_id=? AND snapshot_id=? AND start>=? AND start<?)",
+                    params![self.audit, self.snapshot, self.next, self.limit], |r| r.get(0),
                 ).map_err(io::Error::other)?;
                 return if gap {
                     Err(io::Error::other("retained_body_gap"))
@@ -566,6 +567,7 @@ fn parse_range(
         Box::new(BodyReader {
             db,
             audit,
+            snapshot: "request",
             next: start,
             limit: end,
             chunk: Vec::new(),
@@ -702,6 +704,7 @@ fn page(
             Box::new(BodyReader {
                 db,
                 audit,
+                snapshot: "request",
                 next: start,
                 limit: end,
                 chunk: Vec::new(),

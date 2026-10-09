@@ -659,8 +659,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             return Ok(json_response(200, state.security.status()));
         }
         let query = if let Some(rest) = path.strip_prefix("/api/v1/security/audit/") {
-            let content_page = rest.ends_with("/content");
-            let rest = rest.strip_suffix("/content").unwrap_or(rest);
+            let response_content = rest.ends_with("/response-content");
+            let content_page = response_content || rest.ends_with("/content");
+            let rest = rest
+                .strip_suffix("/response-content")
+                .or_else(|| rest.strip_suffix("/content"))
+                .unwrap_or(rest);
             let (id, body_page) = rest
                 .strip_suffix("/body")
                 .map_or((rest, false), |id| (id, true));
@@ -678,6 +682,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                     }
                 }
                 query.content_offset = Some(offset);
+                query.response_content = response_content;
             }
             if body_page {
                 let mut snapshot = None;
