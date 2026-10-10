@@ -305,7 +305,9 @@ Codex 会话依次根据 `session-id`、`session_id`、`x-session-id`、`x-codex
 
 支持 Bash / shell / exec_command 等常见名称、Read/Write/Edit 类工具，以及 apply_patch。shell 检查只解析有限的字面量参数、分隔符和直接管道；变量展开、重定向、未知包装和动态脚本不做效果推断。构建或包管理命令不直接产生风险，其脚本行为标记为未覆盖。规则是有限的结构匹配，不等价于完整 shell / PowerShell 解释器或漏洞扫描器。
 
-文档化的占位值不算凭据：`${VAR}` / `$VAR`、`{{ var }}`、`<your-password-here>`、`%VAR%` 等明确的模板语法，`None` / `null` / `TODO` / `changeme` 一类的词，`YOUR_TOKEN_HERE` 这类全大写提示，以及由单一遮罩字符重复组成、长度在 32 以内的 `xxxxxxxx`、`********`。判定要求整个值匹配模板语法，因此 `$9fK2mNvQ8xRtZ4wB7hLpY1cD`、`11111111`、`aaaaaaaa` 这类弱口令仍按真实凭据命中；同名字段上的真实值也不受影响。
+文档化的占位值不算凭据：`${VAR}` / `$VAR`、`{{ var }}`、`<your-password-here>`、`%VAR%` 等明确的模板语法，`None` / `null` / `TODO` / `changeme` 一类的词，`YOUR_TOKEN_HERE` 这类全大写提示，以及由单一遮罩字符重复组成、长度在 32 以内的 `xxxxxxxx`、`********`（不含纯数字）。
+
+判定要求整个值匹配模板语法。花括号形式容忍缺少闭合符，因为凭据赋值的捕获在 `}` 或空白处结束，`${VAR}` 实际会被截断成 `${VAR`、`{{ var }}` 会被截断成 `{{`；尖括号不会这样截断（`>` 不是捕获终止符），因此要求必须闭合。于是 `$9fK2mNvQ8xRtZ4wB7hLpY1cD`、`<9fK2mNvQ8xRtZ4wB7hLpY1cD`、`00000000`、`11111111`、`aaaaaaaa` 这类弱口令都按真实凭据命中；同名字段上的真实值也不受影响。
 
 地址标注与凭据范围重叠时，凭据语义优先：合并后的范围保留 `known_credential` 等凭据 reason 而不是仅标注的地址 reason，避免 `ssh://user-<凭据>@host` 这类写法让凭据原样留在元数据里、且无法精确定位。批量与流式两条路径使用同一套合并规则。
 

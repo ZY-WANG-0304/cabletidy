@@ -106,10 +106,14 @@ pub fn credential_field(key: &str) -> bool {
 
 // Explicit template syntax only. A value merely starting with `$` or `<` can be a real
 // password, so the whole value must look like a variable reference or a `<...>` slot.
-// The surrounding capture stops at `}` or whitespace, so a truncated opener counts too.
+//
+// Brace forms stay tolerant of a missing closer because `ASSIGNMENT` ends its capture at
+// `}` or whitespace, so `${VAR}` really does arrive as `${VAR` and `{{ x }}` as `{{`.
+// An angle slot is never truncated that way -- `>` is not a capture terminator -- so it
+// must be closed. Otherwise `<9fK2mNvQ8xRtZ4wB7hLpY1cD` would pass as a placeholder.
 static TEMPLATE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"(?s)^(?:\$\{[^}]*\}?|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}]*\}?\}?|\{\{?|<[^>]*>?|%[A-Za-z_][A-Za-z0-9_]*%)$"
+    r"(?s)^(?:\$\{[^}]*\}?|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}]*\}?\}?|\{\{?|<[^<>]*>|%[A-Za-z_][A-Za-z0-9_]*%)$"
 ).unwrap()
 });
 
@@ -154,13 +158,13 @@ fn placeholder_value(value: &str) -> bool {
     {
         return true;
     }
-    // Masking runs such as xxxxxxxx or ********: one repeated masking character. A
-    // value like `11111111` or `aaaaaaaa` is a weak password, not a mask.
+    // Masking runs such as xxxxxxxx or ********: one repeated masking character. Digits
+    // are excluded, because `00000000` and `11111111` are weak passwords, not masks.
     (4..=32).contains(&v.len())
         && v.chars().collect::<BTreeSet<_>>().len() == 1
         && v.chars()
             .next()
-            .is_some_and(|c| "x*.-_#?0".contains(c.to_ascii_lowercase()))
+            .is_some_and(|c| "x*.-_#?".contains(c.to_ascii_lowercase()))
 }
 
 fn shannon_entropy(s: &str) -> f64 {
@@ -1089,7 +1093,9 @@ mod tests {
         let redactor = Redactor::new(&json!({}));
         for value in [
             "password: <your-password-here>",
+            "password: <token>",
             "api_key: ${API_KEY}",
+            "api_key: $API_KEY",
             "secret: {{ vault_secret }}",
             "password = None",
             "api_key: TODO",
@@ -1108,6 +1114,9 @@ mod tests {
             "password: $9fK2mNvQ8xRtZ4wB7hLpY1cD",
             "password: 11111111",
             "password: aaaaaaaa",
+            // An unclosed angle bracket is not a slot, and digits are not a mask.
+            "password: <9fK2mNvQ8xRtZ4wB7hLpY1cD",
+            "password: 00000000",
         ] {
             assert!(!reasons(&redactor, value).is_empty(), "{value}");
         }

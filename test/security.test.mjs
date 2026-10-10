@@ -696,6 +696,24 @@ test("IPv6 and encoded addresses are classified like their plain equivalents", a
   assert.equal(covered("00:1A:2B"), false, "MAC address is not an endpoint");
 });
 
+test("weak passwords that resemble templates are still credential risks", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  // An unclosed `<` is not a slot and a repeated digit is not a mask.
+  const response = await f.request({ password: "<9fK2mNvQ8xRtZ4wB7hLpY1cD", passwd: "00000000" });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  const hits = record.findings.filter(finding => finding.ruleId === "SEC-SECRET-001");
+  assert.ok(hits.length >= 1, JSON.stringify(record.findings.map(x => x.ruleId)));
+  const covered = record.findings.some(finding => {
+    const ref = finding.evidence.bodyRef;
+    return ref.matchKind === "sensitive" && ref.end > ref.start;
+  });
+  assert.ok(covered, "credential hit has a precise range");
+  assert.ok(body.sensitiveRanges.length >= 1, "sensitive ranges retained");
+});
+
 test("each endpoint finding references the address class that triggered it", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body));
   const response = await f.request({ input: "http://10.0.0.1:8080/ then http://8.8.8.8:53/" });
