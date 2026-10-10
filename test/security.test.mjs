@@ -918,6 +918,31 @@ test("unknown SSE fragments retain original content and report unsupported seman
   for (const half of halves) assert.ok(stored.includes(Buffer.from(half)));
 });
 
+for (const initial of ["response.created", "response.in_progress"]) {
+  test(`${initial} credential exposure remains linked when final output changes`, async t => {
+    const item = text => ({ type: "message", content: [{ type: "output_text", text }] });
+    const f = await fixture(t, (_req, res, body) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end([
+        { type: initial, response: { model: body.model, output: [item(secret), item("second safe output")] } },
+        { type: "response.completed", response: { model: body.model, status: "completed", output: [item("first safe output"), item("second safe output")] } },
+      ].map(event).join(""));
+    });
+    await (await f.request({ stream: true })).text();
+    const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+    for (const restarted of [false, true]) {
+      if (restarted) await f.restart();
+      const record = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+      const finding = record.findings.find(f => f.ruleId === "SEC-SECRET-001");
+      assert.ok(finding, "an observed credential remains a risk after final output changes");
+      const source = finding.evidence.bodyRef.sourceSnapshotId;
+      assert.equal(record.responseContent.items[0].preview, "first safe output");
+      assert.ok(record.responseContent.items[0].contentSnapshotIds.includes(source));
+      assert.equal(record.responseContent.items[1].contentSnapshotIds.includes(source), false);
+    }
+  });
+}
+
 test("changed streamed tool arguments retain every risk version and deduplicate only identical repetitions", async t => {
   const versions = [{ cmd: "rm -rf tmp" }, { cmd: dangerous }, { cmd: "rm -rf cache" }, { cmd: dangerous, description: "updated context" }];
   const f = await fixture(t, (req, res, body) => {
@@ -1354,6 +1379,36 @@ test("Codex streaming response overview resolves retained fragments and deduplic
   assert.equal(content.items[1].preview, tool.arguments);
   assert.equal(content.items[1].callId, tool.call_id);
   assert.equal(content.items[0].snapshotId, "response");
+});
+
+test("unchanged streamed tool arguments preserve full content and filtered detection evidence", async t => {
+  const args = { cmd: "rm -rf /important", workdir: "/workspace", description: "cleanup" };
+  const tool = { id: "tool", type: "function_call", call_id: "call", name: "exec_command", arguments: JSON.stringify(args) };
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end([
+      { type: "response.output_item.added", output_index: 0, item: { ...tool, arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: tool.arguments.slice(0, 15) },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: tool.arguments.slice(15) },
+      { type: "response.function_call_arguments.done", output_index: 0, arguments: tool.arguments },
+      { type: "response.output_item.done", output_index: 0, item: tool },
+      { type: "response.completed", response: { status: "completed", output: [tool] } },
+    ].map(event).join(""));
+  });
+  assert.match(await (await f.request({ input: "hello", stream: true })).text(), /cleanup/);
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const findings = record.findings.filter(f => f.ruleId === "SEC-DELETE-001");
+  assert.equal(findings.length, 1, "identical completed arguments share one detection version");
+  assert.deepEqual(record.bodySnapshots.find(s => s.id === findings[0].evidence.bodyRef.snapshotId).body, { cmd: args.cmd });
+  const content = record.responseContent;
+  assert.equal(content.state, "complete");
+  assert.equal(content.total, 1);
+  assert.equal(content.items[0].preview, tool.arguments);
+  assert.deepEqual(JSON.parse(content.items[0].structure), tool);
+  assert.ok(content.items[0].contentSnapshotIds.includes(findings[0].evidence.bodyRef.sourceSnapshotId));
+  await f.restart();
+  assert.deepEqual((await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent, content);
 });
 
 test("Codex interrupted stream keeps accumulated text without inventing completed output", async t => {

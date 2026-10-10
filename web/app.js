@@ -13,6 +13,7 @@ let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
 let renderedTraceTab = null;
+const securityEvidenceCache = new WeakMap();
 
 // Explicit product guidance; catalog visibility does not indicate authorization.
 const SECURITY_MODELS = new Map([
@@ -1065,6 +1066,7 @@ async function loadSecurityDetail(id, reset = true, embedded = false, prefetched
   const s = state.security;
   const sequence = ++s.detailSequence;
   s.contentLoading = false; s.contentError = null; s.responseContentLoading = false; s.responseContentError = null;
+  s.contentNavigation = null;
   s.sequence++; s.loading = false; s.detailId = id; s.detailLoading = true; s.detailError = null;
   s.bodySequence = (s.bodySequence || 0) + 1;
   const offset = reset ? 0 : s.bodyPage?.offset ?? s.bodySelection?.start ?? 0;
@@ -1084,6 +1086,7 @@ async function loadSecurityDetail(id, reset = true, embedded = false, prefetched
   s.detailLoading = false;
   render();
   if (s.detail && (!embedded || state.trace.tab === "body")) await loadSecurityBody(offset);
+  else if (s.detail && ["request", "response"].includes(state.trace.tab)) await loadContentRiskMarks(state.trace.tab === "response");
 }
 
 function renderSecurityDetailPage() {
@@ -1256,6 +1259,257 @@ const RESPONSE_STATUS_LABELS = { completed: "已完成", failed: "失败", incom
 const RESPONSE_CONTENT_LABELS = { assistant: "模型输出", reasoning: "推理 / 思考", tool_call: "本轮工具调用", tool_result: "服务端工具结果", refusal: "拒绝内容", error: "响应错误", other: "其他内容" };
 function renderRequestContent(record) { return renderRetainedContent(record, false); }
 function renderResponseContent(record) { return renderRetainedContent(record, true); }
+function contentFindings(record, item, response) {
+  return (record.findings || []).filter(finding => {
+    const ref = finding.evidence?.bodyRef;
+    if (!ref) return false;
+    const source = ref.sourceSnapshotId || ref.snapshotId;
+    if (response && item.contentSnapshotIds?.includes(source)) return true;
+    if (source !== (response ? "response" : "request")) return false;
+    const start = ref.sourceStart ?? ref.start, end = ref.sourceEnd ?? ref.end;
+    return start < item.end && end > item.start;
+  });
+}
+
+function retainedRiskText(item, field) {
+  const text = item[field] || "", ranges = item.riskRanges?.[field] || [];
+  const selected = state.security.contentNavigation;
+  const events = [{ at: 0, delta: 0 }, { at: text.length, delta: 0 }];
+  for (const range of ranges) {
+    events.push({ at: range.start, delta: 1, findingId: range.findingId }, { at: range.end, delta: -1, findingId: range.findingId });
+  }
+  events.sort((a, b) => a.at - b.at);
+  let at = 0, html = "";
+  const active = new Map();
+  for (const event of events) {
+    if (event.at > at) {
+      const hit = selected?.index === item.index && selected.field === field && active.has(selected.findingId);
+      const content = esc(text.slice(at, event.at));
+      html += active.size ? `<mark class="security-risk-hit${hit ? " security-body-hit" : ""}"${hit ? ' data-security-content-anchor tabindex="-1"' : ""}>${content}</mark>` : content;
+      at = event.at;
+    }
+    if (event.delta) {
+      const count = (active.get(event.findingId) || 0) + event.delta;
+      if (count) active.set(event.findingId, count); else active.delete(event.findingId);
+    }
+  }
+  return html;
+}
+
+async function findingText(record, finding) {
+  let cache = securityEvidenceCache.get(record);
+  if (!cache) { cache = new Map(); securityEvidenceCache.set(record, cache); }
+  if (!cache.has(finding.id)) cache.set(finding.id, (async () => {
+    const ref = finding.evidence.bodyRef;
+    let offset = Math.max(0, (ref.start || 0) - 512), raw = "", next = ref.start;
+    const encoder = new TextEncoder(), decoder = new TextDecoder();
+    while (true) {
+      const page = await api(`/security/audit/${encodeURIComponent(record.id)}/body?${new URLSearchParams({ snapshot: ref.snapshotId, offset })}`);
+      if (state.security.detail !== record || !securityDetailVisible()) { cache.delete(finding.id); return ""; }
+      if (page.legacySnapshot) {
+        const { text, range } = securityBodyText(page.legacySnapshot.body, page.legacySnapshot.root, ref.location || finding.evidence.location, page.legacySnapshot.fieldOrder);
+        return range ? text.slice(range.start, range.end) : "";
+      }
+      if (finding.ruleId === "SEC-SECRET-001" && ref.matchKind !== "sensitive") {
+        const marks = securityPageMarks(page).filter(mark => mark.start < ref.end && mark.end > ref.start
+          && !["redaction_buffer_budget", "url_authority_uncertain", "credential_prefix_uncertain", "incomplete_body_fragment", "unsupported_stream_fragment"].includes(mark.reason));
+        if (marks.length) return marks.map(mark => (page.chunks || []).map(chunk => decoder.decode(encoder.encode(chunk.content).slice(Math.max(0, mark.start - chunk.start), Math.max(0, Math.min(chunk.end, mark.end) - chunk.start)))).join(""));
+      } else {
+        for (const chunk of page.chunks || []) {
+          const start = Math.max(next, chunk.start), end = Math.min(ref.end, chunk.end);
+          if (end > start) { raw += decoder.decode(encoder.encode(chunk.content).slice(start - chunk.start, end - chunk.start)); next = end; }
+        }
+        if (next >= ref.end) return raw;
+      }
+      if (page.nextOffset == null || page.nextOffset <= offset || page.nextOffset >= ref.end) return "";
+      offset = page.nextOffset;
+    }
+  })().catch(error => { cache.delete(finding.id); throw error; }));
+  return cache.get(finding.id);
+}
+
+// Keep JSON value spans in the displayed text, including its original escaping.
+function contentJsonNode(text) {
+  JSON.parse(text); // Reject incomplete input before collecting any ranges.
+  const tokens = text.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g);
+  let token = tokens.next().value;
+  const take = () => { const current = token; token = tokens.next().value; return current; };
+  const read = () => {
+    const first = take(), start = first.index;
+    if (first[0] === "{" || first[0] === "[") {
+      const object = first[0] === "{", children = object ? new Map() : [];
+      while (token[0] !== (object ? "}" : "]")) {
+        if (object) {
+          const key = JSON.parse(take()[0]);
+          take(); // colon
+          children.set(key, read());
+        } else children.push(read());
+        if (token[0] === ",") take(); else break;
+      }
+      const last = take();
+      return { start, end: last.index + 1, children, object };
+    }
+    const value = JSON.parse(first[0]), string = typeof value === "string";
+    return { start: start + (string ? 1 : 0), end: start + first[0].length - (string ? 1 : 0), value };
+  };
+  return read();
+}
+
+function toolContentRiskRanges(text, evidence, findingId) {
+  const ranges = [];
+  for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
+    if (!raw) continue;
+    let expected;
+    try { expected = JSON.parse(raw); } catch { expected = raw; }
+    // A custom tool's free-text input may itself look like JSON.
+    if (typeof expected === "string" && text === expected) {
+      ranges.push({ start: 0, end: text.length, findingId });
+      continue;
+    }
+    try {
+      let node = contentJsonNode(text), position = offset => offset;
+      const type = node.object && node.children.get("type")?.value;
+      if (["function_call", "custom_tool_call", "tool_use", "server_tool_use"].includes(type)) {
+        node = node.children.get(type === "function_call" ? "arguments" : "input");
+        if (!node) continue;
+      }
+      if (typeof node.value === "string" && (typeof expected !== "string" || type === "function_call")) {
+        // Codex arguments are JSON inside a JSON string. Map decoded UTF-16
+        // offsets back to the escaped string so only the matching value is marked.
+        const offsets = [node.start];
+        for (let at = node.start; at < node.end;) {
+          at += text[at] === "\\" ? (text[at + 1] === "u" ? 6 : 2) : 1;
+          offsets.push(at);
+        }
+        position = offset => offsets[offset];
+        node = contentJsonNode(node.value);
+      }
+      const matches = (current, value, projection = false) => {
+        if (value === null || typeof value !== "object") return !current.children && current.value === value;
+        if (Array.isArray(value)) return Array.isArray(current.children) && current.children.length === value.length
+          && value.every((child, index) => matches(current.children[index], child));
+        const keys = Object.keys(value);
+        return current.object && (projection || current.children.size === keys.length)
+          && keys.every(key => current.children.has(key) && matches(current.children.get(key), value[key]));
+      };
+      // The backend retains only inspected fields. Require all of those fields
+      // at their corresponding keys, while allowing unrelated argument fields.
+      if (!matches(node, expected, true)) continue;
+      const hits = expected && typeof expected === "object" && !Array.isArray(expected)
+        ? Object.keys(expected).map(key => node.children.get(key)) : [node];
+      for (const hit of hits) if (hit.end > hit.start) ranges.push({ start: position(hit.start), end: position(hit.end), findingId });
+    } catch {}
+  }
+  return ranges;
+}
+
+function contentRiskRanges(text, evidence, findingId, structuredTool = false) {
+  if (structuredTool) return toolContentRiskRanges(text, evidence, findingId);
+  const candidates = new Set();
+  const collect = value => {
+    if (typeof value === "string" && value) candidates.add(value);
+    else if (value && typeof value === "object") {
+      candidates.add(JSON.stringify(value));
+      candidates.add(JSON.stringify(value, null, 2));
+      for (const child of Object.values(value)) collect(child);
+    }
+  };
+  for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
+    if (!raw) continue;
+    candidates.add(raw);
+    try { collect(JSON.parse(raw)); } catch {}
+    try { collect(JSON.parse(`"${raw}"`)); } catch {}
+  }
+  const ranges = [];
+  for (const candidate of [...candidates].sort((a, b) => b.length - a.length)) {
+    let at = 0;
+    while ((at = text.indexOf(candidate, at)) >= 0) {
+      const end = at + candidate.length;
+      if (!ranges.some(range => range.start <= at && range.end >= end)) ranges.push({ start: at, end, findingId });
+      at = end;
+    }
+  }
+  return ranges;
+}
+
+async function loadContentRiskMarks(response, operation) {
+  const s = state.security, record = s.detail, sequence = s.detailSequence;
+  const content = record?.[response ? "responseContent" : "requestContent"];
+  if (!content) return;
+  const current = () => record === s.detail && sequence === s.detailSequence && record[response ? "responseContent" : "requestContent"] === content
+    && (!operation || s[operation.key] === operation.token) && securityDetailVisible();
+  try {
+    const items = (content.items || []).filter(item => !item.riskRanges);
+    const findings = [...new Map(items.flatMap(item => contentFindings(record, item, response)).map(finding => [finding.id, finding])).values()];
+    const evidence = new Map();
+    // Body reads share the audit queue. Keep automatic highlighting bounded
+    // even when a page contains many findings, and reuse immutable evidence.
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, findings.length) }, async () => {
+      while (next < findings.length && current()) {
+        const finding = findings[next++];
+        evidence.set(finding.id, await findingText(record, finding));
+      }
+    }));
+    for (const item of items) {
+      const findings = contentFindings(record, item, response);
+      if (!current()) return;
+      item.riskRanges = Object.fromEntries(["preview", "structure"].map(field => [field, findings.flatMap(finding => contentRiskRanges(item[field] || "", evidence.get(finding.id) || "", finding.id, item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001"))]));
+      item.riskVersions = findings.filter(finding => !Object.values(item.riskRanges).some(ranges => ranges.some(range => range.findingId === finding.id))).flatMap(finding => {
+        const raw = evidence.get(finding.id);
+        if (!raw || Array.isArray(raw) && !raw.length) return [];
+        let text = Array.isArray(raw) ? raw.join("\n") : raw;
+        try { const value = JSON.parse(text); text = typeof value === "string" ? value : JSON.stringify(value, null, 2); } catch {
+          try { text = JSON.parse(`"${text}"`); } catch {}
+        }
+        return [{ findingId: finding.id, text, toolArguments: item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001" }];
+      });
+    }
+  } catch (error) {
+    if (current()) s[response ? "responseContentError" : "contentError"] = `风险位置加载失败：${error.message}`;
+  }
+  if (current()) render();
+}
+
+async function locateContentFinding(finding) {
+  const s = state.security, record = s.detail, sequence = s.detailSequence;
+  const source = finding.evidence?.bodyRef?.sourceSnapshotId || finding.evidence?.bodyRef?.snapshotId;
+  const response = canonicalBodySnapshotId(source)?.startsWith("response") || finding.evidenceStage?.startsWith("response") || finding.evidenceStage === "tool_call_proposed";
+  const tab = response ? "response" : "request", key = response ? "responseContent" : "requestContent";
+  const operation = beginContentOperation(response);
+  const navigation = s.contentNavigation = { findingId: finding.id };
+  state.trace.tab = tab;
+  const current = () => s.detail === record && s.detailSequence === sequence && s[operation.key] === operation.token && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
+  render();
+  let content = record[key], item = content?.items?.find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
+  try {
+    for (let offset = 0; !item && current(); offset = content.nextOffset) {
+      if (offset == null) break;
+      content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
+      if (!current()) return;
+      record[key] = content;
+      item = content?.items?.find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
+      if (content.nextOffset != null && content.nextOffset <= offset) break;
+    }
+  } catch (error) {
+    if (current()) { s[response ? "responseContentError" : "contentError"] = error.message; render(); }
+    return;
+  }
+  if (!current()) return;
+  if (!item) { s[response ? "responseContentError" : "contentError"] = "此风险没有可定位的内容项，证据可在风险详情中复核。"; render(); return; }
+  navigation.index = item.index;
+  await loadContentRiskMarks(response, operation);
+  if (!current()) return;
+  navigation.field = item.riskRanges?.preview?.some(range => range.findingId === finding.id) ? "preview" : "structure";
+  render();
+  const row = pageContent.querySelector(`[data-content-index="${item.index}"]`);
+  for (let parent = row; parent; parent = parent.parentElement) if (parent.tagName === "DETAILS") parent.open = true;
+  const target = row?.querySelector("[data-security-content-anchor]") || row;
+  const structure = target?.closest?.("details.trace-content-structure");
+  if (structure) structure.open = true;
+  target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+  target?.focus?.({ preventScroll: true });
+}
 function renderRetainedContent(record, response) {
   const content = response ? record.responseContent : record.requestContent;
   const title = response ? "响应内容" : "请求内容";
@@ -1272,8 +1526,9 @@ function renderRetainedContent(record, response) {
     const related = `${relation}${item.ambiguousRelation ? "，标识重复，关联存在歧义" : ""}`;
     return `<details class="trace-content-item" data-content-index="${item.index}" open>
       <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="${action}-source" data-index="${item.index}">查看此项原文</button></summary>
-      <div class="trace-content-detail">${item.preview ? `<pre>${esc(item.preview)}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
-      ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${esc(item.structure)}</pre></details>` : ""}
+      <div class="trace-content-detail">${item.preview ? `<pre>${retainedRiskText(item, "preview")}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
+      ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${retainedRiskText(item, "structure")}</pre></details>` : ""}
+      ${item.riskVersions?.length ? `<details class="trace-content-risk-versions" open><summary>风险检测时的内容</summary><p class="trace-content-note">此风险来自较早的流式内容或检测参数，当前内容已变化；以下保留检测时的命中内容。</p>${item.riskVersions.map(version => `${version.toolArguments ? `<p class="trace-content-note">检测时的工具参数与当前参数不同，此记录不表示最终参数仍有风险。实际执行状态未知。</p>` : ""}<pre><mark class="security-risk-hit${state.security.contentNavigation?.findingId === version.findingId ? " security-body-hit" : ""}"${state.security.contentNavigation?.findingId === version.findingId ? ' data-security-content-anchor tabindex="-1"' : ""}>${esc(version.text)}</mark></pre>`).join("")}</details>` : ""}
       ${item.parts?.length ? `<p class="trace-content-note">${item.parts.map(part => esc(REQUEST_PART_LABELS[part] || part)).join(" · ")} · 非文本内容见完整结构或原文</p>` : ""}
       ${item.opaque && item.preview ? `<p class="trace-content-note">同时包含加密或不透明内容。</p>` : ""}
       ${!response && item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
@@ -1283,7 +1538,7 @@ function renderRetainedContent(record, response) {
       ${item.cacheControl ? `<p class="trace-content-note">缓存控制：${esc(item.cacheControl)}</p>` : ""}
       ${item.callId ? `<p class="trace-content-note mono">${esc(item.callId)}</p>` : ""}
       ${response && item.kind === "tool_call" ? `<p class="trace-content-note">${item.serverTool ? "服务端工具调用" : "模型提出的工具调用 · 实际执行状态未知"}</p>` : ""}
-      ${response && item.state === "partial" ? `<p class="notice warning">此项尚未完整返回或留存内容存在缺口。</p>` : ""}
+      ${response && item.state === "partial" ? `<p class="notice warning">${item.kind === "tool_call" ? "调用未完成或留存内容存在缺口，保留检测依据；实际执行状态未知。" : "此项尚未完整返回或留存内容存在缺口。"}</p>` : ""}
       ${response && item.status ? `<p class="trace-content-note">条目状态：${esc(RESPONSE_STATUS_LABELS[item.status] || item.status)}</p>` : ""}
       ${response && item.kind === "tool_result" && item.serverTool ? `<p class="trace-content-note">上游返回的服务端工具结果。</p>` : ""}
       </div></details>`;
@@ -1303,12 +1558,20 @@ function renderRetainedContent(record, response) {
 }
 
 async function loadRequestContent(offset) { return loadRetainedContent(offset, false); }
+function beginContentOperation(response) {
+  const s = state.security, key = response ? "responseContentOperation" : "requestContentOperation";
+  const token = s[key] = (s[key] || 0) + 1;
+  s[response ? "responseContentLoading" : "contentLoading"] = false;
+  s[response ? "responseContentError" : "contentError"] = null;
+  return { key, token };
+}
 async function loadRetainedContent(offset, response) {
   const loadingKey = response ? "responseContentLoading" : "contentLoading";
   const errorKey = response ? "responseContentError" : "contentError";
   const s = state.security, record = s.detail, sequence = s.detailSequence;
   if (!record || s[loadingKey]) return;
-  const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
+  const operation = beginContentOperation(response);
+  const current = () => record === s.detail && sequence === s.detailSequence && s[operation.key] === operation.token && securityDetailVisible();
   s[loadingKey] = true; s[errorKey] = null; render();
   try {
     const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
@@ -1319,6 +1582,7 @@ async function loadRetainedContent(offset, response) {
     s[errorKey] = error.message;
   }
   if (current()) { s[loadingKey] = false; render(); }
+  if (current()) await loadContentRiskMarks(response, operation);
 }
 
 function renderTraceInspector() {
@@ -1417,16 +1681,39 @@ function securityPageMarks(page) {
   return [...new Map(marks.map(mark => [JSON.stringify([mark.start, mark.end, mark.reason, mark.location]), mark])).values()];
 }
 
-function securityPageText(page, selection) {
+function securityRiskSelections(record, snapshotId) {
+  return (record?.findings || []).flatMap(finding => {
+    const ref = finding.evidence?.bodyRef;
+    if (!ref) return [];
+    let range;
+    if (ref.snapshotId === snapshotId || ref.sourceSnapshotId === snapshotId && ref.sourceStart == null) range = ref;
+    else if (ref.sourceSnapshotId === snapshotId && ref.sourceStart != null) range = { start: ref.sourceStart, end: ref.sourceEnd };
+    else return [];
+    // Historical credential findings cover detection windows; their stored
+    // sensitive annotations, rather than the window, identify the real hit.
+    if (finding.ruleId === "SEC-SECRET-001" && ref.matchKind !== "sensitive") return [];
+    return [{ ...range, location: ref.location || finding.evidence.location }];
+  });
+}
+
+function securityPageText(page, selection, riskRanges = []) {
   if (page.legacySnapshot) {
     const snapshot = page.legacySnapshot;
-    if (selection.navigation) {
-      const { text, range } = securityBodyText(snapshot.body, snapshot.root || "request", selection.navigation.location, snapshot.fieldOrder);
-      if (!range) return esc(text);
-      const end = range.start + (text.codePointAt(range.start) > 0xffff ? 2 : 1);
-      return `${esc(text.slice(0, range.start))}${securitySourceAnchor(text.slice(range.start, end))}${esc(text.slice(end))}`;
-    }
-    return securityHighlighted(snapshot.body, snapshot.root, selection.location, snapshot.fieldOrder);
+    const root = snapshot.root || "request";
+    const { text } = securityBodyText(snapshot.body, root, null, snapshot.fieldOrder);
+    const encoder = new TextEncoder();
+    const position = location => {
+      const { range } = securityBodyText(snapshot.body, root, location, snapshot.fieldOrder);
+      return range && { start: encoder.encode(text.slice(0, range.start)).length, end: encoder.encode(text.slice(0, range.end)).length };
+    };
+    const sensitiveRanges = (snapshot.sensitiveRanges || snapshot.redactions || []).map(mark => position(mark.location)).filter(Boolean);
+    const risks = riskRanges.map(range => position(range.location)).filter(Boolean);
+    const selected = position(selection.location);
+    const navigation = position(selection.navigation?.location);
+    return securityPageText({ chunks: [{ start: 0, content: text, sensitiveRanges }] }, {
+      hitUnavailable: selection.hitUnavailable, ...(selected || {}),
+      ...(navigation ? { navigation: { start: navigation.start } } : {}),
+    }, risks);
   }
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -1440,6 +1727,7 @@ function securityPageText(page, selection) {
       events.push({ at: start, [kind]: 1 }, { at: end, [kind]: -1 });
     };
     for (const range of chunk.sensitiveRanges || []) add(range, "sensitive");
+    for (const range of riskRanges) add(range, "risk");
     if (!selection.hitUnavailable) add(selection, "selected");
     const position = selection.navigation?.start - chunk.start;
     if (position >= 0 && position < bytes.length) {
@@ -1452,17 +1740,18 @@ function securityPageText(page, selection) {
       if (start < bytes.length) add({ start: chunk.start + start, end: chunk.start + end }, "anchor");
     }
     events.sort((a, b) => a.at - b.at);
-    let at = 0, sensitive = 0, selected = 0, anchor = 0, html = "";
+    let at = 0, sensitive = 0, selected = 0, risk = 0, anchor = 0, html = "";
     for (const event of events) {
       if (event.at > at) {
         const text = decoder.decode(bytes.slice(at, event.at));
         const content = anchor > 0 ? securitySourceAnchor(text) : esc(text);
-        const classes = [sensitive > 0 && "security-sensitive-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
+        const classes = [sensitive > 0 && "security-sensitive-hit", risk > 0 && "security-risk-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
         html += classes ? `<mark class="${classes}"${selected > 0 ? ' tabindex="-1"' : ""}>${content}</mark>` : content;
         at = event.at;
       }
       sensitive += event.sensitive || 0;
       selected += event.selected || 0;
+      risk += event.risk || 0;
       anchor += event.anchor || 0;
     }
     return html;
@@ -1499,13 +1788,13 @@ function renderSecurityBody(record) {
       ${page.gap ? `<div class="notice warning">此范围存在未保存的正文，不能视为完整证据。</div>` : ""}
       ${selection.hitUnavailable ? detection ? `<p class="muted">命中原文保存在下方检测快照中，响应正文保留关联引用。</p>` : `<div class="notice warning">此检测范围未保留可定位的凭据命中点，仅展示正文上下文。</div>` : ""}
       <div class="security-pagination"><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.previousOffset ?? "")}" ${page.previousOffset == null ? "disabled" : ""}>上一段上下文</button><span>${page.rangeStart > 0 ? "源正文" : ""}字节 ${esc(page.offset ?? 0)}–${esc(page.chunks?.at(-1)?.end ?? page.offset ?? 0)} · 本快照 ${esc(snapshot?.byteLength ?? 0)} 字节</span><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.nextOffset ?? "")}" ${page.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div>
-      <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection)}</pre>
+      <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection, securityRiskSelections(record, selection.snapshotId))}</pre>
       ${references.length ? `<div class="security-body-tabs" aria-label="关联流式内容">${references.map((id, i) => `<button class="mini-button" data-action="security-body" data-id="${esc(id)}">关联流式内容 ${i + 1} · ${esc(id.split("/").at(-1).slice(0, 8))}</button>`).join("")}</div>` : ""}
       ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId && selection.sourceStart != null ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart)}">查看完整正文上下文</button>` : ""}
       <details class="security-redactions"><summary>本页${original ? "敏感" : "脱敏"}位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
   const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
   const streamPage = s.streamPageSnapshotId === selection.detectionSnapshotId ? s.streamPage : null;
-  const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }) : "";
+  const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }, securityRiskSelections(record, selection.detectionSnapshotId)) : "";
   const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；点击风险可查看检测快照中的命中原文，响应正文保留关联引用。</p>${streamSnapshots.map((item, i) => {
     const active = selection.detectionSnapshotId === item.id || detection?.sourceSnapshotId === item.id;
     const previous = streamSnapshots[i - 1]?.id;
@@ -1631,17 +1920,21 @@ async function securityAction(action, element) {
     return;
   }
   if (action === "security-trace-tab") {
+    s.contentNavigation = null;
     t.tab = element.dataset.tab; render();
     if (t.tab === "body" && !s.bodyPage) await loadSecurityBody();
+    else if (["request", "response"].includes(t.tab)) await loadContentRiskMarks(t.tab === "response");
     return;
   }
   if (["security-content-page", "security-response-content-page"].includes(action)) {
+    s.contentNavigation = null;
     await loadRetainedContent(Number(element.dataset.offset), action === "security-response-content-page"); return;
   }
   if (["security-content-source", "security-response-content-source"].includes(action)) {
     const response = action === "security-response-content-source";
     const item = s.detail?.[response ? "responseContent" : "requestContent"]?.items?.find(item => item.index === Number(element.dataset.index));
     if (!item) return;
+    s.contentNavigation = null;
     t.tab = "body";
     s.bodySelection = { snapshotId: response ? item.snapshotId || "response" : "request", navigation: { start: item.start, location: item.location } };
     render(); await loadSecurityBody(Math.max(0, item.start - 512)); return;
@@ -1673,8 +1966,9 @@ async function securityAction(action, element) {
       return;
     }
     if (action === "security-finding") {
-      if (state.page === "security-session") t.tab = "body";
       const finding = s.detail.findings?.find(item => item.id === element.dataset.id);
+      if (!finding) return;
+      if (state.page === "security-session") { await locateContentFinding(finding); return; }
       const ref = finding?.evidence?.bodyRef || { snapshotId: "unavailable" };
       const source = ref.sourceSnapshotId || ref.snapshotId;
       const snapshotId = canonicalBodySnapshotId(source);

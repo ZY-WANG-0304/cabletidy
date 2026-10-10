@@ -170,6 +170,7 @@ impl Visitor for Scan {
                 | "role"
                 | "status"
                 | "contentSnapshotId"
+                | "fragmentUnit"
                 | "stop_reason"
         ) {
             f.value.push_str(text);
@@ -208,6 +209,17 @@ impl Visitor for Scan {
         meta["location"] = json!(f.path);
         meta["nodes"] = f.nodes;
         let depth = self.frames.len();
+        let references = if meta["fragmentUnit"] == "decoded_utf8_bytes" {
+            meta["contentSnapshotId"]
+                .as_str()
+                .map(|id| vec![json!(id)])
+                .unwrap_or_default()
+        } else {
+            meta["contentSnapshotIds"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        };
         let parent = self.frames.last().map(|p| p.field.as_str()).unwrap_or("");
         if (depth == 2 && matches!(parent, "output" | "content"))
             || (depth == 3 && parent == "output" && self.frames[1].field == "response")
@@ -215,6 +227,17 @@ impl Visitor for Scan {
             self.items.push(meta.clone());
         }
         if let Some(parent) = self.frames.last_mut() {
+            if !references.is_empty() {
+                if !parent.meta["contentSnapshotIds"].is_array() {
+                    parent.meta["contentSnapshotIds"] = json!([]);
+                }
+                let ids = parent.meta["contentSnapshotIds"].as_array_mut().unwrap();
+                for id in references {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+            }
             if !f.field.is_empty() {
                 if matches!(
                     f.field.as_str(),
@@ -430,6 +453,7 @@ fn build(
         parsed = false;
     }
     let mut outputs = BTreeMap::<u64, Value>::new();
+    let mut output_snapshots = BTreeMap::<u64, Vec<Value>>::new();
     let mut extras = Vec::new();
     let mut terminal = false;
     let mut status = Value::Null;
@@ -451,6 +475,19 @@ fn build(
         let e = &scan.root;
         let t = e["type"].as_str().unwrap_or("");
         let i = e["output_index"].as_u64().unwrap_or(0);
+        if let Some(ids) = e["contentSnapshotIds"].as_array() {
+            if t.starts_with("content_block_") && e["index"].is_u64()
+                || t.starts_with("response.") && e["output_index"].is_u64()
+            {
+                let index = e["index"].as_u64().unwrap_or(i);
+                let all = output_snapshots.entry(index).or_default();
+                for id in ids {
+                    if !all.contains(id) {
+                        all.push(id.clone());
+                    }
+                }
+            }
+        }
         match t {
             "content_block_start" => {
                 let i = e["index"].as_u64().unwrap_or(0);
@@ -627,6 +664,17 @@ fn build(
             }
             "response.created" | "response.in_progress" => {
                 for (i, m) in scan.items.into_iter().enumerate() {
+                    // These events carry output arrays, not a top-level
+                    // output_index. Keep each output's earlier evidence links
+                    // when the final event replaces its display content.
+                    if let Some(ids) = m["contentSnapshotIds"].as_array() {
+                        let all = output_snapshots.entry(i as u64).or_default();
+                        for id in ids {
+                            if !all.contains(id) {
+                                all.push(id.clone());
+                            }
+                        }
+                    }
                     outputs
                         .entry(i as u64)
                         .or_insert_with(|| source(m, Some((start, end))));
@@ -648,7 +696,13 @@ fn build(
             }
         }
     }
-    let mut items = outputs.into_values().collect::<Vec<_>>();
+    let mut items = outputs
+        .into_iter()
+        .map(|(index, mut item)| {
+            item["contentSnapshotIds"] = json!(output_snapshots.remove(&index).unwrap_or_default());
+            item
+        })
+        .collect::<Vec<_>>();
     items.extend(extras);
     Ok(Index {
         items,
@@ -1019,6 +1073,16 @@ fn materialize(
         complete &= meta["blockComplete"] == true;
     }
     let mut item = json!({"kind":meta["kind"],"type":meta["type"],"preview":preview,"structure":serde_json::to_string_pretty(&body)?,"parts":parts,"opaque":opaque,"start":meta["eventStart"].as_u64().or_else(||meta["start"].as_u64()).unwrap_or(0),"end":meta["eventEnd"].as_u64().or_else(||meta["end"].as_u64()).unwrap_or(0),"location":meta["location"],"snapshotId":"response","state":if complete {"complete"} else {"partial"}});
+    let mut ids = meta["contentSnapshotIds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for id in snapshots.keys() {
+        if !ids.contains(&json!(id)) {
+            ids.push(json!(id));
+        }
+    }
+    item["contentSnapshotIds"] = json!(ids);
     for (to, from) in [
         ("name", "name"),
         ("callId", "call_id"),
@@ -1267,6 +1331,77 @@ mod tests {
         assert_eq!(page["items"][1]["preview"], "Future output");
     }
 
+    #[test]
+    fn final_outputs_keep_earlier_snapshot_links_per_output() {
+        let db = db();
+        let ids = [
+            "stream/00000000-0000-0000-0000-000000000001",
+            "stream/00000000-0000-0000-0000-000000000002",
+        ];
+        let mut events = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            events.push(json!({"type":"response.output_text.delta","output_index":i,"content_index":0,"delta":{"contentSnapshotId":id,"observedFragmentStart":0,"observedFragmentEnd":10,"fragmentUnit":"decoded_utf8_bytes"}}));
+        }
+        events.push(json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"first final"}]},{"type":"message","content":[{"type":"output_text","text":"second final"}]}]}}));
+        let text = events
+            .iter()
+            .map(|e| format!("data: {e}\n\n"))
+            .collect::<String>();
+        db.execute(
+            "INSERT INTO audit_snapshots VALUES('audit','response',?)",
+            [json!({"state":"complete"}).to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO audit_body_chunks VALUES('audit','response',0,?,?)",
+            params![text.len(), text],
+        )
+        .unwrap();
+        let page = Cache::default().read(&db, "audit", 0, &|| false).unwrap();
+        assert_eq!(page["items"][0]["preview"], "first final");
+        assert_eq!(page["items"][1]["preview"], "second final");
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(page["items"][i]["contentSnapshotIds"], json!([id]));
+        }
+    }
+    #[test]
+    fn initial_response_arrays_keep_snapshot_links_after_final_replacement() {
+        for initial in ["response.created", "response.in_progress"] {
+            let db = db();
+            let ids = [
+                "stream/00000000-0000-0000-0000-000000000011",
+                "stream/00000000-0000-0000-0000-000000000012",
+            ];
+            let output = ids.iter().map(|id| json!({"type":"message","content":[{"type":"output_text","text":{"contentSnapshotId":id,"observedFragmentStart":0,"observedFragmentEnd":10,"fragmentUnit":"decoded_utf8_bytes"}}]})).collect::<Vec<_>>();
+            let events = [
+                json!({"type":initial,"response":{"output":output}}),
+                json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"safe first"}]},{"type":"message","content":[{"type":"output_text","text":"safe second"}]}]}}),
+            ];
+            let text = events
+                .iter()
+                .map(|e| format!("data: {e}\n\n"))
+                .collect::<String>();
+            db.execute(
+                "INSERT INTO audit_snapshots VALUES('audit','response',?)",
+                [json!({"state":"complete"}).to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO audit_body_chunks VALUES('audit','response',0,?,?)",
+                params![text.len(), text],
+            )
+            .unwrap();
+            let page = Cache::default().read(&db, "audit", 0, &|| false).unwrap();
+            assert_eq!(page["state"], "complete");
+            for (i, id) in ids.iter().enumerate() {
+                assert_eq!(
+                    page["items"][i]["contentSnapshotIds"],
+                    json!([id]),
+                    "{initial}: output {i}"
+                );
+            }
+        }
+    }
     #[test]
     fn invalid_source_ranges_return_errors() {
         let db = db();
