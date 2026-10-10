@@ -664,6 +664,17 @@ fn build(
             }
             "response.created" | "response.in_progress" => {
                 for (i, m) in scan.items.into_iter().enumerate() {
+                    // These events carry output arrays, not a top-level
+                    // output_index. Keep each output's earlier evidence links
+                    // when the final event replaces its display content.
+                    if let Some(ids) = m["contentSnapshotIds"].as_array() {
+                        let all = output_snapshots.entry(i as u64).or_default();
+                        for id in ids {
+                            if !all.contains(id) {
+                                all.push(id.clone());
+                            }
+                        }
+                    }
                     outputs
                         .entry(i as u64)
                         .or_insert_with(|| source(m, Some((start, end))));
@@ -1351,6 +1362,44 @@ mod tests {
         assert_eq!(page["items"][1]["preview"], "second final");
         for (i, id) in ids.iter().enumerate() {
             assert_eq!(page["items"][i]["contentSnapshotIds"], json!([id]));
+        }
+    }
+    #[test]
+    fn initial_response_arrays_keep_snapshot_links_after_final_replacement() {
+        for initial in ["response.created", "response.in_progress"] {
+            let db = db();
+            let ids = [
+                "stream/00000000-0000-0000-0000-000000000011",
+                "stream/00000000-0000-0000-0000-000000000012",
+            ];
+            let output = ids.iter().map(|id| json!({"type":"message","content":[{"type":"output_text","text":{"contentSnapshotId":id,"observedFragmentStart":0,"observedFragmentEnd":10,"fragmentUnit":"decoded_utf8_bytes"}}]})).collect::<Vec<_>>();
+            let events = [
+                json!({"type":initial,"response":{"output":output}}),
+                json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"safe first"}]},{"type":"message","content":[{"type":"output_text","text":"safe second"}]}]}}),
+            ];
+            let text = events
+                .iter()
+                .map(|e| format!("data: {e}\n\n"))
+                .collect::<String>();
+            db.execute(
+                "INSERT INTO audit_snapshots VALUES('audit','response',?)",
+                [json!({"state":"complete"}).to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO audit_body_chunks VALUES('audit','response',0,?,?)",
+                params![text.len(), text],
+            )
+            .unwrap();
+            let page = Cache::default().read(&db, "audit", 0, &|| false).unwrap();
+            assert_eq!(page["state"], "complete");
+            for (i, id) in ids.iter().enumerate() {
+                assert_eq!(
+                    page["items"][i]["contentSnapshotIds"],
+                    json!([id]),
+                    "{initial}: output {i}"
+                );
+            }
         }
     }
     #[test]

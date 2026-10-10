@@ -918,6 +918,31 @@ test("unknown SSE fragments retain original content and report unsupported seman
   for (const half of halves) assert.ok(stored.includes(Buffer.from(half)));
 });
 
+for (const initial of ["response.created", "response.in_progress"]) {
+  test(`${initial} credential exposure remains linked when final output changes`, async t => {
+    const item = text => ({ type: "message", content: [{ type: "output_text", text }] });
+    const f = await fixture(t, (_req, res, body) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end([
+        { type: initial, response: { model: body.model, output: [item(secret), item("second safe output")] } },
+        { type: "response.completed", response: { model: body.model, status: "completed", output: [item("first safe output"), item("second safe output")] } },
+      ].map(event).join(""));
+    });
+    await (await f.request({ stream: true })).text();
+    const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+    for (const restarted of [false, true]) {
+      if (restarted) await f.restart();
+      const record = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+      const finding = record.findings.find(f => f.ruleId === "SEC-SECRET-001");
+      assert.ok(finding, "an observed credential remains a risk after final output changes");
+      const source = finding.evidence.bodyRef.sourceSnapshotId;
+      assert.equal(record.responseContent.items[0].preview, "first safe output");
+      assert.ok(record.responseContent.items[0].contentSnapshotIds.includes(source));
+      assert.equal(record.responseContent.items[1].contentSnapshotIds.includes(source), false);
+    }
+  });
+}
+
 test("changed streamed tool arguments retain every risk version and deduplicate only identical repetitions", async t => {
   const versions = [{ cmd: "rm -rf tmp" }, { cmd: dangerous }, { cmd: "rm -rf cache" }, { cmd: dangerous, description: "updated context" }];
   const f = await fixture(t, (req, res, body) => {

@@ -2185,9 +2185,9 @@ test("all original risk ranges remain highlighted during ordinary and source nav
 });
 
 test("changed streamed content keeps the detected risk version highlighted in response content", async () => {
-  const old = '{"cmd":"rm -rf /important"}';
+  const old = '{"cmd":"rm -rf /important","path":"/workspace"}';
   const finding = { id: "old-delete", ruleId: "SEC-DELETE-001", evidenceStage: "tool_call_proposed", evidence: { bodyRef: { snapshotId: "evidence/old", sourceSnapshotId: "stream/old", start: 0, end: Buffer.byteLength(old) } } };
-  const record = { id: "changed", findings: [finding], responseContent: { offset: 0, total: 1, counts: {}, state: "complete", items: [{ index: 0, kind: "tool_call", preview: '{"cmd":"ls"}', contentSnapshotIds: ["stream/old"] }] } };
+  const record = { id: "changed", findings: [finding], bodySnapshots: [{ id: "stream/old", state: "complete" }], responseContent: { offset: 0, total: 1, counts: {}, state: "complete", items: [{ index: 0, kind: "tool_call", preview: '{"cmd":"ls","path":"/workspace"}', contentSnapshotIds: ["stream/old"] }] } };
   const app = await controller(undefined, { onSecurity(url) {
     if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: Buffer.byteLength(old), content: old }] } };
   } });
@@ -2200,8 +2200,56 @@ test("changed streamed content keeps the detected risk version highlighted in re
   assert.equal(app.read("state.trace.tab"), "response");
   assert.match(app.read("renderTraceInspector()"), /data-security-content-anchor/);
   assert.match(app.read("renderTraceInspector()"), /rm -rf \/important/);
-  assert.equal(app.read("state.security.detail.responseContent.items[0].preview"), '{"cmd":"ls"}');
+  assert.equal(app.read("state.security.detail.responseContent.items[0].preview"), '{"cmd":"ls","path":"/workspace"}');
+  assert.equal(app.read("state.security.detail.responseContent.items[0].riskRanges.preview.length"), 0, "unchanged auxiliary fields do not stand in for the old command");
+  assert.match(app.read("renderTraceInspector()"), /检测时的工具参数与当前参数不同/);
+  assert.match(app.read("renderTraceInspector()"), /不表示最终参数仍有风险/);
 });
+
+test("complete tool evidence stays highlighted while incomplete calls retain explicit status", async () => {
+  const app = await controller();
+  const evidence = '{"cmd":"rm -rf /important","path":"/workspace"}';
+  const text = JSON.stringify(JSON.parse(evidence), null, 2);
+  const ranges = app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(evidence)}, "delete", true)`);
+  assert.equal(ranges.length, 1, "complete inspected arguments match formatted output");
+  assert.equal(text.slice(ranges[0].start, ranges[0].end), text);
+  const record = { responseContent: { offset: 0, total: 1, counts: {}, state: "partial", items: [{ index: 0, kind: "tool_call", state: "partial", preview: evidence }] } };
+  assert.match(app.read(`renderResponseContent(${JSON.stringify(record)})`), /调用未完成.*实际执行状态未知/);
+});
+
+for (const response of [false, true]) for (const lateFailure of [false, true]) {
+  test(`${response ? "response" : "request"} risk navigation invalidates a late ordinary page ${lateFailure ? "failure" : "result"}`, async () => {
+    let release;
+    const key = response ? "responseContent" : "requestContent", endpoint = response ? "/response-content?" : "/content?";
+    const hit = "risk text🙂";
+    const finding = { id: "risk", ruleId: "SEC-INJECT-001", evidenceStage: response ? "response_content" : "request_content", evidence: { bodyRef: { snapshotId: response ? "response" : "request", start: 800, end: 800 + Buffer.byteLength(hit) } } };
+    const page = offset => ({ offset, nextOffset: offset < 80 ? offset + 40 : null, total: 81, counts: {}, state: "complete", items: [{ index: offset, kind: "user", start: offset * 10, end: offset * 10 + 100, preview: offset === 80 ? hit : "safe" }] });
+    let firstPage = true;
+    const app = await controller(undefined, { onSecurity(url) {
+      if (url.includes(endpoint)) {
+        const offset = Number(new URL(url, "http://test").searchParams.get("offset"));
+        if (offset === 40 && firstPage) {
+          firstPage = false;
+          return new Promise(resolve => { release = () => resolve(lateFailure ? { status: 503, body: { error: { message: "old page failed" } } } : { body: page(40) }); });
+        }
+        return { body: page(offset) };
+      }
+      if (url.includes("/body?")) return { body: { chunks: [{ start: 800, end: finding.evidence.bodyRef.end, content: hit }] } };
+    } });
+    app.read(`state.page = "security-session"; state.trace.tab = "${response ? "response" : "request"}"; state.security.detail = ${JSON.stringify({ id: "paging", findings: [finding], [key]: page(0) })}`);
+    const pending = app.action(response ? "security-response-content-page" : "security-content-page", { dataset: { offset: "40" } });
+    await setImmediate();
+    await app.action("security-finding", { dataset: { id: "risk" } });
+    const located = app.read(`state.security.detail.${key}`);
+    assert.equal(located.offset, 80);
+    assert.equal(app.read("state.security.contentNavigation.index"), 80);
+    release(); await pending;
+    assert.equal(app.read(`state.security.detail.${key}`), located);
+    assert.equal(app.read(`state.security.${response ? "responseContentError" : "contentError"}`), null);
+    assert.equal(app.read(`state.security.${response ? "responseContentLoading" : "contentLoading"}`), false);
+    assert.match(app.read("renderTraceInspector()"), /data-security-content-anchor/);
+  });
+}
 
 test("legacy source navigation uses structural positions without adding risk highlighting", async () => {
   const app = await controller();

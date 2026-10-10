@@ -1328,14 +1328,16 @@ async function findingText(record, finding) {
   return cache.get(finding.id);
 }
 
-function contentRiskRanges(text, evidence, findingId) {
+function contentRiskRanges(text, evidence, findingId, structuredTool = false) {
   const candidates = new Set();
   const collect = value => {
     if (typeof value === "string" && value) candidates.add(value);
     else if (value && typeof value === "object") {
       candidates.add(JSON.stringify(value));
       candidates.add(JSON.stringify(value, null, 2));
-      for (const child of Object.values(value)) collect(child);
+      // Tool evidence describes the complete inspected arguments. Matching
+      // individual values can mistake an unchanged auxiliary field for a hit.
+      if (!structuredTool) for (const child of Object.values(value)) collect(child);
     }
   };
   for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
@@ -1356,11 +1358,12 @@ function contentRiskRanges(text, evidence, findingId) {
   return ranges;
 }
 
-async function loadContentRiskMarks(response) {
+async function loadContentRiskMarks(response, operation) {
   const s = state.security, record = s.detail, sequence = s.detailSequence;
   const content = record?.[response ? "responseContent" : "requestContent"];
   if (!content) return;
-  const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
+  const current = () => record === s.detail && sequence === s.detailSequence && record[response ? "responseContent" : "requestContent"] === content
+    && (!operation || s[operation.key] === operation.token) && securityDetailVisible();
   try {
     const items = (content.items || []).filter(item => !item.riskRanges);
     const findings = [...new Map(items.flatMap(item => contentFindings(record, item, response)).map(finding => [finding.id, finding])).values()];
@@ -1377,7 +1380,7 @@ async function loadContentRiskMarks(response) {
     for (const item of items) {
       const findings = contentFindings(record, item, response);
       if (!current()) return;
-      item.riskRanges = Object.fromEntries(["preview", "structure"].map(field => [field, findings.flatMap(finding => contentRiskRanges(item[field] || "", evidence.get(finding.id) || "", finding.id))]));
+      item.riskRanges = Object.fromEntries(["preview", "structure"].map(field => [field, findings.flatMap(finding => contentRiskRanges(item[field] || "", evidence.get(finding.id) || "", finding.id, item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001"))]));
       item.riskVersions = findings.filter(finding => !Object.values(item.riskRanges).some(ranges => ranges.some(range => range.findingId === finding.id))).flatMap(finding => {
         const raw = evidence.get(finding.id);
         if (!raw || Array.isArray(raw) && !raw.length) return [];
@@ -1385,7 +1388,7 @@ async function loadContentRiskMarks(response) {
         try { const value = JSON.parse(text); text = typeof value === "string" ? value : JSON.stringify(value, null, 2); } catch {
           try { text = JSON.parse(`"${text}"`); } catch {}
         }
-        return [{ findingId: finding.id, text }];
+        return [{ findingId: finding.id, text, toolArguments: item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001" }];
       });
     }
   } catch (error) {
@@ -1399,9 +1402,10 @@ async function locateContentFinding(finding) {
   const source = finding.evidence?.bodyRef?.sourceSnapshotId || finding.evidence?.bodyRef?.snapshotId;
   const response = canonicalBodySnapshotId(source)?.startsWith("response") || finding.evidenceStage?.startsWith("response") || finding.evidenceStage === "tool_call_proposed";
   const tab = response ? "response" : "request", key = response ? "responseContent" : "requestContent";
+  const operation = beginContentOperation(response);
   const navigation = s.contentNavigation = { findingId: finding.id };
   state.trace.tab = tab;
-  const current = () => s.detail === record && s.detailSequence === sequence && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
+  const current = () => s.detail === record && s.detailSequence === sequence && s[operation.key] === operation.token && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
   render();
   let content = record[key], item = content?.items?.find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
   try {
@@ -1420,7 +1424,7 @@ async function locateContentFinding(finding) {
   if (!current()) return;
   if (!item) { s[response ? "responseContentError" : "contentError"] = "此风险没有可定位的内容项，证据可在风险详情中复核。"; render(); return; }
   navigation.index = item.index;
-  await loadContentRiskMarks(response);
+  await loadContentRiskMarks(response, operation);
   if (!current()) return;
   navigation.field = item.riskRanges?.preview?.some(range => range.findingId === finding.id) ? "preview" : "structure";
   render();
@@ -1450,7 +1454,7 @@ function renderRetainedContent(record, response) {
       <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="${action}-source" data-index="${item.index}">查看此项原文</button></summary>
       <div class="trace-content-detail">${item.preview ? `<pre>${retainedRiskText(item, "preview")}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
       ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${retainedRiskText(item, "structure")}</pre></details>` : ""}
-      ${item.riskVersions?.length ? `<details class="trace-content-risk-versions" open><summary>风险检测时的内容</summary><p class="trace-content-note">此风险来自较早的流式内容或检测参数，当前内容已变化；以下保留检测时的命中内容。</p>${item.riskVersions.map(version => `<pre><mark class="security-risk-hit${state.security.contentNavigation?.findingId === version.findingId ? " security-body-hit" : ""}"${state.security.contentNavigation?.findingId === version.findingId ? ' data-security-content-anchor tabindex="-1"' : ""}>${esc(version.text)}</mark></pre>`).join("")}</details>` : ""}
+      ${item.riskVersions?.length ? `<details class="trace-content-risk-versions" open><summary>风险检测时的内容</summary><p class="trace-content-note">此风险来自较早的流式内容或检测参数，当前内容已变化；以下保留检测时的命中内容。</p>${item.riskVersions.map(version => `${version.toolArguments ? `<p class="trace-content-note">检测时的工具参数与当前参数不同，此记录不表示最终参数仍有风险。实际执行状态未知。</p>` : ""}<pre><mark class="security-risk-hit${state.security.contentNavigation?.findingId === version.findingId ? " security-body-hit" : ""}"${state.security.contentNavigation?.findingId === version.findingId ? ' data-security-content-anchor tabindex="-1"' : ""}>${esc(version.text)}</mark></pre>`).join("")}</details>` : ""}
       ${item.parts?.length ? `<p class="trace-content-note">${item.parts.map(part => esc(REQUEST_PART_LABELS[part] || part)).join(" · ")} · 非文本内容见完整结构或原文</p>` : ""}
       ${item.opaque && item.preview ? `<p class="trace-content-note">同时包含加密或不透明内容。</p>` : ""}
       ${!response && item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
@@ -1460,7 +1464,7 @@ function renderRetainedContent(record, response) {
       ${item.cacheControl ? `<p class="trace-content-note">缓存控制：${esc(item.cacheControl)}</p>` : ""}
       ${item.callId ? `<p class="trace-content-note mono">${esc(item.callId)}</p>` : ""}
       ${response && item.kind === "tool_call" ? `<p class="trace-content-note">${item.serverTool ? "服务端工具调用" : "模型提出的工具调用 · 实际执行状态未知"}</p>` : ""}
-      ${response && item.state === "partial" ? `<p class="notice warning">此项尚未完整返回或留存内容存在缺口。</p>` : ""}
+      ${response && item.state === "partial" ? `<p class="notice warning">${item.kind === "tool_call" ? "调用未完成或留存内容存在缺口，保留检测依据；实际执行状态未知。" : "此项尚未完整返回或留存内容存在缺口。"}</p>` : ""}
       ${response && item.status ? `<p class="trace-content-note">条目状态：${esc(RESPONSE_STATUS_LABELS[item.status] || item.status)}</p>` : ""}
       ${response && item.kind === "tool_result" && item.serverTool ? `<p class="trace-content-note">上游返回的服务端工具结果。</p>` : ""}
       </div></details>`;
@@ -1480,12 +1484,20 @@ function renderRetainedContent(record, response) {
 }
 
 async function loadRequestContent(offset) { return loadRetainedContent(offset, false); }
+function beginContentOperation(response) {
+  const s = state.security, key = response ? "responseContentOperation" : "requestContentOperation";
+  const token = s[key] = (s[key] || 0) + 1;
+  s[response ? "responseContentLoading" : "contentLoading"] = false;
+  s[response ? "responseContentError" : "contentError"] = null;
+  return { key, token };
+}
 async function loadRetainedContent(offset, response) {
   const loadingKey = response ? "responseContentLoading" : "contentLoading";
   const errorKey = response ? "responseContentError" : "contentError";
   const s = state.security, record = s.detail, sequence = s.detailSequence;
   if (!record || s[loadingKey]) return;
-  const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
+  const operation = beginContentOperation(response);
+  const current = () => record === s.detail && sequence === s.detailSequence && s[operation.key] === operation.token && securityDetailVisible();
   s[loadingKey] = true; s[errorKey] = null; render();
   try {
     const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
@@ -1496,7 +1508,7 @@ async function loadRetainedContent(offset, response) {
     s[errorKey] = error.message;
   }
   if (current()) { s[loadingKey] = false; render(); }
-  if (current()) await loadContentRiskMarks(response);
+  if (current()) await loadContentRiskMarks(response, operation);
 }
 
 function renderTraceInspector() {
