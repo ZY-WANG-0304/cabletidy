@@ -359,6 +359,43 @@ pub async fn stop(
         } => result,
     }
 }
+/// Daemon state for the npm updater, derived from the instance lock and runtime.json only.
+pub async fn instance(paths: &Paths) -> Result<Value> {
+    let running = locked(paths)?;
+    let runtime = match running {
+        // runtime.json may be absent or partially written while the daemon starts or exits.
+        true => read_json(&paths.runtime).await.ok().flatten(),
+        false => None,
+    };
+    // The kernel lock is local, so its holder runs on this machine; the recorded hostname is only
+    // diagnostic and may be stale. Report the process only once pid and start time match locally,
+    // so waiting for exit never depends on an identity that cannot be verified.
+    let mut process = runtime
+        .filter(|r| r["pid"].is_u64())
+        .map(|r| json!({"pid":r["pid"],"startTime":r["pidStartTime"]}));
+    if let Some(identity) = &process {
+        if inspect(identity).await != "alive" {
+            process = None;
+        }
+    }
+    Ok(json!({"running":running,"process":process}))
+}
+
+/// Waits until a recorded daemon process has exited and no longer holds its executable.
+/// A successful stop only confirms shutdown; the process may still be closing control connections.
+pub async fn wait_exit(identity: &Value) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while inspect(identity).await != "dead" {
+        if tokio::time::Instant::now() >= deadline {
+            bail!(
+                "Timed out waiting for CableTidy process {} to exit",
+                identity["pid"]
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
 pub async fn status(paths: &Paths) -> Result<Value> {
     let Some(raw) = read_json(&paths.config).await? else {
         return Ok(

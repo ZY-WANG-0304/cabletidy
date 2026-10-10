@@ -15,11 +15,23 @@ async fn run() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str).unwrap_or("status");
     if ["--help", "-h", "help"].contains(&command) {
-        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start [--foreground]        Start daemon (npm: background; native: foreground)\n  restart [--foreground]      Stop gracefully, then start (also starts if offline)\n  stop                        Stop a running daemon\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNative start/restart run in the foreground without options\nNo command: show status");
+        println!("CableTidy CLI\n\nUsage: cabletidy <command>\n\nCommands:\n  start [--foreground]        Start daemon (npm: background; native: foreground)\n  restart [--foreground]      Stop gracefully, then start (also starts if offline)\n  stop                        Stop a running daemon\n  --help, -h                  Show this help\n  --version, -v               Print the installed version\n  status                      Show daemon status and management URL\n  update [<version|tag>]      Update the npm installation (npm only)\n    --check                   Only report whether an update is available\n    --yes, -y                 Confirm stopping or restarting the daemon\n    --registry <url>          npm registry (default: registry.npmjs.org)\n\nData: CABLETIDY_HOME or ~/.cabletidy\nNative start/restart run in the foreground without options\nNo command: show status");
         return Ok(());
     }
     if ["--version", "-v"].contains(&command) {
         println!("{}", cabletidy::VERSION);
+        return Ok(());
+    }
+    // Internal probe for the npm updater; it must work even when config.json cannot be parsed.
+    if command == "__instance" {
+        let paths = Paths::from_env()?;
+        match &args[1..] {
+            [] => println!("{}", lifecycle::instance(&paths).await?),
+            [flag, identity] if flag == "--wait-exit" => {
+                lifecycle::wait_exit(&serde_json::from_str(identity)?).await?
+            }
+            _ => bail!("用法: cabletidy __instance [--wait-exit <identity>]"),
+        }
         return Ok(());
     }
     if args.len() > 1 {
