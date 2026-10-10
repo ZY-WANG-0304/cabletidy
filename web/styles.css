@@ -264,6 +264,24 @@ h3 {
   gap: 20px;
 }
 
+.suite-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.transfer-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.transfer-selection {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  padding: 16px;
+}
+
 .suite-list {
   overflow: auto;
   border: 1px solid var(--line);

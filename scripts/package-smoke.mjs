@@ -117,6 +117,14 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.match(error.stderr, /ELOCKED/);
       return true;
     });
+    await assert.rejects(cli(["restart", "--invalid"]));
+    const restarted = await cli(["restart"]);
+    assert.match(restarted.stdout, /CableTidy restarted:/);
+    const afterRestart = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
+    assert.notEqual(afterRestart.controlId, runtime.controlId);
+    assert.equal(afterRestart.web.url, url);
+    assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
+    assert.equal((await fetch(url)).status, 200);
     assert.match((await cli(["stop"])).stdout, /CableTidy stopped/);
     await waitFor(async () => {
       try { await fs.access(path.join(home, "runtime.json")); return false; }

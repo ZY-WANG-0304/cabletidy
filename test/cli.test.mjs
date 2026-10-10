@@ -20,12 +20,13 @@ test("help, version and invalid commands do not initialize user data", async (t)
     const result = await execFileAsync(process.execPath, [cli, flag], options);
     assert.match(result.stdout, /Usage: cabletidy/);
     assert.match(result.stdout, /start/);
+    assert.match(result.stdout, /restart/);
   }
   for (const flag of ["--version", "-v"]) {
     const result = await execFileAsync(process.execPath, [cli, flag], options);
     assert.equal(result.stdout.trim(), metadata.version);
   }
-  for (const args of [["unknown"], ["web", "unknown"], ["start", "--unknown"]]) {
+  for (const args of [["unknown"], ["web", "unknown"], ["start", "--unknown"], ["restart", "--unknown"], ["restart", "--foreground", "extra"]]) {
     await assert.rejects(execFileAsync(process.execPath, [cli, ...args], options), error => {
       assert.equal(error.code, 1);
       assert.ok(error.stderr);

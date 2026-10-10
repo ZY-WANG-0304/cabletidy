@@ -9,6 +9,7 @@ pub mod security;
 pub mod server;
 mod streaming;
 pub mod targets;
+mod transfer;
 pub mod validation;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
