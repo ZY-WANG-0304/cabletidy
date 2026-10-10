@@ -101,7 +101,7 @@ test("import previews without writes and adds renamed suites without inheriting 
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
   assert.deepEqual(preview.body.suites.map(s => s.name), ["Alpha (import 2)", "claude-main (import 2)"]);
   assert.equal(await fs.readFile(paths.config, "utf8"), before);
-  const result = await call("/import", { bundle, baseRevision: preview.body.baseRevision, choices: Object.fromEntries(preview.body.suites.filter(s => s.conflict).map(s => [s.sourceId, "create"])) });
+  const result = await call("/import", { bundle, baseRevision: preview.body.baseRevision, useImportedCredentials: false, choices: Object.fromEntries(preview.body.suites.filter(s => s.conflict).map(s => [s.sourceId, "create"])) });
   assert.equal(result.status, 200, JSON.stringify(result.body));
   const config = result.body.config;
   assert.equal(config.revision, original.revision + 1);
