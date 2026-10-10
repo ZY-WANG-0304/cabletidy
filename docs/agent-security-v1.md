@@ -305,7 +305,9 @@ Codex 会话依次根据 `session-id`、`session_id`、`x-session-id`、`x-codex
 
 支持 Bash / shell / exec_command 等常见名称、Read/Write/Edit 类工具，以及 apply_patch。shell 检查只解析有限的字面量参数、分隔符和直接管道；变量展开、重定向、未知包装和动态脚本不做效果推断。构建或包管理命令不直接产生风险，其脚本行为标记为未覆盖。规则是有限的结构匹配，不等价于完整 shell / PowerShell 解释器或漏洞扫描器。
 
-文档化的占位值不算凭据：`<your-password-here>`、`${API_KEY}`、`{{ vault_secret }}`、`%VAR%`、`None` / `null` / `TODO` / `changeme` 一类的词、`YOUR_TOKEN_HERE` 这类全大写提示，以及 `xxxxxxxx`、`********` 等长度在 32 以内的遮罩串，都不生成命中；同名字段上的真实值仍然命中。
+文档化的占位值不算凭据：`${VAR}` / `$VAR`、`{{ var }}`、`<your-password-here>`、`%VAR%` 等明确的模板语法，`None` / `null` / `TODO` / `changeme` 一类的词，`YOUR_TOKEN_HERE` 这类全大写提示，以及由单一遮罩字符重复组成、长度在 32 以内的 `xxxxxxxx`、`********`。判定要求整个值匹配模板语法，因此 `$9fK2mNvQ8xRtZ4wB7hLpY1cD`、`11111111`、`aaaaaaaa` 这类弱口令仍按真实凭据命中；同名字段上的真实值也不受影响。
+
+地址标注与凭据范围重叠时，凭据语义优先：合并后的范围保留 `known_credential` 等凭据 reason 而不是仅标注的地址 reason，避免 `ssh://user-<凭据>@host` 这类写法让凭据原样留在元数据里、且无法精确定位。批量与流式两条路径使用同一套合并规则。
 
 路径与命令判定只看最后一段或短选项，避免结构相近的无害写法被当作目标：`.env.example` / `.env.sample` / `.env.template` / `.env.dist` 等模板不命中而 `.env`、`.env.local` 仍命中；`docs/credentials/README.md` 的目录名和 `curl https://api.test/v1/credentials` 的远端路由不算本地凭据文件，`curl --data-binary @.env` 仍算；`git clean --exclude=foo` 不再因含字母 `f` 判为强制清理，只有 `--force` 或短选项簇成立；`docs/multi-agents.md`、`notes/my-claude.md` 属于说明文档，只有文件名正好是 `AGENTS.md` / `CLAUDE.md` 才算代理配置。
 
@@ -392,7 +394,7 @@ IPv6 由 `Ipv6Addr` 解析校验而非正则硬凑，因此 Rust 的 `std::colle
 
 正文页返回 `snapshotId`、`chunks`（每段 `start`、`end`、`content`、`sensitiveRanges`、`coverageRanges`、`redactions`）、`offset`、`nextOffset`、`previousOffset`、`rangeStart`、`rangeEnd`、`state`、`gap`。每个位置含 `reason`、`start`、`end`、`unit: utf8_bytes`。`sensitiveRanges` 是确认的敏感位置，`coverageRanges` 是不确定或检查不完整的范围，`redactions` 仅用于旧记录的脱敏标记；新位置带 `kind: sensitive | coverage`。SQLite 复用原 `redactions` 列保存带类型的标注，无需改写旧记录。所有位置以**实际持久化文本**为准。范围视图只返回检测时固定范围内的字节，并在 UTF-8 字符边界裁剪；不能读出后来追加的内容。
 
-`finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向敏感原文，并附 `matchKind: sensitive`，检测快照仍保留其周围上下文。地址风险同样精确指向命中的地址或 URL 用户名，附 `matchKind: endpoint`，与凭据区分。其他风险的高亮可表示检测窗口或语义参数。旧记录仍按 `matchKind: redaction` 定位已保存的脱敏标记。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
+`finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向敏感原文，并附 `matchKind: sensitive`，检测快照仍保留其周围上下文。地址风险同样精确指向命中的地址或 URL 用户名，附 `matchKind: endpoint`，与凭据区分；公网与内网规则各自指向触发它的那一类地址，同一请求里两种地址并存时不会互相指错。其他风险的高亮可表示检测窗口或语义参数。旧记录仍按 `matchKind: redaction` 定位已保存的脱敏标记。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
 
 流式事件的 `data` 中，原始参数、初始文本和后续文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。`response.content_part.added`、`response.reasoning_summary_part.added`、初始输出项及响应对象中的文本，按同一输出 / 内容索引加入后续 delta 的重组通道；非空初始文本不能逐事件提前落盘。done / 最终对象保留为独立快照，初始文本后中断仍保留已观察的末尾并标记不完整；若新初始值替换了尚未结束的旧通道，旧通道按不完整内容封口。这是网关观察片段到重组快照的关联；观察片段偏移不是持久化 JSON 正文偏移，不能用于正文高亮。重组快照保存参数 / 文本原文和敏感位置，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件按原始文本保留并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已输出的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；解析器尚未输出的尾部可能缺失。
 

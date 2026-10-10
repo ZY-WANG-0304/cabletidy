@@ -104,6 +104,15 @@ pub fn credential_field(key: &str) -> bool {
     )
 }
 
+// Explicit template syntax only. A value merely starting with `$` or `<` can be a real
+// password, so the whole value must look like a variable reference or a `<...>` slot.
+// The surrounding capture stops at `}` or whitespace, so a truncated opener counts too.
+static TEMPLATE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+    r"(?s)^(?:\$\{[^}]*\}?|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}]*\}?\}?|\{\{?|<[^>]*>?|%[A-Za-z_][A-Za-z0-9_]*%)$"
+).unwrap()
+});
+
 // A documented placeholder is not a credential. Templates, environment references and
 // masking runs are the common shapes; retaining them as hits buries the real values.
 fn placeholder_value(value: &str) -> bool {
@@ -113,11 +122,7 @@ fn placeholder_value(value: &str) -> bool {
     }
     // The surrounding capture stops at `}` or whitespace, so a template opener often
     // arrives truncated (`{{`, `{{vault`). Treat the opener itself as the signal.
-    if v.starts_with('<')
-        || v.starts_with('{')
-        || v.starts_with('$')
-        || (v.starts_with('%') && v.ends_with('%') && v.len() > 2)
-    {
+    if TEMPLATE_VALUE.is_match(v) {
         return true;
     }
     let lower = v.to_ascii_lowercase();
@@ -149,9 +154,13 @@ fn placeholder_value(value: &str) -> bool {
     {
         return true;
     }
-    // Masking runs such as xxxxxxxx or ********. Bounded in length, because a long
-    // low-variety string is more likely a real value than a visual mask.
-    (4..=32).contains(&v.len()) && v.chars().collect::<BTreeSet<_>>().len() <= 2
+    // Masking runs such as xxxxxxxx or ********: one repeated masking character. A
+    // value like `11111111` or `aaaaaaaa` is a weak password, not a mask.
+    (4..=32).contains(&v.len())
+        && v.chars().collect::<BTreeSet<_>>().len() == 1
+        && v.chars()
+            .next()
+            .is_some_and(|c| "x*.-_#?0".contains(c.to_ascii_lowercase()))
 }
 
 fn shannon_entropy(s: &str) -> f64 {
@@ -304,6 +313,28 @@ fn host_reason(value: &str, ip_start: usize, ip: &str, port: bool) -> Option<&'s
 // is demoted to whole-value or word-boundary matching instead of being dropped.
 fn substring_matchable(s: &str) -> bool {
     s.len() >= 8 && !(word_shaped(s) && shannon_entropy(s) < 3.5)
+}
+
+// Overlapping ranges collapse into one, but a credential must never be reported under
+// an annotation-only reason: that would leave the value readable in metadata and make
+// the hit impossible to locate. Credential semantics therefore win the merged range.
+fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
+    spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
+    let mut merged: Vec<Span> = Vec::new();
+    for span in spans {
+        if let Some(last) = merged.last_mut() {
+            if span.start <= last.end {
+                last.end = last.end.max(span.end);
+                if annotation_only(last.reason) && !annotation_only(span.reason) {
+                    last.reason = span.reason;
+                    last.start = last.start.min(span.start);
+                }
+                continue;
+            }
+        }
+        merged.push(span);
+    }
+    merged
 }
 
 #[derive(Clone)]
@@ -483,7 +514,14 @@ impl Redactor {
                 continue;
             }
             let port = bracketed.and(c.get(2));
-            if port.is_none() && !HOST_CONTEXT.is_match(&value[..address.start()]) {
+            // A bracketed address is already in host position. Judge its context from
+            // before the `[`, since `http://[` cannot end the context pattern.
+            let context_end = if bracketed.is_some() {
+                address.start().saturating_sub(1)
+            } else {
+                address.start()
+            };
+            if port.is_none() && !HOST_CONTEXT.is_match(&value[..context_end]) {
                 continue;
             }
             spans.push(Span {
@@ -545,18 +583,7 @@ impl Redactor {
                 }
             }
         }
-        spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
-        let mut merged: Vec<Span> = Vec::new();
-        for span in spans {
-            if let Some(last) = merged.last_mut() {
-                if span.start <= last.end {
-                    last.end = last.end.max(span.end);
-                    continue;
-                }
-            }
-            merged.push(span);
-        }
-        merged
+        merge_spans(spans)
     }
 
     fn scrub_text(&self, value: &str, path: &str, marks: &mut Vec<Value>) -> String {
@@ -870,18 +897,7 @@ impl StreamText {
                     }
                 }
             }
-            spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
-            let mut merged: Vec<Span> = Vec::new();
-            for span in spans {
-                if let Some(last) = merged.last_mut() {
-                    if span.start <= last.end {
-                        last.end = last.end.max(span.end);
-                        continue;
-                    }
-                }
-                merged.push(span);
-            }
-            let spans = merged;
+            let spans = merge_spans(spans);
             for span in &spans {
                 if span.start < cut && span.end > cut {
                     cut = span.end;
@@ -1083,14 +1099,30 @@ mod tests {
         ] {
             assert!(reasons(&redactor, value).is_empty(), "{value}");
         }
-        // Real values alongside the same field names are still reported.
+        // Real values alongside the same field names are still reported. A `$` prefix
+        // or a repeated digit is a weak password, not template or masking syntax.
         for value in [
             "password: hunter2realvalue",
             "https://x.test/cb?token=abc123realtoken",
             "cookie: session=abc123",
+            "password: $9fK2mNvQ8xRtZ4wB7hLpY1cD",
+            "password: 11111111",
+            "password: aaaaaaaa",
         ] {
             assert!(!reasons(&redactor, value).is_empty(), "{value}");
         }
+    }
+
+    #[test]
+    fn credential_semantics_survive_an_overlapping_endpoint_range() {
+        let redactor = Redactor::new(&json!({"key": "a1b2c3d4e5"}));
+        // `internal_identity` starts earlier than the credential inside the userinfo.
+        // The merged range must keep credential semantics or the value stays readable.
+        let value = "ssh://user-a1b2c3d4e5@host/repo";
+        assert_eq!(reasons(&redactor, value), ["known_credential"]);
+        let mut metadata = json!({"url": value});
+        redactor.sanitize(&mut metadata);
+        assert_eq!(metadata["url"], "ssh://[REDACTED]@host/repo");
     }
 
     #[test]
@@ -1104,6 +1136,9 @@ mod tests {
             ("connect to fe80::1", "internal_host"),
             ("[::1]:8080", "internal_host"),
             ("endpoint 2001:db8::1", "internal_host"),
+            // A bracketed URL is host position even without a port.
+            ("http://[fd00::1]/", "internal_host"),
+            ("http://[2606:4700:4700::1111]/", "public_host"),
         ] {
             assert!(
                 reasons(&redactor, value).contains(&expected),

@@ -696,6 +696,24 @@ test("IPv6 and encoded addresses are classified like their plain equivalents", a
   assert.equal(covered("00:1A:2B"), false, "MAC address is not an endpoint");
 });
 
+test("each endpoint finding references the address class that triggered it", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const response = await f.request({ input: "http://10.0.0.1:8080/ then http://8.8.8.8:53/" });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  const hit = ruleId => {
+    const ref = record.findings.find(finding => finding.ruleId === ruleId)?.evidence.bodyRef;
+    assert.ok(ref, ruleId);
+    assert.equal(ref.matchKind, "endpoint", ruleId);
+    return Buffer.from(body.text).subarray(ref.start, ref.end).toString();
+  };
+  // Clicking the public risk must not highlight the internal address.
+  assert.equal(hit("SEC-INTERNAL-001"), "10.0.0.1:8080");
+  assert.equal(hit("SEC-ENDPOINT-001"), "8.8.8.8:53");
+});
+
 test("real credentials are still detected after the false positive filters", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body));
   const token = "sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD";

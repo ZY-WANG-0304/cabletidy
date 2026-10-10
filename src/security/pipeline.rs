@@ -103,8 +103,7 @@ impl Pipeline {
         snapshot: &str,
         range: (u64, u64),
         stage: &str,
-        credential_hit: Option<(u64, u64)>,
-        endpoint_hit: Option<(u64, u64)>,
+        hits: Hits,
     ) {
         let (start, end) = range;
         if before == self.rules.findings.len() {
@@ -125,8 +124,11 @@ impl Pipeline {
             // Point each finding at its own match. Without this an endpoint finding
             // would reference the whole processing window and highlight far too much.
             let (hit, kind) = match text(&finding["ruleId"]) {
-                "SEC-SECRET-001" => (credential_hit, "sensitive"),
-                "SEC-ENDPOINT-001" | "SEC-INTERNAL-001" => (endpoint_hit, "endpoint"),
+                "SEC-SECRET-001" => (hits.credential, "sensitive"),
+                // Each endpoint rule points at the address class that triggered it, so
+                // clicking a public risk never highlights an internal address.
+                "SEC-ENDPOINT-001" => (hits.public, "endpoint"),
+                "SEC-INTERNAL-001" => (hits.internal, "endpoint"),
                 _ => (None, ""),
             };
             let (start, end) = hit.unwrap_or((start, end));
@@ -304,9 +306,27 @@ impl Pipeline {
                     start + mark["end"].as_u64().unwrap_or(0),
                 )
             });
-        self.findings(before, root, (start, writer.position()), stage, hit, None);
+        self.findings(
+            before,
+            root,
+            (start, writer.position()),
+            stage,
+            Hits {
+                credential: hit,
+                ..Hits::default()
+            },
+        );
         Ok(())
     }
+}
+
+// Where each kind of match was found, so every finding can reference its own range
+// instead of the whole processing window.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Hits {
+    pub credential: Option<(u64, u64)>,
+    pub internal: Option<(u64, u64)>,
+    pub public: Option<(u64, u64)>,
 }
 
 fn credential_mark(mark: &Value) -> bool {
@@ -470,7 +490,8 @@ impl BodyVisitor<'_> {
             }
             let start = self.writer.position();
             let mut credential_hit = None;
-            let mut endpoint_hit = None;
+            let mut internal_hit = None;
+            let mut public_hit = None;
             let escaped = serde_json::to_string(&piece.text)?;
             for mark in &piece.marks {
                 let byte = |at: u64| {
@@ -487,11 +508,15 @@ impl BodyVisitor<'_> {
                 if credential_hit.is_none() && credential_mark(mark) && from < to {
                     credential_hit = Some((from, to));
                 }
-                if endpoint_hit.is_none()
-                    && super::capture::annotation_only(text(&mark["reason"]))
-                    && from < to
-                {
-                    endpoint_hit = Some((from, to));
+                if from < to {
+                    let slot = match text(&mark["reason"]) {
+                        "public_host" => &mut public_hit,
+                        "internal_host" | "internal_identity" => &mut internal_hit,
+                        _ => continue,
+                    };
+                    if slot.is_none() {
+                        *slot = Some((from, to));
+                    }
                 }
             }
             self.writer.push(&escaped[1..escaped.len() - 1])?;
@@ -502,8 +527,11 @@ impl BodyVisitor<'_> {
                     &self.root,
                     (start, end),
                     &frame.stage,
-                    credential_hit,
-                    endpoint_hit,
+                    Hits {
+                        credential: credential_hit,
+                        internal: internal_hit,
+                        public: public_hit,
+                    },
                 );
             }
             if self.writer.position() - self.last_progress >= 1024 * 1024 {
@@ -619,8 +647,16 @@ impl Visitor for BodyVisitor<'_> {
         }
         self.writer.push(s)?;
         if self.inspect {
-            self.pipeline
-                .findings(before, &self.root, (start, end), &frame.stage, hit, None);
+            self.pipeline.findings(
+                before,
+                &self.root,
+                (start, end),
+                &frame.stage,
+                Hits {
+                    credential: hit,
+                    ..Hits::default()
+                },
+            );
         }
         Ok(())
     }
