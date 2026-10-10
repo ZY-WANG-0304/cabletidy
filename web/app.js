@@ -1328,16 +1328,90 @@ async function findingText(record, finding) {
   return cache.get(finding.id);
 }
 
+// Keep JSON value spans in the displayed text, including its original escaping.
+function contentJsonNode(text) {
+  JSON.parse(text); // Reject incomplete input before collecting any ranges.
+  const tokens = text.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g);
+  let token = tokens.next().value;
+  const take = () => { const current = token; token = tokens.next().value; return current; };
+  const read = () => {
+    const first = take(), start = first.index;
+    if (first[0] === "{" || first[0] === "[") {
+      const object = first[0] === "{", children = object ? new Map() : [];
+      while (token[0] !== (object ? "}" : "]")) {
+        if (object) {
+          const key = JSON.parse(take()[0]);
+          take(); // colon
+          children.set(key, read());
+        } else children.push(read());
+        if (token[0] === ",") take(); else break;
+      }
+      const last = take();
+      return { start, end: last.index + 1, children, object };
+    }
+    const value = JSON.parse(first[0]), string = typeof value === "string";
+    return { start: start + (string ? 1 : 0), end: start + first[0].length - (string ? 1 : 0), value };
+  };
+  return read();
+}
+
+function toolContentRiskRanges(text, evidence, findingId) {
+  const ranges = [];
+  for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
+    if (!raw) continue;
+    let expected;
+    try { expected = JSON.parse(raw); } catch { expected = raw; }
+    // A custom tool's free-text input may itself look like JSON.
+    if (typeof expected === "string" && text === expected) {
+      ranges.push({ start: 0, end: text.length, findingId });
+      continue;
+    }
+    try {
+      let node = contentJsonNode(text), position = offset => offset;
+      const type = node.object && node.children.get("type")?.value;
+      if (["function_call", "custom_tool_call", "tool_use", "server_tool_use"].includes(type)) {
+        node = node.children.get(type === "function_call" ? "arguments" : "input");
+        if (!node) continue;
+      }
+      if (typeof node.value === "string" && (typeof expected !== "string" || type === "function_call")) {
+        // Codex arguments are JSON inside a JSON string. Map decoded UTF-16
+        // offsets back to the escaped string so only the matching value is marked.
+        const offsets = [node.start];
+        for (let at = node.start; at < node.end;) {
+          at += text[at] === "\\" ? (text[at + 1] === "u" ? 6 : 2) : 1;
+          offsets.push(at);
+        }
+        position = offset => offsets[offset];
+        node = contentJsonNode(node.value);
+      }
+      const matches = (current, value, projection = false) => {
+        if (value === null || typeof value !== "object") return !current.children && current.value === value;
+        if (Array.isArray(value)) return Array.isArray(current.children) && current.children.length === value.length
+          && value.every((child, index) => matches(current.children[index], child));
+        const keys = Object.keys(value);
+        return current.object && (projection || current.children.size === keys.length)
+          && keys.every(key => current.children.has(key) && matches(current.children.get(key), value[key]));
+      };
+      // The backend retains only inspected fields. Require all of those fields
+      // at their corresponding keys, while allowing unrelated argument fields.
+      if (!matches(node, expected, true)) continue;
+      const hits = expected && typeof expected === "object" && !Array.isArray(expected)
+        ? Object.keys(expected).map(key => node.children.get(key)) : [node];
+      for (const hit of hits) if (hit.end > hit.start) ranges.push({ start: position(hit.start), end: position(hit.end), findingId });
+    } catch {}
+  }
+  return ranges;
+}
+
 function contentRiskRanges(text, evidence, findingId, structuredTool = false) {
+  if (structuredTool) return toolContentRiskRanges(text, evidence, findingId);
   const candidates = new Set();
   const collect = value => {
     if (typeof value === "string" && value) candidates.add(value);
     else if (value && typeof value === "object") {
       candidates.add(JSON.stringify(value));
       candidates.add(JSON.stringify(value, null, 2));
-      // Tool evidence describes the complete inspected arguments. Matching
-      // individual values can mistake an unchanged auxiliary field for a hit.
-      if (!structuredTool) for (const child of Object.values(value)) collect(child);
+      for (const child of Object.values(value)) collect(child);
     }
   };
   for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {

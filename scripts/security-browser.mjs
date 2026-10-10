@@ -29,6 +29,18 @@ const upstream = http.createServer(async (req, res) => {
     return;
   }
   const text = `${context}响应命中前 ${secret} 响应命中后；继续复核上下文。`;
+  if (body.riskTool) {
+    const tool = body.riskTool;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end([
+      { type: "response.output_item.added", output_index: 0, item: { ...tool, arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: tool.arguments },
+      { type: "response.function_call_arguments.done", output_index: 0, arguments: tool.arguments },
+      { type: "response.output_item.done", output_index: 0, item: tool },
+      { type: "response.completed", response: { status: "completed", output: [tool] } },
+    ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(""));
+    return;
+  }
   if (body.stream) {
     const item = { id: "msg_browser", type: "message", role: "assistant", content: [{ type: "output_text", text: "" }] };
     const response = { id: "resp_browser", object: "response", status: "in_progress", model: body.model, output: [item] };
@@ -133,7 +145,7 @@ try {
     await page.evaluate(position => scrollTo({ ...position, behavior: "instant" }), scroll);
     report.screenshots.push(file);
   };
-  const visibleHit = async stage => {
+  const visibleHit = async (stage, expected = secret) => {
     await page.waitForFunction(expected => {
       const marks = [...document.querySelectorAll(".security-body-hit")];
       if (marks.map(mark => mark.textContent).join("") !== expected) return false;
@@ -142,14 +154,14 @@ try {
       return marks.every(mark => [...mark.getClientRects()].every(rect =>
         rect.top >= Math.max(0, box.top) && rect.bottom <= Math.min(innerHeight, box.bottom)
         && rect.left >= Math.max(0, box.left) && rect.right <= Math.min(innerWidth, box.right)));
-    }, secret);
+    }, expected);
     const geometry = await page.evaluate(() => {
       const mark = document.querySelector(".security-body-hit");
       const body = mark.closest("pre");
       return { text: mark.textContent, hit: mark.getBoundingClientRect().toJSON(), body: body.getBoundingClientRect().toJSON(), bodyScrollTop: body.scrollTop, pageScrollY: scrollY };
     });
     assert.equal(await page.locator(`[aria-label="${stage === "request" ? "请求内容" : "响应内容"}"] [data-security-content-anchor]`).count(), 1);
-    assert.match(await page.locator("#page-content").innerText(), new RegExp(secret));
+    assert.ok((await page.locator("#page-content").innerText()).includes(expected));
     assert.equal(await page.locator(".security-body-content script").count(), 0);
     report.hits.push({ stage, ...geometry });
   };
@@ -632,6 +644,41 @@ try {
     }
   }
   report.checks.push("Codex and Claude responses show complete long text, thinking and tools, paginate independently, and navigate to response source on desktop and 390px mobile");
+  const cmd = "rm -rf /important";
+  const riskTool = { type: "function_call", name: "exec_command", call_id: "filtered-evidence", arguments: JSON.stringify({ description: "cleanup", workdir: "/workspace", cmd }, null, 2) };
+  await post("relay/v1/responses", { model: "gpt-5.5", stream: true, input: "检查工具风险高亮", riskTool });
+  let toolDetail;
+  for (let i = 0; i < 300; i++) {
+    const latest = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=cabletidy_relay&limit=1`)).json();
+    const record = latest.items[0];
+    if (record && !record.inspectionProgress?.active && record.inspectionStatus === "complete") {
+      toolDetail = (await (await fetch(`${app.url}api/v1/security/audit/${record.id}`)).json()).record;
+      if (toolDetail.responseContent?.items[0]?.callId === riskTool.call_id) break;
+    }
+    await delay(100);
+  }
+  const toolFinding = toolDetail.findings.find(finding => finding.ruleId === "SEC-DELETE-001");
+  assert.ok(toolFinding);
+  await page.goto(`${app.url}#security/session/${toolDetail.sessionKey || toolDetail.id}`);
+  for (const mobile of [false, true]) {
+    await page.setViewportSize(mobile ? { width: 390, height: 844 } : report.viewport);
+    await page.locator('[data-action="security-trace-tab"][data-tab="response"]').click();
+    const item = page.locator('[aria-label="响应内容"] .trace-content-item[data-content-index="0"]');
+    const marks = item.locator(':scope > .trace-content-detail > pre .security-risk-hit');
+    await marks.first().waitFor();
+    assert.deepEqual(await marks.allTextContents(), [cmd]);
+    assert.equal(await item.locator('.trace-content-risk-versions').count(), 0);
+    const structure = item.locator('.trace-content-structure');
+    if (await structure.getAttribute("open") === null) await structure.locator('summary').click();
+    assert.deepEqual(await structure.locator('.security-risk-hit').allTextContents(), [cmd]);
+    await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
+    await page.locator(`[data-action="security-finding"][data-id="${toolFinding.id}"]`).click();
+    await visibleHit(`filtered-tool-${mobile ? "mobile" : "desktop"}`, cmd);
+    assert.equal(await item.locator('[data-security-content-anchor]').first().textContent(), cmd);
+    assert.equal(await item.locator('.trace-content-risk-versions').count(), 0);
+    await screenshot(`17-${mobile ? "mobile" : "desktop"}-filtered-tool-risk.png`);
+  }
+  report.checks.push("unchanged streamed dangerous commands with extra fields stay highlighted in preview and escaped structure, and navigate to current content on desktop and mobile without false historical warnings");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

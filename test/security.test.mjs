@@ -1381,6 +1381,36 @@ test("Codex streaming response overview resolves retained fragments and deduplic
   assert.equal(content.items[0].snapshotId, "response");
 });
 
+test("unchanged streamed tool arguments preserve full content and filtered detection evidence", async t => {
+  const args = { cmd: "rm -rf /important", workdir: "/workspace", description: "cleanup" };
+  const tool = { id: "tool", type: "function_call", call_id: "call", name: "exec_command", arguments: JSON.stringify(args) };
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end([
+      { type: "response.output_item.added", output_index: 0, item: { ...tool, arguments: "" } },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: tool.arguments.slice(0, 15) },
+      { type: "response.function_call_arguments.delta", output_index: 0, delta: tool.arguments.slice(15) },
+      { type: "response.function_call_arguments.done", output_index: 0, arguments: tool.arguments },
+      { type: "response.output_item.done", output_index: 0, item: tool },
+      { type: "response.completed", response: { status: "completed", output: [tool] } },
+    ].map(event).join(""));
+  });
+  assert.match(await (await f.request({ input: "hello", stream: true })).text(), /cleanup/);
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const findings = record.findings.filter(f => f.ruleId === "SEC-DELETE-001");
+  assert.equal(findings.length, 1, "identical completed arguments share one detection version");
+  assert.deepEqual(record.bodySnapshots.find(s => s.id === findings[0].evidence.bodyRef.snapshotId).body, { cmd: args.cmd });
+  const content = record.responseContent;
+  assert.equal(content.state, "complete");
+  assert.equal(content.total, 1);
+  assert.equal(content.items[0].preview, tool.arguments);
+  assert.deepEqual(JSON.parse(content.items[0].structure), tool);
+  assert.ok(content.items[0].contentSnapshotIds.includes(findings[0].evidence.bodyRef.sourceSnapshotId));
+  await f.restart();
+  assert.deepEqual((await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent, content);
+});
+
 test("Codex interrupted stream keeps accumulated text without inventing completed output", async t => {
   const f = await fixture(t, (_req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream" });

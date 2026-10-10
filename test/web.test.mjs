@@ -2211,10 +2211,83 @@ test("complete tool evidence stays highlighted while incomplete calls retain exp
   const evidence = '{"cmd":"rm -rf /important","path":"/workspace"}';
   const text = JSON.stringify(JSON.parse(evidence), null, 2);
   const ranges = app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(evidence)}, "delete", true)`);
-  assert.equal(ranges.length, 1, "complete inspected arguments match formatted output");
-  assert.equal(text.slice(ranges[0].start, ranges[0].end), text);
+  assert.deepEqual(Array.from(ranges, range => text.slice(range.start, range.end)), ["rm -rf /important", "/workspace"], "inspected fields match formatted output at their values");
   const record = { responseContent: { offset: 0, total: 1, counts: {}, state: "partial", items: [{ index: 0, kind: "tool_call", state: "partial", preview: evidence }] } };
   assert.match(app.read(`renderResponseContent(${JSON.stringify(record)})`), /调用未完成.*实际执行状态未知/);
+});
+
+test("filtered tool evidence highlights unchanged commands with extra fields in both content views", async () => {
+  const cmd = "rm -rf /important", evidence = JSON.stringify({ cmd });
+  const preview = JSON.stringify({ description: "cleanup", workdir: "/workspace", cmd });
+  for (const response of [false, true]) {
+    const key = response ? "responseContent" : "requestContent", source = response ? "stream/tool" : "request";
+    const finding = { id: "delete", ruleId: "SEC-DELETE-001", evidenceStage: response ? "tool_call_proposed" : "request_content", evidence: { bodyRef: { snapshotId: "evidence/tool", sourceSnapshotId: source, start: 0, end: evidence.length } } };
+    const item = { index: 0, kind: "tool_call", start: 0, end: 200, preview, structure: JSON.stringify({ type: "function_call", arguments: preview }, null, 2), contentSnapshotIds: [source] };
+    const app = await controller(undefined, { onSecurity(url) {
+      if (url.includes("/body?")) return { body: { chunks: [{ start: 0, end: evidence.length, content: evidence }] } };
+    } });
+    app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify({ id: "unchanged", findings: [finding], [key]: { offset: 0, total: 1, counts: {}, state: "complete", items: [item] } })}`);
+    await app.action("security-trace-tab", { dataset: { tab: response ? "response" : "request" } });
+    for (const field of ["preview", "structure"]) {
+      const ranges = app.read(`state.security.detail.${key}.items[0].riskRanges.${field}`);
+      assert.deepEqual(Array.from(ranges, range => item[field].slice(range.start, range.end)), [cmd]);
+    }
+    assert.equal(app.read(`state.security.detail.${key}.items[0].riskVersions.length`), 0);
+    assert.match(app.read("renderTraceInspector()"), /security-risk-hit/);
+    assert.doesNotMatch(app.read("renderTraceInspector()"), /检测时的工具参数与当前参数不同|security-body-hit/);
+    await app.action("security-finding", { dataset: { id: "delete" } });
+    assert.equal(app.read("state.security.contentNavigation.field"), "preview");
+    assert.match(app.read("renderTraceInspector()"), /data-security-content-anchor/);
+    assert.doesNotMatch(app.read("renderTraceInspector()"), /风险检测时的内容/);
+  }
+});
+
+test("tool evidence matches corresponding fields across formatting, ordering and escaped envelopes", async () => {
+  const app = await controller(), cmd = 'rm -rf /important/秘密🙂 "quoted"\nnext\\path';
+  const evidence = JSON.stringify({ cmd, path: "/workspace" });
+  const argumentsText = '{ "description": "cleanup", "path": "/workspace", "c\\u006dd" : ' + JSON.stringify(cmd).replace("秘密", "\\u79d8\\u5bc6") + " }";
+  for (const text of [argumentsText,
+    JSON.stringify({ type: "function_call", arguments: argumentsText }, null, 2),
+    JSON.stringify({ type: "tool_use", input: JSON.parse(argumentsText) }, null, 2)]) {
+    const ranges = app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(evidence)}, "delete", true)`);
+    assert.equal(ranges.length, 2);
+    const marked = Array.from(ranges, range => text.slice(range.start, range.end));
+    if (JSON.parse(text).type === "function_call") {
+      // First decode the envelope's escapes, then the argument value's escapes.
+      assert.equal(JSON.parse('"' + JSON.parse('"' + marked[0] + '"') + '"'), cmd);
+    } else assert.equal(JSON.parse('"' + marked[0] + '"'), cmd);
+    assert.equal(marked[1], "/workspace");
+  }
+  const nestedEvidence = JSON.stringify({ input: { cmd, options: ["one", { two: true }] } });
+  const nested = JSON.stringify({ input: { options: ["one", { two: true }], cmd }, description: "cleanup" }, null, 2);
+  const ranges = app.read(`contentRiskRanges(${JSON.stringify(nested)}, ${JSON.stringify(nestedEvidence)}, "nested", true)`);
+  assert.equal(ranges.length, 1);
+  assert.deepEqual(JSON.parse(nested.slice(ranges[0].start, ranges[0].end)), JSON.parse(nestedEvidence).input);
+});
+
+test("changed tool evidence cannot match an auxiliary field, another key or nested text", async () => {
+  const app = await controller(), cmd = "rm -rf /important";
+  for (const evidence of [{ cmd }, { cmd, path: "/workspace" }]) {
+    const current = { cmd: "ls", path: "/workspace", description: cmd, archived: { cmd } };
+    for (const text of [JSON.stringify(current),
+      JSON.stringify({ type: "function_call", arguments: JSON.stringify(current) }, null, 2),
+      JSON.stringify({ type: "tool_use", input: current }, null, 2)]) {
+      assert.equal(app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(JSON.stringify(evidence))}, "delete", true)`).length, 0);
+    }
+  }
+  for (const text of ['{"cmd":"rm -rf /important"', '{"cmd":"rm -rf /important","cmd":"ls"}', '{"command":"rm -rf /important"}']) {
+    assert.equal(app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(JSON.stringify({ cmd }))}, "delete", true)`).length, 0);
+  }
+});
+
+test("scalar and array tool inputs keep value ranges without matching surrounding text", async () => {
+  const app = await controller();
+  for (const value of ["*** Begin Patch\n*** End Patch", '{"literal":"custom tool text"}', ["rm", "-rf", "/important"]]) {
+    const evidence = JSON.stringify(value);
+    const texts = [evidence, JSON.stringify({ type: "function_call", arguments: evidence }, null, 2)];
+    if (typeof value === "string") texts.push(value, JSON.stringify({ type: "custom_tool_call", input: value }, null, 2));
+    for (const text of texts) assert.equal(app.read(`contentRiskRanges(${JSON.stringify(text)}, ${JSON.stringify(evidence)}, "tool", true)`).length, 1);
+  }
 });
 
 for (const response of [false, true]) for (const lateFailure of [false, true]) {
