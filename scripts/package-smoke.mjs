@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -153,3 +155,107 @@ async function waitFor(predicate) {
   }
   assert.fail("Timed out waiting for daemon lifecycle");
 }
+
+test("update rolls back to a version without restart and ignores a corrupt config", { timeout: 180000 }, async (t) => {
+  assert.ok(process.env.npm_execpath, "Run with npm run test:package");
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy update-"));
+  const prefix = path.join(directory, "prefix");
+  const home = path.join(directory, "data");
+  const env = {
+    ...process.env,
+    CABLETIDY_HOME: home,
+    CODEX_HOME: path.join(directory, "codex"),
+    npm_config_cache: path.join(directory, "cache"),
+    npm_config_dry_run: "false",
+    npm_config_update_notifier: "false",
+  };
+  delete env.CABLETIDY_MANAGED_STDIN;
+  const options = { cwd: directory, env, timeout: 90000 };
+  const npm = (args, cwd = directory) => execute(process.execPath, [process.env.npm_execpath, ...args], { ...options, cwd });
+  const pack = async cwd => path.join(directory, JSON.parse((await npm(["pack", "--json", "--ignore-scripts", "--pack-destination", directory], cwd)).stdout)[0].filename);
+  const current = process.env.CABLETIDY_PACKAGE_TARBALL ? path.resolve(root, process.env.CABLETIDY_PACKAGE_TARBALL) : await pack(root);
+
+  // Repack the current package as an older release whose launcher, like 0.3.0, has stop but no restart.
+  const legacyVersion = "0.0.1-legacy";
+  const extracted = path.join(directory, "legacy");
+  await fs.mkdir(extracted);
+  await execute("tar", ["-xzf", current, "-C", extracted], options);
+  const legacyRoot = path.join(extracted, "package");
+  const manifest = JSON.parse(await fs.readFile(path.join(legacyRoot, "package.json"), "utf8"));
+  await fs.writeFile(path.join(legacyRoot, "package.json"), JSON.stringify({ ...manifest, version: legacyVersion }, null, 2));
+  const launcherFile = path.join(legacyRoot, "bin", "cabletidy.mjs");
+  const launcher = await fs.readFile(launcherFile, "utf8");
+  const marker = "  const starts = ";
+  assert.ok(launcher.includes(marker));
+  await fs.writeFile(launcherFile, launcher.replace(marker, `  if (command === "restart") throw new Error("未知命令: restart");\n${marker}`));
+  const legacy = await fs.readFile(await pack(legacyRoot));
+
+  // A minimal registry serving only the legacy release keeps this test offline.
+  const registry = http.createServer((request, response) => {
+    const base = `http://127.0.0.1:${registry.address().port}/`;
+    if (request.url === "/cabletidy") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        name: "cabletidy",
+        "dist-tags": { latest: legacyVersion },
+        versions: { [legacyVersion]: { ...manifest, version: legacyVersion, dist: {
+          tarball: `${base}cabletidy-${legacyVersion}.tgz`,
+          integrity: `sha512-${crypto.createHash("sha512").update(legacy).digest("base64")}`,
+        } } },
+      }));
+    } else if (request.url === `/cabletidy-${legacyVersion}.tgz`) {
+      response.end(legacy);
+    } else {
+      response.writeHead(404).end("{}");
+    }
+  });
+  await new Promise(resolve => registry.listen(0, "127.0.0.1", resolve));
+  const registryUrl = `http://127.0.0.1:${registry.address().port}/`;
+  const shim = path.join(prefix, process.platform === "win32" ? "cabletidy.cmd" : "bin/cabletidy");
+  const cli = args => new Promise((resolve, reject) => {
+    const child = spawn(shim, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", code => code === 0 ? resolve({ stdout, stderr })
+      : reject(Object.assign(new Error(`${stdout}\n${stderr}`), { code, stderr, stdout })));
+  });
+  const packageRoot = process.platform === "win32" ? path.join(prefix, "node_modules", "cabletidy") : path.join(prefix, "lib", "node_modules", "cabletidy");
+  // The repacked release keeps the current native binary, so --version cannot tell them apart.
+  const installed = async () => JSON.parse(await fs.readFile(path.join(packageRoot, "package.json"), "utf8")).version;
+  const install = () => npm(["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund", current]);
+  t.after(async () => {
+    try { await cli(["stop"]); } catch {}
+    registry.closeAllConnections();
+    await new Promise(resolve => registry.close(resolve));
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  await install();
+  const update = ["update", legacyVersion, `--registry=${registryUrl}`];
+
+  const checked = await cli([...update, "--check"]);
+  assert.match(checked.stdout, new RegExp(`run: cabletidy update ${legacyVersion} --registry=${registryUrl}`));
+
+  // The daemon is not running; a corrupt configuration must not block the update.
+  await fs.mkdir(home, { recursive: true });
+  await fs.writeFile(path.join(home, "config.json"), "{");
+  await assert.rejects(cli(["status"]), /Invalid JSON/);
+  await cli(update);
+  assert.equal(await installed(), legacyVersion);
+  await fs.rm(path.join(home, "config.json"));
+
+  await install();
+  assert.match((await cli(["start"])).stdout, /CableTidy started:/);
+  const before = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
+  const updated = await cli([...update, "--yes"]);
+  assert.match(updated.stdout, /CableTidy stopped/);
+  assert.match(updated.stdout, /CableTidy started:/);
+  assert.equal(await installed(), legacyVersion);
+  await assert.rejects(cli(["restart"]), /未知命令: restart/);
+  const status = JSON.parse((await cli(["status"])).stdout);
+  assert.equal(status.runtime.status, "online");
+  assert.notEqual(status.runtime.controlId, before.controlId);
+  assert.equal(status.runtime.web.url, before.web.url);
+});

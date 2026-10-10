@@ -134,7 +134,7 @@ npm install -g cabletidy@latest --registry=https://registry.npmjs.org/
 cabletidy start
 ```
 
-已支持 `update` 的版本可以直接执行 `cabletidy update`（默认 `latest`，也可指定版本或 `next` 等标签；加 `--check` 只检查不安装）。它只更新当前包所在的全局 npm 前缀，因此在 nvm 等多 Node 环境中不会装到别处。macOS 和 Linux 下 daemon 运行时可直接更新，完成后询问是否执行 `restart`；Windows 下运行中的可执行文件会被锁定，需要确认先停止 daemon，更新后再询问是否启动。非交互终端中所有确认均视为否。
+已支持 `update` 的版本可以直接执行 `cabletidy update`（默认 `latest`，也可指定版本或 `next` 等标签；加 `--check` 只检查不安装，`--registry` 指定的源会保留在提示命令中）。它只更新当前包所在的全局 npm 前缀，因此在 nvm 等多 Node 环境中不会装到别处；运行状态只通过实例锁和 `runtime.json` 判断，配置文件损坏不影响更新。macOS 和 Linux 下 daemon 运行时可直接更新，完成后询问是否重启；重启使用 `stop` 后 `start`，回退到没有 `restart` 的版本（如 `0.3.0`）也可用。Windows 下运行中的可执行文件会被锁定，需要确认先停止 daemon，并等待原进程真正退出后再安装，更新后询问是否启动；无法确认运行状态时不更新。非交互终端中确认均视为否，可加 `--yes` 自动确认。
 
 如果新版提示 `ELOCKLEGACY`，说明数据目录中仍有旧版的 `daemon.lock` **目录**。请先从 `runtime.json` 查看 PID，并用系统进程工具核对；旧版 `stop` 不可用时，可手动执行 `kill <实际 PID>`（Windows 使用 `taskkill /PID <实际 PID>`），等待并确认旧进程退出后，再删除这个旧锁目录并启动新版。这里的 `<实际 PID>` 必须替换为核对后的数字；不要删除配置、密钥或新版的普通锁文件。新版不自动控制旧 daemon 或回收旧锁。
 
