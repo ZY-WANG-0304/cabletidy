@@ -485,20 +485,23 @@ function renderOverview() {
 
 function renderTransfer(suites) {
   const close = '<button class="button button-quiet" type="button" data-action="close-transfer">取消</button>';
-  const notice = '<p class="muted">仅包含 CableTidy 配置套装。API Key、上游认证凭据和地址中的认证信息不导出，新建配置需填写凭据，更新已有配置保留原凭据。客户端文件、运行记录和管理台设置不包含在内。</p>';
+  const notice = '<p class="muted">仅包含 CableTidy 配置套装。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。</p>';
   if (state.transfer.panel === "export") return `
     <form id="suite-export-form" class="panel transfer-panel">
       <h2>导出配置</h2>${notice}
       <fieldset class="transfer-selection"><legend>选择要导出的配置套装</legend>
         ${suites.map(suite => `<label class="checkbox-field"><input type="checkbox" name="bindingIds" value="${esc(suite.id)}" checked /><span>${esc(suite.name)} · ${esc(targetLabel(suite.target))}</span></label>`).join("")}
       </fieldset>
+      <label class="checkbox-field"><input type="checkbox" name="includeCredentials" /><span>包含认证凭据（API Key、上游密钥及 URL 认证信息）</span></label>
+      <p class="muted">勾选后文件包含明文凭据，请妥善保管，仅分享给可信接收方。</p>
       <div class="form-actions">${close}<button class="button button-primary" type="submit">下载配置文件</button></div>
     </form>`;
   if (state.transfer.panel === "import") {
     const preview = state.transfer.preview;
     return `<form id="suite-import-form" class="panel transfer-panel">
       <h2>导入配置</h2>${notice}
-      ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；更新保留已有认证凭据，新建配置需填写凭据；客户端文件需按需重新应用。</p>
+      ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；未使用文件凭据时，更新保留已有密钥，新建配置需填写凭据。客户端文件需按需重新应用。</p>
+        ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用导入配置中的认证凭据</span></label><p class="muted">勾选时文件中的凭据优先于已有凭据；取消勾选时忽略文件中的密钥和 URL 认证信息。</p>` : ""}
         <div class="transfer-selection">${preview.suites.map(suite => suite.conflict
           ? `<label class="field"><span>${esc(suite.sourceName)} · ${esc(targetLabel(suite.target))}（与「${esc(suite.existingName || suite.sourceName)}」同名）</span>
             <select name="choice:${esc(suite.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有配置</option><option value="create">创建新配置（${esc(suite.name)}）</option></select></label>`
@@ -515,7 +518,8 @@ function renderTransfer(suites) {
 async function exportSuites(data) {
   const bindingIds = data.getAll("bindingIds");
   if (!bindingIds.length) throw new Error("请至少选择一套配置。");
-  const bundle = await api("/config/export", { method: "POST", body: JSON.stringify({ bindingIds }) });
+  const includeCredentials = data.get("includeCredentials") === "on";
+  const bundle = await api("/config/export", { method: "POST", body: JSON.stringify({ bindingIds, includeCredentials }) });
   const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2) + "\n"], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
@@ -524,7 +528,7 @@ async function exportSuites(data) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  toast(`已导出 ${bindingIds.length} 套配置；新建配置需填写凭据，更新已有配置保留原凭据。`);
+  toast(`已导出 ${bindingIds.length} 套配置${includeCredentials ? "，包含明文认证凭据，请妥善保管。" : "，不包含认证凭据。"}`);
 }
 
 async function importSuites(data) {
@@ -551,13 +555,14 @@ async function importSuites(data) {
   const result = await api("/config/import", { method: "POST", body: JSON.stringify({
     bundle: state.transfer.bundle, baseRevision: state.transfer.preview.baseRevision,
     choices,
+    useImportedCredentials: state.transfer.preview.hasCredentials && data.get("useImportedCredentials") === "on",
   }) });
   state.config = result.config;
   state.candidate = clone(result.config);
   state.runtime = result.runtime;
   state.transfer = { panel: null, bundle: null, preview: null };
   render();
-  toast("配置已导入，更新的配置保留已有凭据。请为未配置凭据的上游填写认证信息，再按需应用到客户端。");
+  toast("配置已导入。请为未配置凭据的上游填写认证信息，再按需应用到客户端。");
 }
 
 function suiteModelEditor(suite, modelId, profile, upstreamId) {

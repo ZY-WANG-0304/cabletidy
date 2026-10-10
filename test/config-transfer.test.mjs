@@ -254,3 +254,51 @@ test("two updates sharing an imported connection retain each suite's distinct cr
   assert.equal(secrets[refs[0]], "saved-api-key");
   assert.equal(secrets[refs[1]], "beta-existing-key");
 });
+
+for (const action of ["create", "update"]) {
+  for (const useImportedCredentials of [false, true]) {
+    test(`${action} import ${useImportedCredentials ? "uses" : "ignores"} file credentials without changing shared local secrets`, async t => {
+      const { call, paths } = await fixture(t);
+      const config = (await call("")).body.config;
+      config.virtualProviders.cabletidy_beta.route = "alpha";
+      assert.equal((await call("/commit", { config, baseRevision: config.revision })).status, 200);
+      const excluded = (await call("/export", { bindingIds: ["alpha"] })).body;
+      assert.equal(excluded.upstreamSecrets, undefined);
+      const bundle = (await call("/export", { bindingIds: ["alpha"], includeCredentials: true })).body;
+      assert.deepEqual(bundle.upstreamSecrets, { alpha: "saved-api-key" });
+      assert.match(bundle.config.upstreams.alpha.baseUrl, /url-user:url-password/);
+      bundle.upstreamSecrets.alpha = "file-api-key";
+      const preview = await call("/import", { bundle, preview: true });
+      assert.equal(preview.status, 200);
+      assert.equal(preview.body.hasCredentials, true);
+      assert.doesNotMatch(JSON.stringify(preview.body), /file-api-key|saved-api-key|url-password/);
+      const result = await call("/import", { bundle, baseRevision: preview.body.baseRevision, choices: { alpha: action }, useImportedCredentials });
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      const id = action === "update" ? "alpha" : "alpha-import-2";
+      const provider = result.body.config.virtualProviders[result.body.config.bindings[id].virtualProvider];
+      const upstream = result.body.config.upstreams[result.body.config.routes[provider.route].backends[0].upstream];
+      assert.equal(upstream.secretConfigured, useImportedCredentials || action === "update");
+      const secrets = JSON.parse(await fs.readFile(paths.secrets, "utf8"));
+      assert.equal(secrets[upstream.secretRef], useImportedCredentials ? "file-api-key" : action === "update" ? "saved-api-key" : undefined);
+      assert.equal(secrets["secret://upstreams/alpha"], "saved-api-key");
+      assert.equal(result.body.config.upstreams.alpha.secretConfigured, true);
+      assert.equal(upstream.baseUrl.includes("url-password"), useImportedCredentials);
+      assert.doesNotMatch(await fs.readFile(paths.config, "utf8"), /file-api-key|saved-api-key/);
+    });
+  }
+}
+
+test("file credentials are used by default and malformed credentials cannot partially import", async t => {
+  const { call, paths } = await fixture(t);
+  const bundle = (await call("/export", { bindingIds: ["alpha"], includeCredentials: true })).body;
+  const preview = (await call("/import", { bundle, preview: true })).body;
+  const result = await call("/import", { bundle, baseRevision: preview.baseRevision, choices: { alpha: "create" } });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.config.upstreams["alpha-2"].secretConfigured, true);
+  const before = await fs.readFile(paths.config, "utf8");
+  for (const upstreamSecrets of [[], { missing: "key" }, { alpha: 123 }, { alpha: "" }]) {
+    const invalid = await call("/import", { bundle: { ...bundle, upstreamSecrets }, baseRevision: result.body.revision, choices: { alpha: "create" } });
+    assert.equal(invalid.status, 422);
+    assert.equal(await fs.readFile(paths.config, "utf8"), before);
+  }
+});

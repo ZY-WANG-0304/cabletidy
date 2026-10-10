@@ -783,7 +783,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     }
     if path == "/api/v1/config/export" {
         return Ok(
-            match crate::transfer::export(c, &body["bindingIds"], &snapshot.secrets) {
+            match crate::transfer::export(
+                c,
+                &body["bindingIds"],
+                &snapshot.secrets,
+                body["includeCredentials"] == true,
+            ) {
                 Ok(bundle) => json_response(200, bundle),
                 Err(e) => error(422, "config_export_invalid", &e.to_string()),
             },
@@ -797,11 +802,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 "配置已变更，请重新选择文件并预览导入",
             ));
         }
-        let (candidate, suites) = match crate::transfer::import(
+        let (candidate, suites, imported_secrets) = match crate::transfer::import(
             c,
             &body["bundle"],
             &body["choices"],
             body["preview"] == true,
+            body["useImportedCredentials"] != false,
         ) {
             Ok(value) => value,
             Err(e) => return Ok(error(422, "config_import_invalid", &e.to_string())),
@@ -822,12 +828,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             }
             return Ok(json_response(
                 200,
-                json!({"ok":true,"baseRevision":c["revision"],"suites":suites,"warnings":check["warnings"]}),
+                json!({"ok":true,"baseRevision":c["revision"],"suites":suites,"warnings":check["warnings"],"hasCredentials":crate::transfer::has_credentials(&body["bundle"])}),
             ));
         }
         return commit(
             &state,
-            &json!({"baseRevision":c["revision"],"config":candidate}),
+            &json!({"baseRevision":c["revision"],"config":candidate,"upstreamSecrets":imported_secrets}),
         )
         .await;
     }

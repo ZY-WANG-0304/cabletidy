@@ -30,7 +30,7 @@ fn connection_url(v: &Value) -> Result<Value> {
     url.set_fragment(None);
     Ok(json!(url.as_str()))
 }
-fn portable(c: &Value) -> Result<Value> {
+fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
     let mut out =
         json!({"version":2,"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}});
     for (id, u) in entries(&c["upstreams"]) {
@@ -45,7 +45,11 @@ fn portable(c: &Value) -> Result<Value> {
                 "authHeader",
             ],
         );
-        u2["baseUrl"] = connection_url(&u["baseUrl"])?;
+        u2["baseUrl"] = if include_credentials {
+            u["baseUrl"].clone()
+        } else {
+            connection_url(&u["baseUrl"])?
+        };
         if let Some(auth) = u.get("auth") {
             u2["auth"] = fields(auth, &["header", "scheme"]);
         }
@@ -132,7 +136,7 @@ fn portable(c: &Value) -> Result<Value> {
     Ok(out)
 }
 
-pub fn export(c: &Value, ids: &Value, secrets: &Value) -> Result<Value> {
+pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool) -> Result<Value> {
     let ids = ids.as_array().context("请选择要导出的配置套装")?;
     if ids.is_empty() {
         bail!("请至少选择一套配置");
@@ -163,7 +167,20 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value) -> Result<Value> {
             subset["upstreams"][uid] = c["upstreams"][uid].clone();
         }
     }
-    let data = portable(&subset)?;
+    let data = portable(&subset, include_credentials)?;
+    let mut bundle = json!({"format":"cabletidy.configuration-suites","version":1,"config":data});
+    if include_credentials {
+        let credentials: Map<String, Value> = entries(&subset["upstreams"])
+            .filter_map(|(id, upstream)| {
+                let secret = config::secret(upstream, secrets);
+                (!secret.is_empty()).then(|| (id.clone(), json!(secret)))
+            })
+            .collect();
+        if !credentials.is_empty() {
+            bundle["upstreamSecrets"] = Value::Object(credentials);
+        }
+        return Ok(bundle);
+    }
     // Do not leak a known credential pasted into a display name or model setting.
     let serialized = serde_json::to_string(&data)?;
     for (_, secret) in entries(secrets) {
@@ -172,7 +189,19 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value) -> Result<Value> {
             bail!("配置内容含认证凭据，请先移除名称、地址或模型设置中的凭据再导出");
         }
     }
-    Ok(json!({"format":"cabletidy.configuration-suites","version":1,"config":data}))
+    Ok(bundle)
+}
+
+pub fn has_credentials(bundle: &Value) -> bool {
+    entries(&bundle["upstreamSecrets"]).any(|(_, value)| config::nonempty(value))
+        || entries(&bundle["config"]["upstreams"]).any(|(_, upstream)| {
+            url::Url::parse(text(&upstream["baseUrl"])).is_ok_and(|url| {
+                !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+            })
+        })
 }
 
 fn unique_id(id: &str, used: &mut HashSet<String>) -> String {
@@ -191,7 +220,8 @@ pub fn import(
     bundle: &Value,
     choices: &Value,
     preview: bool,
-) -> Result<(Value, Value)> {
+    use_credentials: bool,
+) -> Result<(Value, Value, Value)> {
     if bundle["format"] != "cabletidy.configuration-suites"
         || bundle["version"] != 1
         || bundle["config"]["version"] != 2
@@ -216,7 +246,15 @@ pub fn import(
     if check["ok"] != true {
         bail!("配置套装校验失败: {}", check["errors"]);
     }
-    let source = portable(&config::normalize(raw))?;
+    if let Some(credentials) = bundle.get("upstreamSecrets") {
+        if !credentials.is_object()
+            || entries(credentials)
+                .any(|(id, value)| raw["upstreams"].get(id).is_none() || !config::nonempty(value))
+        {
+            bail!("配置套装认证凭据格式不合法");
+        }
+    }
+    let source = portable(&config::normalize(raw), use_credentials)?;
     if !choices.is_null() && !choices.is_object() {
         bail!("同名配置处理选项必须是 object");
     }
@@ -242,6 +280,7 @@ pub fn import(
         )
         .collect();
     let mut summaries = Vec::new();
+    let mut imported_secrets = json!({});
     let mut replaced_providers = HashSet::new();
     let mut replaced_routes = HashSet::new();
     let mut replaced_upstreams = HashSet::new();
@@ -276,11 +315,16 @@ pub fn import(
             }
         }
         let mut n = 2;
+        // Lowercasing Unicode can expand the slug; reserve space after normalization.
+        let mut name_prefix = base_name.to_owned();
+        while config::configuration_id(&name_prefix, old_id).len() > 36 {
+            if name_prefix.pop().is_none() {
+                name_prefix = config::configuration_id(base_name, old_id)[..36].to_owned();
+                break;
+            }
+        }
         while !update && used_suites.contains(&id) {
-            name = format!(
-                "{} (import {n})",
-                base_name.chars().take(36).collect::<String>()
-            );
+            name = format!("{name_prefix} (import {n})");
             id = config::configuration_id(&name, old_id);
             n += 1;
         }
@@ -288,7 +332,17 @@ pub fn import(
         let pid = format!("cabletidy_{id}");
         let mut p = source["virtualProviders"][text(&b["virtualProvider"])].clone();
         let old_rid = text(&p["route"]);
-        let route_key = (old_rid.to_owned(), retained_secret_ref.clone());
+        // File credentials use new references so updating cannot overwrite a shared local secret.
+        let credential_group = if use_credentials
+            && config::nonempty(
+                &bundle["upstreamSecrets"]
+                    [text(&source["routes"][old_rid]["backends"][0]["upstream"])],
+            ) {
+            String::new()
+        } else {
+            retained_secret_ref.clone()
+        };
+        let route_key = (old_rid.to_owned(), credential_group.clone());
         let rid = if let Some(id) = route_ids.get(&route_key) {
             id.clone()
         } else {
@@ -296,19 +350,24 @@ pub fn import(
             let mut r = source["routes"][old_rid].clone();
             for backend in r["backends"].as_array_mut().context("路由结构不合法")? {
                 let old_uid = text(&backend["upstream"]);
-                let upstream_key = (old_uid.to_owned(), retained_secret_ref.clone());
+                let file_secret = &bundle["upstreamSecrets"][old_uid];
+                let use_file_secret = use_credentials && config::nonempty(file_secret);
+                let upstream_key = (old_uid.to_owned(), credential_group.clone());
                 let uid = if let Some(id) = upstream_ids.get(&upstream_key) {
                     id.clone()
                 } else {
                     let uid = unique_id(old_uid, &mut used_upstreams);
                     let mut u = source["upstreams"][old_uid].clone();
                     u["id"] = json!(uid);
-                    u["secretRef"] = json!(if retained_secret_ref.is_empty() {
+                    u["secretRef"] = json!(if use_file_secret || retained_secret_ref.is_empty() {
                         format!("secret://imports/{}", uuid::Uuid::new_v4())
                     } else {
                         retained_secret_ref.clone()
                     });
                     result["upstreams"][&uid] = u;
+                    if use_file_secret {
+                        imported_secrets[&uid] = file_secret.clone();
+                    }
                     upstream_ids.insert(upstream_key, uid.clone());
                     uid
                 };
@@ -350,5 +409,126 @@ pub fn import(
             result["upstreams"].as_object_mut().unwrap().remove(&uid);
         }
     }
-    Ok((result, json!(summaries)))
+    Ok((result, json!(summaries), imported_secrets))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configuration(name: &str) -> Value {
+        let id = config::configuration_id(name, "suite");
+        let pid = format!("cabletidy_{id}");
+        config::normalize(&json!({
+            "version":2,
+            "upstreams":{"relay":{"protocol":"openai.responses","baseUrl":"https://example.invalid/v1","secretRef":"secret://local"}},
+            "routes":{"route":{"backends":[{"upstream":"relay"}]}},
+            "virtualProviders":{pid.clone():{"ingressProtocol":"openai.responses","route":"route","models":{}}},
+            "bindings":{id:{"name":name,"target":"codex","virtualProvider":pid,"codex":{}}}
+        }))
+    }
+
+    #[test]
+    fn unicode_conflicts_reserve_suffix_space_after_lowercasing() {
+        let name = "\u{0130}".repeat(30);
+        let c = configuration(&name);
+        assert_eq!(crate::validation::validate(&c)["ok"], true);
+        let ids = json!(c["bindings"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>());
+        let bundle = export(&c, &ids, &json!({}), false).unwrap();
+        let (next, suites, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
+        let new_id = text(&suites[0]["id"]);
+        assert!(new_id.ends_with("import-2"));
+        assert_ne!(new_id, text(&ids[0]));
+        assert_eq!(crate::validation::validate(&next)["ok"], true);
+        let (next, suites, _) = import(&next, &bundle, &Value::Null, true, true).unwrap();
+        assert!(text(&suites[0]["id"]).ends_with("import-3"));
+        assert_eq!(crate::validation::validate(&next)["ok"], true);
+    }
+
+    #[test]
+    fn optional_credentials_export_only_selected_secrets_and_import_with_new_references() {
+        let mut c = configuration("Suite");
+        c["upstreams"]["relay"]["baseUrl"] =
+            json!("https://user:password@example.invalid/v1?key=query-key#secret");
+        let secrets = json!({"secret://local":"saved-key","secret://other":"unrelated-key"});
+        let default = export(&c, &json!(["suite"]), &secrets, false).unwrap();
+        assert!(default.get("upstreamSecrets").is_none());
+        assert_eq!(
+            default["config"]["upstreams"]["relay"]["baseUrl"],
+            "https://example.invalid/v1"
+        );
+        let bundle = export(&c, &json!(["suite"]), &secrets, true).unwrap();
+        assert_eq!(bundle["upstreamSecrets"], json!({"relay":"saved-key"}));
+        assert!(!bundle.to_string().contains("unrelated-key"));
+        assert!(has_credentials(&bundle));
+        for update in [false, true] {
+            for use_credentials in [false, true] {
+                let choices = json!({"suite":if update {"update"} else {"create"}});
+                let (next, suites, payload) =
+                    import(&c, &bundle, &choices, false, use_credentials).unwrap();
+                let b = &next["bindings"][text(&suites[0]["id"])];
+                let p = &next["virtualProviders"][text(&b["virtualProvider"])];
+                let uid = text(&next["routes"][text(&p["route"])]["backends"][0]["upstream"]);
+                let u = &next["upstreams"][uid];
+                if use_credentials {
+                    assert_eq!(payload[uid], "saved-key");
+                    assert_ne!(u["secretRef"], "secret://local");
+                    assert_eq!(u["baseUrl"], c["upstreams"]["relay"]["baseUrl"]);
+                } else {
+                    assert_eq!(payload, json!({}));
+                    assert_eq!(u["baseUrl"], "https://example.invalid/v1");
+                    assert_eq!(u["secretRef"] == "secret://local", update);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn imported_credentials_are_validated_even_when_ignored() {
+        let c = configuration("Suite");
+        let mut bundle = export(&c, &json!(["suite"]), &json!({}), false).unwrap();
+        for invalid in [
+            json!([]),
+            json!({"missing":"key"}),
+            json!({"relay":123}),
+            json!({"relay":""}),
+        ] {
+            bundle["upstreamSecrets"] = invalid;
+            assert!(import(&c, &bundle, &json!({"suite":"create"}), false, false).is_err());
+        }
+    }
+
+    #[test]
+    fn using_file_credentials_does_not_replace_a_shared_local_secret() {
+        let mut c = configuration("Suite");
+        c["bindings"]["other"] =
+            json!({"name":"Other","target":"codex","virtualProvider":"cabletidy_other"});
+        c["virtualProviders"]["cabletidy_other"] = c["virtualProviders"]["cabletidy_suite"].clone();
+        let local = json!({"secret://local":"local-key"});
+        let mut bundle = export(&c, &json!(["suite"]), &local, true).unwrap();
+        bundle["upstreamSecrets"]["relay"] = json!("file-key");
+        let (mut next, suites, payload) =
+            import(&c, &bundle, &json!({"suite":"update"}), false, true).unwrap();
+        let applied = config::apply_secrets(&mut next, &local, &json!({"upstreamSecrets":payload}));
+        assert_eq!(applied["secret://local"], "local-key");
+        assert_eq!(
+            config::secret(&next["upstreams"]["relay"], &applied),
+            "local-key"
+        );
+        let provider = &next["virtualProviders"]
+            [text(&next["bindings"][text(&suites[0]["id"])]["virtualProvider"])];
+        let uid = text(&next["routes"][text(&provider["route"])]["backends"][0]["upstream"]);
+        assert_eq!(
+            config::secret(&next["upstreams"][uid], &applied),
+            "file-key"
+        );
+        assert_eq!(
+            next["virtualProviders"]["cabletidy_other"]["route"],
+            "route"
+        );
+    }
 }
