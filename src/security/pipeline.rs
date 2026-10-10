@@ -104,6 +104,7 @@ impl Pipeline {
         range: (u64, u64),
         stage: &str,
         credential_hit: Option<(u64, u64)>,
+        endpoint_hit: Option<(u64, u64)>,
     ) {
         let (start, end) = range;
         if before == self.rules.findings.len() {
@@ -121,12 +122,19 @@ impl Pipeline {
             id
         };
         for finding in &mut self.rules.findings[before..] {
-            let hit = credential_hit.filter(|_| finding["ruleId"] == "SEC-SECRET-001");
+            // Point each finding at its own match. Without this an endpoint finding
+            // would reference the whole processing window and highlight far too much.
+            let (hit, kind) = match text(&finding["ruleId"]) {
+                "SEC-SECRET-001" => (credential_hit, "sensitive"),
+                "SEC-ENDPOINT-001" | "SEC-INTERNAL-001" => (endpoint_hit, "endpoint"),
+                _ => (None, ""),
+            };
             let (start, end) = hit.unwrap_or((start, end));
             finding["requestId"] = self.record["id"].clone();
             finding["evidence"]["bodyRef"] = json!({"snapshotId":evidence,"sourceSnapshotId":snapshot,"start":start,"end":end,"unit":"utf8_bytes"});
+            // `sensitive` marks a credential hit; an endpoint is a separate match kind.
             if hit.is_some() {
-                finding["evidence"]["bodyRef"]["matchKind"] = json!("sensitive");
+                finding["evidence"]["bodyRef"]["matchKind"] = json!(kind);
             }
         }
     }
@@ -296,19 +304,21 @@ impl Pipeline {
                     start + mark["end"].as_u64().unwrap_or(0),
                 )
             });
-        self.findings(before, root, (start, writer.position()), stage, hit);
+        self.findings(before, root, (start, writer.position()), stage, hit, None);
         Ok(())
     }
 }
 
 fn credential_mark(mark: &Value) -> bool {
-    !matches!(
-        text(&mark["reason"]),
-        "redaction_buffer_budget"
-            | "url_authority_uncertain"
-            | "credential_prefix_uncertain"
-            | "incomplete_body_fragment"
-    )
+    let reason = text(&mark["reason"]);
+    !crate::security::capture::annotation_only(reason)
+        && !matches!(
+            reason,
+            "redaction_buffer_budget"
+                | "url_authority_uncertain"
+                | "credential_prefix_uncertain"
+                | "incomplete_body_fragment"
+        )
 }
 
 pub struct BodyWriter {
@@ -460,6 +470,7 @@ impl BodyVisitor<'_> {
             }
             let start = self.writer.position();
             let mut credential_hit = None;
+            let mut endpoint_hit = None;
             let escaped = serde_json::to_string(&piece.text)?;
             for mark in &piece.marks {
                 let byte = |at: u64| {
@@ -476,6 +487,12 @@ impl BodyVisitor<'_> {
                 if credential_hit.is_none() && credential_mark(mark) && from < to {
                     credential_hit = Some((from, to));
                 }
+                if endpoint_hit.is_none()
+                    && super::capture::annotation_only(text(&mark["reason"]))
+                    && from < to
+                {
+                    endpoint_hit = Some((from, to));
+                }
             }
             self.writer.push(&escaped[1..escaped.len() - 1])?;
             let end = self.writer.position();
@@ -486,6 +503,7 @@ impl BodyVisitor<'_> {
                     (start, end),
                     &frame.stage,
                     credential_hit,
+                    endpoint_hit,
                 );
             }
             if self.writer.position() - self.last_progress >= 1024 * 1024 {
@@ -602,7 +620,7 @@ impl Visitor for BodyVisitor<'_> {
         self.writer.push(s)?;
         if self.inspect {
             self.pipeline
-                .findings(before, &self.root, (start, end), &frame.stage, hit);
+                .findings(before, &self.root, (start, end), &frame.stage, hit, None);
         }
         Ok(())
     }

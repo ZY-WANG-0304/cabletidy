@@ -1,7 +1,7 @@
 use crate::config::array;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::sync::LazyLock;
+use std::{collections::BTreeSet, sync::LazyLock};
 
 const MARKER: &str = "[REDACTED]";
 
@@ -20,10 +20,47 @@ static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     r#"(?i)(?:\b(?:authorization|proxy-authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|cookie|set-cookie)\b["']?\s*[:=]\s*)(?:"((?:\\.|[^"\\])*(?:\\)?)(?:"|$)|'([^']*)(?:'|$)|([^\s,;}\]]+))"#
 ).unwrap()
 });
-static AUTH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(?:Bearer|Basic)\s+([A-Za-z0-9._~+/=-]+)").unwrap());
-static URL_AUTH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://([^/\s@]+)@").unwrap());
+// The scheme word must be followed by a credential-shaped token. Ordinary prose such as
+// "basic instructions" or "bearer token handling" is not an authorization value.
+static AUTH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+    r"(?i)\b(?:Bearer|Basic)\s+([A-Za-z0-9._~+/=-]*[0-9._~+/=-][A-Za-z0-9._~+/=-]*|[A-Za-z]{20,})"
+).unwrap()
+});
+// Only userinfo that carries a password component, or that is itself token shaped,
+// is treated as a credential. `ssh://git@host/repo.git` is an ordinary public form.
+static URL_AUTH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://([^/\s@:]+:[^/\s@]*|[A-Za-z0-9_\-.]{20,})@").unwrap()
+});
+static URL_USERNAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9+.-]*://([^/\s@:]+)(?::[^/\s@]*)?@").unwrap());
+// Any syntactically valid IPv4 address, with an optional port. Whether it is an
+// internal or a public endpoint is decided in `host_reason`.
+static HOST_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+    r"\b((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})(:\d{1,5})?\b"
+).unwrap()
+});
+// A bare address is only an endpoint when something nearby says so. Without this,
+// ordinary version strings like `1.2.3.4` would be reported as servers.
+static HOST_CONTEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+    r"(?i)(?://|@|\b(?:host|hostname|server|ip|addr|address|ssh|scp|ping|connect|proxy|endpoint|upstream|origin|target|bind|listen|telnet|rsync|curl|wget|nc|mysql|psql|redis)\b(?:\s+(?:to|at|on|from|is|are|was)\b)?[\s:=\x22']*)$"
+).unwrap()
+});
+// Candidate IPv6 runs, either bracketed with an optional port or bare. The shape is
+// deliberately loose: `Ipv6Addr` decides what is actually an address, so MAC addresses,
+// timestamps and Rust `::` paths fall out as parse failures rather than regex tuning.
+static HOST_ADDRESS6: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+    r"\[([0-9A-Fa-f:.]+)\](:\d{1,5})?|(?:[^0-9A-Za-z:.]|^)([0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f.]{0,4}){2,})(?:[^0-9A-Za-z]|$)"
+).unwrap()
+});
+// Encoded forms of an IPv4 address: integer, hexadecimal, octal and percent-encoded
+// spellings all resolve to the same host. They are only read in a URL or userinfo
+// position, because a bare large integer elsewhere is ordinary data.
+static HOST_ENCODED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?://|@)([0-9A-Fx.%]+)(:\d{1,5})?").unwrap());
 static URL_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)[?&](?:api[_-]?key|access[_-]?token|token|secret|password|signature|sig)=([^&#\s"']+)"#).unwrap()
 });
@@ -65,6 +102,208 @@ pub fn credential_field(key: &str) -> bool {
             | "xauthtoken"
             | "authentication"
     )
+}
+
+// A documented placeholder is not a credential. Templates, environment references and
+// masking runs are the common shapes; retaining them as hits buries the real values.
+fn placeholder_value(value: &str) -> bool {
+    let v = value.trim().trim_matches(['"', '\'']);
+    if v.is_empty() {
+        return true;
+    }
+    // The surrounding capture stops at `}` or whitespace, so a template opener often
+    // arrives truncated (`{{`, `{{vault`). Treat the opener itself as the signal.
+    if v.starts_with('<')
+        || v.starts_with('{')
+        || v.starts_with('$')
+        || (v.starts_with('%') && v.ends_with('%') && v.len() > 2)
+    {
+        return true;
+    }
+    let lower = v.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "none"
+            | "null"
+            | "nil"
+            | "true"
+            | "false"
+            | "todo"
+            | "fixme"
+            | "changeme"
+            | "xxx"
+            | "test"
+            | "example"
+            | "placeholder"
+            | "redacted"
+            | "undefined"
+    ) {
+        return true;
+    }
+    // Upper-case instructions such as YOUR_TOKEN_HERE.
+    if v.bytes()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && ["YOUR", "HERE", "TOKEN", "KEY", "SECRET", "PASSWORD"]
+            .iter()
+            .any(|word| v.contains(word))
+    {
+        return true;
+    }
+    // Masking runs such as xxxxxxxx or ********. Bounded in length, because a long
+    // low-variety string is more likely a real value than a visual mask.
+    (4..=32).contains(&v.len()) && v.chars().collect::<BTreeSet<_>>().len() <= 2
+}
+
+fn shannon_entropy(s: &str) -> f64 {
+    let mut counts = std::collections::BTreeMap::new();
+    let mut total = 0f64;
+    for c in s.chars() {
+        *counts.entry(c).or_insert(0f64) += 1.0;
+        total += 1.0;
+    }
+    if total == 0.0 {
+        return 0.0;
+    }
+    -counts
+        .values()
+        .map(|n| {
+            let p = n / total;
+            p * p.log2()
+        })
+        .sum::<f64>()
+}
+
+fn word_shaped(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+// Endpoints and URL usernames are recorded for review, not hidden. They stay readable
+// in metadata instead of being replaced by the redaction marker.
+pub fn annotation_only(reason: &str) -> bool {
+    matches!(
+        reason,
+        "internal_host" | "public_host" | "internal_identity"
+    )
+}
+
+fn private_address(ip: &str) -> bool {
+    let mut parts = ip.split('.').filter_map(|p| p.parse::<u8>().ok());
+    let (Some(a), Some(b)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    a == 10
+        || a == 127
+        || a == 0
+        || a >= 224
+        || (a == 192 && b == 168)
+        || (a == 172 && (16..=31).contains(&b))
+        || (a == 169 && b == 254)
+}
+
+// Reported ranges follow the same split as IPv4: anything only reachable inside a
+// network or reserved for documentation is internal, everything else is a public host.
+fn private_address6(ip: std::net::Ipv6Addr) -> bool {
+    let [a, b, ..] = ip.segments();
+    ip.is_loopback()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast()
+        || (a & 0xfe00) == 0xfc00 // fc00::/7 unique local
+        || (a == 0x2001 && b == 0x0db8) // 2001:db8::/32 documentation
+        || ip.to_ipv4_mapped().is_some_and(private_address_v4)
+}
+
+fn private_address_v4(ip: std::net::Ipv4Addr) -> bool {
+    private_address(&ip.to_string())
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(byte as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+// Decode the alternative spellings a resolver accepts for an IPv4 address. Returns
+// `None` for anything that only looks numeric, so ports and ordinary integers are left
+// alone. Plain dotted-decimal is handled by `HOST_ADDRESS` and deliberately skipped.
+fn decode_address(raw: &str) -> Option<std::net::Ipv4Addr> {
+    let decoded = percent_decode(raw);
+    let plain = |s: &str| {
+        s.split('.').count() == 4
+            && s.split('.')
+                .all(|p| !p.is_empty() && p.len() <= 3 && p.bytes().all(|b| b.is_ascii_digit()))
+    };
+    if decoded != raw && plain(&decoded) {
+        return decoded.parse().ok();
+    }
+    let single = |value: u32| {
+        // Only a value that spans all four octets reads as an address.
+        (0x0100_0000..=u32::MAX)
+            .contains(&value)
+            .then(|| std::net::Ipv4Addr::from(value))
+    };
+    if !decoded.is_empty() && decoded.bytes().all(|b| b.is_ascii_digit()) {
+        return single(decoded.parse().ok()?);
+    }
+    // A single hexadecimal literal only; a dotted mix falls through to the loop below.
+    if let Some(hex) = decoded
+        .strip_prefix("0x")
+        .or_else(|| decoded.strip_prefix("0X"))
+        .filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return single(u32::from_str_radix(hex, 16).ok()?);
+    }
+    let parts: Vec<&str> = decoded.split('.').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    let mut encoded = false;
+    for (slot, part) in octets.iter_mut().zip(&parts) {
+        let value = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            encoded = true;
+            u32::from_str_radix(hex, 16).ok()?
+        } else if part.len() > 1 && part.starts_with('0') {
+            encoded = true;
+            u32::from_str_radix(&part[1..], 8).ok()?
+        } else {
+            part.parse().ok()?
+        };
+        *slot = u8::try_from(value).ok()?;
+    }
+    encoded.then(|| std::net::Ipv4Addr::from(octets))
+}
+
+// A server address is an attack surface once it leaks, so a public address is reported
+// at least as prominently as an internal one. An address without a port and without
+// network context is left alone, because dotted version numbers share its shape.
+fn host_reason(value: &str, ip_start: usize, ip: &str, port: bool) -> Option<&'static str> {
+    if !port && !HOST_CONTEXT.is_match(&value[..ip_start]) {
+        return None;
+    }
+    Some(if private_address(ip) {
+        "internal_host"
+    } else {
+        "public_host"
+    })
+}
+
+// Learned values are matched inside longer text only when they look like credentials.
+// A low entropy natural-language word would otherwise light up ordinary prose, so it
+// is demoted to whole-value or word-boundary matching instead of being dropped.
+fn substring_matchable(s: &str) -> bool {
+    s.len() >= 8 && !(word_shaped(s) && shannon_entropy(s) < 3.5)
 }
 
 #[derive(Clone)]
@@ -198,24 +437,79 @@ impl Redactor {
             if secret.len() < 4 && value != secret {
                 continue;
             }
+            // Word-like low entropy values are matched as complete values only, like
+            // short values above. A natural-language word would otherwise mark prose.
+            let anywhere = substring_matchable(secret);
+            let mut push = |start: usize, len: usize| {
+                if anywhere || len == value.len() {
+                    spans.push(Span {
+                        start,
+                        end: start + len,
+                        reason: "known_credential",
+                    });
+                }
+            };
             for (start, _) in value.match_indices(secret) {
-                spans.push(Span {
-                    start,
-                    end: start + secret.len(),
-                    reason: "known_credential",
-                });
+                push(start, secret.len());
             }
             let escaped = serde_json::to_string(secret).unwrap();
             let escaped = &escaped[1..escaped.len() - 1];
             if escaped != secret {
                 for (start, _) in value.match_indices(escaped) {
-                    spans.push(Span {
-                        start,
-                        end: start + escaped.len(),
-                        reason: "known_credential",
-                    });
+                    push(start, escaped.len());
                 }
             }
+        }
+        for c in HOST_ADDRESS.captures_iter(value) {
+            let ip = c.get(1).unwrap();
+            if let Some(reason) = host_reason(value, ip.start(), ip.as_str(), c.get(2).is_some()) {
+                spans.push(Span {
+                    start: ip.start(),
+                    end: c.get(2).map_or(ip.end(), |m| m.end()),
+                    reason,
+                });
+            }
+        }
+        for c in HOST_ADDRESS6.captures_iter(value) {
+            let bracketed = c.get(1);
+            let Some(address) = bracketed.or_else(|| c.get(3)) else {
+                continue;
+            };
+            let Ok(ip) = address.as_str().parse::<std::net::Ipv6Addr>() else {
+                continue;
+            };
+            // A bare `::` carries no endpoint, and `::1` style loopback still does.
+            if ip.is_unspecified() {
+                continue;
+            }
+            let port = bracketed.and(c.get(2));
+            if port.is_none() && !HOST_CONTEXT.is_match(&value[..address.start()]) {
+                continue;
+            }
+            spans.push(Span {
+                start: address.start(),
+                end: port.map_or(address.end(), |m| m.end()),
+                reason: if private_address6(ip) {
+                    "internal_host"
+                } else {
+                    "public_host"
+                },
+            });
+        }
+        for c in HOST_ENCODED.captures_iter(value) {
+            let address = c.get(1).unwrap();
+            let Some(ip) = decode_address(address.as_str()) else {
+                continue;
+            };
+            spans.push(Span {
+                start: address.start(),
+                end: c.get(2).map_or(address.end(), |m| m.end()),
+                reason: if private_address_v4(ip) {
+                    "internal_host"
+                } else {
+                    "public_host"
+                },
+            });
         }
         for (regex, reason) in [
             (&*TOKEN, "credential_pattern"),
@@ -235,9 +529,14 @@ impl Redactor {
             (&*URL_AUTH, "url_credentials"),
             (&*URL_SECRET, "url_credential_parameter"),
             (&*COOKIE, "cookie_header"),
+            (&*URL_USERNAME, "internal_identity"),
         ] {
             for c in regex.captures_iter(value) {
                 if let Some(m) = c.iter().skip(1).flatten().find(|m| !m.is_empty()) {
+                    // A template or masked value names a credential without carrying one.
+                    if reason != "internal_identity" && placeholder_value(m.as_str()) {
+                        continue;
+                    }
                     spans.push(Span {
                         start: m.start(),
                         end: m.end(),
@@ -336,7 +635,11 @@ fn replace_spans(value: &str, spans: &[Span], path: &str, marks: &mut Vec<Value>
         }
         output.push_str(&value[at..span.start]);
         let start = output.len();
-        output.push_str(MARKER);
+        if annotation_only(span.reason) {
+            output.push_str(&value[span.start..span.end]);
+        } else {
+            output.push_str(MARKER);
+        }
         mark(marks, path, span.reason, Some((start, output.len())));
         at = span.end;
     }
@@ -688,5 +991,211 @@ mod tests {
             assert_eq!(rules.findings.len(), 1, "{forbidden}");
             assert_eq!(rules.findings[0]["confidence"], "medium");
         }
+    }
+
+    fn reasons(redactor: &Redactor, value: &str) -> Vec<&'static str> {
+        redactor
+            .spans(value)
+            .into_iter()
+            .map(|s| s.reason)
+            .collect()
+    }
+
+    #[test]
+    fn word_shaped_learned_values_do_not_light_up_ordinary_prose() {
+        let redactor = Redactor::new(&json!({"token": "instructions"}));
+        let prose = "Usually skip visuals for basic instructions, or information already clear.";
+        assert!(reasons(&redactor, prose).is_empty());
+        // The value still matches when it is the complete value, which is how it
+        // appears once a JSON field is walked down to its own string.
+        assert_eq!(reasons(&redactor, "instructions"), ["known_credential"]);
+        let mut value = json!({"token": "instructions", "note": "basic instructions here"});
+        redactor.sanitize(&mut value);
+        assert_eq!(value["token"], MARKER);
+        assert_eq!(value["note"], "basic instructions here");
+    }
+
+    #[test]
+    fn authorization_schemes_in_prose_are_not_credential_values() {
+        let redactor = Redactor::new(&json!({}));
+        for prose in [
+            "Usually skip visuals for basic instructions, or information already clear.",
+            "Basic authentication is required for this endpoint",
+            "bearer token handling is documented elsewhere",
+        ] {
+            assert!(reasons(&redactor, prose).is_empty(), "{prose}");
+        }
+        for header in [
+            "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+            "Authorization: Bearer sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD",
+            "sent with Basic dXNlcjpwYXNzd29yZA== today",
+        ] {
+            // Overlapping spans merge under whichever reason starts first, so assert
+            // that the value is detected rather than which reason reported it.
+            assert!(!reasons(&redactor, header).is_empty(), "{header}");
+        }
+    }
+
+    #[test]
+    fn high_entropy_learned_values_still_match_inside_longer_text() {
+        let redactor = Redactor::new(&json!({"key": "sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD"}));
+        assert_eq!(
+            reasons(&redactor, "prefixsk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cDsuffix"),
+            ["known_credential"]
+        );
+    }
+
+    #[test]
+    fn public_git_urls_are_not_credentials_but_internal_endpoints_are_recorded() {
+        let redactor = Redactor::new(&json!({}));
+        assert_eq!(
+            reasons(&redactor, "ssh://git@github.com/foo/bar.git"),
+            ["internal_identity"]
+        );
+        assert_eq!(
+            reasons(&redactor, "https://user:s3cr3tpassword@internal.test/repo"),
+            ["url_credentials"]
+        );
+        let git = "nssh://git@10.79.10.70:1022/ziyang01.wang/zeroinput.git";
+        assert_eq!(
+            reasons(&redactor, git),
+            ["internal_identity", "internal_host"]
+        );
+        assert_eq!(
+            reasons(&redactor, "http://10.79.10.70:1080/merge_requests/38"),
+            ["internal_host"]
+        );
+        assert!(reasons(&redactor, "https://api.github.test/repos/x").is_empty());
+    }
+
+    #[test]
+    fn documented_placeholders_are_not_credential_values() {
+        let redactor = Redactor::new(&json!({}));
+        for value in [
+            "password: <your-password-here>",
+            "api_key: ${API_KEY}",
+            "secret: {{ vault_secret }}",
+            "password = None",
+            "api_key: TODO",
+            "token=xxxxxxxxxxxx",
+            "https://x.test/cb?token=YOUR_TOKEN_HERE",
+            "https://x.test/cb?token=${TOKEN}",
+        ] {
+            assert!(reasons(&redactor, value).is_empty(), "{value}");
+        }
+        // Real values alongside the same field names are still reported.
+        for value in [
+            "password: hunter2realvalue",
+            "https://x.test/cb?token=abc123realtoken",
+            "cookie: session=abc123",
+        ] {
+            assert!(!reasons(&redactor, value).is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn ipv6_endpoints_are_classified_and_colon_syntax_is_not_an_address() {
+        let redactor = Redactor::new(&json!({}));
+        for (value, expected) in [
+            ("[2606:4700:4700::1111]:8443", "public_host"),
+            ("ssh root@2a00:1450:4001:828::200e", "public_host"),
+            ("server 2606:4700:4700::1111", "public_host"),
+            ("http://[fd00::1]:5432/db", "internal_host"),
+            ("connect to fe80::1", "internal_host"),
+            ("[::1]:8080", "internal_host"),
+            ("endpoint 2001:db8::1", "internal_host"),
+        ] {
+            assert!(
+                reasons(&redactor, value).contains(&expected),
+                "{value} -> {:?}",
+                reasons(&redactor, value)
+            );
+        }
+        // Colons are common in code and logs without naming a host.
+        for value in [
+            "the value is ::",
+            "std::collections::BTreeMap",
+            "use core::fmt::Debug",
+            "mac 00:1A:2B:3C:4D:5E",
+            "at 12:30:45 today",
+            "ratio 1:2",
+        ] {
+            assert!(reasons(&redactor, value).is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn encoded_addresses_resolve_to_the_same_endpoint_class() {
+        let redactor = Redactor::new(&json!({}));
+        // Every spelling below resolves to 192.168.1.1.
+        for value in [
+            "http://3232235777/",
+            "http://0xC0A80101/",
+            "http://0xC0.0xA8.0x01.0x01/",
+            "http://0300.0250.0001.0001/",
+        ] {
+            assert!(
+                reasons(&redactor, value).contains(&"internal_host"),
+                "{value} -> {:?}",
+                reasons(&redactor, value)
+            );
+        }
+        assert!(reasons(&redactor, "http://%31%30%2e%30%2e%30%2e%31/").contains(&"internal_host"));
+        assert!(reasons(&redactor, "http://3475931762/").contains(&"public_host"));
+        // Numbers outside a host position, and ports, are ordinary data.
+        for value in [
+            "timeout 3232235777 ms",
+            "http://8080/",
+            "offset 0xC0A80101 in the dump",
+        ] {
+            assert!(reasons(&redactor, value).is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn public_server_addresses_are_reported_and_version_strings_are_not() {
+        let redactor = Redactor::new(&json!({}));
+        for (value, expected) in [
+            ("http://203.0.113.45:8443/admin", "public_host"),
+            ("ssh root@198.51.100.7", "public_host"),
+            ("server 203.0.113.45", "public_host"),
+            ("host: 203.0.113.45", "public_host"),
+            ("8.8.8.8:53", "public_host"),
+            ("connect to 192.168.1.50:5432", "internal_host"),
+            ("http://127.0.0.1:8080/health", "internal_host"),
+        ] {
+            assert!(
+                reasons(&redactor, value).contains(&expected),
+                "{value} -> {:?}",
+                reasons(&redactor, value)
+            );
+        }
+        // A dotted version number shares the shape of an address but is not an endpoint.
+        for value in [
+            "version 1.2.3.4 released",
+            "schema 1.0.0.0 migration",
+            "v1.2.3.4",
+            "upgraded to version 10.79.10.70",
+        ] {
+            assert!(reasons(&redactor, value).is_empty(), "{value}");
+        }
+    }
+
+    #[test]
+    fn internal_endpoints_stay_readable_and_are_not_reported_as_credentials() {
+        let redactor = Redactor::new(&json!({}));
+        let mut value = json!({"url": "ssh://git@10.79.10.70:1022/x.git"});
+        redactor.sanitize(&mut value);
+        // Recorded for review, not replaced by the redaction marker.
+        assert_eq!(value["url"], "ssh://git@10.79.10.70:1022/x.git");
+        let mut rules = super::super::rules::Rules::new(&json!({}));
+        let marks: Vec<Value> = reasons(&redactor, "ssh://git@10.79.10.70:1022/x.git")
+            .into_iter()
+            .map(|reason| json!({"reason": reason}))
+            .collect();
+        rules.annotations(&marks, "request_content", "input/0");
+        assert_eq!(rules.findings.len(), 1);
+        assert_eq!(rules.findings[0]["ruleId"], "SEC-INTERNAL-001");
+        assert_eq!(rules.findings[0]["severity"], "low");
     }
 }
