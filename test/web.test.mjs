@@ -1259,6 +1259,29 @@ test("advanced model editor exposes one upstream and saves only its model mappin
   assert.deepEqual(model.capabilityOverrides, ["-vision"]);
 });
 
+test("Generic CLI model editing preserves legacy policies without exposing inactive controls", async () => {
+  const config = normalizeConfig(codexConfigFixture());
+  config.bindings.relay.target = "generic-env";
+  const model = config.virtualProviders.cabletidy_relay.models["gpt-5.5"];
+  model.contextWindow = 64000;
+  model.compact = { strategy: "auto", tokenLimit: 50000 };
+  const app = await controller(config);
+  const suiteHtml = app.read("renderSuiteDetail()");
+  assert.match(suiteHtml, /高级模型设置/);
+  assert.doesNotMatch(suiteHtml, /Context window|Compact strategy|compactTokenLimit|contextWindow/);
+  const html = app.read("renderModels()");
+  assert.doesNotMatch(html, /Context window|Compact strategy|compactTokenLimit|contextWindow/);
+  await app.submit(formNode("model-form", {
+    id: "model", clientModelId: "gpt-5.5", aliases: "gpt-5.5",
+    upstreamId: "relay", upstreamModelId: "changed-model", capabilityOverrides: "-vision",
+    capabilities: "streaming, tools",
+  }));
+  const saved = app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"];
+  assert.equal(saved.contextWindow, 64000);
+  assert.deepEqual(saved.compact, { strategy: "auto", tokenLimit: 50000 });
+  assert.deepEqual(saved.capabilities, ["streaming", "tools"]);
+});
+
 test("a rejected creation stays on the form and can be retried without duplicate records", async () => {
   let reject = true;
   const app = await controller(normalizeConfig({}), {

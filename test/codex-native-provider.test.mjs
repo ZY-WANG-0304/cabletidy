@@ -36,6 +36,7 @@ test("Codex renderer emits only a local config.toml provider block", () => {
   assert.equal(Object.hasOwn(artifacts.upstream, "envKey"), false);
   assert.equal(artifacts.providerId, config.bindings[artifacts.bindingId].virtualProvider);
   assert.equal(artifacts.providerId, artifacts.virtualProviderId);
+  assert.equal(Object.hasOwn(artifacts, "modelPolicy"), false);
 });
 
 test("Codex rendering rejects a provider shared by two configurations", () => {

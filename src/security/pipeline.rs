@@ -29,12 +29,12 @@ pub struct Pipeline {
     pub count_progress: bool,
 }
 impl Pipeline {
-    pub fn new(store: Arc<Store>, record: Value, secrets: &Value) -> Self {
+    pub fn new(store: Arc<Store>, record: Value, secrets: &Value, redactor: Redactor) -> Self {
         Self {
             store,
             record,
             rules: Rules::new(secrets),
-            redactor: Redactor::new(secrets),
+            redactor,
             highest: "informational".into(),
             count: 0,
             inspected: 0,
@@ -1029,8 +1029,7 @@ pub(super) fn run(
     sse: bool,
     upstream: bool,
 ) {
-    let mut p = Pipeline::new(store, record, &secrets);
-    p.redactor = redactor;
+    let mut p = Pipeline::new(store, record, &secrets, redactor);
     p.record["usage"] = json!({});
     p.redactor.observe(&request.headers);
     p.redactor.observe(&response.headers);

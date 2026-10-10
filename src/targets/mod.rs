@@ -113,13 +113,8 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
         let provider = text(&p["id"]);
         let active=format!("# >>> CABLETIDY MANAGED ACTIVE PROVIDER {provider} -->\nmodel_provider = {}\n{}# <<< CABLETIDY MANAGED ACTIVE PROVIDER {provider} <--\n",json!(provider),default.as_ref().map(|d|format!("model = {}\n",json!(d))).unwrap_or_default());
         let provider_contents=format!("# >>> CABLETIDY MANAGED PROVIDER {provider} -->\n[model_providers.{provider}]\nname = {}\nbase_url = {}\nwire_api = \"responses\"\nrequires_openai_auth = false\n# <<< CABLETIDY MANAGED PROVIDER {provider} <--\n",json!(format!("CableTidy / {}",text(u.get("name").unwrap_or(&u["id"])))),json!(format!("{base}/v1")));
-        let profile = if requested.is_some() {
-            model::resolve(p, requested)?.profile
-        } else {
-            Value::Null
-        };
         return Ok(
-            json!({"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","bindingId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"modelPolicy":{"contextWindow":profile["contextWindow"],"compact":profile["compact"]},"files":[{"path":"config.toml","contents":format!("{active}\n{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
+            json!({"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","bindingId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"files":[{"path":"config.toml","contents":format!("{active}\n{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
         );
     }
     let mut vars = json!({});
