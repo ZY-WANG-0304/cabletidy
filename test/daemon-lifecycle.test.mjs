@@ -468,3 +468,96 @@ if (process.platform === "win32") {
     await waitFor(() => app.catalogConnections.size === 0);
   });
 }
+
+for (const direct of [false, true]) {
+  test(`${direct ? "native" : "npm foreground"} restart drains requests and preserves configuration and address`, signalTest, async t => {
+    const app = await fixture(t);
+    const beforeRuntime = JSON.parse(await fs.readFile(app.runtime, "utf8"));
+    const configFile = path.join(app.directory, "config.json");
+    const secretsFile = path.join(app.directory, "secrets.json");
+    const beforeConfig = await fs.readFile(configFile, "utf8");
+    const beforeSecrets = await fs.readFile(secretsFile, "utf8");
+    const { upstream, text } = await startStream(app);
+    const child = spawn(direct ? nativeBinary : process.execPath,
+      direct ? ["restart"] : ["bin/cabletidy.mjs", "restart", "--foreground"], {
+        cwd: root, env: fixtureEnvironment({ CABLETIDY_HOME: app.directory, CODEX_HOME: path.join(app.directory, "client"), CABLETIDY_MANAGED_STDIN: "1" }),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    let output = "";
+    child.stdout.on("data", chunk => { output += chunk; });
+    child.stderr.on("data", chunk => { output += chunk; });
+    const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      await closed;
+    });
+    await waitFor(async () => (await daemonStatus(app)).runtime.status === "stopping");
+    assert.equal(JSON.parse(await fs.readFile(app.runtime, "utf8")).controlId, beforeRuntime.controlId);
+    assert.doesNotMatch(output, /CableTidy stopped/);
+    upstream.end("data: [DONE]\n\n");
+    await text;
+    await app.expectExit(0);
+    await waitFor(async () => {
+      const status = await daemonStatus(app);
+      return status.runtime.status === "online" && status.runtime.controlId !== beforeRuntime.controlId;
+    });
+    assert.match(output, /CableTidy stopped/);
+    assert.equal((await daemonStatus(app)).runtime.web.url, app.url);
+    assert.equal(await fs.readFile(configFile, "utf8"), beforeConfig);
+    assert.equal(await fs.readFile(secretsFile, "utf8"), beforeSecrets);
+    assert.equal((await fetch(app.url)).status, 200);
+    await execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: app.directory } });
+    assert.deepEqual(await closed, { code: 0, signal: null }, output);
+  });
+}
+
+test("restart starts an offline daemon and responds to managed shutdown after startup", signalTest, async t => {
+  const app = await fixture(t);
+  await execute(nativeBinary, ["stop"], { env: { ...process.env, CABLETIDY_HOME: app.directory } });
+  await app.expectExit(0);
+  const child = spawn(nativeBinary, ["restart"], {
+    env: fixtureEnvironment({ CABLETIDY_HOME: app.directory, CABLETIDY_MANAGED_STDIN: "1", CODEX_HOME: path.join(app.directory, "client") }),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", chunk => { output += chunk; });
+  child.stderr.on("data", chunk => { output += chunk; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await closed;
+  });
+  await waitFor(() => output.includes("Ctrl+C"));
+  assert.match(output, /not running/);
+  assert.equal((await daemonStatus(app)).runtime.web.url, app.url);
+  child.stdin.write("SIGTERM\n");
+  await waitFor(() => child.exitCode !== null);
+  assert.deepEqual(await closed, { code: 0, signal: null });
+  await assert.rejects(fs.access(app.runtime), { code: "ENOENT" });
+});
+
+test("cancelling restart while draining does not launch a replacement daemon", signalTest, async t => {
+  const app = await fixture(t);
+  const { upstream, text } = await startStream(app);
+  const child = spawn(nativeBinary, ["restart"], {
+    env: fixtureEnvironment({ CABLETIDY_HOME: app.directory, CABLETIDY_MANAGED_STDIN: "1" }),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", chunk => { output += chunk; });
+  child.stderr.on("data", chunk => { output += chunk; });
+  const closed = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", (code, signal) => resolve({ code, signal })); });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await closed;
+  });
+  await waitFor(() => output.includes("waiting for active requests"));
+  child.stdin.write("SIGTERM\n");
+  await waitFor(() => child.exitCode !== null);
+  assert.deepEqual(await closed, { code: 143, signal: null }, output);
+  assert.equal((await daemonStatus(app)).runtime.status, "stopping");
+  upstream.end("data: [DONE]\n\n");
+  await text;
+  await app.expectExit(0);
+  assert.equal((await daemonStatus(app)).runtime.status, "offline");
+});

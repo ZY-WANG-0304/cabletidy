@@ -781,6 +781,56 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     if path == "/api/v1/config/commit" {
         return commit(&state, &body).await;
     }
+    if path == "/api/v1/config/export" {
+        return Ok(
+            match crate::transfer::export(c, &body["bindingIds"], &snapshot.secrets) {
+                Ok(bundle) => json_response(200, bundle),
+                Err(e) => error(422, "config_export_invalid", &e.to_string()),
+            },
+        );
+    }
+    if path == "/api/v1/config/import" {
+        if body["preview"] != true && body["baseRevision"] != c["revision"] {
+            return Ok(error(
+                409,
+                "revision_conflict",
+                "配置已变更，请重新选择文件并预览导入",
+            ));
+        }
+        let (candidate, suites) = match crate::transfer::import(
+            c,
+            &body["bundle"],
+            &body["choices"],
+            body["preview"] == true,
+        ) {
+            Ok(value) => value,
+            Err(e) => return Ok(error(422, "config_import_invalid", &e.to_string())),
+        };
+        if body["preview"] == true {
+            let mut check = validation::validate(&candidate);
+            if check["ok"] == true {
+                check["errors"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(catalog::validate_changes(&candidate, c, &state.catalog).await);
+            }
+            if !array(&check["errors"]).is_empty() {
+                return Ok(json_response(
+                    422,
+                    json!({"error":{"code":"config_import_invalid","message":"配置套装校验失败"},"errors":check["errors"]}),
+                ));
+            }
+            return Ok(json_response(
+                200,
+                json!({"ok":true,"baseRevision":c["revision"],"suites":suites,"warnings":check["warnings"]}),
+            ));
+        }
+        return commit(
+            &state,
+            &json!({"baseRevision":c["revision"],"config":candidate}),
+        )
+        .await;
+    }
     if let Some(rest) = path.strip_prefix("/api/v1/virtual-providers/") {
         if let Some((id, action)) = rest.rsplit_once('/') {
             if ["start", "pause"].contains(&action) {

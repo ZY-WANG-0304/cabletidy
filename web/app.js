@@ -46,6 +46,7 @@ const state = {
   events: [],
   codexCatalog: null,
   createTarget: "codex",
+  transfer: { panel: null, bundle: null, preview: null },
   busy: false,
   pendingSecrets: {
     upstreamSecrets: {},
@@ -467,14 +468,96 @@ function renderOverview() {
   return `
     <div class="suite-toolbar">
       <span class="muted">${suites.length} 套配置</span>
-      <button class="button button-primary" data-action="create-suite">新建配置</button>
+      <div class="suite-toolbar-actions">
+        <button class="button" data-action="import-suites">导入配置</button>
+        <button class="button" data-action="export-suites" ${suites.length ? "" : "disabled"}>导出配置</button>
+        <button class="button button-primary" data-action="create-suite">新建配置</button>
+      </div>
     </div>
+    ${renderTransfer(suites)}
     ${
       suites.length
         ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th><th scope="col">操作</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
         : `<div class="panel"><div class="empty">暂无配置</div></div>`
     }
   `;
+}
+
+function renderTransfer(suites) {
+  const close = '<button class="button button-quiet" type="button" data-action="close-transfer">取消</button>';
+  const notice = '<p class="muted">仅包含 CableTidy 配置套装。API Key、上游认证凭据和地址中的认证信息不导出，新建配置需填写凭据，更新已有配置保留原凭据。客户端文件、运行记录和管理台设置不包含在内。</p>';
+  if (state.transfer.panel === "export") return `
+    <form id="suite-export-form" class="panel transfer-panel">
+      <h2>导出配置</h2>${notice}
+      <fieldset class="transfer-selection"><legend>选择要导出的配置套装</legend>
+        ${suites.map(suite => `<label class="checkbox-field"><input type="checkbox" name="bindingIds" value="${esc(suite.id)}" checked /><span>${esc(suite.name)} · ${esc(targetLabel(suite.target))}</span></label>`).join("")}
+      </fieldset>
+      <div class="form-actions">${close}<button class="button button-primary" type="submit">下载配置文件</button></div>
+    </form>`;
+  if (state.transfer.panel === "import") {
+    const preview = state.transfer.preview;
+    return `<form id="suite-import-form" class="panel transfer-panel">
+      <h2>导入配置</h2>${notice}
+      ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；更新保留已有认证凭据，新建配置需填写凭据；客户端文件需按需重新应用。</p>
+        <div class="transfer-selection">${preview.suites.map(suite => suite.conflict
+          ? `<label class="field"><span>${esc(suite.sourceName)} · ${esc(targetLabel(suite.target))}（与「${esc(suite.existingName || suite.sourceName)}」同名）</span>
+            <select name="choice:${esc(suite.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有配置</option><option value="create">创建新配置（${esc(suite.name)}）</option></select></label>`
+          : `<p>${esc(suite.name)} · ${esc(targetLabel(suite.target))} · 新建配置</p>`).join("")}</div>
+        ${(preview.warnings || []).map(w => `<p class="muted">${esc(w.message)}</p>`).join("")}
+        <div class="form-actions">${close}<button class="button" type="button" data-action="import-suites">重新选择文件</button><button class="button button-primary" type="submit">确认导入</button></div>`
+      : `<label class="field"><span>配置套装文件（JSON）</span><input type="file" name="bundle" accept=".json,application/json" required /></label>
+        <div class="form-actions">${close}<button class="button button-primary" type="submit">预览导入</button></div>`}
+    </form>`;
+  }
+  return "";
+}
+
+async function exportSuites(data) {
+  const bindingIds = data.getAll("bindingIds");
+  if (!bindingIds.length) throw new Error("请至少选择一套配置。");
+  const bundle = await api("/config/export", { method: "POST", body: JSON.stringify({ bindingIds }) });
+  const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2) + "\n"], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `cabletidy-configurations-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`已导出 ${bindingIds.length} 套配置；新建配置需填写凭据，更新已有配置保留原凭据。`);
+}
+
+async function importSuites(data) {
+  if (!state.transfer.preview) {
+    const file = data.get("bundle");
+    if (!file?.size) throw new Error("请选择配置套装文件。");
+    if (file.size > 8 * 1024 * 1024) throw new Error("配置套装文件不能超过 8 MiB。");
+    let bundle;
+    try { bundle = JSON.parse(await file.text()); }
+    catch { throw new Error("配置套装文件不是有效的 JSON。"); }
+    const preview = await api("/config/import", { method: "POST", body: JSON.stringify({ bundle, preview: true }) });
+    state.transfer.bundle = bundle;
+    state.transfer.preview = preview;
+    render();
+    return;
+  }
+  const choices = {};
+  for (const suite of state.transfer.preview.suites) {
+    if (!suite.conflict) continue;
+    const choice = data.get(`choice:${suite.sourceId}`);
+    if (!["update", "create"].includes(choice)) throw new Error("请选择每套同名配置的处理方式。");
+    choices[suite.sourceId] = choice;
+  }
+  const result = await api("/config/import", { method: "POST", body: JSON.stringify({
+    bundle: state.transfer.bundle, baseRevision: state.transfer.preview.baseRevision,
+    choices,
+  }) });
+  state.config = result.config;
+  state.candidate = clone(result.config);
+  state.runtime = result.runtime;
+  state.transfer = { panel: null, bundle: null, preview: null };
+  render();
+  toast("配置已导入，更新的配置保留已有凭据。请为未配置凭据的上游填写认证信息，再按需应用到客户端。");
 }
 
 function suiteModelEditor(suite, modelId, profile, upstreamId) {
@@ -2129,7 +2212,10 @@ async function handleAction(action, element) {
   }
   const unlock = lockControls();
   try {
-    if (action === "refresh") {
+    if (["import-suites", "export-suites", "close-transfer"].includes(action)) {
+      state.transfer = { panel: action === "import-suites" ? "import" : action === "export-suites" ? "export" : null, bundle: null, preview: null };
+      render();
+    } else if (action === "refresh") {
       await refresh();
     } else if (action === "refresh-codex-models") {
       state.codexCatalog = await api("/codex/models?refresh=1");
@@ -2294,6 +2380,8 @@ async function handleFormSubmit(event, form) {
   try {
     // Inputs named "id" shadow the form.id property in the browser.
     const formId = form.getAttribute("id");
+    if (formId === "suite-export-form") { await exportSuites(data); return; }
+    if (formId === "suite-import-form") { await importSuites(data); return; }
     if (formId === "security-trace-search") {
       state.trace.search = String(data.get("search") || ""); render(); return;
     }
