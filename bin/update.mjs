@@ -157,7 +157,7 @@ export async function update(args) {
     console.warn(`Cannot determine whether CableTidy is running: ${state.error}`);
   }
   if (state.running && windows) {
-    if (!state.process) throw new Error("CableTidy is starting or shutting down; wait for it to finish, then run cabletidy update again.");
+    if (!state.process) throw new Error("Cannot verify the running CableTidy process (it may be starting or shutting down); stop it manually, then run cabletidy update again.");
     // Windows locks the running executable, so npm cannot replace the package until the daemon exits.
     if (!await confirm("The running CableTidy daemon must be stopped before updating. Stop it now?", options.yes)) {
       console.log("Update cancelled");

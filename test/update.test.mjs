@@ -93,8 +93,10 @@ test("instance probe ignores config.json and waits until a lingering daemon exit
   const config = await fs.readFile(path.join(home, "config.json"), "utf8");
   await fs.writeFile(path.join(home, "config.json"), "{");
   await assert.rejects(execFileAsync(nativeBinary, ["status"], { env }), /Invalid JSON/);
+  // A stale diagnostic hostname must not prevent confirming that the local process exited.
+  await fs.writeFile(path.join(home, "runtime.json"), JSON.stringify({ ...runtime, hostname: "renamed-host" }));
   const state = JSON.parse(await probe());
-  assert.deepEqual(state, { running: true, process: { pid: daemon.pid, startTime: runtime.pidStartTime, hostname: runtime.hostname } });
+  assert.deepEqual(state, { running: true, process: { pid: daemon.pid, startTime: runtime.pidStartTime } });
   await fs.writeFile(path.join(home, "config.json"), config);
 
   const connection = await holdControlConnection(home, runtime);
@@ -105,8 +107,37 @@ test("instance probe ignores config.json and waits until a lingering daemon exit
   const lingering = alive(daemon.pid);
   t.diagnostic(`daemon alive after stop: ${lingering}`);
   assert.ok(lingering);
+  const started = Date.now();
   await probe("--wait-exit", JSON.stringify(state.process));
   assert.equal(alive(daemon.pid), false);
+  assert.ok(Date.now() - started < 15000, "wait-exit must not run into its timeout");
   await closed;
   assert.deepEqual(JSON.parse(await probe()), { running: false, process: null });
+});
+
+test("instance probe withholds a process identity it cannot verify locally", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-update-stale-"));
+  const env = { ...process.env, CABLETIDY_HOME: home, CABLETIDY_PREFERRED_PORT: "0" };
+  delete env.CABLETIDY_MANAGED_STDIN;
+  const daemon = spawn(nativeBinary, ["start"], { env, stdio: "ignore" });
+  const closed = new Promise(resolve => daemon.once("close", resolve));
+  t.after(async () => {
+    if (daemon.exitCode === null) { daemon.kill(); await closed; }
+    await fs.rm(home, { recursive: true, force: true });
+  });
+  let runtime;
+  for (let i = 0; i < 500 && runtime?.pid !== daemon.pid; i++) {
+    runtime = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8").catch(() => "null"));
+    await delay(20);
+  }
+  assert.equal(runtime?.pid, daemon.pid);
+  const probe = async () => JSON.parse((await execFileAsync(nativeBinary, ["__instance"], { env })).stdout);
+  // A mismatched start time (PID reuse) or a missing one is reported as running without an identity.
+  for (const pidStartTime of [`${runtime.pidStartTime}0`, null]) {
+    await fs.writeFile(path.join(home, "runtime.json"), JSON.stringify({ ...runtime, pidStartTime }));
+    assert.deepEqual(await probe(), { running: true, process: null });
+  }
+  await fs.writeFile(path.join(home, "runtime.json"), JSON.stringify(runtime));
+  await execFileAsync(nativeBinary, ["stop"], { env });
+  await closed;
 });

@@ -367,9 +367,17 @@ pub async fn instance(paths: &Paths) -> Result<Value> {
         true => read_json(&paths.runtime).await.ok().flatten(),
         false => None,
     };
-    let process = runtime
+    // The kernel lock is local, so its holder runs on this machine; the recorded hostname is only
+    // diagnostic and may be stale. Report the process only once pid and start time match locally,
+    // so waiting for exit never depends on an identity that cannot be verified.
+    let mut process = runtime
         .filter(|r| r["pid"].is_u64())
-        .map(|r| json!({"pid":r["pid"],"startTime":r["pidStartTime"],"hostname":r["hostname"]}));
+        .map(|r| json!({"pid":r["pid"],"startTime":r["pidStartTime"]}));
+    if let Some(identity) = &process {
+        if inspect(identity).await != "alive" {
+            process = None;
+        }
+    }
     Ok(json!({"running":running,"process":process}))
 }
 
