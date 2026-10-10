@@ -1184,6 +1184,7 @@ button.list-row:hover,
 .security-body-content { max-height: 520px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .security-sensitive-hit { background: #fff0c2; color: #49300a; border-radius: 2px; }
 .security-risk-hit { background: #ffe3a1; color: #49300a; border-radius: 2px; }
+.security-endpoint-hit { background: #e3eefb; color: #1d3a5c; border-radius: 2px; }
 .security-body-hit { background: #ffe3a1; color: #49300a; outline: 2px solid #b97b1b; border-radius: 2px; scroll-margin-block: 24px; }
 .security-selected-risk { font-weight: 600; }
 .security-redactions ul { padding-left: 20px; max-height: 240px; overflow: auto; }

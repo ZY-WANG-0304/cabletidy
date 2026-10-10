@@ -87,6 +87,7 @@ async function review(f, id) {
     } while (offset != null);
     snapshot.text = chunks.map(c => c.content).join("");
     snapshot.sensitiveRanges = chunks.flatMap(c => c.sensitiveRanges || []);
+    snapshot.coverageRanges = chunks.flatMap(c => c.coverageRanges || []);
     snapshot.redactions = chunks.flatMap(c => c.redactions || []);
     try { snapshot.body = JSON.parse(snapshot.text); } catch { snapshot.body = snapshot.text; }
   }
@@ -622,6 +623,128 @@ test("credential detection retains original text across UTF-8 pages and long cre
   }
   const stored = await auditBytes(f.home);
   for (const value of [unknown, secret, "private-prefix", "private-tail", "long-prefix", "long-tail"]) assert.ok(stored.includes(Buffer.from(value)), value);
+});
+
+test("prose, public git URLs and server addresses are classified without credential false positives", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const prose = "Usually skip visuals for single facts, simple edits, basic instructions, or information already clear.";
+  const git = "nssh://git@10.79.10.70:1022/ziyang01.wang/zeroinput.git";
+  const review1 = "http://10.79.10.70:1080/ziyang01.wang/zeroinput/-/merge_requests/38";
+  const public1 = "ssh root@203.0.113.45";
+  const version = "upgraded to version 1.2.3.4 today";
+  const response = await f.request({ input: `${prose}\n${git}\n${review1}\n${public1}\n${version}` });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  // Everything stays readable; endpoints are annotated rather than redacted.
+  for (const value of [prose, git, review1, public1, version]) assert.ok(body.text.includes(value), value);
+  const rules = record.findings.map(finding => finding.ruleId);
+  // No credential risk: the prose, the `git@` userinfo and the version number are not secrets.
+  assert.equal(rules.includes("SEC-SECRET-001"), false, JSON.stringify(record.findings));
+  assert.ok(rules.includes("SEC-INTERNAL-001"), JSON.stringify(rules));
+  assert.ok(rules.includes("SEC-ENDPOINT-001"), JSON.stringify(rules));
+  assert.equal(record.findings.find(finding => finding.ruleId === "SEC-ENDPOINT-001").severity, "medium");
+  assert.equal(record.findings.find(finding => finding.ruleId === "SEC-INTERNAL-001").severity, "low");
+  const reasons = body.sensitiveRanges.concat(body.coverageRanges, body.redactions).map(mark => mark.reason);
+  assert.equal(reasons.includes("known_credential"), false, JSON.stringify(reasons));
+  assert.equal(reasons.includes("url_credentials"), false, JSON.stringify(reasons));
+  // The version number keeps its shape without being reported as a server.
+  const versionAt = body.text.indexOf("1.2.3.4");
+  assert.ok(!body.sensitiveRanges.concat(body.coverageRanges, body.redactions).some(m => m.start <= versionAt && m.end > versionAt));
+});
+
+test("IPv6 and encoded addresses are classified like their plain equivalents", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const values = {
+    v6public: "[2606:4700:4700::1111]:8443",
+    v6internal: "http://[fd00::1]:5432/db",
+    encodedInternal: "http://3232235777/",
+    encodedHex: "http://0xC0.0xA8.0x01.0x01/",
+    encodedPercent: "http://%31%30%2e%30%2e%30%2e%31/",
+    rustPath: "std::collections::BTreeMap",
+    mac: "mac 00:1A:2B:3C:4D:5E",
+  };
+  const response = await f.request({ input: Object.values(values).join("\n") });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  for (const value of Object.values(values)) assert.ok(body.text.includes(value), value);
+  const rules = record.findings.map(finding => finding.ruleId);
+  assert.ok(rules.includes("SEC-ENDPOINT-001"), JSON.stringify(rules));
+  assert.ok(rules.includes("SEC-INTERNAL-001"), JSON.stringify(rules));
+  assert.equal(rules.includes("SEC-SECRET-001"), false, JSON.stringify(record.findings));
+  const marks = body.sensitiveRanges.concat(body.coverageRanges, body.redactions);
+  const covered = (needle) => {
+    const at = body.text.indexOf(needle);
+    return marks.some(mark => mark.start <= at && mark.end > at);
+  };
+  // Each endpoint finding points at its own match, not the whole processing window,
+  // so risk highlighting stays narrow. `sensitive` is reserved for credential hits.
+  for (const finding of record.findings) {
+    const ref = finding.evidence.bodyRef;
+    assert.equal(ref.matchKind, "endpoint", finding.ruleId);
+    assert.ok(ref.end - ref.start < 64, `${finding.ruleId} span ${ref.start}-${ref.end}`);
+  }
+  assert.ok(covered("2606:4700:4700::1111"), "public IPv6 is reported");
+  assert.ok(covered("fd00::1"), "internal IPv6 is reported");
+  assert.ok(covered("3232235777"), "integer encoded address is reported");
+  assert.ok(covered("0xC0.0xA8"), "hex encoded address is reported");
+  // Colon syntax in code is not an endpoint.
+  assert.equal(covered("std::collections"), false, "Rust path is not an address");
+  assert.equal(covered("00:1A:2B"), false, "MAC address is not an endpoint");
+});
+
+test("weak passwords that resemble templates are still credential risks", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  // An unclosed `<` is not a slot and a repeated digit is not a mask.
+  const response = await f.request({ password: "<9fK2mNvQ8xRtZ4wB7hLpY1cD", passwd: "00000000" });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  const hits = record.findings.filter(finding => finding.ruleId === "SEC-SECRET-001");
+  assert.ok(hits.length >= 1, JSON.stringify(record.findings.map(x => x.ruleId)));
+  const covered = record.findings.some(finding => {
+    const ref = finding.evidence.bodyRef;
+    return ref.matchKind === "sensitive" && ref.end > ref.start;
+  });
+  assert.ok(covered, "credential hit has a precise range");
+  assert.ok(body.sensitiveRanges.length >= 1, "sensitive ranges retained");
+});
+
+test("each endpoint finding references the address class that triggered it", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const response = await f.request({ input: "http://10.0.0.1:8080/ then http://8.8.8.8:53/" });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  const hit = ruleId => {
+    const ref = record.findings.find(finding => finding.ruleId === ruleId)?.evidence.bodyRef;
+    assert.ok(ref, ruleId);
+    assert.equal(ref.matchKind, "endpoint", ruleId);
+    return Buffer.from(body.text).subarray(ref.start, ref.end).toString();
+  };
+  // Clicking the public risk must not highlight the internal address.
+  assert.equal(hit("SEC-INTERNAL-001"), "10.0.0.1:8080");
+  assert.equal(hit("SEC-ENDPOINT-001"), "8.8.8.8:53");
+});
+
+test("real credentials are still detected after the false positive filters", async t => {
+  const f = await fixture(t, (req, res, body) => respond(res, body));
+  const token = "sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD";
+  const response = await f.request({ input: `use ${token} and basic instructions` });
+  assert.equal(response.status, 200); await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await review(f, audit.id)).record;
+  const finding = record.findings.find(item => item.ruleId === "SEC-SECRET-001");
+  assert.ok(finding, JSON.stringify(record.findings));
+  assert.equal(finding.severity, "high");
+  const body = record.bodySnapshots.find(s => s.id === "request");
+  const hit = finding.evidence.bodyRef;
+  assert.equal(Buffer.from(body.text).subarray(hit.start, hit.end).toString(), token);
 });
 
 test("headers and nested credentials are retained while body positions remain reviewable", async t => {
