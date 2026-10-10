@@ -215,6 +215,20 @@ fn unique_id(id: &str, used: &mut HashSet<String>) -> String {
     next
 }
 
+fn import_name(base_name: &str, n: u64) -> String {
+    let suffix = format!("import-{n}");
+    let mut prefix: String = base_name.chars().take(36).collect();
+    loop {
+        let name = format!("{prefix} (import {n})");
+        // Check the complete name: trailing separators become internal when the suffix is added.
+        if config::configuration_id(&name, "suite").ends_with(&suffix) {
+            return name;
+        }
+        // Even an empty prefix leaves a valid, bounded suffix (u64 has at most 20 digits).
+        prefix.pop();
+    }
+}
+
 pub fn import(
     current: &Value,
     bundle: &Value,
@@ -314,17 +328,9 @@ pub fn import(
                 retained_secret_ref = text(&current["upstreams"][uid]["secretRef"]).to_owned();
             }
         }
-        let mut n = 2;
-        // Lowercasing Unicode can expand the slug; reserve space after normalization.
-        let mut name_prefix = base_name.to_owned();
-        while config::configuration_id(&name_prefix, old_id).len() > 36 {
-            if name_prefix.pop().is_none() {
-                name_prefix = config::configuration_id(base_name, old_id)[..36].to_owned();
-                break;
-            }
-        }
+        let mut n = 2u64;
         while !update && used_suites.contains(&id) {
-            name = format!("{name_prefix} (import {n})");
+            name = import_name(base_name, n);
             id = config::configuration_id(&name, old_id);
             n += 1;
         }
@@ -447,6 +453,40 @@ mod tests {
         let (next, suites, _) = import(&next, &bundle, &Value::Null, true, true).unwrap();
         assert!(text(&suites[0]["id"]).ends_with("import-3"));
         assert_eq!(crate::validation::validate(&next)["ok"], true);
+    }
+
+    #[test]
+    fn trailing_hyphen_conflicts_keep_distinct_suffixes() {
+        let name = format!("Alpha{}", "-".repeat(60));
+        let mut c = configuration(&name);
+        assert_eq!(crate::validation::validate(&c)["ok"], true);
+        let bundle = export(&c, &json!(["alpha"]), &json!({}), false).unwrap();
+        for n in 2..=4 {
+            let (next, suites, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
+            let id = text(&suites[0]["id"]);
+            assert!(id.ends_with(&format!("import-{n}")));
+            assert!(!c["bindings"].as_object().unwrap().contains_key(id));
+            assert_eq!(crate::validation::validate(&next)["ok"], true);
+            c = next;
+        }
+    }
+
+    #[test]
+    fn import_suffix_survives_normalization_for_long_and_expanding_names() {
+        for name in [
+            format!("Alpha{}", "-".repeat(60)),
+            "\u{0130}".repeat(30),
+            "a".repeat(100),
+            "-".repeat(100),
+            format!("{}{}", "\u{0130}".repeat(20), "-".repeat(60)),
+        ] {
+            for n in [2, 3, 100000, u64::MAX] {
+                let candidate = import_name(&name, n);
+                let id = config::configuration_id(&candidate, "suite");
+                assert!(id.ends_with(&format!("import-{n}")), "{candidate}: {id}");
+                assert!(id.len() <= 54);
+            }
+        }
     }
 
     #[test]

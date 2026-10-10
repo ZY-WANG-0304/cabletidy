@@ -302,3 +302,26 @@ test("file credentials are used by default and malformed credentials cannot part
     assert.equal(await fs.readFile(paths.config, "utf8"), before);
   }
 });
+
+for (const name of ["Alpha" + "-".repeat(60), "\u0130".repeat(30)]) {
+  test(`same-name preview and repeated copies finish for ${JSON.stringify(name)}`, { timeout: 10000 }, async t => {
+    const { call } = await fixture(t);
+    const config = (await call("")).body.config;
+    config.bindings.alpha.name = name;
+    const saved = await call("/commit", { config, baseRevision: config.revision });
+    assert.equal(saved.status, 200);
+    const sourceId = Object.keys(saved.body.config.bindings).find(id => saved.body.config.bindings[id].name === name);
+    const exported = await call("/export", { bindingIds: [sourceId] });
+    assert.equal(exported.status, 200);
+    const bundle = exported.body;
+    for (const n of [2, 3]) {
+      const preview = await call("/import", { bundle, preview: true });
+      assert.equal(preview.status, 200);
+      assert.ok(preview.body.suites[0].id.endsWith(`import-${n}`));
+      const imported = await call("/import", { bundle, baseRevision: preview.body.baseRevision, choices: { [sourceId]: "create" } });
+      assert.equal(imported.status, 200);
+      assert.ok(imported.body.config.bindings[preview.body.suites[0].id]);
+      assert.equal(imported.body.config.bindings[sourceId].name, name);
+    }
+  });
+}
