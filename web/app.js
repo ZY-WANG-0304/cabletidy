@@ -568,9 +568,8 @@ async function importSuites(data) {
 function suiteModelEditor(suite, modelId, profile, upstreamId) {
   const model = profile || {};
   const isCodex = suite.target === "codex";
-  const compact = model.compact || {};
-  const expanded = model.codex?.metadataMode === "override" || Boolean(model.compact)
-    || (isCodex && !model.codex && Boolean(model.contextWindow));
+  const expanded = isCodex && (model.codex?.metadataMode === "override" || Boolean(model.compact)
+    || (!model.codex && Boolean(model.contextWindow)));
   return `
     <article class="suite-model-card" data-suite-model data-model-id="${esc(modelId)}">
       <div class="suite-model-mapping">
@@ -587,13 +586,10 @@ function suiteModelEditor(suite, modelId, profile, upstreamId) {
       </div>
       ${model.aliases?.length ? `<label class="field"><span>额外请求别名（可选）</span><input data-suite-model-aliases value="${esc(model.aliases.join(", "))}" placeholder="多个别名用逗号分隔" /></label>` : ""}
       ${suite.target === "claude-code" ? "" : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
-        <summary><span>模型能力与上下文</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
+        <summary><span>${isCodex ? "模型能力与上下文" : "模型能力"}</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
         <div class="form-grid suite-model-policy">
           ${isCodex ? codexMetadataFields(model, modelId) : `
           <label class="field full"><span>Capabilities</span><input data-suite-model-capabilities-common value="${esc((model.capabilities || ["streaming", "tools", "reasoning"]).join(", "))}" placeholder="streaming, tools, reasoning" /></label>
-          <label class="field"><span>Context window</span><input type="number" data-suite-model-context value="${esc(model.contextWindow ?? 1000000)}" placeholder="tokens" /></label>
-          <label class="field"><span>Compact strategy</span><select data-suite-model-compact>${optionList(["auto", "manual", "disabled"], compact.strategy || "auto")}</select></label>
-          <label class="field"><span>Compact token limit</span><input type="number" data-suite-model-compact-limit value="${esc(compact.tokenLimit ?? 850000)}" placeholder="tokens" /></label>
           ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-suite-model-capabilities="${esc(upstreamId)}" value="${esc((model.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
           `}
         </div>
@@ -797,7 +793,7 @@ function renderSuiteDetail() {
       </section>
       <section class="suite-section" aria-labelledby="suite-models-title">
         <div class="suite-section-heading suite-models-heading">
-          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>${suite.target === "claude-code" ? "默认透传模型名；改名时填写 Claude Code 请求中的完整模型 ID。模型能力、上下文和压缩由客户端与上游决定。" : "默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。"}</p></div>
+          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>${suite.target === "claude-code" ? "默认透传模型名；改名时填写 Claude Code 请求中的完整模型 ID。模型能力、上下文和压缩由客户端与上游决定。" : suite.target === "generic-env" ? "默认透传请求中的模型名；需要改名或限制能力时再添加设置。" : "默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。"}</p></div>
           <button class="button" type="button" data-action="add-suite-model">添加模型设置</button>
         </div>
         ${suite.target === "codex" ? codexCatalogStatus() : ""}
@@ -809,7 +805,7 @@ function renderSuiteDetail() {
               : `<div class="empty">已启用模型名直接透传，无需添加模型设置。</div>`}
           </div>
           <div class="suite-section-footer">
-            <span class="field-hint">${suite.target === "claude-code" ? "上游模型 ID 留空时原样透传。" : "按需展开模型能力与上下文设置。"}</span>
+            <span class="field-hint">${suite.target === "claude-code" || suite.target === "generic-env" ? "上游模型 ID 留空时原样透传。" : "按需展开模型能力与上下文设置。"}</span>
             <div class="form-actions">
               <button class="button" type="submit">保存模型设置</button>
               ${suite.target === "generic-env" ? `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>` : ""}
@@ -1026,7 +1022,6 @@ function renderModels() {
   if (!suite) return `<div class="empty">请先选择配置</div>`;
   const models = suite.virtualProvider.models || {};
   const selected = selectedId ? models[selectedId] : null;
-  const compact = selected?.compact || {};
   const mapping = selected || {};
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
@@ -1053,9 +1048,6 @@ function renderModels() {
               ${field("Aliases", "aliases", (selected?.aliases || []).join(", "), "son, codex-default")}
               ${field("Family", "family", selected?.family || "codex", "codex")}
               ${field("Capabilities", "capabilities", (selected?.capabilities || ["streaming", "tools", "reasoning"]).join(", "), "streaming, tools, reasoning", true)}
-              ${field("Context window", "contextWindow", selected?.contextWindow ?? 1000000, "tokens")}
-              ${selectField("Compact strategy", "compactStrategy", compact.strategy || "auto", ["auto", "manual", "disabled"])}
-              ${field("Compact token limit", "compactTokenLimit", compact.tokenLimit ?? 850000, "tokens")}
             </div>
             <div class="subsection">
               <div class="subsection-header"><h3>上游模型映射</h3></div>
@@ -1645,7 +1637,6 @@ function renderRetainedContent(record, response) {
   </section>`;
 }
 
-async function loadRequestContent(offset) { return loadRetainedContent(offset, false); }
 function beginContentOperation(response) {
   const s = state.security, key = response ? "responseContentOperation" : "requestContentOperation";
   const token = s[key] = (s[key] || 0) + 1;
@@ -1746,11 +1737,6 @@ function securityBodyText(value, root, location, fieldOrder = {}) {
   walk(value, root, 0);
   const text = chunks.join("");
   return { text, range };
-}
-
-function securityHighlighted(value, root, location, fieldOrder) {
-  const { text, range } = securityBodyText(value, root, location, fieldOrder);
-  return range ? `${esc(text.slice(0, range.start))}<mark class="security-body-hit" tabindex="-1">${esc(text.slice(range.start, range.end))}</mark>${esc(text.slice(range.end))}` : esc(text);
 }
 
 // An original-content link marks a scroll position, not a selected risk range.
@@ -2132,9 +2118,7 @@ function renderDiagnostics() {
 }
 
 function modelRow(id, item, active = false) {
-  const context = item.contextWindow ? `${item.contextWindow.toLocaleString()} ctx` : "context unset";
-  const compact = item.compact?.tokenLimit ? `${item.compact.tokenLimit.toLocaleString()} compact` : "compact unset";
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")} · ${esc(context)} · ${esc(compact)}</p></div><span class="status-badge">当前配置</span></button>`;
+  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")}</p></div><span class="status-badge">当前配置</span></button>`;
 }
 
 function eventRow(event) {
@@ -2532,15 +2516,7 @@ function saveSuiteModels(form) {
       ...(suite.target === "claude-code" ? {
         description: undefined,
       } : { capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"] }),
-      ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : suite.target === "claude-code" ? {} : {
-        contextWindow: Number(row.querySelector("[data-suite-model-context]")?.value || 1000000),
-        compact: {
-        strategy: row.querySelector("[data-suite-model-compact]")?.value || "auto",
-        tokenLimit: Number(
-          row.querySelector("[data-suite-model-compact-limit]")?.value || 850000,
-        ),
-        },
-      }),
+      ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : {}),
       upstreamModelId: upstreamModelId || undefined,
       capabilityOverrides: capabilityOverrides.length ? capabilityOverrides : undefined,
     };
@@ -2734,11 +2710,6 @@ function saveModel(data, form) {
     aliases: commaList(data.get("aliases")),
     family: String(data.get("family") || "codex").trim(),
     capabilities: commaList(data.get("capabilities")),
-    contextWindow: Number(data.get("contextWindow") || 1000000),
-    compact: {
-      strategy: String(data.get("compactStrategy") || "auto").trim(),
-      tokenLimit: Number(data.get("compactTokenLimit") || 850000),
-    },
     upstreamModelId: String(data.get("upstreamModelId") || "").trim() || undefined,
     capabilityOverrides: commaList(data.get("capabilityOverrides")),
   } });

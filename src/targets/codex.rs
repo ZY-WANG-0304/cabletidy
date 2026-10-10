@@ -155,7 +155,6 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
     files.insert(0, json!({"path":"config.toml","contents":root}));
     a["files"] = json!(files);
     a["rootBefore"] = json!(existing);
-    a["codexHome"] = json!(o.codex_home);
     if let Some(state) = state {
         a["catalogState"] = state;
     }
