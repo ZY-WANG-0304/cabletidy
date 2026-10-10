@@ -137,7 +137,7 @@ try {
     await page.waitForFunction(expected => {
       const marks = [...document.querySelectorAll(".security-body-hit")];
       if (marks.map(mark => mark.textContent).join("") !== expected) return false;
-      const box = marks[0]?.closest(".security-body-content").getBoundingClientRect();
+      const box = marks[0]?.closest("pre").getBoundingClientRect();
       if (!box) return false;
       return marks.every(mark => [...mark.getClientRects()].every(rect =>
         rect.top >= Math.max(0, box.top) && rect.bottom <= Math.min(innerHeight, box.bottom)
@@ -145,10 +145,10 @@ try {
     }, secret);
     const geometry = await page.evaluate(() => {
       const mark = document.querySelector(".security-body-hit");
-      const body = mark.closest(".security-body-content");
+      const body = mark.closest("pre");
       return { text: mark.textContent, hit: mark.getBoundingClientRect().toJSON(), body: body.getBoundingClientRect().toJSON(), bodyScrollTop: body.scrollTop, pageScrollY: scrollY };
     });
-    if (stage === "request") assert.ok(geometry.bodyScrollTop > 0, "the long body scrolls to its actual hit");
+    assert.equal(await page.locator(`[aria-label="${stage === "request" ? "请求内容" : "响应内容"}"] [data-security-content-anchor]`).count(), 1);
     assert.match(await page.locator("#page-content").innerText(), new RegExp(secret));
     assert.equal(await page.locator(".security-body-content script").count(), 0);
     report.hits.push({ stage, ...geometry });
@@ -293,6 +293,12 @@ try {
   await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
   assert.equal(await page.locator(".security-sessions, #security-filter-form").count(), 0);
   assert.equal(await page.locator('[data-page="security"]').getAttribute("aria-current"), "page");
+  for (const [tab, label] of [["request", "请求内容"], ["response", "响应内容"]]) {
+    await page.locator(`[data-action="security-trace-tab"][data-tab="${tab}"]`).click();
+    await page.locator(`[aria-label="${label}"] > .trace-content-timeline > .trace-content-item > .trace-content-detail > pre .security-risk-hit`).first().waitFor();
+    assert.equal(await page.locator(".security-body-hit").count(), 0, "risk positions are highlighted before navigation");
+  }
+  await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
   await page.locator(`[data-action="security-finding"][data-id="${requestHit.id}"]`).click();
   await visibleHit("request");
   await screenshot("02-desktop-request-hit.png");
@@ -300,10 +306,19 @@ try {
   await page.locator(`[data-action="security-finding"][data-id="${responseHit.id}"]`).click();
   await visibleHit("response-evidence");
   await screenshot("03-desktop-response-hit.png");
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const [finding, stage] of [[requestHit, "request"], [responseHit, "response-evidence"]]) {
+    await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
+    await page.locator(`[data-action="security-finding"][data-id="${finding.id}"]`).click();
+    await visibleHit(stage);
+  }
+  await screenshot("03-mobile-response-hit.png");
+  await page.setViewportSize(report.viewport);
+  await page.locator('[data-action="security-trace-tab"][data-tab="body"]').click();
   assert.equal(await page.locator('[data-security-snapshot^="stream/"]').count(), 0);
   assert.equal(await page.locator(".security-event-timeline").count(), 1);
   assert.match(await page.locator(".security-event-timeline").innerText(), /流式事件/);
-  report.checks.push("precise request and response hits are shown in their corresponding body panels without exposing detection snapshots as top-level panels");
+  report.checks.push("request and response risks stay highlighted before navigation and jump to their exact visible content positions; original body evidence remains available");
   const bodyRequests = [];
   const trackBodyRequest = request => {
     const url = new URL(request.url());
