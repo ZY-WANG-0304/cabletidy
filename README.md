@@ -134,6 +134,8 @@ npm install -g cabletidy@latest --registry=https://registry.npmjs.org/
 cabletidy start
 ```
 
+已支持 `update` 的版本可以直接执行 `cabletidy update`（默认 `latest`，也可指定版本或 `next` 等标签；加 `--check` 只检查不安装）。它只更新当前包所在的全局 npm 前缀，因此在 nvm 等多 Node 环境中不会装到别处。macOS 和 Linux 下 daemon 运行时可直接更新，完成后询问是否执行 `restart`；Windows 下运行中的可执行文件会被锁定，需要确认先停止 daemon，更新后再询问是否启动。非交互终端中所有确认均视为否。
+
 如果新版提示 `ELOCKLEGACY`，说明数据目录中仍有旧版的 `daemon.lock` **目录**。请先从 `runtime.json` 查看 PID，并用系统进程工具核对；旧版 `stop` 不可用时，可手动执行 `kill <实际 PID>`（Windows 使用 `taskkill /PID <实际 PID>`），等待并确认旧进程退出后，再删除这个旧锁目录并启动新版。这里的 `<实际 PID>` 必须替换为核对后的数字；不要删除配置、密钥或新版的普通锁文件。新版不自动控制旧 daemon 或回收旧锁。
 
 从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载前先执行 `cabletidy stop`，再使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
