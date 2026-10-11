@@ -2077,6 +2077,29 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   assert.equal(app.read("state.trace.summary.requestCount"), 2);
 });
 
+test("session trace distinguishes new findings, historical associations and requests without findings", async () => {
+  const records = [
+    { id: "clean", findingCount: 0, newFindingCount: 0, historicalFindingCount: 0 },
+    { id: "new", findingCount: 1, newFindingCount: 1, historicalFindingCount: 0 },
+    { id: "history", findingCount: 2, newFindingCount: 0, historicalFindingCount: 2 },
+    { id: "mixed", findingCount: 3, newFindingCount: 1, historicalFindingCount: 2 },
+    { id: "legacy", findingCount: 1 },
+  ];
+  const app = await controller();
+  app.read(`state.trace.result = ${JSON.stringify({ items: records, total: records.length })}`);
+  const html = app.read("renderSecuritySession()");
+  const row = id => html.match(new RegExp(`<button class="trace-event-row [^"]*"[^>]*data-id="${id}"[^>]*>([\\s\\S]*?)</button>`))[1];
+  assert.match(row("clean"), /未发现风险/);
+  assert.match(row("new"), /新增风险 1 项/);
+  assert.doesNotMatch(row("new"), /历史风险/);
+  assert.match(row("history"), /仅历史风险 2 项/);
+  assert.doesNotMatch(row("history"), /新增风险/);
+  assert.match(row("mixed"), /新增风险 1 项 · 历史风险 2 项/);
+  assert.match(row("legacy"), /新增风险 1 项/);
+  assert.match(html, /class="trace-segment has-history-risk [^"]*"[^>]*data-id="history"/);
+  assert.match(html, /class="trace-segment has-new-risk [^"]*"[^>]*data-id="mixed"/);
+});
+
 test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {
   const items = [
     { index: 0, kind: "system", source: "instructions", preview: "System <script>literal</script>", start: 20, end: 60 },

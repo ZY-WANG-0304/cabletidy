@@ -23,6 +23,89 @@ pub fn identify_headers(record: &mut Value, headers: &Value) {
             identify(record, id, key);
         }
     }
+    let header = |key: &str| headers[key][0].as_str().unwrap_or("");
+    if record["target"] == "codex" {
+        context(record, "contextKey", header("thread-id"), "thread-id");
+        context(
+            record,
+            "parentContextKey",
+            header("x-codex-parent-thread-id"),
+            "x-codex-parent-thread-id",
+        );
+        if let Ok(metadata) = serde_json::from_str::<Value>(header("x-codex-turn-metadata")) {
+            if record["contextKey"].is_null() {
+                context(
+                    record,
+                    "contextKey",
+                    metadata["thread_id"].as_str().unwrap_or(""),
+                    "x-codex-turn-metadata",
+                );
+            }
+            context(
+                record,
+                "forkedFromContextKey",
+                metadata["forked_from_thread_id"].as_str().unwrap_or(""),
+                "x-codex-turn-metadata",
+            );
+            record["forkBoundary"] = metadata["forked_from_ordinal_exclusive"]
+                .as_u64()
+                .map_or(Value::Null, |n| json!({"value":n,"unit":"ordinal"}));
+        }
+        record["contextKind"] = json!(if record["forkedFromContextKey"].is_string() {
+            "fork"
+        } else if record["parentContextKey"].is_string() {
+            "subagent"
+        } else {
+            "unknown"
+        });
+    } else if record["target"] == "claude-code" {
+        let agent = header("x-claude-code-agent-id");
+        let class = header("x-claude-code-request-class");
+        if !agent.is_empty() {
+            context(record, "contextKey", agent, "x-claude-code-agent-id");
+        } else if class == "main" && record["sessionKey"].is_string() {
+            record["contextKey"] =
+                json!(format!("{}:main", record["sessionKey"].as_str().unwrap()));
+            record["identitySource"] = json!("x-claude-code-request-class");
+        }
+        context(
+            record,
+            "parentContextKey",
+            header("x-claude-code-parent-agent-id"),
+            "x-claude-code-parent-agent-id",
+        );
+        record["contextKind"] = json!(match class {
+            "main" | "subagent" | "compaction" | "auxiliary" | "workflow" => class,
+            "side_reply" => "side",
+            _ => "unknown",
+        });
+    }
+}
+
+fn context(record: &mut Value, field: &str, id: &str, source: &str) {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_-.:".contains(&c))
+    {
+        return;
+    }
+    record[field] = json!(format!(
+        "{:x}",
+        Sha256::digest(
+            json!([
+                record["providerId"],
+                record["protocol"],
+                record["sessionKey"],
+                id
+            ])
+            .to_string()
+        )
+    ));
+    if field == "contextKey" {
+        record["identitySource"] = json!(source);
+    }
 }
 
 pub fn identify(record: &mut Value, id: &str, source: &str) {

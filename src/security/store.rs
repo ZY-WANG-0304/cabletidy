@@ -19,6 +19,8 @@ enum Job {
     Body(String, Value, mpsc::Sender<bool>),
     Query(Query, oneshot::Sender<Result<Value>>),
     Flush(oneshot::Sender<()>),
+    History(Value, Vec<Value>, String, mpsc::Sender<Result<Value>>),
+    InspectionCache(Value, String, Value, mpsc::Sender<Result<()>>),
 }
 
 struct ContentJob {
@@ -26,6 +28,7 @@ struct ContentJob {
     offset: usize,
     response: bool,
     detail: bool,
+    folded: bool,
     deadline: Instant,
     done: oneshot::Sender<Result<Value>>,
 }
@@ -44,6 +47,7 @@ pub struct Query {
     pub body: Option<(String, u64)>,
     pub content_offset: Option<usize>,
     pub response_content: bool,
+    pub folded_content: bool,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -161,6 +165,32 @@ impl Query {
 }
 
 impl Store {
+    pub(super) fn history(
+        &self,
+        record: &Value,
+        items: Vec<Value>,
+        dependency: &str,
+    ) -> Result<Value> {
+        let (tx, rx) = mpsc::channel();
+        self.sender
+            .send(Job::History(record.clone(), items, dependency.into(), tx))?;
+        rx.recv()?
+    }
+    pub(super) fn inspection_cache(
+        &self,
+        record: &Value,
+        dependency: &str,
+        entries: Value,
+    ) -> Result<()> {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(Job::InspectionCache(
+            record.clone(),
+            dependency.into(),
+            entries,
+            tx,
+        ))?;
+        rx.recv()?
+    }
     pub fn start(home: &Path) -> Arc<Self> {
         let path = home.join("audit.sqlite3");
         let health = Arc::new(Mutex::new(json!({
@@ -237,13 +267,20 @@ impl Store {
             .detail
             .as_ref()
             .filter(|_| query.body.is_none())
-            .map(|id| (id.clone(), query.content_offset, query.response_content));
+            .map(|id| {
+                (
+                    id.clone(),
+                    query.content_offset,
+                    query.response_content,
+                    query.folded_content,
+                )
+            });
         let (tx, rx) = oneshot::channel();
         self.sender
             .try_send(Job::Query(query, tx))
             .map_err(|_| anyhow::anyhow!("audit_busy"))?;
         let mut value = tokio::time::timeout(Duration::from_secs(5), rx).await???;
-        if let Some((audit, offset, response)) = content.filter(|_| !value.is_null()) {
+        if let Some((audit, offset, response, folded)) = content.filter(|_| !value.is_null()) {
             let protocol = value["record"]["protocol"].as_str().unwrap_or("");
             if offset.is_some() || matches!(protocol, "openai.responses" | "anthropic.messages") {
                 let (done, result) = oneshot::channel();
@@ -253,6 +290,7 @@ impl Store {
                         offset: offset.unwrap_or(0),
                         response,
                         detail: offset.is_none(),
+                        folded: folded || offset.is_none(),
                         deadline: Instant::now() + Duration::from_secs(30),
                         done,
                     })
@@ -303,7 +341,7 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
     let db = Connection::open(path)?;
     db.busy_timeout(Duration::from_millis(250))?;
     let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version > 3 {
+    if version > 4 {
         bail!("unsupported audit schema");
     }
     db.execute_batch(
@@ -334,7 +372,14 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
           PRIMARY KEY(audit_id,snapshot_id,start),
           FOREIGN KEY(audit_id,snapshot_id) REFERENCES audit_snapshots(audit_id,id) ON DELETE CASCADE);
         CREATE INDEX IF NOT EXISTS body_ranges ON audit_body_chunks(audit_id,snapshot_id,end);
-        PRAGMA user_version=3; COMMIT;",
+        CREATE TABLE IF NOT EXISTS request_units (
+          audit_id TEXT NOT NULL REFERENCES audit(id) ON DELETE CASCADE,
+          idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(audit_id,idx));
+        CREATE TABLE IF NOT EXISTS inspection_cache (
+          scope TEXT NOT NULL, dependency TEXT NOT NULL, key TEXT NOT NULL,
+          audit_id TEXT NOT NULL REFERENCES audit(id) ON DELETE CASCADE,
+          data TEXT NOT NULL, PRIMARY KEY(scope,dependency,key));
+        PRAGMA user_version=4; COMMIT;",
     )?;
     if recover {
         // Only records left by a previous process are recovered as unknown.
@@ -602,7 +647,11 @@ fn prune_completed(db: &Connection, protected: Option<&str>) -> Result<usize> {
     )?)
 }
 
-fn reclaim_body_pages(db: &Connection, protected: Option<&str>, additional: u64) -> Result<bool> {
+pub(super) fn reclaim_body_pages(
+    db: &Connection,
+    protected: Option<&str>,
+    additional: u64,
+) -> Result<bool> {
     // Use the same live-page budget for maintenance and body writes. Free pages
     // can be reused immediately without waiting for database or WAL truncation.
     while used_bytes(db)?.saturating_add(additional) > body_budget() {
@@ -648,6 +697,14 @@ fn persist(db: &mut Connection, mut record: Value) -> Result<()> {
     )?;
     let severity:String=tx.query_row("SELECT coalesce((SELECT severity FROM findings WHERE audit_id=? ORDER BY CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END DESC LIMIT 1),'informational')",[record["id"].as_str()],|r|r.get(0))?;
     record["findingCount"] = json!(count);
+    if record["schemaVersion"]
+        .as_u64()
+        .is_some_and(|version| version >= 5)
+    {
+        let historical: i64 = tx.query_row("SELECT count(*) FROM findings WHERE audit_id=? AND json_extract(data,'$.historical')=1", [record["id"].as_str()], |r| r.get(0))?;
+        record["newFindingCount"] = json!(count - historical);
+        record["historicalFindingCount"] = json!(historical);
+    }
     record["severity"] = json!(severity);
     tx.execute(
         "UPDATE audit SET severity=?,data=? WHERE id=?",
@@ -966,6 +1023,7 @@ fn read_sessions(
         min(a.seq) AS first_seq, max(a.seq) AS last_seq, min(a.at) AS first_at, max(a.at) AS last_at,
         count(*) AS requests,
         sum(coalesce(json_extract(a.data,'$.findingCount'),0)) AS findings,
+        sum(coalesce(json_extract(a.data,'$.newFindingCount'),json_extract(a.data,'$.findingCount'),0)) AS new_findings,
         sum(CASE WHEN coalesce(json_extract(a.data,'$.findingCount'),0)>0 THEN 1 ELSE 0 END) AS risky,
         sum(CASE WHEN a.outcome IN ('started','streaming') THEN 1 ELSE 0 END) AS active,
         sum(CASE WHEN a.outcome NOT IN ('started','streaming','completed') THEN 1 ELSE 0 END) AS errors,
@@ -975,9 +1033,9 @@ fn read_sessions(
         max(CASE a.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END) AS severity
         FROM audit a JOIN matching m ON m.key=coalesce(json_extract(a.data,'$.sessionKey'),a.id) WHERE a.kind = 'request' GROUP BY m.key
     )");
-    let (total, records, risky, findings): (i64,i64,i64,i64) = db.query_row(
-        &format!("{cte} SELECT count(*),coalesce(sum(requests),0),coalesce(sum(risky>0),0),coalesce(sum(findings),0) FROM grouped"),
-        params_from_iter(args), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    let (total, records, risky, findings, new_findings): (i64,i64,i64,i64,i64) = db.query_row(
+        &format!("{cte} SELECT count(*),coalesce(sum(requests),0),coalesce(sum(risky>0),0),coalesce(sum(findings),0),coalesce(sum(new_findings),0) FROM grouped"),
+        params_from_iter(args), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     let mut page_args = args.to_vec();
     let cursor = if query.cursor > 0 {
         page_args.push(query.cursor.into());
@@ -988,6 +1046,7 @@ fn read_sessions(
     page_args.push(((query.limit + 1) as i64).into());
     let sql = format!("{cte} SELECT g.key,g.last_seq,first.data,
         json_object('firstAtMs',g.first_at,'lastAtMs',g.last_at,'requestCount',g.requests,'findingCount',g.findings,
+        'newFindingCount',g.new_findings,'historicalFindingCount',g.findings-g.new_findings,
         'riskRecordCount',g.risky,'activeCount',g.active,'errorCount',g.errors,'incompleteCount',g.incomplete,'limitedCount',g.limited,
         'durationMs',g.duration,'severityRank',g.severity),
         (SELECT json_extract(t.data,'$.sessionTitle') FROM audit t WHERE t.kind='request' AND coalesce(json_extract(t.data,'$.sessionKey'),t.id)=g.key AND json_extract(t.data,'$.sessionTitle') IS NOT NULL ORDER BY t.seq LIMIT 1)
@@ -1053,7 +1112,7 @@ fn read_sessions(
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
-        json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
+        json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"newFindingCount":new_findings,"historicalFindingCount":findings-new_findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
     )
 }
 
@@ -1065,6 +1124,7 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
         offset,
         response,
         detail,
+        folded,
         deadline,
         done,
     }) = receiver.recv()
@@ -1087,11 +1147,11 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
             )?;
             let value = if visible {
                 if detail {
-                    json!({"requestContent":cache.read(&tx, &audit, 0, &cancelled)?,"responseContent":responses.read(&tx, &audit, 0, &cancelled)?})
+                    json!({"requestContent":cache.view(&tx, &audit, 0, true, &cancelled)?,"responseContent":responses.read(&tx, &audit, 0, &cancelled)?})
                 } else if response {
                     responses.read(&tx, &audit, offset, &cancelled)?
                 } else {
-                    cache.read(&tx, &audit, offset, &cancelled)?
+                    cache.view(&tx, &audit, offset, folded, &cancelled)?
                 }
             } else {
                 Value::Null
@@ -1117,6 +1177,20 @@ fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>
             }
         }
         match job {
+            Job::History(record, items, dependency, done) => {
+                let result = db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
+                    .and_then(|db| super::history::prepare(db, &record, items, &dependency));
+                let _ = done.send(result);
+            }
+            Job::InspectionCache(record, dependency, entries, done) => {
+                let result = db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
+                    .and_then(|db| super::history::save_cache(db, &record, &dependency, &entries));
+                let _ = done.send(result);
+            }
             Job::Body(audit_id, value, done) => {
                 let result = db
                     .as_mut()
@@ -1357,6 +1431,89 @@ mod tests {
             "inspectionStatus":"complete","severity":"high","findingCount":1,
             "findings":[{"id":format!("f-{id}"),"requestId":id,"atMs":chrono::Utc::now().timestamp_millis(),
                 "category":"destructive_action","severity":"high","confidence":"high","evidenceStage":"tool_call_proposed"}]})
+    }
+
+    #[test]
+    fn inspection_cache_requires_completed_results_and_current_evidence_survives_source_cleanup() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut source = record("source", "completed");
+        source["sessionKey"] = json!("family");
+        source["requestBodyState"] = json!("interrupted");
+        persist(&mut db, source.clone()).unwrap();
+        let entries = json!([{"key":"check","result":{"hits":[],"reasons":[],"at":config::now()}}]);
+        super::super::history::save_cache(&db, &source, "rules-2:parser-1:catalog", &entries)
+            .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM inspection_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        source["requestBodyState"] = json!("complete");
+        persist(&mut db, source.clone()).unwrap();
+        super::super::history::save_cache(&db, &source, "rules-2:parser-1:catalog", &entries)
+            .unwrap();
+        let mut current = record("current", "completed");
+        current["sessionKey"] = json!("family");
+        current["requestBodyState"] = json!("complete");
+        current["findings"][0]["evidence"]["bodyRef"] = json!({"snapshotId":"evidence/current","sourceSnapshotId":"request","sourceStart":0,"sourceEnd":50,"start":0,"end":50});
+        current["findings"][0]["reusedFrom"] = json!({"requestId":"source"});
+        persist(&mut db, current.clone()).unwrap();
+        let body = r#"{"input":[{"role":"assistant","content":"retained evidence"}]}"#;
+        let mut spool = crate::streaming::Spool::new().unwrap();
+        spool.write_all(body.as_bytes()).unwrap();
+        let items =
+            super::super::content::index_spool(&spool.seal().unwrap(), &mut current).unwrap();
+        let loaded = super::super::history::prepare(
+            &db,
+            &current,
+            items.clone(),
+            "rules-2:parser-1:catalog",
+        )
+        .unwrap();
+        assert!(loaded["cache"]["check"].is_object());
+        let changed =
+            super::super::history::prepare(&db, &current, items, "rules-3:parser-1:catalog")
+                .unwrap();
+        assert_eq!(
+            changed["cache"],
+            json!({}),
+            "rule versions invalidate completed checks"
+        );
+        persist_body(&db, "current", &json!({"id":"request","state":"receiving"})).unwrap();
+        persist_body(
+            &db,
+            "current",
+            &json!({"id":"request","start":0,"end":body.len(),"content":body,"annotations":[]}),
+        )
+        .unwrap();
+        persist_body(&db,"current",&json!({"id":"request","state":"complete","contentMode":"original","byteLength":body.len()})).unwrap();
+        persist_body(&db,"current",&json!({"id":"evidence/current","sourceSnapshotId":"request","rangeStart":0,"rangeEnd":body.len(),"state":"complete","contentMode":"original"})).unwrap();
+        db.execute("DELETE FROM audit WHERE id='source'", [])
+            .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM inspection_cache", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let evidence = read_body_page(&db, "current", "evidence/current", 0).unwrap();
+        assert_eq!(evidence["chunks"][0]["content"], body);
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("current".into()),
+                ..Query::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(detail["record"]["findings"][0]["requestId"], "current");
+        let page = super::super::content::Cache::default()
+            .view(&db, "current", 0, true, &|| false)
+            .unwrap();
+        assert_eq!(page["items"][0]["preview"], "retained evidence");
     }
 
     #[test]
@@ -2031,6 +2188,7 @@ mod tests {
                     offset: 0,
                     response: false,
                     detail: false,
+                    folded: false,
                     deadline: Instant::now() + Duration::from_secs(30),
                     done,
                 })
@@ -2091,14 +2249,14 @@ mod tests {
         assert_eq!(std::fs::read(&corrupt).unwrap(), b"not a database");
         let newer = dir.path().join("newer.sqlite3");
         let db = open(&newer, true).unwrap();
-        db.execute_batch("PRAGMA user_version=4").unwrap();
+        db.execute_batch("PRAGMA user_version=5").unwrap();
         drop(db);
         assert!(open(&newer, true).is_err());
         let version: i64 = Connection::open(newer)
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -2190,7 +2348,7 @@ mod tests {
             assert_eq!(
                 db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
-                3
+                4
             );
             if version == 1 {
                 assert_eq!(detail["record"]["bodySnapshots"], json!([]));

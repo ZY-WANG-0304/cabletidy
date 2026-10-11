@@ -109,6 +109,122 @@ function respondClaude(res, body) {
     usage: { input_tokens: 12, output_tokens: 8 } }));
 }
 
+test("request history folds across pages, reuses checks and preserves current evidence and new calls", async t => {
+  const f = await fixture(t, (_req, res, body) => respond(res, body));
+  const headers = { "content-type": "application/json", "session-id": "history-family", "thread-id": "main-A" };
+  const input = [
+    { role: "user", content: secret },
+    { role: "assistant", content: "Starting checks" },
+    { type: "function_call", name: "exec_command", call_id: "old-call", arguments: JSON.stringify({ cmd: dangerous }) },
+    { type: "function_call_output", call_id: "old-call", output: "Reported by client" },
+    ...Array.from({ length: 80 }, (_, i) => ({ role: "assistant", content: `History ${i}: 汉字 🙂` })),
+  ];
+  const send = async (items, requestHeaders = headers) => {
+    const response = await f.request({ instructions: "Keep the original order", input: items }, { headers: requestHeaders });
+    assert.equal(response.status, 200); await response.text();
+    const records = await f.waitFor(result => result.total === f.calls.length);
+    return (await (await f.call(`api/v1/security/audit/${records.items[0].id}`)).json()).record;
+  };
+  const first = await send(input);
+  assert.equal(first.requestContent.historicalCount, 0);
+  assert.ok(first.inspectionReuse.ruleChecks > 0);
+  assert.equal(first.inspectionReuse.reusedRuleChecks, 0);
+  const next = [...input,
+    { type: "function_call", name: "exec_command", call_id: "new-call", arguments: JSON.stringify({ cmd: dangerous }) },
+    { role: "user", content: "继续" },
+  ];
+  const second = await send(next);
+  assert.equal(second.requestContent.total, 87);
+  assert.equal(second.requestContent.historicalCount, 85);
+  assert.deepEqual(second.requestContent.nodes.map(node => node.kind), ["history_range", "tool_call", "user"]);
+  assert.deepEqual(second.requestContent.items.map(item => item.index), [85,86]);
+  assert.ok(second.inspectionReuse.reusedUnits >= 84);
+  assert.ok(second.inspectionReuse.ruleChecks < first.inspectionReuse.ruleChecks);
+  assert.ok(second.historicalFindingCount > 0);
+  assert.ok(second.newFindingCount > 0, "different call ID is a new risky operation");
+  for (const finding of second.findings) {
+    assert.equal(finding.requestId, second.id);
+    assert.ok(finding.evidence.bodyRef);
+    if (finding.historical) assert.ok(finding.reusedFrom.requestId);
+  }
+  const page = await (await f.call(`api/v1/security/audit/${second.id}/content?offset=40&view=all`)).json();
+  assert.deepEqual(page.items.map(item => item.index), Array.from({ length: 40 }, (_, i) => i+40));
+  const retained = await review(f, second.id);
+  assert.deepEqual(JSON.parse(retained.record.bodySnapshots.find(snapshot => snapshot.id === "request").text).input, next);
+  const cachedTool = retained.record.findings.find(finding => finding.historical && finding.evidenceStage === "tool_call_replayed" && finding.ruleId !== "SEC-SECRET-001");
+  assert.ok(retained.record.bodySnapshots.find(snapshot => snapshot.id === cachedTool.evidence.bodyRef.snapshotId).text.includes(dangerous));
+  await f.restart();
+  const third = await send([...next, { role: "assistant", content: "New assistant output" }, { role: "user", content: "继续" }]);
+  assert.equal(third.requestContent.items.at(-1).preview, "继续", "repeated last user input remains visible");
+  assert.ok(third.inspectionReuse.reusedUnits >= 86, "completed checks survive restart");
+  const sessions = await f.list("sessions");
+  assert.equal(sessions.items[0].newFindingCount, first.newFindingCount+second.newFindingCount+third.newFindingCount);
+  assert.equal(sessions.items[0].findingCount, first.findingCount+second.findingCount+third.findingCount);
+});
+
+test("Codex fork and main history stay separate within one session family", async t => {
+  const f = await fixture(t, (_req, res, body) => respond(res, body));
+  const shared = [{ role: "user", content: "Shared task" }, { role: "assistant", content: "Shared answer" }];
+  const send = async (thread, items, fork) => {
+    const response = await f.request({ input: items }, { headers: { "content-type": "application/json", "session-id": "fork-family", "thread-id": thread,
+      ...(fork ? { "x-codex-turn-metadata": JSON.stringify({ thread_id: thread, forked_from_thread_id: fork, forked_from_ordinal_exclusive: 13 }) } : {}) } });
+    await response.text(); assert.equal(response.status, 200);
+    const records = await f.waitFor(result => result.total === f.calls.length);
+    return (await (await f.call(`api/v1/security/audit/${records.items[0].id}`)).json()).record;
+  };
+  const main = await send("main",shared);
+  const fork = await send("side",[...shared,{ role:"user",content:"Side question" }],"main");
+  assert.equal(fork.sessionKey,main.sessionKey);
+  assert.notEqual(fork.contextKey,main.contextKey);
+  assert.equal(fork.contextKind,"fork");
+  assert.equal(fork.requestContent.historicalCount,2);
+  const continuation = await send("main",[...shared,{ role:"user",content:"Main continuation" }]);
+  assert.equal(continuation.requestContent.items[0].preview,"Main continuation");
+  const full = await (await f.call(`api/v1/security/audit/${continuation.id}/content?view=all`)).json();
+  assert.equal(full.items[0].historyOf.requestId,main.id);
+  assert.equal(full.items.some(item => item.preview === "Side question"),false);
+});
+
+test("Claude side requests without agent identity preserve new input, while independent agents share only computation", async t => {
+  const f = await fixture(t, (_req,res,body) => respondClaude(res,body), { claude:true });
+  const send = async (messages, extra = {}) => {
+    const response = await f.request({ messages }, { headers: { "content-type":"application/json", "x-claude-code-session-id":"claude-family", ...extra } });
+    await response.text(); assert.equal(response.status,200);
+    const records = await f.waitFor(result => result.total === f.calls.length);
+    return (await (await f.call(`api/v1/security/audit/${records.items[0].id}`)).json()).record;
+  };
+  const shared = [{content:[{type:"text",text:secret}],role:"user"},{role:"assistant",content:"Shared answer"}];
+  const main = await send(shared);
+  const side = await send([...shared,{role:"user",content:"Side question"}]);
+  const continuation = await send([...shared,{role:"user",content:"Main continuation"}]);
+  assert.equal(main.contextKey,undefined);
+  assert.equal(side.requestContent.items[0].preview,"Side question");
+  assert.equal(continuation.requestContent.items[0].preview,"Main continuation");
+  assert.ok(continuation.inspectionReuse.reusedRuleChecks > 0);
+  const child = await send(shared,{"x-claude-code-agent-id":"child-1","x-claude-code-request-class":"subagent"});
+  assert.equal(child.contextKind,"subagent");
+  assert.equal(child.requestContent.historicalCount,0,"ordinary subagent does not imply inherited history");
+  assert.ok(child.inspectionReuse.reusedRuleChecks > 0);
+  assert.equal(child.historicalFindingCount,0);
+  assert.ok(child.newFindingCount > 0,"cache hit does not merge separate events");
+});
+
+test("newly learned credentials invalidate completed negative checks", async t => {
+  const f = await fixture(t, (_req,res,body) => respond(res,body));
+  const credential = "new-catalog-credential-value";
+  const input = [{role:"user",content:credential},{role:"assistant",content:"Ordinary answer"}];
+  const headers = {"content-type":"application/json","session-id":"credential-family","thread-id":"credential-main"};
+  const response = await f.request({input},{headers}); await response.text();
+  const first = (await f.waitFor(result => result.total === 1)).items[0];
+  assert.equal(first.findingCount,0);
+  const secondResponse = await f.request({input:[...input,{role:"user",content:"Continue"}],credentials:{token:credential}},{headers}); await secondResponse.text();
+  const second = (await f.waitFor(result => result.total === 2)).items[0];
+  assert.equal(second.inspectionReuse.reusedRuleChecks,0);
+  const detail = (await (await f.call(`api/v1/security/audit/${second.id}`)).json()).record;
+  assert.ok(detail.findings.some(finding => finding.contentIndex === 0 && finding.ruleId === "SEC-SECRET-001"));
+  assert.ok(detail.newFindingCount > 0);
+});
+
 test("Claude overview projects content blocks, preserves Messages payloads and associates tools across pages and restart", async t => {
   const f = await fixture(t, (_req, res, body) => respondClaude(res, body), { claude: true });
   const body = claudeRequestFixture({ history: 45 });
@@ -980,7 +1096,7 @@ test("original nested, escaped and scalar credentials have exact sensitive range
   const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
   const record = (await review(f, audit.id)).record;
   const body = record.bodySnapshots.find(s => s.id === "request");
-  assert.equal(record.schemaVersion, 4);
+  assert.equal(record.schemaVersion, 5);
   assert.equal(body.contentMode, "original");
   assert.deepEqual(body.body, { model: f.model, max_tokens: 100, ...input });
   assert.equal(body.redactions.length, 0);

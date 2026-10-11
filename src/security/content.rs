@@ -91,6 +91,7 @@ struct Frame {
     content_array: bool,
     role_items: u64,
     items_start: usize,
+    digest: Sha256,
 }
 
 struct Projection {
@@ -102,6 +103,11 @@ struct Projection {
     index_only: bool,
 }
 impl Projection {
+    fn hash(&mut self, bytes: &[u8]) {
+        for frame in &mut self.frames {
+            frame.digest.update(bytes);
+        }
+    }
     fn selected(&self) -> bool {
         !self.index_only && self.total >= self.offset && self.items.len() < PAGE_ITEMS
     }
@@ -160,6 +166,9 @@ impl Visitor for Projection {
             b'"' | b'k' => "\"",
             _ => "",
         };
+        self.hash(raw.as_bytes());
+        let mut digest = Sha256::new();
+        digest.update(raw.as_bytes());
         self.frames.push(Frame {
             path: path.into(),
             field: field.into(),
@@ -168,11 +177,14 @@ impl Visitor for Projection {
             raw: if capture { raw.into() } else { String::new() },
             capture,
             items_start: self.items.len(),
+            digest,
             ..Frame::default()
         });
         Ok(())
     }
     fn text(&mut self, text: &str) -> Result<()> {
+        let escaped = serde_json::to_string(text)?;
+        self.hash(&escaped.as_bytes()[1..escaped.len() - 1]);
         let f = self.frames.last_mut().unwrap();
         if f.capture {
             let escaped = serde_json::to_string(text)?;
@@ -201,6 +213,7 @@ impl Visitor for Projection {
         Ok(())
     }
     fn scalar(&mut self, value: &str) -> Result<()> {
+        self.hash(value.as_bytes());
         let f = self.frames.last_mut().unwrap();
         if f.capture {
             f.raw.push_str(value);
@@ -213,6 +226,7 @@ impl Visitor for Projection {
     fn punctuation(&mut self, value: &str) -> Result<()> {
         // Container delimiters are emitted on start/end instead.
         if matches!(value, "," | ":") {
+            self.hash(value.as_bytes());
             let f = self.frames.last_mut().unwrap();
             if f.capture {
                 f.raw.push_str(value);
@@ -221,6 +235,13 @@ impl Visitor for Projection {
         Ok(())
     }
     fn end(&mut self, node: &Node) -> Result<()> {
+        let kind = self.frames.last().unwrap().kind;
+        self.hash(match kind {
+            b'{' => b"}",
+            b'[' => b"]",
+            b'"' | b'k' => b"\"",
+            _ => b"",
+        });
         let mut f = self.frames.pop().unwrap();
         let closing = match f.kind {
             b'{' => "}",
@@ -344,6 +365,7 @@ impl Visitor for Projection {
             let mut item = json!({"kind":kind,"type":f.item_type,"role":f.role,"source":source,
                 "preview":preview,
                 "parts":f.parts,"opaque":f.opaque,"start":f.start,"end":node.end,"location":f.path});
+            item["contentHash"] = json!(format!("{:x}", f.digest.finalize()));
             if !f.name.is_empty() {
                 item["name"] = json!(f.name);
             }
@@ -535,6 +557,62 @@ struct ContentIndex {
     items: Vec<Value>,
     counts: Value,
     parsed: bool,
+}
+
+pub(super) fn index_spool(
+    spool: &std::sync::Arc<crate::streaming::Spool>,
+    record: &mut Value,
+) -> Result<Vec<Value>> {
+    struct IndexVisitor<'a> {
+        projection: Projection,
+        navigation: super::session::Capture,
+        record: &'a mut Value,
+    }
+    impl Visitor for IndexVisitor<'_> {
+        fn start(&mut self, path: &str, field: &str, kind: u8, at: u64) -> Result<()> {
+            self.navigation.start(field, kind);
+            self.projection.start(path, field, kind, at)
+        }
+        fn text(&mut self, value: &str) -> Result<()> {
+            self.navigation.text(value);
+            self.projection.text(value)
+        }
+        fn scalar(&mut self, value: &str) -> Result<()> {
+            self.projection.scalar(value)
+        }
+        fn punctuation(&mut self, value: &str) -> Result<()> {
+            self.projection.punctuation(value)
+        }
+        fn end(&mut self, node: &Node) -> Result<()> {
+            self.navigation.end(self.record, "request");
+            self.projection.end(node)
+        }
+    }
+    let mut visitor = IndexVisitor {
+        projection: Projection::new(0),
+        navigation: super::session::Capture::default(),
+        record,
+    };
+    visitor.projection.index_only = true;
+    JsonStream::new(spool.reader()).parse(&mut visitor, "request")?;
+    let mut items = visitor.projection.items;
+    associate_index(&mut items, &|| false)?;
+    for item in &mut items {
+        item["fingerprint"] = json!(format!(
+            "{:x}",
+            Sha256::digest(
+                json!([
+                    "request-unit-v1",
+                    item["contentHash"],
+                    item["kind"],
+                    item["role"],
+                    item["name"]
+                ])
+                .to_string()
+            )
+        ));
+    }
+    Ok(items)
 }
 struct CachedIndex {
     audit: String,
@@ -736,11 +814,22 @@ fn page(
 }
 
 impl Cache {
+    #[cfg(test)]
     pub(super) fn read(
         &mut self,
         db: &Connection,
         audit: &str,
         offset: usize,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value> {
+        self.view(db, audit, offset, false, cancelled)
+    }
+    pub(super) fn view(
+        &mut self,
+        db: &Connection,
+        audit: &str,
+        offset: usize,
+        folded: bool,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Value> {
         let manifest: Option<String> = db
@@ -764,7 +853,7 @@ impl Cache {
             .entries
             .iter()
             .position(|entry| entry.audit == audit && entry.manifest == fingerprint);
-        let entry = if let Some(position) = cached {
+        let mut entry = if let Some(position) = cached {
             self.entries.remove(position).unwrap()
         } else {
             self.entries.retain(|entry| entry.audit != audit);
@@ -786,15 +875,61 @@ impl Cache {
                 bytes,
             }
         };
-        let result = page(
-            db,
-            audit,
-            offset,
-            &manifest,
-            legacy.as_deref(),
-            &entry.index,
-            cancelled,
-        );
+        for unit in super::history::units(db, audit)? {
+            if let Some(item) = entry
+                .index
+                .items
+                .get_mut(unit["index"].as_u64().unwrap_or(u64::MAX) as usize)
+            {
+                if item["contentHash"] == unit["contentHash"] && item["role"] == unit["role"] {
+                    for key in ["historyOf", "occurrenceId", "sameOccurrence"] {
+                        if let Some(value) = unit.get(key) {
+                            item[key] = value.clone();
+                        }
+                    }
+                }
+            }
+        }
+        let mut result = if folded {
+            folded_page(
+                db,
+                audit,
+                offset,
+                &manifest,
+                legacy.as_deref(),
+                &entry.index,
+                cancelled,
+            )
+        } else {
+            page(
+                db,
+                audit,
+                offset,
+                &manifest,
+                legacy.as_deref(),
+                &entry.index,
+                cancelled,
+            )
+        };
+        if let Ok(value) = &mut result {
+            let historical = entry
+                .index
+                .items
+                .iter()
+                .filter(|item| item["historyOf"].is_object())
+                .count();
+            value["historicalCount"] = json!(historical);
+            value["newCount"] = json!(entry.index.items.len() - historical);
+            value["firstNewIndex"] = entry
+                .index
+                .items
+                .iter()
+                .find(|item| !item["historyOf"].is_object())
+                .map_or(Value::Null, |item| item["index"].clone());
+            if !folded {
+                value["view"] = json!("all");
+            }
+        }
         if entry.bytes <= INDEX_CACHE_BYTES {
             while self.entries.len() >= INDEX_CACHE_ENTRIES
                 || self.entries.iter().map(|entry| entry.bytes).sum::<usize>() + entry.bytes
@@ -808,6 +943,76 @@ impl Cache {
     }
 }
 
+fn folded_page(
+    db: &Connection,
+    audit: &str,
+    offset: usize,
+    manifest: &Value,
+    legacy: Option<&[u8]>,
+    index: &ContentIndex,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Value> {
+    let mut nodes = Vec::new();
+    let mut historical = 0;
+    for item in &index.items {
+        if item["historyOf"].is_object() {
+            historical += 1;
+            if let Some(last) = nodes
+                .last_mut()
+                .filter(|node: &&mut Value| node["kind"] == "history_range")
+            {
+                last["endIndex"] = item["index"].clone();
+                last["end"] = item["end"].clone();
+                continue;
+            }
+            nodes.push(json!({"kind":"history_range","startIndex":item["index"],"endIndex":item["index"],"start":item["start"],"end":item["end"]}));
+        } else {
+            nodes.push(item.clone());
+        }
+    }
+    let selected: Vec<_> = nodes
+        .iter()
+        .skip(offset)
+        .take(PAGE_ITEMS)
+        .cloned()
+        .collect();
+    let page_index = ContentIndex {
+        items: selected
+            .iter()
+            .filter(|node| node["kind"] != "history_range")
+            .cloned()
+            .collect(),
+        counts: index.counts.clone(),
+        parsed: index.parsed,
+    };
+    let mut result = page(db, audit, 0, manifest, legacy, &page_index, cancelled)?;
+    let mut loaded = result["items"].as_array().unwrap().iter();
+    let mut display = Vec::new();
+    for node in selected {
+        if node["kind"] == "history_range" {
+            let mut node = node;
+            let count: i64 = db.query_row("SELECT count(*) FROM findings WHERE audit_id=? AND coalesce(json_extract(data,'$.evidence.bodyRef.sourceSnapshotId'),json_extract(data,'$.evidence.bodyRef.snapshotId'))='request' AND coalesce(json_extract(data,'$.evidence.bodyRef.sourceStart'),json_extract(data,'$.evidence.bodyRef.start'))<? AND coalesce(json_extract(data,'$.evidence.bodyRef.sourceEnd'),json_extract(data,'$.evidence.bodyRef.end'))>?", params![audit,node["end"].as_u64(),node["start"].as_u64()], |r| r.get(0))?;
+            node["findingCount"] = json!(count);
+            display.push(node);
+        } else {
+            display.push(loaded.next().unwrap().clone());
+        }
+    }
+    result["nodes"] = json!(display);
+    result["total"] = json!(index.items.len());
+    result["nodeTotal"] = json!(nodes.len());
+    result["historicalCount"] = json!(historical);
+    result["newCount"] = json!(index.items.len() - historical);
+    result["view"] = json!("folded");
+    result["offset"] = json!(offset);
+    result["nextOffset"] = if offset.saturating_add(PAGE_ITEMS) < nodes.len() {
+        json!(offset + PAGE_ITEMS)
+    } else {
+        Value::Null
+    };
+    Ok(result)
+}
+
 #[cfg(test)]
 pub(super) fn read(db: &Connection, audit: &str, offset: usize) -> Result<Value> {
     Cache::default().read(db, audit, offset, &|| false)
@@ -816,6 +1021,30 @@ pub(super) fn read(db: &Connection, audit: &str, offset: usize) -> Result<Value>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fingerprints_preserve_structure_roles_and_string_whitespace() {
+        use std::io::Write;
+        let index = |body: &str| {
+            let mut spool = crate::streaming::Spool::new().unwrap();
+            spool.write_all(body.as_bytes()).unwrap();
+            index_spool(&spool.seal().unwrap(), &mut json!({"kind":"request"})).unwrap()
+        };
+        let compact =
+            index(r#"{"messages":[{"content":[{"type":"text","text":" x 🙂 "}],"role":"user"}]}"#);
+        let pretty = index("{\n  \"messages\": [ { \"content\": [ { \"type\": \"text\", \"text\": \" x 🙂 \" } ], \"role\": \"user\" } ] }");
+        assert_eq!(compact[0]["fingerprint"], pretty[0]["fingerprint"]);
+        let trimmed =
+            index(r#"{"messages":[{"content":[{"type":"text","text":"x 🙂"}],"role":"user"}]}"#);
+        assert_ne!(compact[0]["fingerprint"], trimmed[0]["fingerprint"]);
+        let role = index(
+            r#"{"messages":[{"content":[{"type":"text","text":" x 🙂 "}],"role":"assistant"}]}"#,
+        );
+        assert_ne!(compact[0]["fingerprint"], role[0]["fingerprint"]);
+        let reordered =
+            index(r#"{"messages":[{"content":[{"text":" x 🙂 ","type":"text"}],"role":"user"}]}"#);
+        assert_ne!(compact[0]["fingerprint"], reordered[0]["fingerprint"]);
+    }
 
     fn project(body: Value, offset: usize) -> Projection {
         let mut projection = Projection::new(offset);
@@ -834,7 +1063,7 @@ mod tests {
     #[test]
     fn legacy_parseability_does_not_override_retention_state() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT)")
+        db.execute_batch("CREATE TABLE request_units (audit_id TEXT,idx INTEGER,data TEXT); CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT)")
             .unwrap();
         for state in [
             Some("complete"),
@@ -871,7 +1100,7 @@ mod tests {
     fn cached_pages_read_only_indexed_ranges_and_invalidate_on_manifest_changes() {
         use std::cell::Cell;
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE request_units (audit_id TEXT,idx INTEGER,data TEXT); CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
         let mut input = vec![
             json!({"type":"function_call","call_id":"across-pages","name":"read","arguments":"{}"}),
         ];
@@ -1113,7 +1342,7 @@ mod tests {
             ),
         ] {
             let db = Connection::open_in_memory().unwrap();
-            db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
+            db.execute_batch("CREATE TABLE request_units (audit_id TEXT,idx INTEGER,data TEXT); CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
             db.execute(
                 "INSERT INTO audit_snapshots VALUES('partial','request','{\"state\":\"partial\"}')",
                 [],
@@ -1339,7 +1568,7 @@ mod tests {
     #[test]
     fn retained_chunks_legacy_snapshots_and_gaps_are_projected_without_writes() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
+        db.execute_batch("CREATE TABLE request_units (audit_id TEXT,idx INTEGER,data TEXT); CREATE TABLE audit_snapshots (audit_id TEXT,id TEXT,data TEXT); CREATE TABLE audit_body_chunks (audit_id TEXT,snapshot_id TEXT,start INTEGER,end INTEGER,content TEXT);").unwrap();
         let body = json!({"instructions":"system", "input":[{"role":"user","content":"Hello"},{"type":"function_call_output","call_id":"missing","output":"reported"}]});
         let encoded = serde_json::to_string_pretty(&body).unwrap();
         db.execute(
