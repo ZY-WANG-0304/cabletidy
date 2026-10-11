@@ -720,15 +720,22 @@ fn compact(db: &Connection) -> Result<()> {
     if busy != 0 {
         return Ok(());
     }
-    // SQLite yields one row per vacuumed page. Drain them to reclaim the requested pages.
-    let mut statement = db.prepare("PRAGMA incremental_vacuum(2048)")?;
-    let mut pages = statement.query([])?;
-    while pages.next()?.is_some() {}
-    drop(pages);
-    drop(statement);
-    db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-        r.get::<_, i64>(0)
-    })?;
+    let mut free_pages: u64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    while free_pages > 0 {
+        // Drain every vacuum result and continue in batches so idle services
+        // reclaim all released pages without waiting for another maintenance job.
+        {
+            let mut statement = db.prepare("PRAGMA incremental_vacuum(2048)")?;
+            let mut pages = statement.query([])?;
+            while pages.next()?.is_some() {}
+        }
+        let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        let remaining: u64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+        if busy != 0 || remaining >= free_pages {
+            break;
+        }
+        free_pages = remaining;
+    }
     Ok(())
 }
 
@@ -1583,6 +1590,80 @@ mod tests {
             .query_row("PRAGMA max_page_count", [], |r| r.get(0))
             .unwrap();
         assert_eq!(pages, 192);
+    }
+
+    #[tokio::test]
+    async fn lowering_capacity_reclaims_large_history_before_configuration_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let store = Store::start(dir.path(), unlimited);
+        assert!(store.write_analysis(record("large-history", "streaming")));
+        assert!(store.body("large-history", json!({"id":"request","state":"receiving"})));
+        let chunk = "x".repeat(32768);
+        for i in 0..1024 {
+            let start = i * chunk.len();
+            assert!(store.body("large-history", json!({"id":"request","start":start,"end":start+chunk.len(),"content":chunk,"annotations":[]})));
+        }
+        assert!(store.body(
+            "large-history",
+            json!({"id":"request","state":"complete","byteLength":32*1024*1024})
+        ));
+        assert!(store.write_analysis(record("large-history", "completed")));
+        assert!(store.write_analysis(record("active", "streaming")));
+        assert!(store.body("active", json!({"id":"request","state":"receiving"})));
+        assert!(store.body(
+            "active",
+            json!({"id":"request","start":0,"end":5,"content":"hello","annotations":[]})
+        ));
+        store.flush().await;
+        assert!(disk_bytes(&path) > 32 * 1024 * 1024);
+
+        let limited = AuditSettings {
+            budget_bytes: Some(1024 * 1024),
+            ..unlimited
+        };
+        store.configure(limited).await;
+        // Inspect the result immediately; no extra flush or query should be needed.
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT id FROM audit", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            read_body_page(&db, "active", "request", 0).unwrap()["chunks"][0]["content"],
+            "hello"
+        );
+        assert!(used_bytes(&db).unwrap() < body_budget(limited).unwrap());
+        assert!(disk_bytes(&path) < limited.budget_bytes.unwrap());
+        assert_eq!(
+            db.query_row("PRAGMA freelist_count", [], |r| r.get::<_, u64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.status()["state"], "ready");
+        assert_eq!(store.status()["failedWrites"], 0);
+        assert!(store.status()["bytes"].as_u64().unwrap() < limited.budget_bytes.unwrap());
+    }
+
+    #[test]
+    fn compaction_stops_when_incremental_vacuum_cannot_reclaim_pages() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA auto_vacuum=NONE; CREATE TABLE probe(content BLOB); INSERT INTO probe VALUES(zeroblob(65536)); DELETE FROM probe;").unwrap();
+        let before: u64 = db
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap();
+        assert!(before > 0);
+        compact(&db).unwrap();
+        assert_eq!(
+            db.query_row("PRAGMA freelist_count", [], |r| r.get::<_, u64>(0))
+                .unwrap(),
+            before
+        );
     }
 
     #[tokio::test]
