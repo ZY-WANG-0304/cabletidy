@@ -378,11 +378,11 @@ IPv6 由 `Ipv6Addr` 解析校验而非正则硬凑，因此 Rust 的 `std::colle
 
 请求结果 `outcome` 与检查状态分开：`started` / `streaming` 表示尚未结束；完成结果包括 `completed`、`local_error`、`upstream_error`、`connection_error`、`stream_error`、`interrupted`、`unknown`。`httpStatus` 在有上游响应时为其状态，否则为本地返回状态；HTTP 200 中的协议错误仍可为 `stream_error`。这些都不表示工具已执行。CableTidy 自身的配置操作不生成记录；Agent 请求仍保留当时的配置修订用于追溯。
 
-流式请求按完整的协议结束事件确认结果：`response.completed`、`message_stop` 或 `[DONE]` 确认完成；`response.failed`、`response.incomplete`、`error` 确认响应流错误。客户端在结束事件后关闭连接、未继续读取 HTTP EOF，不再导致“请求中断”。`responseTerminalEvent` 保存判定依据，`responseTransportState` 独立保存连接接收状态（`complete` / `interrupted` / `error` / `not_observed`）。HTTP 错误仍保留 `upstream_error`；工具项完成事件、正文中的结束事件字符串、未闭合事件或留存缺口都不能证明响应完整。正常 EOF 但缺少协议结束事件为 `unknown`，结束事件前取消仍为 `interrupted`。
+流式请求按请求协议识别完整的结束事件：`openai.responses` 使用 `response.completed` 确认完成，`response.failed`、`response.incomplete`、`error` 确认响应流错误；`anthropic.messages` 使用 `message_stop` 确认完成，`error` 确认响应流错误。两个协议均不以 `[DONE]`、带额外字符的 `[DONE]` 或其他协议的结束事件确认完成；实时检查和历史迁移使用相同的协议规则，未知协议不推定结束。客户端在完整结束事件后关闭连接、未继续读取 HTTP EOF，不再导致“请求中断”。`responseTerminalEvent` 保存判定依据，`responseTransportState` 独立保存连接接收状态（`complete` / `interrupted` / `error` / `not_observed`）。HTTP 错误仍保留 `upstream_error`；工具项完成事件、正文中的结束事件字符串、未闭合事件或留存缺口都不能证明响应完整。正常 EOF 但缺少协议结束事件为 `unknown`，结束事件前取消仍为 `interrupted`。已观察到完整、合法的错误事件后，即使尾部事件残缺或处理失败，仍保留 `stream_error` 与错误事件依据，同时明确标记正文与检查缺口；未闭合的错误事件不能作为已确认的协议错误。
 
 检查状态区分任务进度、运行缺口与能力范围：`pending` / `running` 表示检查尚未结束，`failed` 表示检测任务失败，`partial` 表示正文缺失、事件不完整、解析或资源不足等导致检查不完整，`limited` 表示已完成支持范围内检查但包含明确的能力限制，`complete` 表示本次没有记录额外限制，`skipped` 用于仅操作审计。加密或非文本内容、推理语义、未知工具、动态脚本等归入 `coverageLimitations`，页面显示“已检查（覆盖有限）”；运行缺口归入 `inspectionIssues` 并显示警告，两者可同时存在。原 `coverageReasons` 保留合并列表用于兼容和溯源。未知原因默认作为检查缺口，避免新的失败原因被当成正常限制；这些状态均不保证内容安全。
 
-启动时对旧记录进行一次状态修正（`statusVersion = 1`）：仅在请求正文完整、响应分段连续且长度一致、原文快照保留完整结束事件时，将误判中断的响应改为对应协议结果，修正响应清单状态并移除过时的 `body_not_complete`。缺少响应正文、保存缺口、事件未闭合或检测失败的记录继续保留异常状态。能力限制单独重新分类；响应正文、字节位置、标注和风险发现不重新生成或改写，重复启动不重复迁移。
+启动时对旧记录进行一次状态修正（`statusVersion = 1`）：仅在请求正文完整、响应分段连续且长度一致、原检查明确没有事件闭合或解析缺口、已知协议下的快照保留合法结束事件时，将误判中断的响应改为对应协议结果，修正响应清单状态并移除过时的 `body_not_complete`。旧 SSE 保存会对未闭合事件补齐双换行，因此不能仅凭保存后分隔符推断原始事件完整；只有覆盖原因包含 `body_not_complete` 且其余原因均为能力限制的候选记录才允许修正。`incomplete_stream_fragment`、`missing_terminal_event`、其他检查缺口、未知或缺失协议、正文缺失及检测失败的记录继续保留原请求结果和正文状态。能力限制单独重新分类；响应正文、字节位置、标注和风险发现不重新生成或改写，重复启动不重复迁移。
 
 ### 9.4 正文与证据接口
 

@@ -51,16 +51,19 @@ pub(super) fn classify(record: &mut Value) {
     record["inspectionIssues"] = json!(issues);
 }
 
-pub(super) fn terminal_outcome(event: &str) -> Option<&'static str> {
-    match event {
-        "response.completed" | "message_stop" | "[DONE]" => Some("completed"),
-        "response.failed" | "response.incomplete" | "error" => Some("stream_error"),
+pub(super) fn terminal_outcome(protocol: &str, event: &str) -> Option<&'static str> {
+    match (protocol, event) {
+        ("openai.responses", "response.completed") | ("anthropic.messages", "message_stop") => {
+            Some("completed")
+        }
+        ("openai.responses", "response.failed" | "response.incomplete" | "error")
+        | ("anthropic.messages", "error") => Some("stream_error"),
         _ => None,
     }
 }
 
 pub(super) fn apply_terminal(record: &mut Value, event: &str) {
-    if let Some(outcome) = terminal_outcome(event) {
+    if let Some(outcome) = terminal_outcome(text(&record["protocol"]), event) {
         record["responseTerminalEvent"] = json!(event);
         if record["httpStatus"].as_u64().is_some_and(|s| s < 400)
             && matches!(
