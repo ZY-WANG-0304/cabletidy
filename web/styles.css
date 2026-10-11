@@ -1237,7 +1237,7 @@ button.list-row:hover,
 .trace-scale-row { display: flex; justify-content: flex-start; margin-bottom: 4px; }
 .trace-minimap { display: flex; gap: 2px; align-items: stretch; height: 26px; }
 .trace-segment { min-width: 1px; flex-basis: 0; padding: 0; background: #90b6a5; border: 0; border-radius: 2px; }
-.trace-segment.has-new-risk { background: #d4a452; }
+.trace-segment.has-risk, .trace-segment.has-new-risk { background: #d4a452; }
 .trace-segment.has-history-risk { background: #b7ada0; }
 .trace-segment.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; }
 .trace-segment:hover { filter: brightness(.9); }

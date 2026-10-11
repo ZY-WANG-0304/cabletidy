@@ -764,6 +764,49 @@ try {
   }
   report.checks.push("history folds beyond two pages, lazily expands in order, preserves manual item state and navigates cached historical risks on desktop/mobile");
   report.checks.push("content actions use one compact view toggle; no-risk, new-risk and historical-risk requests have distinct labels and navigation colors on desktop/mobile");
+  const legacyRecords = [noRiskDetail, newRiskDetail].map(record => {
+    const legacy = { ...record, schemaVersion: 4 };
+    delete legacy.newFindingCount;
+    delete legacy.historicalFindingCount;
+    return legacy;
+  });
+  const modernSessions = await (await fetch(`${app.url}api/v1/security/sessions?session=${historyDetail.sessionKey}`)).json();
+  const legacySummary = { ...modernSessions.items[0], requestCount: 2, findingCount: newRiskDetail.findingCount,
+    legacyFindingCount: newRiskDetail.findingCount, newFindingCount: 0, historicalFindingCount: 0 };
+  await page.route("**/api/v1/security/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/sessions")) return route.fulfill({ json: { ...modernSessions, items: [legacySummary],
+      total: 1, recordCount: 2, findingCount: legacySummary.findingCount, legacyFindingCount: legacySummary.legacyFindingCount,
+      newFindingCount: 0, historicalFindingCount: 0, nextCursor: null } });
+    if (url.pathname.endsWith("/audit")) return route.fulfill({ json: { items: legacyRecords, total: 2, nextCursor: null } });
+    const record = legacyRecords.find(record => url.pathname.endsWith(`/audit/${record.id}`));
+    if (record) return route.fulfill({ json: { record } });
+    return route.continue();
+  });
+  for (const mobile of [false, true]) {
+    await page.setViewportSize(mobile ? { width: 390, height: 844 } : report.viewport);
+    await page.goto(`${app.url}#security`);
+    const session = page.locator(`.security-session-row[data-id="${legacySummary.id}"]`);
+    await session.waitFor();
+    assert.match(await session.innerText(), /风险 \d+ 项/);
+    assert.doesNotMatch(await session.innerText(), /新增|历史关联/);
+    assert.doesNotMatch(await page.locator(".security-summary").innerText(), /新增风险/);
+    await session.click();
+    await page.locator(`.trace-event-row[data-id="${newRiskDetail.id}"]`).waitFor();
+    assert.match(await page.locator(`.trace-event-row[data-id="${noRiskDetail.id}"]`).innerText(), /未发现风险/);
+    const riskRow = await page.locator(`.trace-event-row[data-id="${newRiskDetail.id}"]`).innerText();
+    assert.match(riskRow, /风险 \d+ 项/);
+    assert.doesNotMatch(riskRow, /新增风险|历史风险/);
+    assert.deepEqual(await page.locator(".trace-legend").allTextContents(), ["未发现风险", "风险"]);
+    assert.equal(await page.locator(".trace-segment.has-risk").count(), 1);
+    assert.equal(await page.locator(".trace-segment.has-new-risk, .trace-segment.has-history-risk").count(), 0);
+    assert.doesNotMatch(await page.locator(".trace-totals").innerText(), /新增风险/);
+    await screenshot(`20-${mobile ? "mobile" : "desktop"}-legacy-risk.png`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "legacy trace fits the viewport");
+    await page.locator('[data-action="security-trace-risk"]').click();
+    assert.equal(await page.locator(".trace-event-row").count(), 1);
+  }
+  report.checks.push("legacy records use only no-risk/risk labels in session summaries, trace rows and legends, and remain filterable on desktop/mobile");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

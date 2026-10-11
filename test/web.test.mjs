@@ -2077,13 +2077,15 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   assert.equal(app.read("state.trace.summary.requestCount"), 2);
 });
 
-test("session trace distinguishes new findings, historical associations and requests without findings", async () => {
+test("session trace uses neutral risk labels for legacy records and three states for modern records", async () => {
   const records = [
-    { id: "clean", findingCount: 0, newFindingCount: 0, historicalFindingCount: 0 },
-    { id: "new", findingCount: 1, newFindingCount: 1, historicalFindingCount: 0 },
-    { id: "history", findingCount: 2, newFindingCount: 0, historicalFindingCount: 2 },
-    { id: "mixed", findingCount: 3, newFindingCount: 1, historicalFindingCount: 2 },
-    { id: "legacy", findingCount: 1 },
+    { id: "clean", schemaVersion: 5, findingCount: 0, newFindingCount: 0, historicalFindingCount: 0 },
+    { id: "new", schemaVersion: 5, findingCount: 1, newFindingCount: 1, historicalFindingCount: 0 },
+    { id: "history", schemaVersion: 5, findingCount: 2, newFindingCount: 0, historicalFindingCount: 2 },
+    { id: "mixed", schemaVersion: 6, findingCount: 3, newFindingCount: 1, historicalFindingCount: 2 },
+    { id: "legacy", schemaVersion: 4, findingCount: 1 },
+    { id: "unversioned", findingCount: 1 },
+    { id: "legacy-clean", schemaVersion: 3, findingCount: 0 },
   ];
   const app = await controller();
   app.read(`state.trace.result = ${JSON.stringify({ items: records, total: records.length })}`);
@@ -2095,9 +2097,64 @@ test("session trace distinguishes new findings, historical associations and requ
   assert.match(row("history"), /仅历史风险 2 项/);
   assert.doesNotMatch(row("history"), /新增风险/);
   assert.match(row("mixed"), /新增风险 1 项 · 历史风险 2 项/);
-  assert.match(row("legacy"), /新增风险 1 项/);
+  for (const id of ["legacy", "unversioned"]) {
+    assert.match(row(id), /风险 1 项/);
+    assert.doesNotMatch(row(id), /新增风险|历史风险/);
+    assert.match(html, new RegExp(`class="trace-segment has-risk [^"]*"[^>]*data-id="${id}"`));
+    assert.doesNotMatch(html, new RegExp(`class="trace-segment has-new-risk [^"]*"[^>]*data-id="${id}"`));
+  }
+  assert.match(row("legacy-clean"), /未发现风险/);
   assert.match(html, /class="trace-segment has-history-risk [^"]*"[^>]*data-id="history"/);
   assert.match(html, /class="trace-segment has-new-risk [^"]*"[^>]*data-id="mixed"/);
+  assert.match(html, /风险 \/ 新增风险<\/span>/);
+  await app.action("security-trace-risk", { dataset: {} });
+  assert.deepEqual(clone(app.read("traceItems().map(item => item.id)")), ["new", "history", "mixed", "legacy", "unversioned"]);
+});
+
+test("legacy session summaries and legends never describe old findings as new", async () => {
+  const app = await controller();
+  const summary = { id: "legacy-session", requestCount: 2, findingCount: 3, newFindingCount: 0, legacyFindingCount: 3, historicalFindingCount: 0 };
+  app.read(`state.trace.summary = ${JSON.stringify(summary)}; state.trace.result = ${JSON.stringify({ items: [
+    { id: "legacy-risk", schemaVersion: 4, findingCount: 3 },
+    { id: "legacy-clean", schemaVersion: 4, findingCount: 0 },
+  ] })}; state.security.result = ${JSON.stringify({ ...summary, items: [summary] })}`);
+  const trace = app.read("renderSecuritySession()");
+  assert.match(trace, /trace-risk-swatch"[^>]*><\/i>风险<\/span>/);
+  assert.doesNotMatch(trace, /新增风险|仅历史风险|trace-history-risk-swatch/);
+  assert.match(trace, /<strong>3<\/strong> 项风险/);
+  const list = app.read("renderSecurity()");
+  assert.match(list, /风险 3 项/);
+  assert.match(list, /<strong>3<\/strong><span>项风险<\/span>/);
+  assert.doesNotMatch(list, /新增风险|项新增|历史关联/);
+  const clean = { ...summary, requestCount: 1, findingCount: 0, legacyFindingCount: 0 };
+  app.read(`state.trace.summary = ${JSON.stringify(clean)}; state.trace.result.items = [state.trace.result.items[1]]; state.security.result = ${JSON.stringify({ ...clean, items: [clean] })}`);
+  const cleanTrace = app.read("renderSecuritySession()");
+  assert.match(cleanTrace, /trace-totals[^]*?<span>未发现风险<\/span>/);
+  assert.doesNotMatch(cleanTrace, /新增风险|仅历史风险/);
+  assert.doesNotMatch(app.read("renderSecurity()"), /新增风险|项新增|历史关联/);
+});
+
+test("mixed session summaries and grouped navigation keep legacy risks separate from modern findings", async () => {
+  const app = await controller();
+  const summary = { id: "mixed-session", findingCount: 6, legacyFindingCount: 3, newFindingCount: 1, historicalFindingCount: 2 };
+  const list = app.read(`securitySessionRow(${JSON.stringify(summary)})`);
+  assert.match(list, /风险 3 项（旧记录） · 新增风险 1 项 · 2 次历史关联/);
+  const records = [
+    { id: "legacy", schemaVersion: 4, findingCount: 3 },
+    { id: "new", schemaVersion: 5, findingCount: 1, newFindingCount: 1, historicalFindingCount: 0 },
+    { id: "history", schemaVersion: 5, findingCount: 2, newFindingCount: 0, historicalFindingCount: 2 },
+    ...Array.from({ length: 118 }, (_, i) => ({ id: `clean-${i}`, schemaVersion: 5, findingCount: 0, newFindingCount: 0, historicalFindingCount: 0 })),
+  ];
+  app.read(`state.trace.summary = ${JSON.stringify(summary)}; state.trace.result = ${JSON.stringify({ items: records })}`);
+  const html = app.read("renderSecuritySession()");
+  assert.match(html, /<strong>4<\/strong> 项风险（含旧记录 3 项） · 2 次历史关联/);
+  assert.match(html, /title="请求 1–3[^\"]*风险 3 项（旧记录） · 新增风险 1 项 · 历史风险 2 项/);
+  assert.match(html, /class="trace-segment has-new-risk [^\"]*"[^>]*data-id="legacy"/);
+  app.read(`state.trace.result.items[1] = ${JSON.stringify({ id: "legacy-clean", schemaVersion: 4, findingCount: 0 })}`);
+  const withHistory = app.read("renderSecuritySession()");
+  assert.match(withHistory, /class="trace-segment has-risk [^\"]*"[^>]*data-id="legacy"/);
+  assert.match(withHistory, /风险 3 项（旧记录） · 历史风险 2 项/);
+  assert.doesNotMatch(withHistory, /title="请求 1–3[^\"]*仅历史风险/);
 });
 
 test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {

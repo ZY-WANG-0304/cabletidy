@@ -1023,7 +1023,8 @@ fn read_sessions(
         min(a.seq) AS first_seq, max(a.seq) AS last_seq, min(a.at) AS first_at, max(a.at) AS last_at,
         count(*) AS requests,
         sum(coalesce(json_extract(a.data,'$.findingCount'),0)) AS findings,
-        sum(coalesce(json_extract(a.data,'$.newFindingCount'),json_extract(a.data,'$.findingCount'),0)) AS new_findings,
+        sum(CASE WHEN coalesce(json_extract(a.data,'$.schemaVersion'),0)>=5 THEN coalesce(json_extract(a.data,'$.newFindingCount'),json_extract(a.data,'$.findingCount'),0) ELSE 0 END) AS new_findings,
+        sum(CASE WHEN coalesce(json_extract(a.data,'$.schemaVersion'),0)<5 THEN coalesce(json_extract(a.data,'$.findingCount'),0) ELSE 0 END) AS legacy_findings,
         sum(CASE WHEN coalesce(json_extract(a.data,'$.findingCount'),0)>0 THEN 1 ELSE 0 END) AS risky,
         sum(CASE WHEN a.outcome IN ('started','streaming') THEN 1 ELSE 0 END) AS active,
         sum(CASE WHEN a.outcome NOT IN ('started','streaming','completed') THEN 1 ELSE 0 END) AS errors,
@@ -1033,9 +1034,9 @@ fn read_sessions(
         max(CASE a.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END) AS severity
         FROM audit a JOIN matching m ON m.key=coalesce(json_extract(a.data,'$.sessionKey'),a.id) WHERE a.kind = 'request' GROUP BY m.key
     )");
-    let (total, records, risky, findings, new_findings): (i64,i64,i64,i64,i64) = db.query_row(
-        &format!("{cte} SELECT count(*),coalesce(sum(requests),0),coalesce(sum(risky>0),0),coalesce(sum(findings),0),coalesce(sum(new_findings),0) FROM grouped"),
-        params_from_iter(args), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
+    let (total, records, risky, findings, new_findings, legacy_findings): (i64,i64,i64,i64,i64,i64) = db.query_row(
+        &format!("{cte} SELECT count(*),coalesce(sum(requests),0),coalesce(sum(risky>0),0),coalesce(sum(findings),0),coalesce(sum(new_findings),0),coalesce(sum(legacy_findings),0) FROM grouped"),
+        params_from_iter(args), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
     let mut page_args = args.to_vec();
     let cursor = if query.cursor > 0 {
         page_args.push(query.cursor.into());
@@ -1046,7 +1047,7 @@ fn read_sessions(
     page_args.push(((query.limit + 1) as i64).into());
     let sql = format!("{cte} SELECT g.key,g.last_seq,first.data,
         json_object('firstAtMs',g.first_at,'lastAtMs',g.last_at,'requestCount',g.requests,'findingCount',g.findings,
-        'newFindingCount',g.new_findings,'historicalFindingCount',g.findings-g.new_findings,
+        'newFindingCount',g.new_findings,'legacyFindingCount',g.legacy_findings,'historicalFindingCount',g.findings-g.new_findings-g.legacy_findings,
         'riskRecordCount',g.risky,'activeCount',g.active,'errorCount',g.errors,'incompleteCount',g.incomplete,'limitedCount',g.limited,
         'durationMs',g.duration,'severityRank',g.severity),
         (SELECT json_extract(t.data,'$.sessionTitle') FROM audit t WHERE t.kind='request' AND coalesce(json_extract(t.data,'$.sessionKey'),t.id)=g.key AND json_extract(t.data,'$.sessionTitle') IS NOT NULL ORDER BY t.seq LIMIT 1)
@@ -1112,7 +1113,7 @@ fn read_sessions(
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(
-        json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"newFindingCount":new_findings,"historicalFindingCount":findings-new_findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
+        json!({"items":items,"sessionId":query.session,"total":total,"recordCount":records,"riskSessionCount":risky,"findingCount":findings,"newFindingCount":new_findings,"legacyFindingCount":legacy_findings,"historicalFindingCount":findings-new_findings-legacy_findings,"nextCursor":next,"providers":providers,"oldestAtMs":oldest}),
     )
 }
 
@@ -1431,6 +1432,81 @@ mod tests {
             "inspectionStatus":"complete","severity":"high","findingCount":1,
             "findings":[{"id":format!("f-{id}"),"requestId":id,"atMs":chrono::Utc::now().timestamp_millis(),
                 "category":"destructive_action","severity":"high","confidence":"high","evidenceStage":"tool_call_proposed"}]})
+    }
+
+    #[test]
+    fn session_summaries_separate_legacy_risks_without_rewriting_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        for (id, version, session, count, historical) in [
+            ("legacy", Some(4), "legacy-session", 2, 0),
+            ("unversioned", None, "unversioned", 1, 0),
+            ("legacy-clean", Some(3), "legacy-session", 0, 0),
+            ("mixed-legacy", Some(4), "mixed-session", 2, 0),
+            ("mixed-current", Some(5), "mixed-session", 2, 1),
+            ("modern", Some(6), "modern-session", 1, 1),
+            ("modern-clean", Some(5), "modern-session", 0, 0),
+        ] {
+            let mut value = record(id, "completed");
+            if let Some(version) = version {
+                value["schemaVersion"] = json!(version);
+            }
+            value["sessionKey"] = json!(session);
+            value["findings"] = json!((0..count)
+                .map(|i| {
+                    let mut finding = value["findings"][0].clone();
+                    finding["id"] = json!(format!("{id}-{i}"));
+                    if i < historical {
+                        finding["historical"] = json!(true);
+                    }
+                    finding
+                })
+                .collect::<Vec<_>>());
+            persist(&mut db, value).unwrap();
+        }
+        let stored = || {
+            db.query_row("SELECT group_concat(data) FROM audit", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+        };
+        let before = stored();
+        let sessions = |raw: &str| {
+            let mut query = Query::parse(raw).unwrap();
+            query.sessions = true;
+            read(&db, query).unwrap()
+        };
+        let all = sessions("limit=1");
+        assert_eq!(all["total"], 4);
+        assert_eq!(all["recordCount"], 7);
+        assert_eq!(all["riskSessionCount"], 4);
+        assert_eq!(all["findingCount"], 8);
+        assert_eq!(all["legacyFindingCount"], 5);
+        assert_eq!(all["newFindingCount"], 1);
+        assert_eq!(all["historicalFindingCount"], 2);
+        assert!(all["nextCursor"].is_string());
+        for (session, total, legacy, new, historical) in [
+            ("legacy-session", 2, 2, 0, 0),
+            ("unversioned", 1, 1, 0, 0),
+            ("mixed-session", 4, 2, 1, 1),
+            ("modern-session", 1, 0, 0, 1),
+        ] {
+            let result = sessions(&format!("session={session}"));
+            assert_eq!(result["total"], 1);
+            for item in [&result, &result["items"][0]] {
+                assert_eq!(item["findingCount"], total, "{session}");
+                assert_eq!(item["legacyFindingCount"], legacy, "{session}");
+                assert_eq!(item["newFindingCount"], new, "{session}");
+                assert_eq!(item["historicalFindingCount"], historical, "{session}");
+            }
+        }
+        let mixed = read(&db, Query::parse("session=mixed-session").unwrap()).unwrap();
+        let legacy = &mixed["items"][0];
+        assert_eq!(legacy["id"], "mixed-legacy");
+        assert_eq!(legacy["findingCount"], 2);
+        assert!(legacy["newFindingCount"].is_null());
+        assert!(legacy["historicalFindingCount"].is_null());
+        assert_eq!(stored(), before);
     }
 
     #[test]
