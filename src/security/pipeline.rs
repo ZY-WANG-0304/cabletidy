@@ -56,13 +56,8 @@ impl Pipeline {
         self.record["severity"] = json!(self.highest);
         self.record["findingCount"] = json!(self.count);
         self.record["coverageReasons"] = json!(self.rules.reasons);
-        self.record["inspectionStatus"] = json!(if self.failed {
-            "failed"
-        } else if state == "complete" && !self.rules.reasons.is_empty() {
-            "partial"
-        } else {
-            state
-        });
+        self.record["inspectionStatus"] = json!(if self.failed { "failed" } else { state });
+        super::status::classify(&mut self.record);
         self.record["inspectionProgress"] = json!({"state":self.record["inspectionStatus"],"active":true,"processedBytes":self.inspected.min(self.record["observedBytes"].as_u64().unwrap_or(self.inspected)),"observedBytes":self.record["observedBytes"],"phase":"detecting","updatedAt":crate::config::now()});
         for batch in findings.chunks(16) {
             let mut record = self.record.clone();
@@ -89,9 +84,12 @@ impl Pipeline {
             self.record["inspectionProgress"]["state"] = json!("failed");
         }
         self.record["coverageReasons"] = json!(self.rules.reasons);
+        super::status::classify(&mut self.record);
+        self.record["inspectionProgress"]["state"] = self.record["inspectionStatus"].clone();
         // Failed stages can be followed by more body work. Release retention
         // protection only after all final finding batches have been queued.
         if matches!(state, "complete" | "skipped") {
+            self.record["statusVersion"] = json!(1);
             self.record["inspectionProgress"]["active"] = json!(false);
             self.record["inspectionProgress"]["phase"] = json!("finished");
         }
@@ -1082,7 +1080,7 @@ pub(super) fn run(
         }
         if let Some(spool) = body.sealed.take() {
             let result = if id == "response" && sse {
-                super::sse::inspect(&mut p, spool, body.complete && !body.gap)
+                super::sse::inspect(&mut p, spool, body.gap)
             } else {
                 p.body(id, source, spool, body.complete && !body.gap, true)
             };
@@ -1100,7 +1098,7 @@ pub(super) fn run(
                 p.failed = true;
             }
         }
-        if !body.complete && body.started {
+        if !body.complete && body.started && p.record[format!("{id}BodyState")] != "complete" {
             p.rules.reasons.insert("body_not_complete");
         }
     }

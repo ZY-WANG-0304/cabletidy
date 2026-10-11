@@ -442,6 +442,160 @@ test("stream failures, missing terminal events and cancellation retain honest ou
   assert.equal(canceled, true, "downstream cancellation closes upstream");
 });
 
+for (const passthrough of [false, true]) for (const terminal of ["response.completed", "response.failed", "response.incomplete", "message_stop"]) {
+  test(`client closes after ${terminal} before HTTP EOF (${passthrough ? "passthrough" : "mapped"})`, async t => {
+    let canceled = false;
+    const claude = terminal === "message_stop";
+    const f = await fixture(t, async (req, res, body) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.on("close", () => { canceled = true; });
+      const wire = event({ type: terminal, response: { model: body.model, output: [] } });
+      res.write(wire.slice(0, -3));
+      await delay(10);
+      if (!res.destroyed) res.write(wire.slice(-3));
+      // Keep HTTP open: the caller closes upon observing the protocol ending.
+    }, { passthrough, claude });
+    const controller = new AbortController();
+    const response = await f.request({ stream: true, ...(claude ? { messages: [{ role: "user", content: "hello" }] } : { input: "hello" }) }, { signal: controller.signal });
+    const reader = response.body.getReader();
+    let wire = "";
+    while (!/\r?\n\r?\n$/.test(wire)) {
+      const chunk = await reader.read();
+      assert.equal(chunk.done, false);
+      wire += Buffer.from(chunk.value).toString();
+    }
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    const outcome = ["response.failed", "response.incomplete"].includes(terminal) ? "stream_error" : "completed";
+    const audit = (await f.waitFor(r => r.items[0]?.outcome === outcome)).items[0];
+    assert.equal(audit.responseTransportState, "interrupted");
+    assert.equal(audit.responseTerminalEvent, terminal);
+    assert.equal(audit.responseBodyState, "complete");
+    assert.equal(audit.inspectionStatus, "complete");
+    assert.deepEqual(audit.inspectionIssues, []);
+    const detail = (await review(f, audit.id)).record;
+    assert.equal(detail.bodySnapshots.find(s => s.id === "response").state, "complete");
+    for (let i = 0; i < 100 && !canceled; i++) await delay(10);
+    assert.equal(canceled, true, "protocol completion does not keep upstream alive after cancellation");
+  });
+}
+
+test("terminal markers require framing and cannot turn protocol errors into success", async t => {
+  let mode;
+  const f = await fixture(t, (req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const wire = mode === "error-done"
+      ? event({ type: "error", error: { message: "failed" } }) + "data: [DONE]\r\n\r\n"
+      : mode === "unframed"
+      ? `data: ${JSON.stringify({ type: "response.completed", response: { output: [] } })}\n`
+      : event({ type: "response.output_text.delta", delta: "response.completed" });
+    res.end(wire);
+  }, { passthrough: true });
+  for (mode of ["error-done", "unframed", "marker-in-text"]) {
+    await (await f.request({ stream: true, input: "hello" })).text();
+    const outcome = mode === "error-done" ? "stream_error" : "unknown";
+    const audit = (await f.waitFor(r => r.total === ["error-done", "unframed", "marker-in-text"].indexOf(mode) + 1 && r.items[0]?.outcome === outcome)).items[0];
+    assert.equal(audit.responseBodyState, mode === "error-done" ? "complete" : "interrupted");
+    assert.equal(audit.inspectionStatus, "partial");
+    if (mode === "error-done") assert.equal(audit.responseTerminalEvent, "error");
+    else {
+      assert.equal(audit.responseTerminalEvent, undefined);
+      assert.equal(audit.inspectionStatus, "partial");
+      assert.ok(audit.inspectionIssues.includes("missing_terminal_event"));
+    }
+  }
+});
+
+for (const claude of [false, true]) for (const cancel of [false, true]) {
+  test(`only native protocol events confirm completion (${claude ? "Messages" : "Responses"}, ${cancel ? "cancel" : "EOF"})`, async t => {
+    let payload;
+    const f = await fixture(t, (req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${payload}\r\n\r\n`);
+      if (!cancel) res.end();
+    }, { passthrough: true, claude });
+    const foreign = claude ? ["response.completed", "response.failed", "response.incomplete"] : ["message_stop"];
+    const payloads = ["[DONE]", "[DONE]garbage", ...foreign.map(type => JSON.stringify({ type }))];
+    for (const [index, value] of payloads.entries()) {
+      payload = value;
+      const controller = new AbortController();
+      const response = await f.request({ stream: true }, { signal: controller.signal });
+      if (cancel) {
+        const reader = response.body.getReader();
+        await reader.read();
+        controller.abort();
+        await reader.cancel().catch(() => {});
+      } else await response.text();
+      const outcome = cancel ? "interrupted" : "unknown";
+      const audit = (await f.waitFor(r => r.total === index + 1 && r.items[0]?.outcome === outcome)).items[0];
+      assert.equal(audit.responseTerminalEvent, undefined, payload);
+      assert.equal(audit.responseBodyState, "interrupted", payload);
+      assert.equal(audit.inspectionStatus, "partial", payload);
+      assert.ok(audit.inspectionIssues.includes("missing_terminal_event"), payload);
+      const detail = (await review(f, audit.id)).record;
+      assert.ok(detail.bodySnapshots.find(s => s.id === "response").text.includes(payload), "foreign events remain reviewable");
+    }
+  });
+}
+
+for (const claude of [false, true]) for (const cancel of [false, true]) {
+  test(`confirmed protocol errors survive incomplete tails (${claude ? "Messages" : "Responses"}, ${cancel ? "cancel" : "EOF"})`, async t => {
+    let wire;
+    const f = await fixture(t, (req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(wire);
+      if (!cancel) res.end();
+    }, { passthrough: true, claude });
+    const types = claude ? ["error"] : ["response.failed", "response.incomplete", "error"];
+    const cases = [
+      ...types.map(type => ({ type, wire: event({ type }) + "data: {", confirmed: true })),
+      { type: "error", wire: 'data: {"type":"error"}\n', confirmed: false },
+    ];
+    for (const [index, item] of cases.entries()) {
+      wire = item.wire;
+      const controller = new AbortController();
+      const response = await f.request({ stream: true }, { signal: controller.signal });
+      if (cancel) {
+        const reader = response.body.getReader();
+        await reader.read();
+        controller.abort();
+        await reader.cancel().catch(() => {});
+      } else await response.text();
+      const outcome = item.confirmed ? "stream_error" : cancel ? "interrupted" : "unknown";
+      const audit = (await f.waitFor(r => r.total === index + 1 && r.items[0]?.outcome === outcome)).items[0];
+      assert.equal(audit.responseTerminalEvent, item.confirmed ? item.type : undefined);
+      assert.equal(audit.responseBodyState, "interrupted");
+      assert.equal(audit.inspectionStatus, "partial");
+      assert.ok(audit.inspectionIssues.includes("incomplete_stream_fragment"));
+      assert.equal(audit.inspectionIssues.includes("missing_terminal_event"), !item.confirmed);
+    }
+  });
+}
+
+test("coverage limitations stay separate from response failures and inspection gaps", async t => {
+  const f = await fixture(t, (req, res) => {
+    res.writeHead(429, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "rate limited" } }));
+  });
+  const response = await f.request({ metadata: { session_id: "coverage-limits" }, input: [
+    { type: "reasoning", encrypted_content: "opaque" },
+    { type: "function_call", name: "future_tool", arguments: "{}" },
+  ] });
+  assert.equal(response.status, 429);
+  await response.text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "upstream_error")).items[0];
+  assert.equal(audit.inspectionStatus, "limited");
+  assert.deepEqual(audit.inspectionIssues, []);
+  assert.deepEqual(audit.coverageLimitations, ["non_text_or_reasoning_semantics", "unsupported_tool"]);
+  assert.equal(audit.responseBodyState, "complete");
+  const filtered = await f.list("audit", "inspection=limited");
+  assert.equal(filtered.total, 1);
+  const sessions = await f.list("sessions", "inspection=limited");
+  assert.equal(sessions.items[0].limitedCount, 1);
+  assert.equal(sessions.items[0].incompleteCount, 0);
+  assert.equal(sessions.items[0].errorCount, 1);
+});
+
 test("configuration operations stay outside auditing; agent failures are recorded and reads do not create records", async t => {
   const f = await fixture(t, (req, res, body) => respond(res, body));
   assert.equal((await f.list()).total, 0, "configuration commit does not create an audit");
@@ -936,8 +1090,8 @@ test("reasoning SSE text locates credentials across interleaved summary and cont
   const record = (await review(f, audit.id)).record;
   for (const forbidden of [secret, ...halves]) assert.equal(JSON.stringify(record).includes(forbidden), true, forbidden);
   assert.ok(record.findings.some(f => f.ruleId === "SEC-SECRET-001"));
-  assert.equal(record.inspectionStatus, "partial");
-  assert.ok(record.coverageReasons.includes("reasoning_content_not_inspected"));
+  assert.equal(record.inspectionStatus, "limited");
+  assert.ok(record.coverageLimitations.includes("reasoning_content_not_inspected"));
   for (const type of ["reasoning_summary_text", "reasoning_text"]) {
     for (const output of [0, 1]) for (const part of [0, 1]) {
       const snapshots = record.bodySnapshots.filter(s => s.body?.text === `context ${type}/${output}/${part}: ${secret} retained tail`);
@@ -1004,7 +1158,7 @@ for (const initial of ["content_part", "output_item", "summary_part", "reasoning
       assert.equal(events[1].delta.contentSnapshotId, initialRef.contentSnapshotId);
       assert.equal(events[1].delta.observedFragmentStart, Buffer.byteLength(initialText));
       assert.equal(snapshot.body.text, fullText);
-      assert.equal(record.inspectionStatus, summary ? "partial" : "complete");
+      assert.equal(record.inspectionStatus, summary ? "limited" : "complete");
       const finding = record.findings.find(f => f.evidence.bodyRef.sourceSnapshotId === snapshot.id);
       assert.ok(finding);
       const ref = finding.evidence.bodyRef;

@@ -23,6 +23,7 @@ struct Streams {
     memory: Reservation,
     terminal: bool,
     error: bool,
+    terminal_event: Option<&'static str>,
 }
 fn node<'a>(index: &'a Index, field: &str) -> Option<&'a Node> {
     index
@@ -253,14 +254,34 @@ impl Streams {
         event: Arc<Spool>,
     ) -> Result<()> {
         let data = streaming::event_data(&event)?;
-        let mut prefix = [0; 6];
-        let n = data.payload.reader().read(&mut prefix)?;
-        if &prefix[..n] == b"[DONE]" {
-            self.terminal = true;
-        }
         let mut edits = Edits::new();
         if let Ok(info) = streaming::index(&data.payload, None) {
             let kind = text(&info.values["type"]);
+            if let Some(outcome) =
+                super::status::terminal_outcome(text(&p.record["protocol"]), kind)
+            {
+                let error = outcome == "stream_error";
+                if error || !self.error {
+                    self.terminal_event = Some(match kind {
+                        "response.completed" => "response.completed",
+                        "response.failed" => "response.failed",
+                        "response.incomplete" => "response.incomplete",
+                        "message_stop" => "message_stop",
+                        _ => "error",
+                    });
+                }
+                self.terminal = true;
+                self.error |= error;
+            } else if matches!(
+                kind,
+                "response.completed"
+                    | "response.failed"
+                    | "response.incomplete"
+                    | "message_stop"
+                    | "error"
+            ) {
+                p.rules.reasons.insert("unsupported_response_event");
+            }
             let key = format!(
                 "output/{}",
                 info.values["output_index"].as_u64().unwrap_or(0)
@@ -424,11 +445,6 @@ impl Streams {
                 | "response.completed"
                 | "response.failed"
                 | "response.incomplete" => {
-                    let terminal = !matches!(kind, "response.created" | "response.in_progress");
-                    if terminal {
-                        self.terminal = true;
-                        self.error = kind != "response.completed";
-                    }
                     if let Some(response) = node(&info, "response") {
                         let response = streaming::index(&data.payload, Some(response))?;
                         if let Some(output) = node(&response, "output") {
@@ -448,17 +464,12 @@ impl Streams {
                         }
                     }
                 }
-                "message_stop" => self.terminal = true,
-                "error" => {
-                    self.terminal = true;
-                    self.error = true;
-                }
-                "message_start" | "message_delta" | "ping" => {}
+                "message_stop" | "error" | "message_start" | "message_delta" | "ping" => {}
                 _ => {
                     p.rules.reasons.insert("unsupported_response_event");
                 }
             }
-        } else if data.payload.len > 0 && &prefix[..n] != b"[DONE]" {
+        } else if data.payload.len > 0 {
             p.rules.reasons.insert("invalid_sse_event");
         }
         edits.ranges.sort_by_key(|r| r.0);
@@ -482,13 +493,14 @@ impl Streams {
     }
 }
 
-pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, complete: bool) -> Result<()> {
+pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, gap: bool) -> Result<()> {
     let mut streams = Streams {
         groups: BTreeMap::new(),
         names: BTreeMap::new(),
         memory: Reservation::memory(),
         terminal: false,
         error: false,
+        terminal_event: None,
     };
     let mut writer = BodyWriter::new(
         p.store.clone(),
@@ -503,6 +515,7 @@ pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, complete: bool) -> R
     let mut framer = EventFramer::new();
     p.inspect_tools = false;
     p.count_progress = false;
+    let mut unfinished_event = false;
     let result = (|| -> Result<()> {
         loop {
             let n = reader.read(&mut buffer)?;
@@ -521,29 +534,36 @@ pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, complete: bool) -> R
             }
         }
         if let Some(event) = framer.finish()? {
-            let terminal = streams.terminal;
-            streams.event(p, &mut writer, event)?;
-            streams.terminal = terminal;
+            unfinished_event = true;
+            let terminal = (streams.terminal, streams.error, streams.terminal_event);
+            let result = streams.event(p, &mut writer, event);
+            (streams.terminal, streams.error, streams.terminal_event) = terminal;
+            result?;
             p.rules.reasons.insert("incomplete_stream_fragment");
         }
         for key in streams.groups.keys().cloned().collect::<Vec<_>>() {
-            streams.finish(p, &key, complete && streams.terminal && !streams.error)?;
+            streams.finish(
+                p,
+                &key,
+                !gap && !unfinished_event && streams.terminal && !streams.error,
+            )?;
         }
         Ok(())
     })();
     if !streams.terminal {
         p.rules.reasons.insert("missing_terminal_event");
     }
-    if p.record["outcome"] == "completed" {
-        if streams.error {
-            p.record["outcome"] = json!("stream_error");
-        } else if !streams.terminal {
-            p.record["outcome"] = json!("unknown");
-        }
+    let protocol_complete = result.is_ok() && !gap && !unfinished_event && streams.terminal;
+    // Completion needs intact content; a confirmed error remains known even if
+    // a later event is cut off or cannot be stored/processed.
+    if streams.error || protocol_complete {
+        super::status::apply_terminal(&mut p.record, streams.terminal_event.unwrap());
+    } else if p.record["outcome"] == "completed" {
+        p.record["outcome"] = json!("unknown");
     }
     let state = if result.is_err() {
         "gap"
-    } else if complete && streams.terminal {
+    } else if protocol_complete {
         "complete"
     } else {
         "interrupted"
