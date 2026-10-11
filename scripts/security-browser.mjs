@@ -108,12 +108,12 @@ try {
     const sessions = await (await fetch(`${app.url}api/v1/security/sessions?limit=100`)).json();
     const session = sessions.items.find(item => item.identified);
     if (session) sessionRecords = await (await fetch(`${app.url}api/v1/security/audit?session=${session.id}&limit=100`)).json();
-    if (audits.total === 117 && sessionRecords?.items.length === 53 && sessionRecords.items.every(item => ["complete", "partial"].includes(item.inspectionStatus)) && audits.items.every(item => !["pending", "running"].includes(item.inspectionStatus))) break;
+    if (audits.total === 117 && sessionRecords?.items.length === 53 && sessionRecords.items.every(item => ["complete", "limited", "partial"].includes(item.inspectionStatus)) && audits.items.every(item => !["pending", "running"].includes(item.inspectionStatus))) break;
     await delay(100);
   }
   assert.equal(audits.total, 117);
-  assert.equal(audits.items.every(item => ["complete", "partial"].includes(item.inspectionStatus)), true);
-  assert.equal(sessionRecords.items[1].inspectionStatus, "partial", "mixed image/reasoning context honestly reports limited semantic inspection");
+  assert.equal(audits.items.every(item => ["complete", "limited", "partial"].includes(item.inspectionStatus)), true);
+  assert.equal(sessionRecords.items[1].inspectionStatus, "limited", "mixed image/reasoning context honestly reports limited semantic inspection");
   const audit = sessionRecords.items[0];
   const record = (await (await fetch(`${app.url}api/v1/security/audit/${audit.id}`)).json()).record;
   assert.equal(audit.clientModelId, "gpt-5.5");
@@ -487,7 +487,7 @@ try {
   let claudeRecords;
   for (let i = 0; i < 300; i++) {
     claudeRecords = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=cabletidy_claude-main&limit=10`)).json();
-    if (claudeRecords.total === 3 && claudeRecords.items.every(item => ["complete", "partial"].includes(item.inspectionStatus) && !item.inspectionProgress?.active)) break;
+    if (claudeRecords.total === 3 && claudeRecords.items.every(item => ["complete", "limited", "partial"].includes(item.inspectionStatus) && !item.inspectionProgress?.active)) break;
     await delay(100);
   }
   assert.equal(claudeRecords.total, 3);
@@ -569,7 +569,7 @@ try {
     for (let i = 0; i < 300; i++) {
       const latest = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=${claude ? "cabletidy_claude-main" : "cabletidy_relay"}&limit=1`)).json();
       const record = latest.items[0];
-      if (record && !record.inspectionProgress?.active && ["complete", "partial"].includes(record.inspectionStatus)) {
+      if (record && !record.inspectionProgress?.active && ["complete", "limited", "partial"].includes(record.inspectionStatus)) {
         detail = (await (await fetch(`${app.url}api/v1/security/audit/${record.id}`)).json()).record;
         if (detail.requestContent.items[1]?.preview === target) break;
       }
@@ -606,7 +606,7 @@ try {
     for (let i=0;i<300;i++) {
       const latest = await (await fetch(`${app.url}api/v1/security/audit?kind=request&provider=${claude?"cabletidy_claude-main":"cabletidy_relay"}&limit=1`)).json();
       const record = latest.items[0];
-      if (record && !record.inspectionProgress?.active && ["complete","partial"].includes(record.inspectionStatus)) {
+      if (record && !record.inspectionProgress?.active && ["complete","limited","partial"].includes(record.inspectionStatus)) {
         detail = (await (await fetch(`${app.url}api/v1/security/audit/${record.id}`)).json()).record;
         if (detail.responseContent?.total===43) break;
       }

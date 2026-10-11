@@ -174,7 +174,7 @@ AIVSS v0.8 要求 CVSS v4.0 基线，并加入 Agentic 风险放大因素。官�
 | 严重程度 | severity、severityReason | 潜在影响及其分级依据 |
 | 判断可靠性 | confidence、confidenceReason | 支持结论的证据强度 |
 | 证据阶段 | evidenceStage | 观察到输入、调用提议、历史重放、工具结果还是模型返回内容 |
-| 检查完整性 | inspectionStatus、coverageReasons | 支持范围内检查完成、部分完成、跳过或失败 |
+| 检查完整性 | inspectionStatus、coverageReasons、coverageLimitations、inspectionIssues | 支持范围内检查完成、覆盖有限、部分完成、跳过或失败 |
 | 执行情况 | executionStatus | 工具默认 unknown；客户端报告结果也需注明来源 |
 | 网关结果 | requestOutcome、httpStatus | 转发、连接失败、流中断等事实，与风险等级独立 |
 | 处理模式 | mode = record_only | 第一版只记录结果 |
@@ -343,7 +343,7 @@ IPv6 由 `Ipv6Addr` 解析校验而非正则硬凑，因此 Rust 的 `std::colle
 
 1. 接收时以固定页写入匿名临时文件，内容由每文件随机密钥以 ChaCha20-Poly1305 加密，每页使用独立 nonce；密钥只在内存中。请求路由、模型名改写、流式事件重组均从加密暂存读取，不建立完整明文正文缓冲，不把原始凭据写进临时文件。
 2. 请求结束或中断后进入后台队列。先学习结构化 / 内嵌凭据，再逐段执行原始内容检测，把原文、判断依据和敏感位置偏移交给 SQLite worker。跨页模式使用重叠窗口及连续凭据状态；跨 SSE delta 的内容按条目重组后处理。
-3. 规则结果随检查进度分批保存。`inspectionStatus` 为 `pending`、`running`、`complete`、`partial`、`failed` ；存储缺口等完整性记录使用 `skipped`；`inspectionProgress` 提供 `state`、`phase`、`active`、`processedBytes`、`observedBytes`、`updatedAt`。`active` 从正文接收、排队到全部检测与风险批次完成前均为 `true`，最终更新才设为 `false`、`phase: finished`。某阶段失败后可能继续检测其余正文，因此 `failed` 不代表任务已结束；页面对 `failed + active` 显示“部分步骤失败，仍在检测”。接收阶段总量继续增长；检查结束后已扫描字节与捕获字节对齐，语义覆盖不足仍可为 `partial`。这是经过正文扫描的进度，不能解释为所有语义均被识别。
+3. 规则结果随检查进度分批保存。`inspectionStatus` 为 `pending`、`running`、`complete`、`limited`、`partial`、`failed`；存储缺口等完整性记录使用 `skipped`；`inspectionProgress` 提供 `state`、`phase`、`active`、`processedBytes`、`observedBytes`、`updatedAt`。`active` 从正文接收、排队到全部检测与风险批次完成前均为 `true`，最终更新才设为 `false`、`phase: finished`。某阶段失败后可能继续检测其余正文，因此 `failed` 不代表任务已结束；页面对 `failed + active` 显示“部分步骤失败，仍在检测”。接收阶段总量继续增长；检查结束后已扫描字节与捕获字节对齐，只有能力范围限制时为 `limited`，处理缺口仍为 `partial`。这是经过正文扫描的进度，不能解释为所有语义均被识别。
 4. 保存失败或不可解析内容标明缺口，释放临时文件和预算。完整扫描已保留内容不等于支持所有工具、编码、脚本或模型内部语义。长 URL 认证区或令牌前缀无法在检测工作区中确认时保留原文，明确记录检测覆盖不足。
 
 临时文件只保存密文，退出后删除；进程重启不能恢复内存中的密钥，因此不能重启续扫未完成的原始正文。正常退出等待后台检测和持久写入完成。强制退出后，未结束请求恢复为 `unknown`；已结束 HTTP 请求保留原结果，未完成的检测标为 `partial`（已失败的检测保留 `failed`），进度标为失败、`active: false` 并增加 `daemon_restarted`；未封口的正文清单标为 `gap`。已经保存的风险与证据继续保留，任务异常退出也会结束活跃状态。
@@ -370,13 +370,19 @@ IPv6 由 `Ipv6Addr` 解析校验而非正则硬凑，因此 Rust 的 `std::colle
 
 返回包含 `items`、`total`（全部匹配审计记录数）、`riskRecordCount`（其中有关联风险的记录数）、`findingCount`（这些记录的全部关联风险数）、`counts`（按记录最高等级统计）、`nextCursor`、历史配置候选 `providers`、`oldestAtMs` 和 `storage`。行内 `findingCount` 也取实际关联数量。计数覆盖整个筛选范围，不只统计当前页；即使筛选某个分类，发现数仍包含匹配记录的其他分类风险。游标防止新记录插入造成重复翻页，但不是冻结快照，进行中记录、计数和保留范围可以变化。时间以 UTC 写入，页面按浏览器时区显示时区名称。
 
-会话列表接受相同筛选参数，返回 `total`（会话 / 独立入口数）、`recordCount`、`riskSessionCount`、`findingCount`、`items`、`nextCursor`、`providers`、`oldestAtMs` 与 `storage`。每个会话包含起止观察时间、请求累计耗时、请求数、风险记录数、异常数、进行中数与未完整检查数。按最后一条请求的序号倒序分页。活跃会话新增请求后排序可能改变，列表不是冻结快照，可手动刷新。
+会话列表接受相同筛选参数，返回 `total`（会话 / 独立入口数）、`recordCount`、`riskSessionCount`、`findingCount`、`items`、`nextCursor`、`providers`、`oldestAtMs` 与 `storage`。每个会话包含起止观察时间、请求累计耗时、请求数、风险记录数、异常数、进行中数、未完整检查数 `incompleteCount` 与覆盖有限数 `limitedCount`。覆盖有限的已结束检查不计入未完整检查数。按最后一条请求的序号倒序分页。活跃会话新增请求后排序可能改变，列表不是冻结快照，可手动刷新。
 
 `session=<key>` 用于两个列表接口，查询全部已保留会话内容，不应用默认 24 小时时间窗；显式会话查询的 `hours` 也不限制该会话。审计请求列表此时按序号升序，游标取上一页末项；其余筛选仍有效。两个接口的 `session` 均接受原请求 UUID，并解析到该请求当前的归组键；响应的 `sessionId` 返回此次查询使用的归组键（未传 `session` 时为 null）。原请求已被清理且无法解析时返回空列表，页面显示未找到或已过期。会话索引使用已有 JSON 元数据的 SQLite 表达式索引，不重写旧正文。
 
 参数无效返回 400；详情不存在或被清理返回 404；存储忙、损坏或不可用返回 503。读取不会产生新的审计记录。
 
 请求结果 `outcome` 与检查状态分开：`started` / `streaming` 表示尚未结束；完成结果包括 `completed`、`local_error`、`upstream_error`、`connection_error`、`stream_error`、`interrupted`、`unknown`。`httpStatus` 在有上游响应时为其状态，否则为本地返回状态；HTTP 200 中的协议错误仍可为 `stream_error`。这些都不表示工具已执行。CableTidy 自身的配置操作不生成记录；Agent 请求仍保留当时的配置修订用于追溯。
+
+流式请求按完整的协议结束事件确认结果：`response.completed`、`message_stop` 或 `[DONE]` 确认完成；`response.failed`、`response.incomplete`、`error` 确认响应流错误。客户端在结束事件后关闭连接、未继续读取 HTTP EOF，不再导致“请求中断”。`responseTerminalEvent` 保存判定依据，`responseTransportState` 独立保存连接接收状态（`complete` / `interrupted` / `error` / `not_observed`）。HTTP 错误仍保留 `upstream_error`；工具项完成事件、正文中的结束事件字符串、未闭合事件或留存缺口都不能证明响应完整。正常 EOF 但缺少协议结束事件为 `unknown`，结束事件前取消仍为 `interrupted`。
+
+检查状态区分任务进度、运行缺口与能力范围：`pending` / `running` 表示检查尚未结束，`failed` 表示检测任务失败，`partial` 表示正文缺失、事件不完整、解析或资源不足等导致检查不完整，`limited` 表示已完成支持范围内检查但包含明确的能力限制，`complete` 表示本次没有记录额外限制，`skipped` 用于仅操作审计。加密或非文本内容、推理语义、未知工具、动态脚本等归入 `coverageLimitations`，页面显示“已检查（覆盖有限）”；运行缺口归入 `inspectionIssues` 并显示警告，两者可同时存在。原 `coverageReasons` 保留合并列表用于兼容和溯源。未知原因默认作为检查缺口，避免新的失败原因被当成正常限制；这些状态均不保证内容安全。
+
+启动时对旧记录进行一次状态修正（`statusVersion = 1`）：仅在请求正文完整、响应分段连续且长度一致、原文快照保留完整结束事件时，将误判中断的响应改为对应协议结果，修正响应清单状态并移除过时的 `body_not_complete`。缺少响应正文、保存缺口、事件未闭合或检测失败的记录继续保留异常状态。能力限制单独重新分类；响应正文、字节位置、标注和风险发现不重新生成或改写，重复启动不重复迁移。
 
 ### 9.4 正文与证据接口
 

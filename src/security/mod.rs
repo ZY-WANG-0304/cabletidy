@@ -5,6 +5,7 @@ mod response;
 mod rules;
 mod session;
 mod sse;
+mod status;
 pub mod store;
 
 use crate::{
@@ -292,6 +293,15 @@ impl Audit {
         s.request.seal();
         s.response.seal();
         s.record["outcome"] = json!(outcome);
+        s.record["responseTransportState"] = json!(if s.response.complete {
+            "complete"
+        } else if outcome == "stream_error" {
+            "error"
+        } else if s.response.started {
+            "interrupted"
+        } else {
+            "not_observed"
+        });
         s.record["finishedAt"] = json!(config::now());
         s.record["durationMs"] = json!(self.started.elapsed().as_millis());
         s.record["observedBytes"] = json!(s.request.observed + s.response.observed);
