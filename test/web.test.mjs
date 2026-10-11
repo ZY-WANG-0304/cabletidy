@@ -44,8 +44,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
   let controls = [];
   let persisted = clone(config);
   const location = new URL(options.url || "http://test/");
-  const historyEntries = [{ url: location.href, state: null }];
-  let historyIndex = 0;
+  const historyEntries = options.historyEntries || [{ url: location.href, state: null }];
+  let historyIndex = historyEntries.length - 1;
   let navigation = Promise.resolve();
   const browserHistory = {
     get state() { return historyEntries[historyIndex].state; },
@@ -232,6 +232,77 @@ test("audit status displays unlimited retention and storage without default fall
   assert.match(app.node("#page-content").innerHTML, /保存周期不设上限/);
   assert.match(app.node("#page-content").innerHTML, /存储不设上限/);
   assert.doesNotMatch(app.node("#page-content").innerHTML, /保留 30 天/);
+});
+
+function mountSettingsEditor(app) {
+  const page = app.node("#page-content");
+  let current;
+  const makeForm = () => {
+    const audit = app.read("state.config.audit");
+    const inputs = [
+      inputNode("retentionDays", String(audit.retentionDays ?? 30), { type: "number" }),
+      inputNode("retentionUnlimited", "on", { type: "checkbox", checked: audit.retentionDays === null }),
+      inputNode("budgetMiB", String(audit.budgetBytes === null ? 128 : audit.budgetBytes / 1048576), { type: "number" }),
+      inputNode("storageUnlimited", "on", { type: "checkbox", checked: audit.budgetBytes === null }),
+    ];
+    const form = formNode("audit-settings-form");
+    const cleanup = { hidden: true };
+    form.querySelector = selector => selector === "[data-form-feedback]" ? form.feedback
+      : selector === "#audit-settings-cleanup" ? cleanup
+      : inputs.find(input => selector === `[name="${input.name}"]`) || null;
+    form.querySelectorAll = selector => selector === "input, select, textarea" ? inputs : [];
+    form.replaceWith = replacement => { current = replacement; };
+    Object.defineProperty(form, "fields", { get: () => Object.fromEntries(inputs
+      .filter(input => !input.disabled && (input.type !== "checkbox" || input.checked))
+      .map(input => [input.name, input.value])) });
+    return form;
+  };
+  app.read('state.page = "settings"');
+  Object.defineProperty(page, "innerHTML", { configurable: true, set: () => { current = makeForm(); } });
+  page.querySelectorAll = selector => selector === "form" ? [current] : [];
+  page.querySelector = selector => selector === "#audit-settings-form" ? current : null;
+  app.read("render()");
+  return { form: () => current, input: name => current.querySelector(`[name="${name}"]`) };
+}
+
+for (const [key, name] of [["retentionDays", "retentionDays"], ["budgetBytes", "budgetMiB"]]) {
+  test(`${key} number and unlimited edits conflict as one setting and remain blocked until reloaded`, async () => {
+    const app = await controller();
+    const editor = mountSettingsEditor(app);
+    editor.input(name).value = "7";
+    app.externalUpdate(config => { config.audit[key] = null; });
+    const draft = editor.form();
+    await app.submit(draft);
+    assert.match(draft.feedback.innerHTML, /其他窗口变更/);
+    const attempts = app.requests.filter(({ url }) => url.endsWith("/config/commit")).length;
+    for (let i = 0; i < 2; i++) {
+      await app.action("refresh");
+      assert.equal(editor.form(), draft);
+      assert.equal(editor.input(name).value, "7");
+      assert.equal(editor.input(name).disabled, false);
+      assert.match(draft.feedback.innerHTML, /冲突.*暂停保存/);
+      await app.submit(draft);
+      assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, attempts);
+    }
+    await app.action("reload-form", { closest: () => draft });
+    assert.equal(editor.input(name).disabled, true);
+    assert.equal(app.edited(editor.form()), false);
+    assert.equal(app.persisted().audit[key], null);
+  });
+}
+
+test("settings refresh merges independent limits including a remote unlimited edit", async () => {
+  const app = await controller();
+  const editor = mountSettingsEditor(app);
+  editor.input("retentionDays").value = "7";
+  app.externalUpdate(config => { config.audit.budgetBytes = null; });
+  await app.action("refresh");
+  assert.equal(editor.input("retentionDays").value, "7");
+  assert.equal(editor.input("storageUnlimited").checked, true);
+  assert.equal(editor.input("budgetMiB").disabled, true);
+  assert.equal(editor.form().feedback, null);
+  await app.submit(editor.form());
+  assert.deepEqual(app.persisted().audit, { retentionDays: 7, budgetBytes: null });
 });
 
 test("security page filters, paginates and renders evidence as text without control actions", async () => {
@@ -1670,6 +1741,48 @@ test("confirmed navigation proceeds, while reverted edits need no confirmation",
   app.read('navigatePage("overview")');
   assert.equal(app.read("state.page"), "overview");
   assert.equal(app.confirmations.length, 1);
+});
+
+for (const direction of ["back", "forward"]) {
+  for (const accept of [false, true]) {
+    test(`browser ${direction} ${accept ? "discards a settings draft only after confirmation" : "keeps the settings URL and draft when cancelled"}`, async () => {
+      const app = await controller(undefined, { confirmLeave: accept });
+      app.read('navigatePage("settings")');
+      app.read('navigatePage("security")');
+      await setImmediate();
+      await app.back();
+      const input = inputNode("retentionDays", "30", { type: "number" });
+      const form = mountTrackedForm(app, "audit-settings-form", [input]);
+      input.value = "7";
+      await app[direction]();
+      assert.equal(app.confirmations.length, 1);
+      assert.equal(app.read("state.page"), accept ? (direction === "back" ? "overview" : "security") : "settings");
+      assert.equal(app.read("window.location.hash"), accept ? (direction === "back" ? "" : "#security") : "#settings");
+      if (!accept) {
+        assert.equal(input.value, "7");
+        assert.equal(app.edited(form), true);
+      }
+    });
+  }
+}
+
+test("cancelling back to an older history entry preserves the settings draft without reloading", async () => {
+  const app = await controller(undefined, {
+    confirmLeave: false, url: "http://test/#settings",
+    historyEntries: [
+      { url: "http://test/", state: { page: "overview" } },
+      { url: "http://test/#settings", state: { page: "settings" } },
+    ],
+  });
+  const input = inputNode("retentionDays", "30", { type: "number" });
+  const form = mountTrackedForm(app, "audit-settings-form", [input]);
+  input.value = "7";
+  await app.back();
+  assert.equal(app.confirmations.length, 1);
+  assert.equal(app.read("state.page"), "settings");
+  assert.equal(app.read("window.location.hash"), "#settings");
+  assert.equal(input.value, "7");
+  assert.equal(app.edited(form), true);
 });
 
 test("clicking the active navigation page does not rerender or discard input", async () => {

@@ -430,7 +430,7 @@ fn open(path: &Path, recover: bool, settings: AuditSettings) -> Result<Connectio
         restore_security_statuses(&db)?;
     }
     apply_page_limit(&db, settings)?;
-    maintain(&db, path, settings)?;
+    maintain(&db, settings)?;
     Ok(db)
 }
 
@@ -649,11 +649,19 @@ fn body_budget(settings: AuditSettings) -> Option<u64> {
 fn apply_page_limit(db: &Connection, settings: AuditSettings) -> Result<()> {
     let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
     // Reserve room for WAL and metadata; remove the old fixed SQLite cap when unlimited.
-    let pages = settings
+    let mut pages = settings
         .budget_bytes
         .map(|bytes| bytes * 3 / 4 / page_size)
         .unwrap_or(4_294_967_294)
         .clamp(1, 4_294_967_294);
+    let current: u64 = db.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    if current >= pages {
+        // A lowered limit must leave room for existing records to finish. Body
+        // writes and new records still check their live-page budgets separately.
+        pages = current
+            .saturating_add((MAX_RECORD as u64 * 4).div_ceil(page_size))
+            .min(4_294_967_294);
+    }
     db.pragma_update(None, "max_page_count", pages)?;
     Ok(())
 }
@@ -691,7 +699,7 @@ pub(super) fn reclaim_body_pages(
     Ok(true)
 }
 
-fn maintain(db: &Connection, path: &Path, settings: AuditSettings) -> Result<()> {
+fn maintain(db: &Connection, settings: AuditSettings) -> Result<()> {
     if let Some(days) = settings.retention_days {
         let age = days.saturating_mul(86_400_000).min(i64::MAX as u64) as i64;
         let cutoff = chrono::Utc::now().timestamp_millis().saturating_sub(age);
@@ -699,30 +707,28 @@ fn maintain(db: &Connection, path: &Path, settings: AuditSettings) -> Result<()>
     }
     reclaim_body_pages(db, None, 0, settings)?;
     compact(db)?;
-    if let Some(budget) = settings.budget_bytes {
-        while disk_bytes(path) > budget * 3 / 4 {
-            let before = disk_bytes(path);
-            compact(db)?;
-            if disk_bytes(path) < before {
-                continue;
-            }
-            if prune_completed(db, None)? == 0 {
-                break;
-            }
-        }
+    if settings.budget_bytes.is_some() {
         apply_page_limit(db, settings)?;
     }
     Ok(())
 }
 
 fn compact(db: &Connection) -> Result<()> {
+    // Readers can pin obsolete WAL frames. Defer their reclamation without
+    // treating the file size as live data or creating more vacuum frames.
+    let busy: i64 = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+    if busy != 0 {
+        return Ok(());
+    }
     // SQLite yields one row per vacuumed page. Drain them to reclaim the requested pages.
     let mut statement = db.prepare("PRAGMA incremental_vacuum(2048)")?;
     let mut pages = statement.query([])?;
     while pages.next()?.is_some() {}
     drop(pages);
     drop(statement);
-    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+    db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    })?;
     Ok(())
 }
 
@@ -1249,7 +1255,7 @@ fn worker(
                 }
                 let ok = db.as_ref().is_some_and(|db| {
                     apply_page_limit(db, settings)
-                        .and_then(|_| maintain(db, &path, settings))
+                        .and_then(|_| maintain(db, settings))
                         .is_ok()
                 });
                 update_health(&health, &path, ok, "audit_maintenance_failed");
@@ -1282,13 +1288,7 @@ fn worker(
                             .budget_bytes
                             .is_some_and(|budget| disk_bytes(&path) > budget * 3 / 4)
                         {
-                            maintain(db, &path, settings)?;
-                        }
-                        if settings
-                            .budget_bytes
-                            .is_some_and(|budget| disk_bytes(&path) > budget)
-                        {
-                            bail!("audit_capacity");
+                            maintain(db, settings)?;
                         }
                         persist_body(db, &audit_id, &value, settings)
                     });
@@ -1305,9 +1305,7 @@ fn worker(
                 let _ = done.send(result.is_ok());
             }
             Job::Flush(done) => {
-                let ok = db
-                    .as_ref()
-                    .is_some_and(|db| maintain(db, &path, settings).is_ok());
+                let ok = db.as_ref().is_some_and(|db| maintain(db, settings).is_ok());
                 update_health(&health, &path, ok, "audit_maintenance_failed");
                 let _ = done.send(());
             }
@@ -1316,7 +1314,7 @@ fn worker(
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
                     .and_then(|db| {
-                        maintain(db, &path, settings)?;
+                        maintain(db, settings)?;
                         read(db, query)
                     });
                 update_health(&health, &path, result.is_ok(), "audit_read_failed");
@@ -1335,13 +1333,18 @@ fn worker(
                                 .budget_bytes
                                 .is_some_and(|budget| disk_bytes(&path) > budget * 3 / 4)
                         {
-                            maintain(db, &path, settings)?;
+                            maintain(db, settings)?;
                         }
-                        if settings
-                            .budget_bytes
-                            .is_some_and(|budget| disk_bytes(&path) > budget)
-                        {
-                            bail!("audit_capacity");
+                        if let Some(budget) = settings.budget_bytes {
+                            if used_bytes(db)? > budget * 3 / 4
+                                && !db.query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM audit WHERE id=?)",
+                                    [record["id"].as_str()],
+                                    |r| r.get::<_, bool>(0),
+                                )?
+                            {
+                                bail!("audit_capacity");
+                            }
                         }
                         persist(db, record)
                     });
@@ -1415,7 +1418,6 @@ mod tests {
         }
         maintain(
             &db,
-            &path,
             AuditSettings {
                 retention_days: Some(120),
                 ..unlimited
@@ -1424,7 +1426,6 @@ mod tests {
         .unwrap();
         maintain(
             &db,
-            &path,
             AuditSettings {
                 retention_days: Some(7),
                 ..unlimited
@@ -1504,7 +1505,7 @@ mod tests {
                 ..unlimited
             };
             apply_page_limit(&db, settings).unwrap();
-            maintain(&db, &path, settings).unwrap();
+            maintain(&db, settings).unwrap();
             assert!(reclaim_body_pages(&db, Some("current"), 32768, settings).unwrap());
             assert_eq!(
                 db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
@@ -1565,7 +1566,7 @@ mod tests {
             ..unlimited
         };
         apply_page_limit(&db, limited).unwrap();
-        maintain(&db, &path, limited).unwrap();
+        maintain(&db, limited).unwrap();
         assert_eq!(
             db.query_row("SELECT id FROM audit", [], |r| r.get::<_, String>(0))
                 .unwrap(),
@@ -1582,6 +1583,119 @@ mod tests {
             .query_row("PRAGMA max_page_count", [], |r| r.get(0))
             .unwrap();
         assert_eq!(pages, 192);
+    }
+
+    #[tokio::test]
+    async fn capacity_changes_preserve_history_while_a_reader_holds_the_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let store = Store::start(dir.path(), unlimited);
+        store.flush().await;
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM audit;")
+            .unwrap();
+        for i in 0..80 {
+            assert!(store.write_analysis(record(&format!("history-{i}"), "completed")));
+        }
+        store.flush().await;
+        let limited = AuditSettings {
+            budget_bytes: Some(1024 * 1024),
+            ..unlimited
+        };
+        assert!(disk_bytes(&path) > limited.budget_bytes.unwrap());
+        store.configure(limited).await;
+        let db = Connection::open(&path).unwrap();
+        assert!(used_bytes(&db).unwrap() < body_budget(limited).unwrap());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            80
+        );
+        assert!(store.write_analysis(record("during-read", "completed")));
+        store.flush().await;
+        assert_eq!(store.status()["failedWrites"], 0);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            81
+        );
+        reader.execute_batch("COMMIT").unwrap();
+        store.flush().await;
+        assert!(disk_bytes(&path) < limited.budget_bytes.unwrap());
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            81
+        );
+    }
+
+    #[tokio::test]
+    async fn lowering_capacity_allows_active_records_to_finish_and_writing_to_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let store = Store::start(dir.path(), unlimited);
+        let mut active = record("active", "streaming");
+        active["inspectionStatus"] = json!("running");
+        active["inspectionProgress"] = json!({"active":true});
+        assert!(store.write_analysis(active.clone()));
+        assert!(store.body("active", json!({"id":"request","state":"receiving"})));
+        for i in 0..48 {
+            let start = i * 32768;
+            assert!(store.body("active", json!({"id":"request","start":start,"end":start+32768,"content":"x".repeat(32768),"annotations":[]})));
+        }
+        store.flush().await;
+        let limited = AuditSettings {
+            budget_bytes: Some(1024 * 1024),
+            ..unlimited
+        };
+        store.configure(limited).await;
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT outcome FROM audit WHERE id='active'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "streaming"
+        );
+        assert!(store.body("active", json!({"id":"request","state":"complete","byteLength":48*32768,"note":"final metadata".repeat(400)})));
+        active["outcome"] = json!("completed");
+        active["inspectionStatus"] = json!("complete");
+        active["inspectionProgress"] = json!({"active":false,"state":"complete"});
+        active["requestPreview"] = json!("final metadata".repeat(2000));
+        assert!(store.write_analysis(active));
+        store.flush().await;
+        assert_eq!(store.status()["failedWrites"], 0);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit WHERE id='active'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit_body_chunks", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(store.write_analysis(record("new", "completed")));
+        store.flush().await;
+        assert_eq!(store.status()["failedWrites"], 0);
+        assert_eq!(
+            db.query_row("SELECT outcome FROM audit WHERE id='new'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "completed"
+        );
+        assert!(disk_bytes(&path) < limited.budget_bytes.unwrap());
     }
 
     #[tokio::test]
@@ -2423,7 +2537,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(prune_completed(&db, Some("another-request")).unwrap(), 0);
-        maintain(&db, &path, AuditSettings::default()).unwrap();
+        maintain(&db, AuditSettings::default()).unwrap();
         let detail = read(
             &db,
             Query {
@@ -2874,7 +2988,7 @@ mod tests {
             }
             db.execute("UPDATE audit SET at=0 WHERE id='legacy'", [])
                 .unwrap();
-            maintain(&db, &path, AuditSettings::default()).unwrap();
+            maintain(&db, AuditSettings::default()).unwrap();
             assert_eq!(
                 db.query_row("SELECT count(*) FROM audit_snapshots", [], |r| r
                     .get::<_, i64>(0))

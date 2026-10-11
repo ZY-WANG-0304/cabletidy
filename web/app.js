@@ -13,6 +13,9 @@ let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
 let renderedTraceTab = null;
+let navigationIndex = window.history.state?.navigationIndex || 0;
+let navigationUrl = window.location.href;
+let restoringNavigation = false;
 const securityEvidenceCache = new WeakMap();
 
 // Explicit product guidance; catalog visibility does not indicate authorization.
@@ -272,6 +275,21 @@ function mergeFormFields(base, local, remote) {
   return merged;
 }
 
+function mergeAuditSettingsFields(base, local, remote) {
+  const merged = [];
+  for (const names of [["retentionDays", "retentionUnlimited"], ["budgetMiB", "storageUnlimited"]]) {
+    const groups = [base, local, remote].map(fields => fields.filter(field => names.includes(field[0])));
+    const value = fields => fields.find(field => field[0] === names[1])[4]
+      ? null : Number(fields.find(field => field[0] === names[0])[4]);
+    const [before, ours, theirs] = groups.map(value);
+    // Each number and its unlimited checkbox represent one configuration value.
+    if (Object.is(ours, before)) merged.push(...groups[2]);
+    else if (Object.is(theirs, before) || Object.is(ours, theirs)) merged.push(...groups[1]);
+    else return null;
+  }
+  return merged;
+}
+
 function restoreFormChanges(form, replacement) {
   const baseline = formBaselines.get(form);
   const latest = formBaselines.get(replacement);
@@ -290,8 +308,9 @@ function restoreFormChanges(form, replacement) {
   const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
   const sameStructure = baseline !== undefined && (suiteModels
     || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
+  const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields : mergeFormFields;
   const merged = sameContext && sameStructure
-    ? mergeFormFields(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
+    ? merge(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
   const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
     .map((control) => [fieldKey(fieldSnapshot(control)), control]));
   if (!merged || merged.some((field) => !controls.has(fieldKey(field)))) {
@@ -344,13 +363,18 @@ function confirmPageLeave() {
   return !hasUnsavedChanges() || window.confirm("有未保存的修改，确定放弃并离开？");
 }
 
+function pushNavigation(navigation, url) {
+  window.history.pushState({ ...navigation, navigationIndex: ++navigationIndex }, "", url);
+  navigationUrl = window.location.href;
+}
+
 function navigatePage(page) {
   if (state.busy || !state.config || page === state.page || !confirmPageLeave()) return;
   if (page === "security" && state.page.startsWith("security-")) { returnSecurityList(); return; }
   if (state.page === "security") saveSecurityList();
   if (["security", "settings"].includes(page) || state.page.startsWith("security") || state.page === "settings") {
     window.history.replaceState({ ...window.history.state, page: state.page }, "");
-    window.history.pushState({ page, ...(page === "security" ? { list: securityListState() } : {}) }, "", ["security", "settings"].includes(page) ? `#${page}` : window.location.pathname + window.location.search);
+    pushNavigation({ page, ...(page === "security" ? { list: securityListState() } : {}) }, ["security", "settings"].includes(page) ? `#${page}` : window.location.pathname + window.location.search);
   }
   state.security.detailSequence++;
   state.security.bodySequence = (state.security.bodySequence || 0) + 1;
@@ -360,7 +384,27 @@ function navigatePage(page) {
 }
 
 window.history.scrollRestoration = "manual";
-window.addEventListener("popstate", () => state.config ? restoreSecurityNavigation() : undefined);
+window.history.replaceState({ ...window.history.state, navigationIndex }, "");
+window.addEventListener("popstate", event => {
+  if (!state.config) return;
+  if (restoringNavigation) { restoringNavigation = false; return; }
+  const nextIndex = event.state?.navigationIndex || 0;
+  if (state.busy || !confirmPageLeave()) {
+    // popstate fires after the URL changes. Return to the current entry on cancel.
+    const offset = navigationIndex - nextIndex;
+    if (offset) {
+      restoringNavigation = true;
+      window.history.go(offset);
+    } else {
+      // Entries from an older app may lack an index; go(0) would reload the draft.
+      pushNavigation({ page: state.page }, navigationUrl);
+    }
+    return;
+  }
+  navigationIndex = nextIndex;
+  navigationUrl = window.location.href;
+  return restoreSecurityNavigation();
+});
 
 pageContent.addEventListener("click", (event) => {
   const element = event.target.closest("[data-action], [data-page]");
@@ -1129,7 +1173,7 @@ function securityListState() {
 
 function saveSecurityList() {
   state.security.listScroll = { x: window.scrollX, y: window.scrollY };
-  window.history.replaceState({ page: "security", list: securityListState() }, "", "#security");
+  window.history.replaceState({ ...window.history.state, page: "security", list: securityListState() }, "", "#security");
 }
 
 async function showSecurityList(list = securityListState()) {
@@ -1147,7 +1191,7 @@ async function showSecurityList(list = securityListState()) {
 
 async function returnSecurityList() {
   if (window.history.state?.returnToSecurityList) { window.history.back(); return; }
-  window.history.pushState({ page: "security", list: securityListState() }, "", "#security");
+  pushNavigation({ page: "security", list: securityListState() }, "#security");
   await showSecurityList();
 }
 
@@ -2109,7 +2153,7 @@ async function securityAction(action, element) {
   const t = state.trace;
   if (action === "security-session") {
     saveSecurityList();
-    window.history.pushState({ page: "security-session", list: securityListState(), returnToSecurityList: true }, "", `#security/session/${encodeURIComponent(element.dataset.id)}`);
+    pushNavigation({ page: "security-session", list: securityListState(), returnToSecurityList: true }, `#security/session/${encodeURIComponent(element.dataset.id)}`);
     await loadSecuritySession(element.dataset.id); return;
   }
   if (action === "security-session-refresh") { await loadSecuritySession(t.id, false); return; }
@@ -2158,7 +2202,7 @@ async function securityAction(action, element) {
   if (action === "security-detail") {
     const fromList = state.page === "security";
     if (fromList) saveSecurityList();
-    window.history.pushState({ page: "security-detail", list: securityListState(), returnToSecurityList: fromList }, "", `#security/audit/${encodeURIComponent(element.dataset.id)}`);
+    pushNavigation({ page: "security-detail", list: securityListState(), returnToSecurityList: fromList }, `#security/audit/${encodeURIComponent(element.dataset.id)}`);
     await loadSecurityDetail(element.dataset.id);
     return;
   }

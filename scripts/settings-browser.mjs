@@ -18,6 +18,19 @@ try {
   const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   page.on("pageerror", error => errors.push(error.message));
   const persisted = async () => (await (await fetch(`${app.url}api/v1/config`)).json()).config;
+  const commit = async audit => {
+    const config = await persisted();
+    config.audit = audit;
+    const response = await fetch(`${app.url}api/v1/config/commit`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ baseRevision: config.revision, config }),
+    });
+    assert.equal(response.status, 200);
+  };
+  const refresh = async () => {
+    await page.getByRole("button", { name: "刷新", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector("#refresh-button").disabled);
+  };
   const save = async audit => {
     await page.getByRole("button", { name: "保存设置", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('#audit-settings-form button[type="submit"]').disabled);
@@ -90,8 +103,78 @@ try {
   assert.ok(saveBounds.y + saveBounds.height <= 812, "Save stays within the mobile viewport");
   await page.locator(".toast").last().waitFor({ state: "hidden", timeout: 10000 });
   await page.screenshot({ path: path.join(output, "settings-mobile.png"), fullPage: true });
+
+  const defaults = { retentionDays: 14, budgetBytes: 256 * 1048576 };
+  for (const [key, label, toggle, unit, finite, local, remote] of [
+    ["retentionDays", "保存周期（天）", "保存周期不设上限", 1, 14, 7, 90],
+    ["budgetBytes", "存储上限（MiB）", "存储不设上限", 1048576, 256, 64, 128],
+  ]) {
+    for (const [baseValue, localValue, remoteValue] of [[finite, local, null], [finite, null, remote], [null, local, remote]]) {
+      await commit({ ...defaults, [key]: baseValue === null ? null : baseValue * unit });
+      await refresh();
+      const input = page.getByLabel(label, { exact: true });
+      const unlimited = page.getByLabel(toggle, { exact: true });
+      await unlimited.setChecked(localValue === null);
+      if (localValue !== null) await input.fill(String(localValue));
+      const draft = await input.inputValue();
+      await commit({ ...defaults, [key]: remoteValue === null ? null : remoteValue * unit });
+      await page.getByRole("button", { name: "保存设置", exact: true }).click();
+      await page.getByRole("alert").filter({ hasText: "配置已在其他窗口变更" }).waitFor();
+      await refresh();
+      await page.getByRole("alert").filter({ hasText: "冲突，已暂停保存" }).waitFor();
+      assert.equal(await input.inputValue(), draft);
+      assert.equal(await unlimited.isChecked(), localValue === null);
+      const revision = (await persisted()).revision;
+      await page.getByRole("button", { name: "保存设置", exact: true }).click();
+      assert.equal((await persisted()).revision, revision, "Conflicting settings cannot be submitted");
+      page.once("dialog", dialog => dialog.accept());
+      await page.getByRole("button", { name: "加载最新配置", exact: true }).click();
+      assert.equal(await unlimited.isChecked(), remoteValue === null);
+    }
+
+    await commit(defaults);
+    await refresh();
+    await page.getByLabel(toggle, { exact: true }).check();
+    const agreed = { ...defaults, [key]: null };
+    await commit(agreed);
+    await page.getByRole("button", { name: "保存设置", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "配置已在其他窗口变更" }).waitFor();
+    await refresh();
+    assert.equal(await page.getByRole("alert").count(), 0, "Matching unlimited edits merge without a conflict");
+    await save(agreed);
+  }
+
+  await commit(defaults);
+  await refresh();
+  await page.getByRole("button", { name: "配置套装", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const historyNavigation = async (direction, accept) => {
+    const handled = new Promise(resolve => page.once("dialog", async dialog => {
+      assert.match(dialog.message(), /有未保存的修改/);
+      if (accept) await dialog.accept();
+      else await dialog.dismiss();
+      resolve();
+    }));
+    await page.evaluate(direction => window.history[direction](), direction);
+    await handled;
+    await page.waitForURL(accept ? (direction === "back" ? app.url : `${app.url}#security`) : `${app.url}#settings`);
+  };
+  await page.getByLabel("保存周期（天）", { exact: true }).fill("7");
+  await historyNavigation("back", false);
+  assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "7");
+  await historyNavigation("back", true);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "14");
+  await page.getByRole("button", { name: "审计记录", exact: true }).click();
+  await page.goBack();
+  await page.getByLabel("保存周期（天）", { exact: true }).fill("7");
+  await historyNavigation("forward", false);
+  assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "7");
+  await historyNavigation("forward", true);
+  await page.goBack();
+  assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "14");
   assert.deepEqual(errors, []);
-  console.log("Settings browser checks passed: finite/unlimited combinations, reload, navigation, conflicts, validation, desktop and mobile.");
+  console.log("Settings browser checks passed: finite/unlimited combinations, reload, semantic conflicts, back/forward draft protection, validation, desktop and mobile.");
   console.log(`Screenshots: ${output}`);
 } finally {
   await browser?.close();
