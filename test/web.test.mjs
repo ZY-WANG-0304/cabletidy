@@ -2028,6 +2028,8 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   let html = app.read("renderSecuritySession()");
   assert.match(html, /&lt;script&gt;literal/);
   assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /工具提议/);
+  assert.doesNotMatch(app.read("renderTraceInspector()"), /查看请求与响应原文/);
   assert.match(html, /模型<\/span><strong[^>]*>gpt-5\.5 → &lt;vendor-gpt&gt;<\/strong>/);
   assert.doesNotMatch(html, /<vendor-gpt>/);
   assert.match(app.read("renderTraceInspector()"), /模型<\/dt><dd>gpt-5\.5 → &lt;vendor-gpt&gt;<\/dd>/);
@@ -2044,7 +2046,9 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   assert.equal(app.read("traceItems()[0].id"), "b");
   await app.action("security-trace-select", { dataset: { id: "b" } });
   assert.equal(app.read("state.security.detail.id"), "b");
-  assert.match(app.read("renderTraceInspector()"), /模型<\/dt><dd>未记录 → 未记录<\/dd>/);
+  html = app.read("renderTraceInspector()");
+  assert.match(html, /模型<\/dt><dd>未记录 → 未记录<\/dd>/);
+  assert.doesNotMatch(html, /工具调用提议/);
   assert.equal(app.read("state.page"), "security-session");
   await app.back();
   assert.equal(app.read("state.page"), "security");
