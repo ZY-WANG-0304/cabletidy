@@ -35,6 +35,7 @@
     "test": "node scripts/test.mjs",
     "test:security:browser": "node scripts/build-native.mjs --debug --test && node scripts/security-browser.mjs",
     "test:config:browser": "node scripts/build-native.mjs --debug --test && node scripts/config-transfer-browser.mjs",
+    "test:settings:browser": "node scripts/build-native.mjs --debug --test && node scripts/settings-browser.mjs",
     "test:package": "npm run build && node --test scripts/package-smoke.mjs",
     "test:claude": "node scripts/build-native.mjs --debug --test && node --test scripts/claude-smoke.mjs",
     "check:release": "node scripts/check-release.mjs",

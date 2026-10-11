@@ -1,4 +1,4 @@
-use crate::config::{array, text};
+use crate::config::{array, text, AuditSettings};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -83,6 +83,7 @@ pub(super) fn prepare(
     record: &Value,
     mut items: Vec<Value>,
     dependency: &str,
+    settings: AuditSettings,
 ) -> Result<Value> {
     let id = text(&record["id"]);
     let scope = record["sessionKey"].as_str();
@@ -140,7 +141,7 @@ pub(super) fn prepare(
     let bytes: usize = items.iter().map(|item| item.to_string().len()).sum();
     anyhow::ensure!(bytes <= MAX_INDEX_BYTES, "request_index_budget");
     anyhow::ensure!(
-        super::store::reclaim_body_pages(db, Some(id), bytes as u64 + 16384)?,
+        super::store::reclaim_body_pages(db, Some(id), bytes as u64 + 16384, settings)?,
         "request_index_budget"
     );
     let tx = db.unchecked_transaction()?;
@@ -183,6 +184,7 @@ pub(super) fn save_cache(
     record: &Value,
     dependency: &str,
     entries: &Value,
+    settings: AuditSettings,
 ) -> Result<()> {
     let id = text(&record["id"]);
     let Some(scope) = record["sessionKey"].as_str() else {
@@ -200,7 +202,7 @@ pub(super) fn save_cache(
         return Ok(());
     }
     let bytes = entries.to_string().len();
-    if !super::store::reclaim_body_pages(db, Some(id), bytes as u64 + 16384)? {
+    if !super::store::reclaim_body_pages(db, Some(id), bytes as u64 + 16384, settings)? {
         return Ok(());
     }
     let tx = db.unchecked_transaction()?;

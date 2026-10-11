@@ -179,6 +179,61 @@ function clone(value) {
   return structuredClone(value);
 }
 
+test("top-level settings save finite and independently unlimited audit limits", async () => {
+  const app = await controller(undefined, { url: "http://test/#settings" });
+  assert.equal(app.read("state.page"), "settings");
+  assert.equal(app.node("#page-title").textContent, "设置");
+  assert.match(app.node("#page-content").innerHTML, /settings-row/);
+  const bindings = clone(app.persisted().bindings);
+  for (const [fields, expected] of [
+    [{ retentionDays: "7", budgetMiB: "64" }, { retentionDays: 7, budgetBytes: 64 * 1048576 }],
+    [{ retentionUnlimited: "on", budgetMiB: "256" }, { retentionDays: null, budgetBytes: 256 * 1048576 }],
+    [{ retentionDays: "90", storageUnlimited: "on" }, { retentionDays: 90, budgetBytes: null }],
+    [{ retentionUnlimited: "on", storageUnlimited: "on" }, { retentionDays: null, budgetBytes: null }],
+  ]) {
+    await app.submit(formNode("audit-settings-form", fields));
+    assert.deepEqual(app.persisted().audit, expected);
+    assert.deepEqual(app.persisted().bindings, bindings);
+    assert.equal(app.read("state.page"), "settings");
+  }
+  assert.equal(app.requests.filter(({ url }) => url === "/api/v1/config/commit").length, 4);
+  app.read('navigatePage("overview")');
+  await app.back();
+  assert.equal(app.read("state.page"), "settings");
+});
+
+test("settings validation and revision conflicts preserve the draft without a partial save", async () => {
+  const app = await controller();
+  for (const fields of [
+    { retentionDays: "0", budgetMiB: "128" }, { retentionDays: "1.5", budgetMiB: "128" },
+    { retentionDays: "7", budgetMiB: "" }, { retentionDays: "7", budgetMiB: "0.5" },
+  ]) {
+    const form = formNode("audit-settings-form", fields);
+    await app.submit(form);
+    assert.ok(form.feedback);
+    assert.equal(app.persisted().revision, 0);
+  }
+  assert.equal(app.requests.filter(({ url }) => url === "/api/v1/config/commit").length, 0);
+  app.externalUpdate(config => { config.audit.retentionDays = 90; });
+  const form = formNode("audit-settings-form", { retentionDays: "7", storageUnlimited: "on" });
+  await app.submit(form);
+  assert.match(form.feedback.innerHTML, /配置已在其他窗口变更/);
+  assert.deepEqual(form.fields, { retentionDays: "7", storageUnlimited: "on" });
+  assert.equal(app.persisted().audit.retentionDays, 90);
+});
+
+test("audit status displays unlimited retention and storage without default fallbacks", async () => {
+  const app = await controller(undefined, { onSecurity(url) {
+    if (url.endsWith("/status")) return { body: { storage: { state: "ready", retentionDays: null, budgetBytes: null } } };
+    return { body: { items: [], total: 0, counts: {}, storage: { state: "ready", retentionDays: null, budgetBytes: null } } };
+  } });
+  app.read('navigatePage("security")');
+  await setImmediate();
+  assert.match(app.node("#page-content").innerHTML, /保存周期不设上限/);
+  assert.match(app.node("#page-content").innerHTML, /存储不设上限/);
+  assert.doesNotMatch(app.node("#page-content").innerHTML, /保留 30 天/);
+});
+
 test("security page filters, paginates and renders evidence as text without control actions", async () => {
   const finding = { id: "finding-one", requestId: "request-one", severity: "high", category: "sensitive_data", ruleId: "SEC-SECRET-001", ruleVersion: "1", evidenceStage: "tool_call_proposed", confidence: "low", inspectionStatus: "partial", outcome: "completed", at: "2026-09-26T10:00:00Z", evidence: { location: '<script>alert("x")</script>' } };
   const app = await controller(undefined, { onSecurity(url) {

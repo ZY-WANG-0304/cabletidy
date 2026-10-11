@@ -1,4 +1,4 @@
-use crate::config;
+use crate::config::{self, AuditSettings};
 use anyhow::{bail, Result};
 use rusqlite::{params, params_from_iter, Connection};
 use serde_json::{json, Value};
@@ -10,8 +10,6 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-const RETENTION_DAYS: i64 = 30;
-const BUDGET: u64 = 128 * 1024 * 1024;
 pub(super) const MAX_RECORD: usize = 64 * 1024;
 
 enum Job {
@@ -19,6 +17,7 @@ enum Job {
     Body(String, Value, mpsc::Sender<bool>),
     Query(Query, oneshot::Sender<Result<Value>>),
     Flush(oneshot::Sender<()>),
+    Configure(AuditSettings, oneshot::Sender<()>),
     History(Value, Vec<Value>, String, mpsc::Sender<Result<Value>>),
     InspectionCache(Value, String, Value, mpsc::Sender<Result<()>>),
 }
@@ -191,12 +190,12 @@ impl Store {
         ))?;
         rx.recv()?
     }
-    pub fn start(home: &Path) -> Arc<Self> {
+    pub fn start(home: &Path, settings: AuditSettings) -> Arc<Self> {
         let path = home.join("audit.sqlite3");
         let health = Arc::new(Mutex::new(json!({
             "state":"starting", "droppedWrites":0, "failedWrites":0,
             "lastWrittenAt":null, "lastError":null, "bytes":0,
-            "retentionDays":RETENTION_DAYS, "budgetBytes":BUDGET
+            "retentionDays":settings.retention_days, "budgetBytes":settings.budget_bytes
         })));
         let (sender, receiver) = mpsc::sync_channel(256);
         let (content_sender, content_receiver) = mpsc::sync_channel(4);
@@ -209,7 +208,7 @@ impl Store {
         let content_path = path.clone();
         if std::thread::Builder::new()
             .name("security-audit".into())
-            .spawn(move || worker(path, receiver, worker_health))
+            .spawn(move || worker(path, receiver, worker_health, settings))
             .is_err()
         {
             health.lock().unwrap()["state"] = json!("unavailable");
@@ -322,9 +321,20 @@ impl Store {
             let _ = rx.await;
         }
     }
+
+    pub async fn configure(&self, settings: AuditSettings) {
+        let (tx, rx) = oneshot::channel();
+        let sender = self.sender.clone();
+        if tokio::task::spawn_blocking(move || sender.send(Job::Configure(settings, tx)).is_ok())
+            .await
+            .unwrap_or(false)
+        {
+            let _ = rx.await;
+        }
+    }
 }
 
-fn open(path: &Path, recover: bool) -> Result<Connection> {
+fn open(path: &Path, recover: bool, settings: AuditSettings) -> Result<Connection> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
@@ -347,7 +357,7 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
     db.execute_batch(
         "PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA wal_autocheckpoint=256;
-        PRAGMA journal_size_limit=1048576; PRAGMA max_page_count=24576;
+        PRAGMA journal_size_limit=1048576;
         BEGIN;
         CREATE TABLE IF NOT EXISTS audit (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, at INTEGER NOT NULL,
@@ -419,7 +429,8 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
         restore_codex_sessions(&db)?;
         restore_security_statuses(&db)?;
     }
-    maintain(&db, path)?;
+    apply_page_limit(&db, settings)?;
+    maintain(&db, path, settings)?;
     Ok(db)
 }
 
@@ -629,8 +640,22 @@ fn disk_bytes(path: &Path) -> u64 {
     .sum()
 }
 
-fn body_budget() -> u64 {
-    crate::streaming::budget("CABLETIDY_TEST_AUDIT_BODY_BYTES", 80 * 1024 * 1024)
+fn body_budget(settings: AuditSettings) -> Option<u64> {
+    settings
+        .budget_bytes
+        .map(|bytes| crate::streaming::budget("CABLETIDY_TEST_AUDIT_BODY_BYTES", bytes * 5 / 8))
+}
+
+fn apply_page_limit(db: &Connection, settings: AuditSettings) -> Result<()> {
+    let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+    // Reserve room for WAL and metadata; remove the old fixed SQLite cap when unlimited.
+    let pages = settings
+        .budget_bytes
+        .map(|bytes| bytes * 3 / 4 / page_size)
+        .unwrap_or(4_294_967_294)
+        .clamp(1, 4_294_967_294);
+    db.pragma_update(None, "max_page_count", pages)?;
+    Ok(())
 }
 
 fn used_bytes(db: &Connection) -> Result<u64> {
@@ -651,10 +676,14 @@ pub(super) fn reclaim_body_pages(
     db: &Connection,
     protected: Option<&str>,
     additional: u64,
+    settings: AuditSettings,
 ) -> Result<bool> {
+    let Some(budget) = body_budget(settings) else {
+        return Ok(true);
+    };
     // Use the same live-page budget for maintenance and body writes. Free pages
     // can be reused immediately without waiting for database or WAL truncation.
-    while used_bytes(db)?.saturating_add(additional) > body_budget() {
+    while used_bytes(db)?.saturating_add(additional) > budget {
         if prune_completed(db, protected)? == 0 {
             return Ok(false);
         }
@@ -662,15 +691,38 @@ pub(super) fn reclaim_body_pages(
     Ok(true)
 }
 
-fn maintain(db: &Connection, path: &Path) -> Result<()> {
-    let cutoff = chrono::Utc::now().timestamp_millis() - RETENTION_DAYS * 86_400_000;
-    db.execute("DELETE FROM audit WHERE at < ? AND outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND coalesce(json_extract(data,'$.inspectionProgress.active'),0)=0", [cutoff])?;
-    reclaim_body_pages(db, None, 0)?;
-    db.execute_batch("PRAGMA incremental_vacuum(2048); PRAGMA wal_checkpoint(TRUNCATE);")?;
-    if disk_bytes(path) > BUDGET * 3 / 4 {
-        prune_completed(db, None)?;
-        db.execute_batch("PRAGMA incremental_vacuum(2048); PRAGMA wal_checkpoint(TRUNCATE);")?;
+fn maintain(db: &Connection, path: &Path, settings: AuditSettings) -> Result<()> {
+    if let Some(days) = settings.retention_days {
+        let age = days.saturating_mul(86_400_000).min(i64::MAX as u64) as i64;
+        let cutoff = chrono::Utc::now().timestamp_millis().saturating_sub(age);
+        db.execute("DELETE FROM audit WHERE at < ? AND outcome NOT IN ('started','streaming') AND inspection NOT IN ('pending','running') AND coalesce(json_extract(data,'$.inspectionProgress.active'),0)=0", [cutoff])?;
     }
+    reclaim_body_pages(db, None, 0, settings)?;
+    compact(db)?;
+    if let Some(budget) = settings.budget_bytes {
+        while disk_bytes(path) > budget * 3 / 4 {
+            let before = disk_bytes(path);
+            compact(db)?;
+            if disk_bytes(path) < before {
+                continue;
+            }
+            if prune_completed(db, None)? == 0 {
+                break;
+            }
+        }
+        apply_page_limit(db, settings)?;
+    }
+    Ok(())
+}
+
+fn compact(db: &Connection) -> Result<()> {
+    // SQLite yields one row per vacuumed page. Drain them to reclaim the requested pages.
+    let mut statement = db.prepare("PRAGMA incremental_vacuum(2048)")?;
+    let mut pages = statement.query([])?;
+    while pages.next()?.is_some() {}
+    drop(pages);
+    drop(statement);
+    db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
     Ok(())
 }
 
@@ -714,7 +766,12 @@ fn persist(db: &mut Connection, mut record: Value) -> Result<()> {
     Ok(())
 }
 
-fn persist_body(db: &Connection, audit: &str, value: &Value) -> Result<()> {
+fn persist_body(
+    db: &Connection,
+    audit: &str,
+    value: &Value,
+    settings: AuditSettings,
+) -> Result<()> {
     let id = config::text(&value["id"]);
     if let Some(content) = value["content"].as_str() {
         // Reuse the existing column; tagged annotations distinguish original-content
@@ -726,7 +783,7 @@ fn persist_body(db: &Connection, audit: &str, value: &Value) -> Result<()> {
         let page_size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
         // Leave database pages available for terminal states, findings and gap records.
         let additional = (content.len() + redactions.len()) as u64 + 4 * page_size;
-        if !reclaim_body_pages(db, Some(audit), additional)? {
+        if !reclaim_body_pages(db, Some(audit), additional, settings)? {
             bail!("audit_body_budget");
         }
         let changed=db.execute("INSERT OR IGNORE INTO audit_body_chunks(audit_id,snapshot_id,start,end,content,redactions)
@@ -1164,32 +1221,56 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
     }
 }
 
-fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>>) {
-    let mut db = open(&path, true).ok();
+fn worker(
+    path: PathBuf,
+    receiver: mpsc::Receiver<Job>,
+    health: Arc<Mutex<Value>>,
+    mut settings: AuditSettings,
+) {
+    let mut db = open(&path, true, settings).ok();
     let mut recover_pending = db.is_none();
     update_health(&health, &path, db.is_some(), "audit_open_failed");
     let mut writes = 0;
     let mut reported_loss = 0;
     while let Ok(job) = receiver.recv() {
         if db.is_none() {
-            db = open(&path, recover_pending).ok();
+            db = open(&path, recover_pending, settings).ok();
             if db.is_some() {
                 recover_pending = false;
             }
         }
         match job {
+            Job::Configure(next, done) => {
+                settings = next;
+                {
+                    let mut h = health.lock().unwrap();
+                    h["retentionDays"] = json!(settings.retention_days);
+                    h["budgetBytes"] = json!(settings.budget_bytes);
+                }
+                let ok = db.as_ref().is_some_and(|db| {
+                    apply_page_limit(db, settings)
+                        .and_then(|_| maintain(db, &path, settings))
+                        .is_ok()
+                });
+                update_health(&health, &path, ok, "audit_maintenance_failed");
+                let _ = done.send(());
+            }
             Job::History(record, items, dependency, done) => {
                 let result = db
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
-                    .and_then(|db| super::history::prepare(db, &record, items, &dependency));
+                    .and_then(|db| {
+                        super::history::prepare(db, &record, items, &dependency, settings)
+                    });
                 let _ = done.send(result);
             }
             Job::InspectionCache(record, dependency, entries, done) => {
                 let result = db
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
-                    .and_then(|db| super::history::save_cache(db, &record, &dependency, &entries));
+                    .and_then(|db| {
+                        super::history::save_cache(db, &record, &dependency, &entries, settings)
+                    });
                 let _ = done.send(result);
             }
             Job::Body(audit_id, value, done) => {
@@ -1197,13 +1278,19 @@ fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
                     .and_then(|db| {
-                        if disk_bytes(&path) > BUDGET * 3 / 4 {
-                            maintain(db, &path)?;
+                        if settings
+                            .budget_bytes
+                            .is_some_and(|budget| disk_bytes(&path) > budget * 3 / 4)
+                        {
+                            maintain(db, &path, settings)?;
                         }
-                        if disk_bytes(&path) > BUDGET {
+                        if settings
+                            .budget_bytes
+                            .is_some_and(|budget| disk_bytes(&path) > budget)
+                        {
                             bail!("audit_capacity");
                         }
-                        persist_body(db, &audit_id, &value)
+                        persist_body(db, &audit_id, &value, settings)
                     });
                 if result.is_err() {
                     let mut h = health.lock().unwrap();
@@ -1218,7 +1305,9 @@ fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>
                 let _ = done.send(result.is_ok());
             }
             Job::Flush(done) => {
-                let ok = db.as_ref().is_some_and(|db| maintain(db, &path).is_ok());
+                let ok = db
+                    .as_ref()
+                    .is_some_and(|db| maintain(db, &path, settings).is_ok());
                 update_health(&health, &path, ok, "audit_maintenance_failed");
                 let _ = done.send(());
             }
@@ -1227,7 +1316,7 @@ fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
                     .and_then(|db| {
-                        maintain(db, &path)?;
+                        maintain(db, &path, settings)?;
                         read(db, query)
                     });
                 update_health(&health, &path, result.is_ok(), "audit_read_failed");
@@ -1241,10 +1330,17 @@ fn worker(path: PathBuf, receiver: mpsc::Receiver<Job>, health: Arc<Mutex<Value>
                     .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
                     .and_then(|db| {
-                        if writes % 100 == 0 || disk_bytes(&path) > BUDGET * 3 / 4 {
-                            maintain(db, &path)?;
+                        if writes % 100 == 0
+                            || settings
+                                .budget_bytes
+                                .is_some_and(|budget| disk_bytes(&path) > budget * 3 / 4)
+                        {
+                            maintain(db, &path, settings)?;
                         }
-                        if disk_bytes(&path) > BUDGET {
+                        if settings
+                            .budget_bytes
+                            .is_some_and(|budget| disk_bytes(&path) > budget)
+                        {
                             bail!("audit_capacity");
                         }
                         persist(db, record)
@@ -1297,9 +1393,257 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_retention_survives_restart_and_protects_active_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: Some(128 * 1024 * 1024),
+        };
+        let mut db = open(&path, true, unlimited).unwrap();
+        for (id, outcome) in [("old", "completed"), ("active", "streaming")] {
+            let mut audit = record(id, outcome);
+            audit["atMs"] = json!(chrono::Utc::now().timestamp_millis() - 90 * 86_400_000);
+            persist(&mut db, audit).unwrap();
+            persist_body(
+                &db,
+                id,
+                &json!({"id":"request","state":"receiving"}),
+                unlimited,
+            )
+            .unwrap();
+        }
+        maintain(
+            &db,
+            &path,
+            AuditSettings {
+                retention_days: Some(120),
+                ..unlimited
+            },
+        )
+        .unwrap();
+        maintain(
+            &db,
+            &path,
+            AuditSettings {
+                retention_days: Some(7),
+                ..unlimited
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM findings", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT audit_id FROM audit_snapshots", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "active"
+        );
+        drop(db);
+        let db = open(&path, true, unlimited).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        // Recovery finishes interrupted inspections, but unlimited retention keeps their history.
+        assert_eq!(
+            db.query_row("SELECT outcome FROM audit", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "unknown"
+        );
+        drop(db);
+        let db = open(
+            &path,
+            true,
+            AuditSettings {
+                retention_days: Some(7),
+                ..unlimited
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn unlimited_storage_removes_fixed_body_and_sqlite_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let mut db = open(&path, true, unlimited).unwrap();
+        persist(&mut db, record("old", "completed")).unwrap();
+        persist(&mut db, record("current", "streaming")).unwrap();
+        db.execute_batch("CREATE TABLE capacity_probe(content BLOB); INSERT INTO capacity_probe VALUES(zeroblob(104857600));").unwrap();
+        assert!(used_bytes(&db).unwrap() > 96 * 1024 * 1024);
+        assert_eq!(body_budget(unlimited), None);
+        assert_eq!(
+            body_budget(AuditSettings {
+                budget_bytes: Some(256 * 1024 * 1024),
+                ..unlimited
+            }),
+            Some(160 * 1024 * 1024)
+        );
+        for budget_bytes in [Some(256 * 1024 * 1024), None] {
+            let settings = AuditSettings {
+                budget_bytes,
+                ..unlimited
+            };
+            apply_page_limit(&db, settings).unwrap();
+            maintain(&db, &path, settings).unwrap();
+            assert!(reclaim_body_pages(&db, Some("current"), 32768, settings).unwrap());
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+        persist_body(
+            &db,
+            "current",
+            &json!({"id":"request","state":"receiving"}),
+            unlimited,
+        )
+        .unwrap();
+        persist_body(
+            &db,
+            "current",
+            &json!({"id":"request","start":0,"end":5,"content":"hello","annotations":[]}),
+            unlimited,
+        )
+        .unwrap();
+        drop(db);
+        let db = open(&path, true, unlimited).unwrap();
+        assert_eq!(
+            read_body_page(&db, "current", "request", 0).unwrap()["chunks"][0]["content"],
+            "hello"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn lowering_storage_budget_reclaims_history_without_a_retention_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let mut db = open(&path, true, unlimited).unwrap();
+        persist(&mut db, record("old", "completed")).unwrap();
+        persist_body(
+            &db,
+            "old",
+            &json!({"id":"request","state":"receiving"}),
+            unlimited,
+        )
+        .unwrap();
+        let content = "x".repeat(900 * 1024);
+        persist_body(&db, "old", &json!({"id":"request","start":0,"end":content.len(),"content":content,"annotations":[]}), unlimited).unwrap();
+        persist(&mut db, record("active", "streaming")).unwrap();
+        let limited = AuditSettings {
+            budget_bytes: Some(1024 * 1024),
+            ..unlimited
+        };
+        apply_page_limit(&db, limited).unwrap();
+        maintain(&db, &path, limited).unwrap();
+        assert_eq!(
+            db.query_row("SELECT id FROM audit", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM audit_body_chunks", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(used_bytes(&db).unwrap() < body_budget(limited).unwrap());
+        let pages: u64 = db
+            .query_row("PRAGMA max_page_count", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pages, 192);
+    }
+
+    #[tokio::test]
+    async fn settings_updates_apply_before_acknowledgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let unlimited = AuditSettings {
+            retention_days: None,
+            budget_bytes: None,
+        };
+        let store = Store::start(dir.path(), unlimited);
+        let mut old = record("old", "completed");
+        old["atMs"] = json!(chrono::Utc::now().timestamp_millis() - 90 * 86_400_000);
+        store.write(old);
+        store.write(record("recent", "completed"));
+        store.flush().await;
+        assert!(!store
+            .query(Query {
+                detail: Some("old".into()),
+                ..Query::default()
+            })
+            .await
+            .unwrap()
+            .is_null());
+        store
+            .configure(AuditSettings {
+                retention_days: Some(7),
+                ..unlimited
+            })
+            .await;
+        assert_eq!(store.status()["retentionDays"], 7);
+        assert_eq!(store.status()["budgetBytes"], Value::Null);
+        assert!(store
+            .query(Query {
+                detail: Some("old".into()),
+                ..Query::default()
+            })
+            .await
+            .unwrap()
+            .is_null());
+        store
+            .configure(AuditSettings {
+                budget_bytes: Some(2 * 1024 * 1024),
+                ..unlimited
+            })
+            .await;
+        assert_eq!(store.status()["retentionDays"], Value::Null);
+        assert_eq!(store.status()["budgetBytes"], 2 * 1024 * 1024);
+        assert_eq!(
+            store.query(Query::parse("").unwrap()).await.unwrap()["total"],
+            1
+        );
+    }
+
+    #[test]
     fn configuration_history_is_excluded_without_removing_integrity_records() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
         let mut management = record("legacy-config", "completed");
         management["kind"] = json!("management");
         management["providerId"] = json!("legacy-config-only");
@@ -1355,7 +1699,7 @@ mod tests {
     fn segmented_snapshots_are_lazy_contiguous_immutable_and_range_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         let mut audit = record("segments", "completed");
         audit["inspectionStatus"] = json!("running");
         persist(&mut db, audit).unwrap();
@@ -1363,12 +1707,13 @@ mod tests {
             &db,
             "segments",
             &json!({"id":"response","state":"receiving","byteLength":0}),
+            AuditSettings::default(),
         )
         .unwrap();
         let content = "before 安全 hit";
-        persist_body(&db,"segments",&json!({"id":"response","start":0,"end":content.len(),"content":content,"redactions":[]})).unwrap();
-        persist_body(&db,"segments",&json!({"id":"evidence/test","state":"complete","sourceSnapshotId":"response","rangeStart":8,"rangeEnd":content.len(),"byteLength":content.len()-8})).unwrap();
-        persist_body(&db,"segments",&json!({"id":"response","start":content.len(),"end":content.len()+6,"content":" later","redactions":[]})).unwrap();
+        persist_body(&db,"segments",&json!({"id":"response","start":0,"end":content.len(),"content":content,"redactions":[]}), AuditSettings::default()).unwrap();
+        persist_body(&db,"segments",&json!({"id":"evidence/test","state":"complete","sourceSnapshotId":"response","rangeStart":8,"rangeEnd":content.len(),"byteLength":content.len()-8}), AuditSettings::default()).unwrap();
+        persist_body(&db,"segments",&json!({"id":"response","start":content.len(),"end":content.len()+6,"content":" later","redactions":[]}), AuditSettings::default()).unwrap();
         let view = read_body_page(&db, "segments", "evidence/test", 0).unwrap();
         assert_eq!(view["chunks"][0]["content"], "全 hit");
         assert_eq!(view["nextOffset"], Value::Null);
@@ -1379,19 +1724,22 @@ mod tests {
             &db,
             "segments",
             &json!({"id":"response","state":"complete","byteLength":content.len()+6}),
+            AuditSettings::default(),
         )
         .unwrap();
         assert!(persist_body(
             &db,
             "segments",
-            &json!({"id":"response","start":0,"end":7,"content":"changed","redactions":[]})
+            &json!({"id":"response","start":0,"end":7,"content":"changed","redactions":[]}),
+            AuditSettings::default()
         )
         .is_err());
-        assert!(persist_body(&db,"segments",&json!({"id":"response","start":content.len()+6,"end":content.len()+7,"content":"!","redactions":[]})).is_err());
+        assert!(persist_body(&db,"segments",&json!({"id":"response","start":content.len()+6,"end":content.len()+7,"content":"!","redactions":[]}), AuditSettings::default()).is_err());
         persist_body(
             &db,
             "segments",
             &json!({"id":"evidence/test","state":"complete","rangeEnd":100000}),
+            AuditSettings::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1399,7 +1747,7 @@ mod tests {
             content.len()
         );
         drop(db);
-        let db = open(&path, true).unwrap();
+        let db = open(&path, true, AuditSettings::default()).unwrap();
         let state = read(
             &db,
             Query {
@@ -1513,14 +1861,25 @@ mod tests {
     fn inspection_cache_requires_completed_results_and_current_evidence_survives_source_cleanup() {
         use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
-        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
         let mut source = record("source", "completed");
         source["sessionKey"] = json!("family");
         source["requestBodyState"] = json!("interrupted");
         persist(&mut db, source.clone()).unwrap();
         let entries = json!([{"key":"check","result":{"hits":[],"reasons":[],"at":config::now()}}]);
-        super::super::history::save_cache(&db, &source, "rules-2:parser-1:catalog", &entries)
-            .unwrap();
+        super::super::history::save_cache(
+            &db,
+            &source,
+            "rules-2:parser-1:catalog",
+            &entries,
+            AuditSettings::default(),
+        )
+        .unwrap();
         assert_eq!(
             db.query_row("SELECT count(*) FROM inspection_cache", [], |r| r
                 .get::<_, i64>(0))
@@ -1529,8 +1888,14 @@ mod tests {
         );
         source["requestBodyState"] = json!("complete");
         persist(&mut db, source.clone()).unwrap();
-        super::super::history::save_cache(&db, &source, "rules-2:parser-1:catalog", &entries)
-            .unwrap();
+        super::super::history::save_cache(
+            &db,
+            &source,
+            "rules-2:parser-1:catalog",
+            &entries,
+            AuditSettings::default(),
+        )
+        .unwrap();
         let mut current = record("current", "completed");
         current["sessionKey"] = json!("family");
         current["requestBodyState"] = json!("complete");
@@ -1547,26 +1912,39 @@ mod tests {
             &current,
             items.clone(),
             "rules-2:parser-1:catalog",
+            AuditSettings::default(),
         )
         .unwrap();
         assert!(loaded["cache"]["check"].is_object());
-        let changed =
-            super::super::history::prepare(&db, &current, items, "rules-3:parser-1:catalog")
-                .unwrap();
+        let changed = super::super::history::prepare(
+            &db,
+            &current,
+            items,
+            "rules-3:parser-1:catalog",
+            AuditSettings::default(),
+        )
+        .unwrap();
         assert_eq!(
             changed["cache"],
             json!({}),
             "rule versions invalidate completed checks"
         );
-        persist_body(&db, "current", &json!({"id":"request","state":"receiving"})).unwrap();
+        persist_body(
+            &db,
+            "current",
+            &json!({"id":"request","state":"receiving"}),
+            AuditSettings::default(),
+        )
+        .unwrap();
         persist_body(
             &db,
             "current",
             &json!({"id":"request","start":0,"end":body.len(),"content":body,"annotations":[]}),
+            AuditSettings::default(),
         )
         .unwrap();
-        persist_body(&db,"current",&json!({"id":"request","state":"complete","contentMode":"original","byteLength":body.len()})).unwrap();
-        persist_body(&db,"current",&json!({"id":"evidence/current","sourceSnapshotId":"request","rangeStart":0,"rangeEnd":body.len(),"state":"complete","contentMode":"original"})).unwrap();
+        persist_body(&db,"current",&json!({"id":"request","state":"complete","contentMode":"original","byteLength":body.len()}), AuditSettings::default()).unwrap();
+        persist_body(&db,"current",&json!({"id":"evidence/current","sourceSnapshotId":"request","rangeStart":0,"rangeEnd":body.len(),"state":"complete","contentMode":"original"}), AuditSettings::default()).unwrap();
         db.execute("DELETE FROM audit WHERE id='source'", [])
             .unwrap();
         assert_eq!(
@@ -1596,7 +1974,7 @@ mod tests {
     fn startup_repairs_statuses_only_from_contiguous_framed_terminal_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         for (id, content, expected) in [
             ("completed", "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n", "completed"),
             ("claude", "data: {\"type\":\"message_stop\"}\r\n\r\n", "completed"),
@@ -1638,12 +2016,12 @@ mod tests {
                 audit["coverageGaps"] = json!([{"snapshotId":"response"}]);
             }
             persist(&mut db, audit).unwrap();
-            persist_body(&db, id, &json!({"id":"response","state":"receiving"})).unwrap();
+            persist_body(&db, id, &json!({"id":"response","state":"receiving"}), AuditSettings::default()).unwrap();
             let mid = content.len() / 2;
             for (start, end) in [(0, mid), (mid, content.len())] {
-                persist_body(&db, id, &json!({"id":"response","start":start,"end":end,"content":&content[start..end],"annotations":[]})).unwrap();
+                persist_body(&db, id, &json!({"id":"response","start":start,"end":end,"content":&content[start..end],"annotations":[]}), AuditSettings::default()).unwrap();
             }
-            persist_body(&db, id, &json!({"id":"response","source":"upstream_response","contentMode":"original","state":"interrupted","byteLength":content.len()})).unwrap();
+            persist_body(&db, id, &json!({"id":"response","source":"upstream_response","contentMode":"original","state":"interrupted","byteLength":content.len()}), AuditSettings::default()).unwrap();
             if id == "missing-prefix" {
                 db.execute("DELETE FROM audit_body_chunks WHERE audit_id=? AND start=0", [id]).unwrap();
             }
@@ -1679,7 +2057,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let store = Store::start(dir.path());
+        let store = Store::start(dir.path(), AuditSettings::default());
         let request = b"{\"input\":\"hello\"}";
         let response = b"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n";
         let spool = |bytes: &[u8]| {
@@ -1717,7 +2095,7 @@ mod tests {
         store.flush().await;
         drop(store);
 
-        let db = open(&path, false).unwrap();
+        let db = open(&path, false, AuditSettings::default()).unwrap();
         let retained: String = db.query_row("SELECT group_concat(content,'') FROM (SELECT content FROM audit_body_chunks WHERE audit_id='normalized-tail' AND snapshot_id='response' ORDER BY start)", [], |r| r.get(0)).unwrap();
         assert!(
             retained.ends_with("\n\n"),
@@ -1728,7 +2106,7 @@ mod tests {
         db.execute("UPDATE audit SET data=json_remove(data,'$.statusVersion','$.responseTransportState','$.responseTerminalEvent','$.coverageLimitations','$.inspectionIssues') WHERE id='normalized-tail'", []).unwrap();
         drop(db);
 
-        let db = open(&path, true).unwrap();
+        let db = open(&path, true, AuditSettings::default()).unwrap();
         let result = read(
             &db,
             Query {
@@ -1771,12 +2149,18 @@ mod tests {
             audit["target"] = json!("codex");
             audit["protocol"] = json!("openai.responses");
             persist(db, audit).unwrap();
-            persist_body(db, id, &json!({"id":"request/headers","state":"receiving"})).unwrap();
+            persist_body(
+                db,
+                id,
+                &json!({"id":"request/headers","state":"receiving"}),
+                AuditSettings::default(),
+            )
+            .unwrap();
             let mid = content.len() / 2;
             for (start, end) in [(0, mid), (mid, content.len())] {
-                persist_body(db, id, &json!({"id":"request/headers","start":start,"end":end,"content":&content[start..end],"redactions":[]})).unwrap();
+                persist_body(db, id, &json!({"id":"request/headers","start":start,"end":end,"content":&content[start..end],"redactions":[]}), AuditSettings::default()).unwrap();
             }
-            persist_body(db, id, &json!({"id":"request/headers","source":"observed_headers","contentMode":"original","state":"complete","byteLength":content.len()})).unwrap();
+            persist_body(db, id, &json!({"id":"request/headers","source":"observed_headers","contentMode":"original","state":"complete","byteLength":content.len()}), AuditSettings::default()).unwrap();
         }
         fn evidence(db: &Connection) -> Vec<String> {
             db.prepare("SELECT json_array(audit_id,id,data) FROM audit_snapshots UNION ALL SELECT json_array(audit_id,snapshot_id,start,end,content,redactions) FROM audit_body_chunks UNION ALL SELECT json_array(id,data) FROM findings ORDER BY 1")
@@ -1784,7 +2168,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         for session in ["one", "two"] {
             for (i, header) in ["session-id", "session_id", "thread-id"].iter().enumerate() {
                 seed(
@@ -1840,7 +2224,7 @@ mod tests {
         db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.byteLength',999999) WHERE audit_id='oversized'", []).unwrap();
         let before = evidence(&db);
         drop(db);
-        let db = open(&path, true).unwrap();
+        let db = open(&path, true, AuditSettings::default()).unwrap();
         for session in ["one", "two"] {
             let trace = read(&db, Query::parse(&format!("session={session}-0")).unwrap()).unwrap();
             assert_eq!(trace["total"], 3);
@@ -1907,9 +2291,15 @@ mod tests {
         for restart in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("audit.sqlite3");
-            let mut db = open(&path, true).unwrap();
+            let mut db = open(&path, true, AuditSettings::default()).unwrap();
             persist(&mut db, record("old", "completed")).unwrap();
-            persist_body(&db, "old", &json!({"id":"request","state":"receiving"})).unwrap();
+            persist_body(
+                &db,
+                "old",
+                &json!({"id":"request","state":"receiving"}),
+                AuditSettings::default(),
+            )
+            .unwrap();
             // Reproduce an existing database between the old 80 MiB write limit
             // and the 96 MiB disk-maintenance threshold, using normal-size pages.
             let tx = db.transaction().unwrap();
@@ -1929,14 +2319,15 @@ mod tests {
                 &db,
                 "old",
                 &json!({"id":"request","state":"complete","byteLength":offset}),
+                AuditSettings::default(),
             )
             .unwrap();
             db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
-            assert!(used_bytes(&db).unwrap() > body_budget());
-            assert!(disk_bytes(&path) < BUDGET * 3 / 4);
+            assert!(used_bytes(&db).unwrap() > body_budget(AuditSettings::default()).unwrap());
+            assert!(disk_bytes(&path) < AuditSettings::default().budget_bytes.unwrap() * 3 / 4);
             if restart {
                 drop(db);
-                db = open(&path, true).unwrap();
+                db = open(&path, true, AuditSettings::default()).unwrap();
             }
             persist(&mut db, record("streaming", "streaming")).unwrap();
             let mut pending = record("pending", "completed");
@@ -1947,17 +2338,25 @@ mod tests {
                 let mut current = record(&id, "completed");
                 current["inspectionStatus"] = json!("running");
                 persist(&mut db, current).unwrap();
-                persist_body(&db, &id, &json!({"id":"request","state":"receiving"})).unwrap();
+                persist_body(
+                    &db,
+                    &id,
+                    &json!({"id":"request","state":"receiving"}),
+                    AuditSettings::default(),
+                )
+                .unwrap();
                 persist_body(
                     &db,
                     &id,
                     &json!({"id":"request","start":0,"end":5,"content":"hello","redactions":[]}),
+                    AuditSettings::default(),
                 )
                 .unwrap();
                 persist_body(
                     &db,
                     &id,
                     &json!({"id":"request","state":"complete","byteLength":5}),
+                    AuditSettings::default(),
                 )
                 .unwrap();
                 persist(&mut db, record(&id, "completed")).unwrap();
@@ -1966,7 +2365,7 @@ mod tests {
                     "hello"
                 );
             }
-            assert!(used_bytes(&db).unwrap() < body_budget());
+            assert!(used_bytes(&db).unwrap() < body_budget(AuditSettings::default()).unwrap());
             assert_eq!(
                 db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
                     .get::<_, i64>(0))
@@ -1998,21 +2397,28 @@ mod tests {
     fn failed_but_active_inspections_keep_findings_and_bodies_during_all_retention_paths() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         let mut failed = record("active", "completed");
         failed["atMs"] = json!(chrono::Utc::now().timestamp_millis() - 31 * 86_400_000);
         failed["inspectionStatus"] = json!("failed");
         failed["inspectionProgress"] = json!({"state":"failed","phase":"detecting","active":true});
         persist(&mut db, failed.clone()).unwrap();
-        persist_body(&db, "active", &json!({"id":"request","state":"receiving"})).unwrap();
+        persist_body(
+            &db,
+            "active",
+            &json!({"id":"request","state":"receiving"}),
+            AuditSettings::default(),
+        )
+        .unwrap();
         persist_body(
             &db,
             "active",
             &json!({"id":"request","start":0,"end":8,"content":"evidence","redactions":[]}),
+            AuditSettings::default(),
         )
         .unwrap();
         assert_eq!(prune_completed(&db, Some("another-request")).unwrap(), 0);
-        maintain(&db, &path).unwrap();
+        maintain(&db, &path, AuditSettings::default()).unwrap();
         let detail = read(
             &db,
             Query {
@@ -2039,7 +2445,7 @@ mod tests {
     fn restart_ends_failed_active_inspections_without_losing_prior_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         let mut failed = record("failed-active", "completed");
         failed["inspectionStatus"] = json!("failed");
         failed["inspectionProgress"] = json!({"state":"failed","phase":"detecting","active":true});
@@ -2049,10 +2455,11 @@ mod tests {
             &db,
             "failed-active",
             &json!({"id":"response","state":"receiving"}),
+            AuditSettings::default(),
         )
         .unwrap();
         drop(db);
-        let db = open(&path, true).unwrap();
+        let db = open(&path, true, AuditSettings::default()).unwrap();
         let detail = read(
             &db,
             Query {
@@ -2077,7 +2484,12 @@ mod tests {
     #[test]
     fn snapshots_deduplicate_findings_and_keep_keyset_pages_stable() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
         for id in ["a", "b", "c"] {
             persist(&mut db, record(id, "streaming")).unwrap();
         }
@@ -2119,7 +2531,7 @@ mod tests {
     fn restart_recovers_only_unfinished_requests_and_retention_cascades() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
-        let mut db = open(&path, true).unwrap();
+        let mut db = open(&path, true, AuditSettings::default()).unwrap();
         let mut unfinished = record("unfinished", "streaming");
         unfinished["coverageReasons"] = json!(["unsupported_tool"]);
         persist(&mut db, unfinished).unwrap();
@@ -2128,7 +2540,7 @@ mod tests {
         old["atMs"] = json!(chrono::Utc::now().timestamp_millis() - 31 * 86_400_000);
         persist(&mut db, old).unwrap();
         drop(db);
-        let db = open(&path, true).unwrap();
+        let db = open(&path, true, AuditSettings::default()).unwrap();
         let result = read(&db, Query::parse("hours=720").unwrap()).unwrap();
         assert_eq!(result["total"], 2);
         let detail = read(
@@ -2164,7 +2576,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.sqlite3");
         std::fs::create_dir(&path).unwrap();
-        let store = Store::start(dir.path());
+        let store = Store::start(dir.path(), AuditSettings::default());
         store.write(record("lost", "completed"));
         store.flush().await;
         assert!(store.query(Query::parse("").unwrap()).await.is_err());
@@ -2218,7 +2630,7 @@ mod tests {
     #[tokio::test]
     async fn queued_overviews_never_block_audit_queries_or_body_writes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::start(dir.path());
+        let store = Store::start(dir.path(), AuditSettings::default());
         store.write(record("reading", "completed"));
         store.flush().await;
         // Hold the overview receiver without running it. This proves isolation
@@ -2321,13 +2733,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let corrupt = dir.path().join("corrupt.sqlite3");
         std::fs::write(&corrupt, b"not a database").unwrap();
-        assert!(open(&corrupt, true).is_err());
+        assert!(open(&corrupt, true, AuditSettings::default()).is_err());
         assert_eq!(std::fs::read(&corrupt).unwrap(), b"not a database");
         let newer = dir.path().join("newer.sqlite3");
-        let db = open(&newer, true).unwrap();
+        let db = open(&newer, true, AuditSettings::default()).unwrap();
         db.execute_batch("PRAGMA user_version=5").unwrap();
         drop(db);
-        assert!(open(&newer, true).is_err());
+        assert!(open(&newer, true, AuditSettings::default()).is_err());
         let version: i64 = Connection::open(newer)
             .unwrap()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -2338,7 +2750,12 @@ mod tests {
     #[test]
     fn unified_filters_count_records_once_and_all_their_findings() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
         let mut risky = record("many", "completed");
         let mut second = risky["findings"][0].clone();
         second["id"] = json!("second");
@@ -2392,7 +2809,7 @@ mod tests {
         for version in [1, 2] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("audit.sqlite3");
-            let mut db = open(&path, true).unwrap();
+            let mut db = open(&path, true, AuditSettings::default()).unwrap();
             persist(&mut db, record("legacy", "completed")).unwrap();
             if version == 1 {
                 db.execute_batch("DROP TABLE audit_snapshots; PRAGMA user_version=1")
@@ -2411,7 +2828,7 @@ mod tests {
                 db.execute_batch("PRAGMA user_version=2").unwrap();
             }
             drop(db);
-            let store = Store::start(dir.path());
+            let store = Store::start(dir.path(), AuditSettings::default());
             let detail = store
                 .query(Query {
                     detail: Some("legacy".into()),
@@ -2420,7 +2837,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(detail["record"]["findings"].as_array().unwrap().len(), 1);
-            let db = open(&path, false).unwrap();
+            let db = open(&path, false, AuditSettings::default()).unwrap();
             assert_eq!(
                 db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
@@ -2437,6 +2854,7 @@ mod tests {
                     &db,
                     "legacy",
                     &json!({"id":"evidence/one","state":"complete","body":"later content"}),
+                    AuditSettings::default(),
                 )
                 .unwrap();
                 let page = store
@@ -2451,7 +2869,7 @@ mod tests {
             }
             db.execute("UPDATE audit SET at=0 WHERE id='legacy'", [])
                 .unwrap();
-            maintain(&db, &path).unwrap();
+            maintain(&db, &path, AuditSettings::default()).unwrap();
             assert_eq!(
                 db.query_row("SELECT count(*) FROM audit_snapshots", [], |r| r
                     .get::<_, i64>(0))
