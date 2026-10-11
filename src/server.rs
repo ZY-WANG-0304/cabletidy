@@ -678,6 +678,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
                     match (k.as_ref(), v.parse::<usize>()) {
                         ("offset", Ok(n)) if n <= i64::MAX as usize => offset = n,
+                        ("view", _) if !response_content && v == "folded" => {
+                            query.folded_content = true
+                        }
+                        ("view", _) if !response_content && v == "all" => {
+                            query.folded_content = false
+                        }
                         _ => return Ok(error(400, "invalid_content_query", "内容偏移无效")),
                     }
                 }

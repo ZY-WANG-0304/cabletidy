@@ -708,7 +708,18 @@ pageContent.addEventListener("change", (event) => {
 
 pageContent.addEventListener("toggle", (event) => {
   const panel = event.target;
-  if (!panel.open || !pageContent.contains(panel)) return;
+  if (!pageContent.contains(panel)) return;
+  const record = state.security.detail;
+  if (record && panel.matches("[data-content-index]")) {
+    (record.contentOpen ||= {})[`${panel.dataset.contentResponse}:${panel.dataset.contentIndex}`] = panel.open;
+  }
+  if (record && panel.matches("[data-history-risks]")) record.historyRisksOpen = panel.open;
+  if (record && panel.matches("[data-history-start]")) {
+    const range = (record.historyRanges ||= {})[panel.dataset.historyStart] ||= {};
+    range.open = panel.open;
+    if (panel.open && !range.page && !range.loading && !range.error) loadHistoryRange(Number(panel.dataset.historyStart), Number(panel.dataset.historyEnd));
+  }
+  if (!panel.open) return;
   // Rendering an already-selected panel also fires toggle; preserve its page and risk selection.
   if (panel.matches("[data-security-snapshot]") && panel.dataset.securitySnapshot !== state.security.bodySelection?.snapshotId) {
     securityAction("security-body", { dataset: { id: panel.dataset.securitySnapshot } });
@@ -1208,7 +1219,7 @@ function renderSecurity() {
       ${securitySelect("请求结果", "outcome", { "": "全部结果", ...SECURITY_LABELS.outcome })}
       ${securitySelect("检查状态", "inspection", { "": "全部状态", ...SECURITY_LABELS.inspection })}
     </div></details><div class="form-actions"><label class="security-risk-toggle"><input type="checkbox" name="hasRisk" value="true" ${s.filters.hasRisk === "true" ? "checked" : ""}> 仅看有风险</label><button class="button button-primary" type="submit" ${s.loading ? "disabled" : ""}>筛选</button><button class="button" type="button" data-action="security-reset">重置筛选</button></div></form></div></div>
-    <div class="security-summary" aria-live="polite"><div><strong>${esc(s.result?.total ?? "—")}</strong><span>个会话 / 独立记录</span></div><div><strong>${esc(s.result?.recordCount ?? "—")}</strong><span>条审计记录</span></div><div><strong>${esc(s.result?.riskSessionCount ?? "—")}</strong><span>个会话有风险</span></div><div><strong>${esc(s.result?.findingCount ?? "—")}</strong><span>项风险发现</span></div></div>
+    <div class="security-summary" aria-live="polite"><div><strong>${esc(s.result?.total ?? "—")}</strong><span>个会话 / 独立记录</span></div><div><strong>${esc(s.result?.recordCount ?? "—")}</strong><span>条审计记录</span></div><div><strong>${esc(s.result?.riskSessionCount ?? "—")}</strong><span>个会话有风险</span></div><div><strong>${esc(s.result?.newFindingCount ?? s.result?.findingCount ?? "—")}</strong><span>项新增风险</span></div></div>
     <p class="muted">筛选命中会话后，统计与轨迹保留该会话的全部已保留记录。没有会话标识的 Agent 请求作为独立记录展示。</p>
     <section class="panel"><div class="panel-header"><h2>会话记录</h2><span class="muted">${s.loading ? "读取中…" : `更新于 ${esc(securityTime(s.updatedAt))}`}</span></div>
       ${s.result?.items?.length ? `<div class="security-sessions">${s.result.items.map(securitySessionRow).join("")}</div>` : `<div class="empty" role="status">${s.loading ? "正在读取会话…" : s.error ? "暂时无法读取记录。" : "当前筛选范围内没有审计记录。通过此代理发起请求后可在这里查看。"}</div>`}
@@ -1229,11 +1240,20 @@ function securitySessionTitle(item) {
   return item.sessionTitle || (item.kind === "request" ? "未命名模型会话" : securityLabel("action", item.action));
 }
 
+function securityRiskCounts(item) {
+  return { new: item.newFindingCount ?? item.findingCount ?? 0, historical: item.historicalFindingCount ?? 0 };
+}
+
+function securityRiskSummary(item) {
+  const counts = securityRiskCounts(item);
+  return [counts.new ? `新增风险 ${counts.new} 项` : "", counts.historical ? `${counts.new ? "" : "仅"}历史风险 ${counts.historical} 项` : ""].filter(Boolean).join(" · ") || "未发现风险";
+}
+
 function securitySessionRow(item) {
   return `<button class="security-session-row" data-action="security-session" data-id="${esc(item.id)}">
     <span class="security-session-main"><strong>${esc(securitySessionTitle(item))}</strong><span class="muted">${esc(item.providerId || "未记录配置")} · ${esc(item.target ? targetLabel(item.target) : securityLabel("kind", item.kind))} · ${item.identified ? "客户端会话" : "独立记录 · 无会话标识"}</span></span>
     <span class="security-session-count"><strong>${esc(item.requestCount || 1)} 条记录</strong><span class="muted">${item.activeCount ? `${esc(item.activeCount)} 条进行中` : item.errorCount ? `${esc(item.errorCount)} 条异常` : "已记录"}${item.incompleteCount ? ` · ${esc(item.incompleteCount)} 条待检查 / 不完整` : ""}${item.limitedCount ? ` · ${esc(item.limitedCount)} 条覆盖有限` : ""}</span></span>
-    <span class="security-session-risk">${item.findingCount ? securityBadge(item.severity) : `<span class="muted">未发现风险</span>`}<span class="muted">${esc(item.findingCount || 0)} 项发现</span></span>
+    <span class="security-session-risk">${item.findingCount ? securityBadge(item.severity) : `<span class="muted">未发现风险</span>`}<span class="muted">${esc(item.newFindingCount ?? item.findingCount ?? 0)} 项新增${item.historicalFindingCount ? ` · ${esc(item.historicalFindingCount)} 次历史关联` : ""}</span></span>
     <span class="security-session-time muted">${esc(securityTime(item.lastAtMs))}<span>查看轨迹 →</span></span>
   </button>`;
 }
@@ -1321,7 +1341,8 @@ function traceSegments(items) {
     const group = items.slice(i, i + size);
     segments.push({ id: group[0].id, first: i + 1, last: i + group.length,
       duration: group.reduce((n, item) => n + (item.durationMs || 0), 0),
-      findings: group.reduce((n, item) => n + (item.findingCount || 0), 0),
+      newFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).new, 0),
+      historicalFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).historical, 0),
       selected: group.some(item => item.id === state.security.detailId) });
   }
   return segments;
@@ -1345,6 +1366,16 @@ const RESPONSE_STATUS_LABELS = { completed: "已完成", failed: "失败", incom
 const RESPONSE_CONTENT_LABELS = { assistant: "模型输出", reasoning: "推理 / 思考", tool_call: "本轮工具调用", tool_result: "服务端工具结果", refusal: "拒绝内容", error: "响应错误", other: "其他内容" };
 function renderRequestContent(record) { return renderRetainedContent(record, false); }
 function renderResponseContent(record) { return renderRetainedContent(record, true); }
+function retainedContentItems(record, response, visible = false) {
+  const content = record[response ? "responseContent" : "requestContent"];
+  const items = content?.items || [];
+  if (response || !content?.nodes) return items;
+  if (visible) return content.nodes.flatMap(node => node.kind === "history_range"
+    ? record.historyRanges?.[node.startIndex]?.open ? (record.historyRanges[node.startIndex].page?.items || []).filter(item => item.index >= node.startIndex && item.index <= node.endIndex) : []
+    : items.filter(item => item.index === node.index));
+  const loaded = [...items, ...Object.values(record.historyRanges || {}).flatMap(range => range.page?.items || [])];
+  return [...new Map(loaded.map(item => [item.index,item])).values()];
+}
 function contentFindings(record, item, response) {
   return (record.findings || []).filter(finding => {
     const ref = finding.evidence?.bodyRef;
@@ -1525,7 +1556,7 @@ async function loadContentRiskMarks(response, operation) {
   const current = () => record === s.detail && sequence === s.detailSequence && record[response ? "responseContent" : "requestContent"] === content
     && (!operation || s[operation.key] === operation.token) && securityDetailVisible();
   try {
-    const items = (content.items || []).filter(item => !item.riskRanges);
+    const items = retainedContentItems(record, response, true).filter(item => !item.riskRanges);
     const findings = [...new Map(items.flatMap(item => contentFindings(record, item, response)).map(finding => [finding.id, finding])).values()];
     const evidence = new Map();
     // Body reads share the audit queue. Keep automatic highlighting bounded
@@ -1567,8 +1598,20 @@ async function locateContentFinding(finding) {
   state.trace.tab = tab;
   const current = () => s.detail === record && s.detailSequence === sequence && s[operation.key] === operation.token && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
   render();
-  let content = record[key], item = content?.items?.find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
+  let content = record[key], item = retainedContentItems(record, response, true).find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
   try {
+    if (!item && !response && finding.contentIndex != null) {
+      const range = content.nodes?.find(node => node.kind === "history_range" && node.startIndex <= finding.contentIndex && node.endIndex >= finding.contentIndex);
+      if (range) {
+        await loadHistoryRange(range.startIndex, range.endIndex, range.startIndex + Math.floor((finding.contentIndex - range.startIndex) / 40) * 40);
+        item = record[key].items.find(item => item.index === finding.contentIndex);
+      } else {
+        content = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset: Math.floor(finding.contentIndex / 40) * 40, view: "all" })}`);
+        if (!current()) return;
+        record[key] = content;
+        item = content.items.find(item => item.index === finding.contentIndex);
+      }
+    }
     for (let offset = 0; !item && current(); offset = content.nextOffset) {
       if (offset == null) break;
       content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
@@ -1584,6 +1627,7 @@ async function locateContentFinding(finding) {
   if (!current()) return;
   if (!item) { s[response ? "responseContentError" : "contentError"] = "此风险没有可定位的内容项，证据可在风险详情中复核。"; render(); return; }
   navigation.index = item.index;
+  (record.contentOpen ||= {})[`${response}:${item.index}`] = true;
   await loadContentRiskMarks(response, operation);
   if (!current()) return;
   navigation.field = item.riskRanges?.preview?.some(range => range.findingId === finding.id) ? "preview" : "structure";
@@ -1610,8 +1654,8 @@ function renderRetainedContent(record, response) {
     const label = labels[item.kind] || labels.other;
     const relation = response ? "" : item.relatedIndex != null ? `对应第 ${item.relatedIndex + 1} 项` : item.kind === "tool_result" ? "本次请求未找到对应调用" : item.kind === "tool_call" ? "本次请求未包含对应结果" : "";
     const related = `${relation}${item.ambiguousRelation ? "，标识重复，关联存在歧义" : ""}`;
-    return `<details class="trace-content-item" data-content-index="${item.index}" open>
-      <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="${action}-source" data-index="${item.index}">查看此项原文</button></summary>
+    return `<details class="trace-content-item" data-content-response="${response}" data-content-index="${item.index}" ${(record.contentOpen?.[`${response}:${item.index}`] ?? true) ? "open" : ""}>
+      <summary><span class="trace-content-title"><span class="trace-content-order">${item.index + 1}</span><span class="trace-content-role">${esc(label)}</span>${!response && item.historyOf ? `<span class="muted">历史</span>` : ""}${item.name ? `<strong class="mono">${esc(item.name)}</strong>` : ""}</span><button class="mini-button trace-content-source" data-action="${action}-source" data-index="${item.index}">查看此项原文</button></summary>
       <div class="trace-content-detail">${item.preview ? `<pre>${retainedRiskText(item, "preview")}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
       ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${retainedRiskText(item, "structure")}</pre></details>` : ""}
       ${item.riskVersions?.length ? `<details class="trace-content-risk-versions" open><summary>风险检测时的内容</summary><p class="trace-content-note">此风险来自较早的流式内容或检测参数，当前内容已变化；以下保留检测时的命中内容。</p>${item.riskVersions.map(version => `${version.toolArguments ? `<p class="trace-content-note">检测时的工具参数与当前参数不同，此记录不表示最终参数仍有风险。实际执行状态未知。</p>` : ""}<pre><mark class="security-risk-hit${state.security.contentNavigation?.findingId === version.findingId ? " security-body-hit" : ""}"${state.security.contentNavigation?.findingId === version.findingId ? ' data-security-content-anchor tabindex="-1"' : ""}>${esc(version.text)}</mark></pre>`).join("")}</details>` : ""}
@@ -1629,16 +1673,29 @@ function renderRetainedContent(record, response) {
       ${response && item.kind === "tool_result" && item.serverTool ? `<p class="trace-content-note">上游返回的服务端工具结果。</p>` : ""}
       </div></details>`;
   };
-  const definitions = items.filter(item => item.kind === "tool_definition");
-  const messages = items.filter(item => item.kind !== "tool_definition");
+  const rangeRow = node => {
+    const range = record.historyRanges?.[node.startIndex] || {};
+    const loaded = (range.page?.items || []).filter(item => item.index >= node.startIndex && item.index <= node.endIndex);
+    return `<details class="trace-content-history" data-history-start="${node.startIndex}" data-history-end="${node.endIndex}" ${range.open ? "open" : ""}>
+      <summary>第 ${node.startIndex + 1}–${node.endIndex + 1} 项 · 已有历史${node.findingCount ? ` · ${node.findingCount} 项风险` : ""}</summary>
+      ${loaded.map(row).join("")}
+      ${range.page ? `<div class="trace-content-pagination"><button class="mini-button" data-action="security-history-page" data-start="${node.startIndex}" data-end="${node.endIndex}" data-offset="${Math.max(node.startIndex, range.page.offset - 40)}" ${range.page.offset <= node.startIndex || range.loading ? "disabled" : ""}>上一组历史</button><span>${loaded[0]?.index + 1}–${loaded.at(-1)?.index + 1}</span><button class="mini-button" data-action="security-history-page" data-start="${node.startIndex}" data-end="${node.endIndex}" data-offset="${range.page.offset + 40}" ${range.page.offset + 40 > node.endIndex || range.loading ? "disabled" : ""}>下一组历史</button></div>` : ""}
+      ${range.loading ? `<p class="muted" role="status">正在加载历史…</p>` : ""}${range.error ? `<p class="notice warning" role="alert">${esc(range.error)}</p><button class="mini-button" data-action="security-history-page" data-start="${node.startIndex}" data-end="${node.endIndex}" data-offset="${node.startIndex}">重试</button>` : ""}
+    </details>`;
+  };
+  const nodes = content.nodes || items;
+  const definitions = nodes.filter(item => item.kind === "tool_definition").map(item => items.find(loaded => loaded.index === item.index) || item);
+  const messages = nodes.filter(item => item.kind !== "tool_definition");
+  const timeline = messages.map(item => item.kind === "history_range" ? rangeRow(item) : row(items.find(loaded => loaded.index === item.index) || item)).join("");
   return `<section class="trace-request-content" aria-label="${title}"><h3>${title} <span>${content.total} 项</span></h3>
+    ${!response && content.historicalCount ? `<div class="trace-content-controls"><span>新增 ${content.newCount} 项 · 历史 ${content.historicalCount} 项</span><div class="trace-content-actions"><button class="mini-button" data-action="security-content-view" data-view="${content.view === "all" ? "folded" : "all"}" ${loading ? "disabled" : ""}>${content.view === "all" ? "折叠历史" : "展开全部"}</button><button class="mini-button" data-action="security-content-new" ${content.firstNewIndex == null || loading ? "disabled" : ""}>跳到新增</button></div></div>${content.newCount === 0 ? `<p class="muted">本次请求内容与已记录历史一致。</p>` : ""}` : ""}
     ${response && content.status ? `<p class="trace-content-note">${claude ? "结束原因" : "响应状态"}：${esc(RESPONSE_STATUS_LABELS[content.status] || content.status)}</p>` : ""}
     ${claude && !response ? `<p class="trace-content-note">按消息内容块展示；工具结果属于工具上下文，消息角色为 user 也不会计为用户输入。</p>` : ""}
     <div class="trace-content-counts" aria-label="${title}组成">${Object.entries(labels).map(([kind, label]) => `<span>${label} <strong>${counts[kind] || 0}</strong></span>`).join("")}</div>
     ${content.state !== "complete" ? `<p class="notice warning">${content.state === "unavailable" ? `${response ? "响应" : "请求"}正文未保留，无法还原内容组成。` : `${response ? "响应" : "请求"}正文存在缺口或尚未解析完整，以下为已保留的内容。`}</p>` : content.total === 0 ? `<p class="muted">${response ? "本次响应未包含输出内容。" : "本次请求未包含提示词、输入或工具上下文。"}</p>` : ""}
-    <div class="trace-content-timeline">${messages.map(row).join("")}</div>
+    <div class="trace-content-timeline">${timeline}</div>
     ${definitions.length ? `<details class="trace-content-tools"><summary>可用工具定义 · 本页 ${definitions.length} 个</summary>${definitions.map(row).join("")}</details>` : ""}
-    ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="${action}-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || loading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + items.length} / ${content.total}</span><button class="mini-button" data-action="${action}-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || loading ? "disabled" : ""}>下一组内容</button></div>` : ""}
+    ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="${action}-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || loading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + nodes.length} / ${content.nodeTotal ?? content.total}</span><button class="mini-button" data-action="${action}-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || loading ? "disabled" : ""}>下一组内容</button></div>` : ""}
     ${loading ? `<p class="muted" role="status">正在解析${title}…</p>` : ""}${error ? `<p class="notice warning" role="alert">${esc(error)}</p>` : ""}
   </section>`;
 }
@@ -1650,7 +1707,7 @@ function beginContentOperation(response) {
   s[response ? "responseContentError" : "contentError"] = null;
   return { key, token };
 }
-async function loadRetainedContent(offset, response) {
+async function loadRetainedContent(offset, response, view) {
   const loadingKey = response ? "responseContentLoading" : "contentLoading";
   const errorKey = response ? "responseContentError" : "contentError";
   const s = state.security, record = s.detail, sequence = s.detailSequence;
@@ -1659,7 +1716,7 @@ async function loadRetainedContent(offset, response) {
   const current = () => record === s.detail && sequence === s.detailSequence && s[operation.key] === operation.token && securityDetailVisible();
   s[loadingKey] = true; s[errorKey] = null; render();
   try {
-    const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
+    const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset, ...(!response ? { view: view || record.requestContent?.view || "folded" } : {}) })}`);
     if (!current()) return;
     record[response ? "responseContent" : "requestContent"] = content;
   } catch (error) {
@@ -1668,6 +1725,31 @@ async function loadRetainedContent(offset, response) {
   }
   if (current()) { s[loadingKey] = false; render(); }
   if (current()) await loadContentRiskMarks(response, operation);
+}
+
+
+async function loadHistoryRange(start, end, offset = start) {
+  const s = state.security, record = s.detail, sequence = s.detailSequence;
+  const content = record?.requestContent;
+  if (!content) return;
+  const operation = { key: "requestContentOperation", token: s.requestContentOperation };
+  const range = (record.historyRanges ||= {})[start] ||= {};
+  if (range.loading && range.operation === operation.token) return;
+  range.operation = operation.token;
+  range.open = true; range.loading = true; range.error = null; render();
+  const current = () => record === s.detail && sequence === s.detailSequence && record.requestContent === content
+    && s[operation.key] === operation.token && record.historyRanges[start] === range && securityDetailVisible();
+  try {
+    const page = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset, view: "all" })}`);
+    if (!current()) return;
+    range.page = page;
+    const loaded = (page.items || []).filter(item => item.index >= start && item.index <= end);
+    const byIndex = new Map((content.items || []).map(item => [item.index,item]));
+    for (const item of loaded) byIndex.set(item.index,item);
+    content.items = [...byIndex.values()];
+  } catch (error) { if (current()) range.error = error.message; }
+  finally { if (range.operation === operation.token) range.loading = false; }
+  if (current()) { render(); await loadContentRiskMarks(false, operation); }
 }
 
 function renderTraceInspector() {
@@ -1701,13 +1783,13 @@ function renderSecuritySession() {
   const positions = new Map(all.map((item, i) => [item.id, i]));
   return `<nav class="security-detail-nav"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 会话轨迹</span><span class="status-badge">仅记录</span></nav>
     <header class="trace-heading"><div><h2>${esc(summary ? securitySessionTitle(summary) : "会话轨迹")}</h2><p class="muted">${esc(summary?.providerId || "未记录配置")} · ${summary?.identified ? "按客户端会话标识归组" : "独立记录 · 未获取会话标识"}${summary ? ` · ${esc(securityTime(summary.firstAtMs))}` : ""}</p></div>
-    <div class="trace-totals"><span><strong>${esc(summary?.requestCount ?? "—")}</strong> 条记录</span><span><strong>${esc(summary?.findingCount ?? "—")}</strong> 项风险</span><span><strong>${esc(securityDuration(summary?.durationMs))}</strong> 请求累计耗时</span></div></header>
+    <div class="trace-totals"><span><strong>${esc(summary?.requestCount ?? "—")}</strong> 条记录</span><span><strong>${esc(summary?.newFindingCount ?? summary?.findingCount ?? "—")}</strong> 项新增风险${summary?.historicalFindingCount ? ` · ${esc(summary.historicalFindingCount)} 次历史关联` : ""}</span><span><strong>${esc(securityDuration(summary?.durationMs))}</strong> 请求累计耗时</span></div></header>
     ${t.error ? `<p class="notice warning" role="alert">${esc(t.error)}<button class="button" data-action="security-session-refresh">重试</button></p>` : ""}
     <section class="trace-workspace" aria-label="会话轨迹">
       <div class="trace-toolbar"><strong>轨迹</strong><span class="muted">按请求顺序 · 已加载 ${all.length} 条 / 共 ${esc(t.result?.total ?? "—")} 条</span><button class="mini-button" data-action="security-session-refresh" ${t.loading ? "disabled" : ""}>${t.loading ? "读取中…" : "刷新会话"}</button></div>
-      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.findings ? "has-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${item.findings} 项风险" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>${segmentDescription}</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>请求</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>发现风险</span>${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击）</span>" : ""}</p></div>
+      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>${segmentDescription}</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>新增风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击）</span>" : ""}</p></div>
       <div class="trace-columns"><section class="trace-events" aria-label="请求列表"><form id="security-trace-search" class="trace-search"><input name="search" aria-label="搜索已加载轨迹" placeholder="搜索已加载输入、输出、工具或模型" value="${esc(t.search)}"><button class="mini-button" type="submit">搜索</button><button class="mini-button" type="button" data-action="security-trace-risk" aria-pressed="${t.riskOnly}">仅看风险</button></form>
-        <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span>${item.findingCount ? `<span class="trace-risk-count">${esc(item.findingCount)} 项风险</span>` : ""}</span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span><span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
+        <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id), risk = securityRiskCounts(item); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span><span class="${risk.new ? "trace-risk-count" : "muted"}">${esc(securityRiskSummary(item))}</span></span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span><span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
       </section><aside class="trace-inspector" aria-label="选中步骤详情">${renderTraceInspector()}</aside></div>
     </section>`;
 }
@@ -1949,9 +2031,12 @@ async function loadSecurityStream(snapshotId, offset = Math.max(0, (state.securi
 }
 
 function renderSecurityFindings(record) {
-  return `    <h3>关联风险 · ${record.findings?.length || 0}</h3>
-    ${(record.findings || []).map(f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div><p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`).join("") || `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>`}
-`;
+  const findings = record.findings || [];
+  const fresh = findings.filter(finding => !finding.historical), historical = findings.filter(finding => finding.historical);
+  const row = f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div>${f.reusedFrom ? `<p class="trace-content-note">复用已有检查结果 · ${esc(securityTime(f.reusedFrom.checkedAt))}</p>` : ""}<p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`;
+  return `<h3>关联风险 · ${findings.length}</h3>${historical.length ? `<p class="muted">新增 ${fresh.length} 项 · 历史 ${historical.length} 项</p>` : ""}
+    ${fresh.map(row).join("") || (!historical.length ? `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>` : "")}
+    ${historical.length ? `<details class="trace-content-history" data-history-risks ${record.historyRisksOpen ? "open" : ""}><summary>历史风险 · ${historical.length} 项</summary>${historical.map(row).join("")}</details>` : ""}`;
 }
 
 function securityRecordFacts(record) {
@@ -2013,13 +2098,27 @@ async function securityAction(action, element) {
     else if (["request", "response"].includes(t.tab)) await loadContentRiskMarks(t.tab === "response");
     return;
   }
+  if (action === "security-history-page") {
+    await loadHistoryRange(Number(element.dataset.start), Number(element.dataset.end), Number(element.dataset.offset)); return;
+  }
+  if (action === "security-content-view") {
+    if (element.dataset.view === "folded") s.detail.historyRanges = {};
+    await loadRetainedContent(0, false, element.dataset.view); return;
+  }
+  if (action === "security-content-new") {
+    const content = s.detail?.requestContent;
+    if (content?.firstNewIndex == null) return;
+    if (content.view !== "folded" || content.offset) await loadRetainedContent(0, false, "folded");
+    const index = s.detail.requestContent.firstNewIndex;
+    pageContent.querySelector(`[data-content-index="${index}"]`)?.scrollIntoView({ block: "start", behavior: "instant" }); return;
+  }
   if (["security-content-page", "security-response-content-page"].includes(action)) {
     s.contentNavigation = null;
     await loadRetainedContent(Number(element.dataset.offset), action === "security-response-content-page"); return;
   }
   if (["security-content-source", "security-response-content-source"].includes(action)) {
     const response = action === "security-response-content-source";
-    const item = s.detail?.[response ? "responseContent" : "requestContent"]?.items?.find(item => item.index === Number(element.dataset.index));
+    const item = s.detail && retainedContentItems(s.detail, response).find(item => item.index === Number(element.dataset.index));
     if (!item) return;
     s.contentNavigation = null;
     t.tab = "body";

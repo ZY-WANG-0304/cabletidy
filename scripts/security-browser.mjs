@@ -272,9 +272,8 @@ try {
   assert.match(await page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="8"]').innerText(), /没有可读文本/);
   const checkSourceHeading = async index => {
     const block = page.locator(`[aria-label="请求内容"] .trace-content-item[data-content-index="${index}"]`);
-    const header = await block.locator(":scope > summary").boundingBox();
-    const title = await block.locator(".trace-content-title").boundingBox();
-    const source = await block.getByRole("button", { name: "查看此项原文", exact: true }).boundingBox();
+    await block.locator(":scope > summary").waitFor({ state: "visible" });
+    const {header,title,source} = await block.evaluate(node => Object.fromEntries(Object.entries({header:":scope > summary",title:".trace-content-title",source:".trace-content-source"}).map(([key,selector]) => [key,node.querySelector(selector)?.getBoundingClientRect().toJSON()])));
     assert.ok(source && header && title);
     assert.ok(source.x >= title.x + title.width - 1, "source button sits to the right of the title");
     assert.ok(source.y >= header.y && source.y + source.height <= header.y + header.height + 1, "source button shares the title row");
@@ -583,7 +582,7 @@ try {
       await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
       const item = page.locator('[aria-label="请求内容"] .trace-content-item[data-content-index="1"]');
       await item.waitFor();
-      await item.locator(":scope > summary .trace-content-title").click();
+      if (await item.evaluate(node => node.open)) await item.locator(":scope > summary .trace-content-title").click();
       assert.equal(await item.getAttribute("open"), null);
       await item.getByRole("button", { name: "查看此项原文", exact: true }).click();
       await visibleSource(target);
@@ -679,6 +678,92 @@ try {
     await screenshot(`17-${mobile ? "mobile" : "desktop"}-filtered-tool-risk.png`);
   }
   report.checks.push("unchanged streamed dangerous commands with extra fields stay highlighted in preview and escaped structure, and navigate to current content on desktop and mobile without false historical warnings");
+  const historicalInput = [
+    {role:"user",content:"History browser task"}, {role:"assistant",content:"Initial answer"},
+    ...Array.from({length:70}, (_,i) => ({role:"assistant",content:`Historical note ${i}`})),
+    {type:"function_call",name:"exec_command",call_id:"history-risk",arguments:JSON.stringify({cmd:"rm -rf --no-preserve-root /"})},
+    {type:"function_call_output",call_id:"history-risk",output:"Client reported result"},
+    {role:"user",content:"Historical last question"},
+  ];
+  const postHistory = async input => {
+    const response = await fetch(`${app.url}relay/v1/responses`,{method:"POST",headers:{"content-type":"application/json","session-id":"browser-history-family","thread-id":"browser-main"},body:JSON.stringify({model:"gpt-5.5",input})});
+    assert.equal(response.status,200); await response.text();
+    for (let i=0; i<400; i++) {
+      const result = await (await fetch(`${app.url}api/v1/security/audit?kind=request&limit=1`)).json();
+      const latest = result.items[0];
+      if (latest?.requestPreview === input.at(-1).content && latest.inspectionProgress?.active === false) return (await (await fetch(`${app.url}api/v1/security/audit/${latest.id}`)).json()).record;
+      await delay(25);
+    }
+    assert.fail("History browser fixture did not settle");
+  };
+  const noRiskDetail = await postHistory([...historicalInput.slice(0,72),{role:"user",content:"只检查上下文，不调用工具"}]);
+  assert.equal(noRiskDetail.findingCount,0);
+  const newRiskDetail = await postHistory(historicalInput);
+  assert.ok(newRiskDetail.newFindingCount > 0);
+  assert.equal(newRiskDetail.historicalFindingCount,0);
+  const historyDetail = await postHistory([...historicalInput,{role:"assistant",content:"New answer"},{role:"user",content:"新增问题 <script>literal</script>"}]);
+  assert.ok(historyDetail.historicalFindingCount > 0);
+  assert.equal(historyDetail.newFindingCount,0);
+  for (const mobile of [false,true]) {
+    await page.setViewportSize(mobile ? {width:390,height:844} : {width:1440,height:1000});
+    await page.goto(`${app.url}#security/session/${historyDetail.sessionKey}`);
+    await page.locator(`.trace-event-row[data-action="security-trace-select"][data-id="${historyDetail.id}"]`).click();
+    await page.locator('[data-action="security-trace-tab"][data-tab="request"]').click();
+    const content = page.getByLabel("请求内容",{exact:true});
+    assert.match(await page.locator(`.trace-event-row[data-id="${noRiskDetail.id}"]`).innerText(),/未发现风险/);
+    assert.match(await page.locator(`.trace-event-row[data-id="${newRiskDetail.id}"]`).innerText(),/新增风险 \d+ 项/);
+    assert.match(await page.locator(`.trace-event-row[data-id="${historyDetail.id}"]`).innerText(),/仅历史风险 \d+ 项/);
+    assert.equal(await page.locator(`.trace-segment[data-id="${noRiskDetail.id}"].has-new-risk, .trace-segment[data-id="${noRiskDetail.id}"].has-history-risk`).count(),0);
+    assert.equal(await page.locator(`.trace-segment[data-id="${newRiskDetail.id}"].has-new-risk`).count(),1);
+    assert.equal(await page.locator(`.trace-segment[data-id="${historyDetail.id}"].has-history-risk`).count(),1);
+    assert.equal(await content.locator('[data-action="security-content-view"]').count(),1);
+    const controls = await content.locator('.trace-content-actions > button').evaluateAll(nodes => nodes.map(node => {
+      const rect = node.getBoundingClientRect();
+      return {left:rect.left,right:rect.right,top:rect.top};
+    }));
+    assert.equal(controls.length,2);
+    assert.ok(Math.abs(controls[0].top-controls[1].top) < 1,"content actions stay on the same line");
+    assert.ok(controls[1].left-controls[0].right <= 9,"content actions use a compact gap");
+    const history = content.locator('[data-history-start="0"]');
+    await history.waitFor();
+    assert.equal(await history.evaluate(node => node.open),false);
+    assert.equal(await content.locator('.trace-content-item').count(),2,"initial view loads only new content");
+    assert.equal(await content.locator('[data-content-index="76"] > .trace-content-detail > pre').textContent(),"新增问题 <script>literal</script>");
+    await content.locator('[data-content-index="76"] > summary .trace-content-title').click();
+    await history.locator(':scope > summary').click();
+    await history.locator('[data-content-index="0"]').waitFor();
+    assert.equal(await content.locator('[data-content-index="76"]').evaluate(node => node.open),false,"manual collapse survives history loading and highlighting");
+    await history.getByRole("button",{name:"下一组历史",exact:true}).click();
+    await history.locator('[data-content-index="72"]').waitFor();
+    const indexes = await content.locator('.trace-content-item').evaluateAll(nodes => nodes.map(node => Number(node.dataset.contentIndex)));
+    assert.deepEqual(indexes,[...Array.from({length:35},(_,i)=>i+40),75,76],"expanded history and new items retain their original order");
+    await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
+    const oldRisks = page.locator('[data-history-risks]');
+    assert.equal(await oldRisks.evaluate(node => node.open),false);
+    await oldRisks.locator(':scope > summary').click();
+    await oldRisks.locator('[data-action="security-finding"]').first().click();
+    await history.locator('[data-content-index="72"] [data-security-content-anchor]').first().waitFor();
+    assert.equal(await history.evaluate(node => node.open),true,"historical risk navigation opens its current body range");
+    await content.getByRole("button",{name:"展开全部",exact:true}).click();
+    await content.locator('[data-content-index="0"]').waitFor();
+    assert.equal(await content.locator('[data-history-start]').count(),0);
+    assert.equal(await content.locator('[data-action="security-content-view"]').count(),1);
+    assert.equal(await content.getByRole("button",{name:"展开全部",exact:true}).count(),0);
+    await content.getByRole("button",{name:"折叠历史",exact:true}).click();
+    await history.waitFor();
+    assert.equal(await history.evaluate(node => node.open),false);
+    await screenshot(`18-${mobile ? "mobile" : "desktop"}-history-folding.png`);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),"history view fits the viewport");
+    await page.locator(`.trace-event-row[data-id="${newRiskDetail.id}"]`).click();
+    await page.locator('[data-action="security-trace-tab"][data-tab="risks"]').click();
+    const newFinding = newRiskDetail.findings.find(finding => finding.ruleId === "SEC-DELETE-001");
+    await page.locator(`[data-action="security-finding"][data-id="${newFinding.id}"]`).click();
+    await content.locator('[data-content-index="72"] [data-security-content-anchor]').first().waitFor();
+    await page.locator('.trace-event-list').evaluate(node => { node.scrollTop = 0; });
+    await screenshot(`19-${mobile ? "mobile" : "desktop"}-new-risk.png`);
+  }
+  report.checks.push("history folds beyond two pages, lazily expands in order, preserves manual item state and navigates cached historical risks on desktop/mobile");
+  report.checks.push("content actions use one compact view toggle; no-risk, new-risk and historical-risk requests have distinct labels and navigation colors on desktop/mobile");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;

@@ -27,6 +27,7 @@ pub struct Pipeline {
     pub inspect_tools: bool,
     pub incomplete: bool,
     pub count_progress: bool,
+    credential_catalog_complete: bool,
 }
 impl Pipeline {
     pub fn new(store: Arc<Store>, record: Value, secrets: &Value, redactor: Redactor) -> Self {
@@ -43,6 +44,7 @@ impl Pipeline {
             inspect_tools: true,
             incomplete: false,
             count_progress: true,
+            credential_catalog_complete: true,
         }
     }
     pub fn publish(&mut self, state: &str) {
@@ -55,6 +57,9 @@ impl Pipeline {
         }
         self.record["severity"] = json!(self.highest);
         self.record["findingCount"] = json!(self.count);
+        if let Some(reuse) = &self.rules.reuse {
+            self.record["inspectionReuse"] = reuse.statistics();
+        }
         self.record["coverageReasons"] = json!(self.rules.reasons);
         self.record["inspectionStatus"] = json!(if self.failed { "failed" } else { state });
         super::status::classify(&mut self.record);
@@ -150,6 +155,31 @@ impl Pipeline {
         let prior_progress = self.count_progress;
         self.count_progress = matches!(id, "request" | "response");
         let valid = learn_credentials(&spool, &mut self.redactor);
+        if id == "request" && complete && valid {
+            if let Ok(items) = super::content::index_spool(&spool, &mut self.record) {
+                // Known-secret rules use the configured subset, while redaction also learns credentials.
+                let dependency = format!(
+                    "rules-2:parser-1:{}:{}",
+                    self.redactor.catalog_digest(),
+                    self.rules.secrets_digest()
+                );
+                if let Ok(prepared) = self.store.history(&self.record, items, &dependency) {
+                    self.record["historyContentCount"] = json!(prepared["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|item| item["historyOf"].is_object())
+                        .count());
+                    if self.credential_catalog_complete
+                        && self.redactor.available()
+                        && self.rules.reasons.is_empty()
+                        && self.record["sessionKey"].is_string()
+                    {
+                        self.rules.reuse = Some(super::reuse::Reuse::new(prepared, dependency));
+                    }
+                }
+            }
+        }
         if !self.redactor.available() {
             self.rules.reasons.insert("credential_redaction_budget");
         }
@@ -212,6 +242,13 @@ impl Pipeline {
         }
         self.count_progress = prior_progress;
         self.publish("running");
+        if id == "request" && parsed.is_ok() && finalized.is_ok() && complete && !self.failed {
+            if let Some(reuse) = &self.rules.reuse {
+                let _ =
+                    self.store
+                        .inspection_cache(&self.record, &reuse.dependency, reuse.entries());
+            }
+        }
         parsed.and(finalized)
     }
     pub(super) fn render_json(
@@ -544,6 +581,11 @@ impl BodyVisitor<'_> {
 impl Visitor for BodyVisitor<'_> {
     fn start(&mut self, path: &str, field: &str, kind: u8, at: u64) -> Result<()> {
         self.navigation.start(field, kind);
+        if self.root == "request" && kind != b'k' {
+            if let Some(reuse) = &mut self.pipeline.rules.reuse {
+                reuse.enter(path);
+            }
+        }
         let parent = self.frames.last();
         let credential =
             kind != b'k' && (credential_field(field) || parent.is_some_and(|p| p.credential));
@@ -811,6 +853,11 @@ impl Visitor for BodyVisitor<'_> {
                 .reasons
                 .insert("non_text_or_reasoning_semantics");
         }
+        if self.root == "request" && frame.kind != b'k' {
+            if let Some(reuse) = &mut self.pipeline.rules.reuse {
+                reuse.leave(&frame.path);
+            }
+        }
         Ok(())
     }
 }
@@ -1032,11 +1079,11 @@ pub(super) fn run(
     p.redactor.observe(&request.headers);
     p.redactor.observe(&response.headers);
     if let Some(spool) = &request.sealed {
-        learn_credentials(spool, &mut p.redactor);
+        p.credential_catalog_complete &= learn_credentials(spool, &mut p.redactor);
     }
     if !sse {
         if let Some(spool) = &response.sealed {
-            learn_credentials(spool, &mut p.redactor);
+            p.credential_catalog_complete &= learn_credentials(spool, &mut p.redactor);
         }
     }
     super::limit_labels(&mut p.record);

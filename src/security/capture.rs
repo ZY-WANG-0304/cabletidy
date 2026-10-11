@@ -355,6 +355,15 @@ pub struct Redactor {
 }
 
 impl Redactor {
+    pub(super) fn catalog_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut values: Vec<_> = self.secrets.iter().collect();
+        values.sort_unstable();
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&json!([self.complete, values])).unwrap())
+        )
+    }
     pub fn available(&self) -> bool {
         self.complete
     }

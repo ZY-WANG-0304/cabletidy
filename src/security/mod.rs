@@ -1,7 +1,9 @@
 pub(crate) mod capture;
 mod content;
+mod history;
 mod pipeline;
 mod response;
+mod reuse;
 mod rules;
 mod session;
 mod sse;
@@ -65,7 +67,7 @@ impl Security {
         metadata["id"] = json!(uuid::Uuid::new_v4().to_string());
         metadata["at"] = json!(config::now());
         metadata["atMs"] = json!(chrono::Utc::now().timestamp_millis());
-        metadata["schemaVersion"] = json!(4);
+        metadata["schemaVersion"] = json!(5);
         metadata["mode"] = json!("record_only");
         metadata["outcome"] = json!("started");
         metadata["ruleVersion"] = json!("2");

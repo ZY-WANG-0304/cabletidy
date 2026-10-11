@@ -34,6 +34,8 @@ pub struct Rules {
     seen: BTreeSet<(String, [u8; 32])>,
     tool_version: [u8; 32],
     memory: crate::streaming::Reservation,
+    pub(super) reuse: Option<super::reuse::Reuse>,
+    templates: Option<(Vec<Value>, BTreeSet<&'static str>)>,
 }
 
 impl Rules {
@@ -61,7 +63,184 @@ impl Rules {
             seen: BTreeSet::new(),
             tool_version: [0; 32],
             memory,
+            reuse: None,
+            templates: None,
         }
+    }
+
+    pub(super) fn secrets_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut values: Vec<_> = self.secrets.iter().collect();
+        values.sort_unstable();
+        values.dedup();
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap()))
+    }
+
+    fn reason(&mut self, reason: &'static str) {
+        self.reasons.insert(reason);
+        if let Some((_, reasons)) = &mut self.templates {
+            reasons.insert(reason);
+        }
+    }
+
+    fn memoized(
+        &mut self,
+        kind: &str,
+        input: impl FnOnce() -> Value,
+        stage: &str,
+        location: &str,
+        run: impl FnOnce(&mut Self),
+    ) {
+        let Some(mut reuse) = self.reuse.take() else {
+            run(self);
+            return;
+        };
+        if reuse.current.is_none() {
+            run(self);
+            self.reuse = Some(reuse);
+            return;
+        }
+        let Some(key) = reuse.key(kind, &input(), stage, location) else {
+            run(self);
+            self.reuse = Some(reuse);
+            return;
+        };
+        let cached = reuse.cached.get(&key).cloned();
+        reuse.counted(cached.is_some());
+        let before = self.findings.len();
+        if let Some(result) = &cached {
+            for reason in crate::config::array(&result["reasons"]) {
+                if let Some(reason) = super::reuse::LIMITATIONS
+                    .iter()
+                    .find(|&&allowed| allowed == text(reason))
+                {
+                    self.reason(reason);
+                }
+            }
+            // Replay rule matches through the normal finding/evidence path, so
+            // locations and tool snapshots are created for the current request.
+            for hit in crate::config::array(&result["hits"]) {
+                self.tool_version =
+                    serde_json::from_value(hit["version"].clone()).unwrap_or([0; 32]);
+                self.hit(
+                    text(&hit["id"]),
+                    text(&hit["category"]),
+                    text(&hit["severity"]),
+                    text(&hit["confidence"]),
+                    stage,
+                    &format!("{location}{}", text(&hit["location"])),
+                    text(&hit["operation"]),
+                    text(&hit["target"]),
+                );
+            }
+            self.tool_version = [0; 32];
+        } else {
+            self.templates = Some((Vec::new(), BTreeSet::new()));
+            run(self);
+            let (mut hits, reasons) = self.templates.take().unwrap();
+            for hit in &mut hits {
+                hit["location"] =
+                    json!(text(&hit["location"]).strip_prefix(location).unwrap_or(""));
+            }
+            if reasons
+                .iter()
+                .all(|reason| super::reuse::LIMITATIONS.contains(reason))
+            {
+                reuse.remember(
+                    key,
+                    json!({"hits":hits,"reasons":reasons,"at":crate::config::now()}),
+                );
+            }
+        }
+        let unit = reuse.current.as_ref().unwrap();
+        for finding in &mut self.findings[before..] {
+            finding["contentIndex"] = unit["index"].clone();
+            finding["occurrenceId"] = unit["occurrenceId"].clone();
+            finding["inspectionDependency"] = json!(reuse.dependency);
+            use sha2::{Digest, Sha256};
+            finding["findingSignature"] = json!(format!(
+                "{:x}",
+                Sha256::digest(
+                    json!([
+                        finding["ruleId"],
+                        finding["ruleVersion"],
+                        finding["evidenceStage"],
+                        finding["severity"],
+                        finding["confidence"],
+                        finding["evidence"]["operation"],
+                        finding["evidence"]["targetClass"],
+                        text(&finding["evidence"]["location"])
+                            .strip_prefix(text(&unit["location"]))
+                            .unwrap_or("")
+                    ])
+                    .to_string()
+                )
+            ));
+            if let Some(result) = &cached {
+                finding["reusedFrom"] =
+                    json!({"requestId":result["requestId"],"checkedAt":result["at"]});
+            }
+            if crate::config::array(&unit["previousFindings"])
+                .contains(&finding["findingSignature"])
+            {
+                finding["historical"] = json!(true);
+                finding["historyOf"] = unit["historyOf"].clone();
+            }
+        }
+        self.reuse = Some(reuse);
+    }
+
+    pub fn content(&mut self, value: &str, stage: &str, location: &str) {
+        self.memoized(
+            "content",
+            || json!(value),
+            stage,
+            location,
+            |rules| rules.content_uncached(value, stage, location),
+        );
+    }
+    pub fn instruction(&mut self, bits: u8, stage: &str, location: &str) {
+        self.memoized(
+            "instruction",
+            || json!(bits),
+            stage,
+            location,
+            |rules| rules.instruction_uncached(bits, stage, location),
+        );
+    }
+    pub fn credential(&mut self, stage: &str, location: &str, known: bool) {
+        self.memoized(
+            "credential",
+            || json!(known),
+            stage,
+            location,
+            |rules| rules.credential_uncached(stage, location, known),
+        );
+    }
+    pub fn annotations(&mut self, marks: &[Value], stage: &str, location: &str) {
+        self.memoized(
+            "annotations",
+            || json!(marks),
+            stage,
+            location,
+            |rules| rules.annotations_uncached(marks, stage, location),
+        );
+    }
+    pub fn tool(
+        &mut self,
+        name: &str,
+        input: &Value,
+        stage: &str,
+        location: &str,
+        version: [u8; 32],
+    ) {
+        self.memoized(
+            "tool",
+            || json!([name, input, version]),
+            stage,
+            location,
+            |rules| rules.tool_uncached(name, input, stage, location, version),
+        );
     }
 
     fn known_secret(&self, value: &str) -> bool {
@@ -92,12 +271,15 @@ impl Rules {
         operation: &str,
         target: &str,
     ) {
+        if let Some((hits, _)) = &mut self.templates {
+            hits.push(json!({"id":id,"category":category,"severity":severity,"confidence":confidence,"stage":stage,"location":location,"operation":operation,"target":target,"version":self.tool_version}));
+        }
         let key = (format!("{id}:{stage}:{location}"), self.tool_version);
         if self.seen.contains(&key) {
             return;
         }
         if self.memory.grow(key.0.len() + 2048).is_err() {
-            self.reasons.insert("shared_detection_budget");
+            self.reason("shared_detection_budget");
             return;
         }
         self.seen.insert(key);
@@ -143,7 +325,7 @@ impl Rules {
         }));
     }
 
-    pub fn content(&mut self, value: &str, stage: &str, location: &str) {
+    fn content_uncached(&mut self, value: &str, stage: &str, location: &str) {
         let known = self.known_secret(value);
         if known || CREDENTIAL.is_match(value) {
             self.hit(
@@ -159,7 +341,7 @@ impl Rules {
         }
         self.instruction(instruction_bits(value), stage, location);
     }
-    pub fn instruction(&mut self, bits: u8, stage: &str, location: &str) {
+    fn instruction_uncached(&mut self, bits: u8, stage: &str, location: &str) {
         if stage == "tool_result_reported" && bits == 7 {
             self.hit(
                 "SEC-INJECT-001",
@@ -174,7 +356,7 @@ impl Rules {
         }
     }
 
-    pub fn credential(&mut self, stage: &str, location: &str, known: bool) {
+    fn credential_uncached(&mut self, stage: &str, location: &str, known: bool) {
         self.hit(
             "SEC-SECRET-001",
             "sensitive_data",
@@ -187,7 +369,7 @@ impl Rules {
         );
     }
 
-    pub fn annotations(&mut self, marks: &[Value], stage: &str, location: &str) {
+    fn annotations_uncached(&mut self, marks: &[Value], stage: &str, location: &str) {
         let mut credential = false;
         let mut known = false;
         let mut internal = false;
@@ -197,7 +379,7 @@ impl Rules {
                 "redaction_buffer_budget"
                 | "url_authority_uncertain"
                 | "credential_prefix_uncertain" => {
-                    self.reasons.insert("redaction_buffer_budget");
+                    self.reason("redaction_buffer_budget");
                 }
                 "incomplete_body_fragment" => {}
                 "internal_host" | "internal_identity" => internal = true,
@@ -247,7 +429,7 @@ impl Rules {
         );
     }
 
-    pub fn tool(
+    fn tool_uncached(
         &mut self,
         name: &str,
         input: &Value,
@@ -279,7 +461,7 @@ impl Rules {
                         0,
                     );
                 } else {
-                    self.reasons.insert("unsupported_tool_arguments");
+                    self.reason("unsupported_tool_arguments");
                 }
             }
             "read" | "read_file" | "write" | "write_file" | "edit" | "edit_file" | "multiedit" => {
@@ -313,7 +495,7 @@ impl Rules {
                         );
                     }
                 } else {
-                    self.reasons.insert("unsupported_tool_arguments");
+                    self.reason("unsupported_tool_arguments");
                 }
             }
             "apply_patch" => {
@@ -357,11 +539,11 @@ impl Rules {
                         }
                     }
                 } else {
-                    self.reasons.insert("unsupported_tool_arguments");
+                    self.reason("unsupported_tool_arguments");
                 }
             }
             _ => {
-                self.reasons.insert("unsupported_tool");
+                self.reason("unsupported_tool");
             }
         }
         self.tool_version = [0; 32];
@@ -369,11 +551,11 @@ impl Rules {
 
     fn shell(&mut self, command: &str, stage: &str, location: &str, depth: usize) {
         if depth > 2 {
-            self.reasons.insert("shell_nesting_limit");
+            self.reason("shell_nesting_limit");
             return;
         }
         let Some(segments) = shell_segments(command) else {
-            self.reasons.insert("unsupported_shell_syntax");
+            self.reason("unsupported_shell_syntax");
             return;
         };
         for (i, (words, pipe)) in segments.iter().enumerate() {
@@ -409,7 +591,7 @@ impl Rules {
 
     fn command(&mut self, words: &[String], stage: &str, location: &str, depth: usize) {
         if depth > 8 {
-            self.reasons.insert("shell_nesting_limit");
+            self.reason("shell_nesting_limit");
             return;
         }
         let Some(first) = words.first() else {
@@ -431,7 +613,7 @@ impl Rules {
             if name == "sudo" && args.first().is_some_and(|s| !s.starts_with('-')) {
                 self.command(args, stage, location, depth + 1);
             } else {
-                self.reasons.insert("unsupported_shell_wrapper");
+                self.reason("unsupported_shell_wrapper");
             }
         } else if matches!(name.as_str(), "bash" | "sh" | "zsh") {
             if let Some(i) = args.iter().position(|s| s == "-c" || s == "-lc") {
@@ -439,7 +621,7 @@ impl Rules {
                     self.shell(cmd, stage, location, depth + 1);
                 }
             } else {
-                self.reasons.insert("external_script_not_inspected");
+                self.reason("external_script_not_inspected");
             }
         } else if name == "rm" || name == "remove-item" {
             if args.iter().any(|s| {
@@ -521,7 +703,7 @@ impl Rules {
                     "status" | "diff" | "log" | "show" | "reset" | "clean" | "ls-files"
                 )
             }) {
-                self.reasons.insert("command_semantics_not_inspected");
+                self.reason("command_semantics_not_inspected");
             }
         } else if name == "chmod" {
             if args
@@ -573,7 +755,7 @@ impl Rules {
                 "dynamic_code_execution",
                 "dynamic_code",
             );
-            self.reasons.insert("dynamic_code_not_inspected");
+            self.reason("dynamic_code_not_inspected");
         } else if matches!(name.as_str(), "curl" | "wget")
             // The request target is where data goes, not a local file being sent, so a
             // remote route named `/credentials` is not an export of local material.
@@ -592,7 +774,7 @@ impl Rules {
                 "credential_file",
             );
         } else if matches!(name.as_str(), "npm" | "pnpm" | "yarn" | "cargo" | "go") {
-            self.reasons.insert("external_script_not_inspected");
+            self.reason("external_script_not_inspected");
         } else if (name == "find"
             && args
                 .iter()
@@ -627,7 +809,7 @@ impl Rules {
                     | "get-content"
             )
         {
-            self.reasons.insert("command_semantics_not_inspected");
+            self.reason("command_semantics_not_inspected");
         }
     }
 }
@@ -792,6 +974,39 @@ fn shell_segments(command: &str) -> Option<Vec<(Vec<String>, bool)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_findings_do_not_depend_on_computation_cache_hits() {
+        let unit = json!({"index":0,"location":"request/0","fingerprint":"same-item","occurrenceId":"same-occurrence"});
+        let configure = |unit: Value, cache: Value| {
+            let mut rules = Rules::new(&json!({}));
+            let mut reuse = super::super::reuse::Reuse::new(
+                json!({"items":[unit],"cache":cache}),
+                "same-dependencies".into(),
+            );
+            reuse.enter("request/0");
+            rules.reuse = Some(reuse);
+            rules
+        };
+        let value = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
+        let mut first = configure(unit.clone(), json!({}));
+        first.content(value, "request_content", "request/0/text");
+        let mut historical_unit = unit.clone();
+        historical_unit["historyOf"] = json!({"requestId":"first","index":0});
+        historical_unit["previousFindings"] = json!([first.findings[0]["findingSignature"]]);
+        let mut recomputed = configure(historical_unit, json!({}));
+        recomputed.content(value, "request_content", "request/0/text");
+        assert_eq!(recomputed.findings[0]["historical"], true);
+        assert!(recomputed.findings[0]["reusedFrom"].is_null());
+        let mut cached = first.reuse.take().unwrap().pending;
+        for result in cached.values_mut() {
+            result["requestId"] = json!("first");
+        }
+        let mut new_event = configure(unit, Value::Object(cached));
+        new_event.content(value, "request_content", "request/0/text");
+        assert!(new_event.findings[0]["reusedFrom"].is_object());
+        assert!(new_event.findings[0]["historical"].is_null());
+    }
 
     #[test]
     fn executable_structure_distinguishes_examples_and_actual_actions() {

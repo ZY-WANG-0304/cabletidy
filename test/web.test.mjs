@@ -2077,6 +2077,29 @@ test("session trace preserves context, selects steps lazily, filters summaries a
   assert.equal(app.read("state.trace.summary.requestCount"), 2);
 });
 
+test("session trace distinguishes new findings, historical associations and requests without findings", async () => {
+  const records = [
+    { id: "clean", findingCount: 0, newFindingCount: 0, historicalFindingCount: 0 },
+    { id: "new", findingCount: 1, newFindingCount: 1, historicalFindingCount: 0 },
+    { id: "history", findingCount: 2, newFindingCount: 0, historicalFindingCount: 2 },
+    { id: "mixed", findingCount: 3, newFindingCount: 1, historicalFindingCount: 2 },
+    { id: "legacy", findingCount: 1 },
+  ];
+  const app = await controller();
+  app.read(`state.trace.result = ${JSON.stringify({ items: records, total: records.length })}`);
+  const html = app.read("renderSecuritySession()");
+  const row = id => html.match(new RegExp(`<button class="trace-event-row [^"]*"[^>]*data-id="${id}"[^>]*>([\\s\\S]*?)</button>`))[1];
+  assert.match(row("clean"), /未发现风险/);
+  assert.match(row("new"), /新增风险 1 项/);
+  assert.doesNotMatch(row("new"), /历史风险/);
+  assert.match(row("history"), /仅历史风险 2 项/);
+  assert.doesNotMatch(row("history"), /新增风险/);
+  assert.match(row("mixed"), /新增风险 1 项 · 历史风险 2 项/);
+  assert.match(row("legacy"), /新增风险 1 项/);
+  assert.match(html, /class="trace-segment has-history-risk [^"]*"[^>]*data-id="history"/);
+  assert.match(html, /class="trace-segment has-new-risk [^"]*"[^>]*data-id="mixed"/);
+});
+
 test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {
   const items = [
     { index: 0, kind: "system", source: "instructions", preview: "System <script>literal</script>", start: 20, end: 60 },
@@ -2367,6 +2390,47 @@ for (const response of [false, true]) for (const lateFailure of [false, true]) {
     assert.equal(app.read(`state.security.${response ? "responseContentError" : "contentError"}`), null);
     assert.equal(app.read(`state.security.${response ? "responseContentLoading" : "contentLoading"}`), false);
     assert.match(app.read("renderTraceInspector()"), /data-security-content-anchor/);
+  });
+}
+
+for (const destination of ["all", "folded", "risk"]) for (const lateFailure of [false, true]) {
+  test(`late historical page ${lateFailure ? "failure" : "result"} cannot replace ${destination} content`, async () => {
+    let release, delayed = false;
+    const hit = "risk at item 80";
+    const item = index => ({ index, kind:"assistant", start:index*100, end:index*100+80, preview:index === 80 ? hit : `Historical item ${index}` });
+    const page = offset => ({ view:"all", offset, nextOffset:offset+40 < 101 ? offset+40 : null, total:101, counts:{}, state:"complete", items:Array.from({length:Math.min(40,101-offset)},(_,i) => item(offset+i)) });
+    const folded = { view:"folded", offset:0, nextOffset:null, total:101, nodeTotal:2, historicalCount:100, newCount:1, firstNewIndex:100, counts:{}, state:"complete",
+      nodes:[{kind:"history_range",startIndex:0,endIndex:99},item(100)], items:[item(100)] };
+    const finding = { id:"history-risk", contentIndex:80, ruleId:"SEC-INJECT-001", evidenceStage:"request_content", evidence:{bodyRef:{snapshotId:"request",start:8000,end:8000+hit.length}} };
+    const app = await controller(undefined, { onSecurity(url) {
+      if (url.includes("/content?")) {
+        const params = new URL(url,"http://test").searchParams, offset = Number(params.get("offset"));
+        if (offset === 40 && !delayed) {
+          delayed = true;
+          return new Promise(resolve => { release = () => resolve(lateFailure ? {status:503,body:{error:{message:"old history failed"}}} : {body:page(40)}); });
+        }
+        return {body:params.get("view") === "folded" ? clone(folded) : page(offset)};
+      }
+      if (url.includes("/body?")) return {body:{chunks:[{start:8000,end:8000+hit.length,content:hit}]}};
+    } });
+    app.read(`state.page = "security-session"; state.trace.tab = "request"; state.security.detail = ${JSON.stringify({id:"history-paging",findings:[finding],requestContent:folded})}`);
+    const pending = app.action("security-history-page", {dataset:{start:"0",end:"99",offset:"40"}});
+    await setImmediate();
+    if (destination === "risk") await app.action("security-finding", {dataset:{id:finding.id}});
+    else await app.action("security-content-view", {dataset:{view:destination}});
+    const current = app.read("state.security.detail.requestContent"), before = clone(current);
+    if (destination === "risk") assert.equal(app.read("state.security.contentNavigation.index"),80);
+    if (destination === "all") assert.equal(current.items.length,40);
+    release(); await pending;
+    assert.equal(app.read("state.security.detail.requestContent"),current);
+    assert.deepEqual(clone(current),before,"the old page cannot add items or change pagination");
+    assert.equal(app.read("state.security.detail.historyRanges?.[0]?.error ?? null"),null);
+    assert.equal(app.read("state.security.detail.historyRanges?.[0]?.loading ?? false"),false);
+    assert.equal(app.read("state.security.contentError"),null);
+    if (destination === "folded") {
+      await app.action("security-history-page", {dataset:{start:"0",end:"99",offset:"0"}});
+      assert.equal(app.read("state.security.detail.historyRanges[0].page.offset"),0,"history remains loadable after the discarded request");
+    }
   });
 }
 
