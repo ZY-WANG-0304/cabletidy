@@ -94,6 +94,14 @@ test("model discovery and startup HEAD stay local and all four endpoints honor p
   const f = await fixture(t, () => assert.fail("Local-only endpoint contacted upstream"), (config) => {
     config.virtualProviders["cabletidy_claude-main"].models["claude-opus-4-6"] = structuredClone(config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"]);
   });
+  const runtime = await (await f.call("api/v1/runtime")).json();
+  const baseUrl = runtime.virtualProviders[0].baseUrl;
+  assert.equal(baseUrl, `${f.app.url}claude-main`);
+  const preview = await f.call("api/v1/config/preview-target-artifacts", { bindingId: "claude-main" });
+  assert.equal(preview.status, 200);
+  assert.equal((await preview.json()).artifacts.environment.vars.ANTHROPIC_BASE_URL, baseUrl);
+  assert.equal((await fetch(`${baseUrl}/v1/models`)).status, 200);
+  assert.equal((await fetch(`${baseUrl}/api/hello`, { method: "HEAD" })).status, 204);
   const models = await f.call("claude-main/v1/models?limit=1");
   assert.equal(models.status, 200);
   assert.deepEqual(await models.json(), { data: [{ id: "claude-sonnet-4-6", type: "model", display_name: "claude-sonnet-4-6" }],
@@ -105,7 +113,8 @@ test("model discovery and startup HEAD stay local and all four endpoints honor p
   assert.equal(probe.status, 204);
   assert.equal(await probe.text(), "");
   assert.equal(f.calls.length, 0);
-  await f.call("api/v1/virtual-providers/cabletidy_claude-main/pause", {});
+  const paused = await f.call("api/v1/virtual-providers/cabletidy_claude-main/pause", {});
+  assert.equal((await paused.json()).runtime.virtualProviders[0].baseUrl, baseUrl);
   for (const [route, body, method] of [["v1/messages", { model: "x" }, "POST"], ["v1/messages/count_tokens", { model: "x" }, "POST"], ["v1/models", undefined, "GET"], ["api/hello", undefined, "HEAD"]]) {
     assert.equal((await f.call(`claude-main/${route}`, body, {}, method)).status, 503);
   }

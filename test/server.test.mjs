@@ -93,6 +93,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     const runtime = await runtimeResponse.json();
     assert.equal(runtime.counts.models, 1);
     assert.equal(runtime.virtualProviders[0].id, "cabletidy_codex");
+    assert.equal(runtime.virtualProviders[0].baseUrl, `http://127.0.0.1:${webPort}/codex/v1`);
 
     const artifactResponse = await fetch(
       `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
