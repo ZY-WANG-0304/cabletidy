@@ -1070,13 +1070,13 @@ const SECURITY_LABELS = {
   category: { sensitive_data: "敏感数据与凭据", destructive_action: "破坏性操作", permission_change: "权限与安全配置变更", external_execution: "外部代码执行", instruction_manipulation: "疑似指令操纵" },
   confidence: { low: "低置信度", medium: "中置信度", high: "高置信度" },
   stage: { request_content: "请求内容", tool_call_proposed: "本轮调用提议", tool_call_replayed: "历史调用", tool_result_reported: "客户端报告的工具结果", response_content: "模型返回内容" },
-  inspection: { pending: "等待检测", running: "检测进行中", failed: "检测失败", complete: "已完成支持范围内检查", partial: "检测不完整", skipped: "仅操作审计" },
+  inspection: { pending: "等待检测", running: "检测进行中", failed: "检测失败", complete: "已完成支持范围内检查", limited: "已检查（覆盖有限）", partial: "检测不完整", skipped: "仅操作审计" },
   outcome: { started: "请求已接收", streaming: "响应接收中", completed: "已完成", local_error: "本地处理失败", upstream_error: "上游返回错误", connection_error: "上游连接失败", stream_error: "响应流错误", interrupted: "请求中断", unknown: "结果未知" },
   kind: { request: "模型请求", system: "审计状态" },
   action: { "model.request": "模型请求", "tokens.count": "Token 计数", "audit.gap": "审计记录缺口" },
   basis: { system_wide_damage_possible: "显式关闭根目录保护，可能造成系统范围的数据破坏", credential_exposure_possible: "凭据可能暴露在模型内容或联网操作中", working_data_loss_possible: "操作可能丢弃工作区数据或影响较大目录范围", broad_write_access_possible: "操作可能向所有用户开放写权限", unreviewed_remote_code_execution: "远程内容直接进入代码解释器", sensitive_goal_redirection_possible: "外部指令试图将原任务引向敏感操作", scoped_sensitive_operation: "涉及有限范围的数据修改、敏感读取或权限变更", known_credential_match: "内容与本地已知凭据匹配", credential_pattern_match: "仅匹配凭据格式，尚未验证其有效性", heuristic_keyword_combination: "命中指令覆盖与敏感动作的启发式组合", network_sensitive_file_reference: "联网命令引用敏感文件，未确认实际发送", recognized_literal_tool_arguments: "已识别的工具参数或字面量命令结构", internal_endpoint_pattern_match: "内容包含内网地址、端口或 URL 用户名", public_endpoint_pattern_match: "内容包含公网服务器地址,泄露后可被直接访问" },
   rule: { "SEC-SECRET-001": "内容中发现凭据特征", "SEC-READ-001": "读取敏感文件", "SEC-DELETE-001": "递归删除目录", "SEC-DELETE-002": "补丁删除文件", "SEC-VCS-001": "丢弃工作区修改", "SEC-CONFIG-001": "修改代理或安全配置", "SEC-PRIV-001": "请求提升执行权限", "SEC-PRIV-002": "授予所有用户写权限", "SEC-EXEC-001": "下载内容直接交给解释器执行", "SEC-EXEC-002": "动态代码执行", "SEC-EXPORT-001": "联网命令引用敏感文件", "SEC-INJECT-001": "外部内容要求改写目标并执行敏感操作", "SEC-INTERNAL-001": "内网地址或身份标识", "SEC-ENDPOINT-001": "公网服务器地址暴露" },
-  reason: { header_storage_or_processing_failure: "请求或响应头保存失败", invalid_json_or_structure_budget: "JSON 不完整或超出解析栈预算，仅保留已解析的前缀", evidence_storage_unavailable: "检测快照写入失败", audit_metadata_budget: "审计元数据写入有缺口", redaction_buffer_budget: "凭据检测工作区不足，或长 URL 认证区、令牌前缀无法确认", invalid_sse_event: "流式事件无法解析，仅按文本检查", shared_encrypted_spool_budget: "共享临时空间或内存不足，正文保留有缺口", shared_working_memory_budget: "共享内存不足，部分工具参数无法完整解析", shared_detection_budget: "共享检测资源不足，风险发现可能不完整", credential_redaction_budget: "凭据匹配资源不足，检测可能不完整", body_storage_or_processing_failure: "正文存储或处理失败", body_not_complete: "正文接收未完成", unstructured_content: "非结构化或无效 JSON，仅完成文本规则检查", non_text_or_reasoning_semantics: "非文本或推理内容的语义不在规则覆盖范围", inspection_worker_failed: "检测任务失败", incomplete_body_fragment: "正文末尾不完整", incomplete_stream_fragment: "流式内容未结束，部分片段无法完整检查", stream_item_metadata_missing: "流式条目缺少工具类型或名称", credential_catalog_limit: "部分本地凭据超出支持的数量或长度范围", concurrent_inspection_limit: "并发检查数量达到上限", request_inspection_limit: "请求内容检查达到上限", response_inspection_limit: "响应内容检查达到上限", sse_event_limit: "流式事件过大", tool_argument_limit: "工具参数过大", finding_limit: "单次请求风险数量达到上限", unsupported_tool: "工具语义暂不支持", unsupported_tool_arguments: "工具参数结构暂不支持", unsupported_shell_syntax: "命令包含暂不解析的展开或复合语法", unsupported_shell_wrapper: "命令包装方式暂不支持", shell_nesting_limit: "嵌套命令达到检查上限", external_script_not_inspected: "无法观察脚本文件内容", command_semantics_not_inspected: "命令语义未覆盖", dynamic_code_not_inspected: "动态代码内容未检查", non_text_content: "包含非文本内容", opaque_content: "包含不透明或加密内容", reasoning_content_not_inspected: "推理文本已做凭据检查，推理语义未覆盖", unsupported_response_event: "包含未知响应事件，部分语义未覆盖", unsupported_response_item: "包含未知响应项", invalid_response_json: "响应无法解析为 JSON", invalid_event_json: "流式事件 JSON 无效", invalid_event_encoding: "流式事件编码无效", unterminated_sse_event: "流式事件未完整结束", missing_terminal_event: "未观察到协议结束事件", incomplete_response_item: "响应项尚未完整返回", missing_tool_start: "缺少工具调用开始事件", invalid_tool_arguments: "工具参数无法解析", response_item_limit: "响应项数量达到上限", text_item_limit: "文本项达到检查上限", response_not_complete: "响应未完整接收", request_not_inspected: "请求未进入内容检查", request_interrupted: "请求在响应前中断", daemon_restarted: "上次进程未记录请求结束", historical_context_not_visible: "引用的历史上下文未经过本次请求" },
+  reason: { inspection_coverage_unknown: "旧记录未保存检查覆盖依据", header_storage_or_processing_failure: "请求或响应头保存失败", invalid_json_or_structure_budget: "JSON 不完整或超出解析栈预算，仅保留已解析的前缀", evidence_storage_unavailable: "检测快照写入失败", audit_metadata_budget: "审计元数据写入有缺口", redaction_buffer_budget: "凭据检测工作区不足，或长 URL 认证区、令牌前缀无法确认", invalid_sse_event: "流式事件无法解析，仅按文本检查", shared_encrypted_spool_budget: "共享临时空间或内存不足，正文保留有缺口", shared_working_memory_budget: "共享内存不足，部分工具参数无法完整解析", shared_detection_budget: "共享检测资源不足，风险发现可能不完整", credential_redaction_budget: "凭据匹配资源不足，检测可能不完整", body_storage_or_processing_failure: "正文存储或处理失败", body_not_complete: "正文接收未完成", unstructured_content: "非结构化或无效 JSON，仅完成文本规则检查", non_text_or_reasoning_semantics: "非文本或推理内容的语义不在规则覆盖范围", inspection_worker_failed: "检测任务失败", incomplete_body_fragment: "正文末尾不完整", incomplete_stream_fragment: "流式内容未结束，部分片段无法完整检查", stream_item_metadata_missing: "流式条目缺少工具类型或名称", credential_catalog_limit: "部分本地凭据超出支持的数量或长度范围", concurrent_inspection_limit: "并发检查数量达到上限", request_inspection_limit: "请求内容检查达到上限", response_inspection_limit: "响应内容检查达到上限", sse_event_limit: "流式事件过大", tool_argument_limit: "工具参数过大", finding_limit: "单次请求风险数量达到上限", unsupported_tool: "工具语义暂不支持", unsupported_tool_arguments: "工具参数结构暂不支持", unsupported_shell_syntax: "命令包含暂不解析的展开或复合语法", unsupported_shell_wrapper: "命令包装方式暂不支持", shell_nesting_limit: "嵌套命令达到检查上限", external_script_not_inspected: "无法观察脚本文件内容", command_semantics_not_inspected: "命令语义未覆盖", dynamic_code_not_inspected: "动态代码内容未检查", non_text_content: "包含非文本内容", opaque_content: "包含不透明或加密内容", reasoning_content_not_inspected: "推理文本已做凭据检查，推理语义未覆盖", unsupported_response_event: "包含未知响应事件，部分语义未覆盖", unsupported_response_item: "包含未知响应项", invalid_response_json: "响应无法解析为 JSON", invalid_event_json: "流式事件 JSON 无效", invalid_event_encoding: "流式事件编码无效", unterminated_sse_event: "流式事件未完整结束", missing_terminal_event: "未观察到协议结束事件", incomplete_response_item: "响应项尚未完整返回", missing_tool_start: "缺少工具调用开始事件", invalid_tool_arguments: "工具参数无法解析", response_item_limit: "响应项数量达到上限", text_item_limit: "文本项达到检查上限", response_not_complete: "响应未完整接收", request_not_inspected: "请求未进入内容检查", request_interrupted: "请求在响应前中断", daemon_restarted: "上次进程未记录请求结束", historical_context_not_visible: "引用的历史上下文未经过本次请求" },
 };
 
 function securityLabel(group, value) { return SECURITY_LABELS[group]?.[value] || value || "未知"; }
@@ -1084,6 +1084,12 @@ function securityTime(value) { return value ? new Date(value).toLocaleString(und
 function securityInspectionLabel(record, state = record.inspectionStatus) {
   return state === "failed" && record.inspectionProgress?.active
     ? "部分步骤失败，仍在检测" : securityLabel("inspection", state);
+}
+function renderSecurityCoverage(record) {
+  const limits = record.coverageLimitations || (record.inspectionStatus === "limited" ? record.coverageReasons : []) || [];
+  const issues = record.inspectionIssues || (record.inspectionStatus !== "limited" ? record.coverageReasons : []) || [];
+  return `${issues.length ? `<p class="notice warning">检查缺口：${issues.map(reason => esc(securityLabel("reason", reason))).join("；")}</p>` : ""}
+    ${limits.length ? `<p class="notice">覆盖范围限制：${limits.map(reason => esc(securityLabel("reason", reason))).join("；")}。这些限制不表示请求中断。</p>` : ""}`;
 }
 function securityBadge(value) {
   const level = Object.hasOwn(SECURITY_LABELS.severity, value) ? value : "informational";
@@ -1208,7 +1214,7 @@ function renderSecurity() {
       ${s.result?.items?.length ? `<div class="security-sessions">${s.result.items.map(securitySessionRow).join("")}</div>` : `<div class="empty" role="status">${s.loading ? "正在读取会话…" : s.error ? "暂时无法读取记录。" : "当前筛选范围内没有审计记录。通过此代理发起请求后可在这里查看。"}</div>`}
       <div class="panel-body security-pagination"><button class="button" data-action="security-prev" ${!s.history.length || s.loading ? "disabled" : ""}>上一页</button><span class="muted">第 ${s.history.length + 1} 页 · 每页 50 个会话 / 独立记录</span><button class="button" data-action="security-next" ${!s.result?.nextCursor || s.loading ? "disabled" : ""}>下一页</button></div>
     </section>
-    <p class="muted">检查范围：已知凭据特征、已支持工具的参数与字面量命令、外部内容中的指令操纵线索。动态脚本、未知工具和资源不足时未覆盖的内容会标记覆盖不足。${s.result?.oldestAtMs ? `最早保留记录：${esc(securityTime(s.result.oldestAtMs))}。` : ""}</p>
+    <p class="muted">检查范围：已知凭据特征、已支持工具的参数与字面量命令、外部内容中的指令操纵线索。动态脚本、未知工具等显示为覆盖范围限制；正文缺失或资源不足导致未完成检查时显示检测不完整。${s.result?.oldestAtMs ? `最早保留记录：${esc(securityTime(s.result.oldestAtMs))}。` : ""}</p>
   `;
 }
 
@@ -1226,7 +1232,7 @@ function securitySessionTitle(item) {
 function securitySessionRow(item) {
   return `<button class="security-session-row" data-action="security-session" data-id="${esc(item.id)}">
     <span class="security-session-main"><strong>${esc(securitySessionTitle(item))}</strong><span class="muted">${esc(item.providerId || "未记录配置")} · ${esc(item.target ? targetLabel(item.target) : securityLabel("kind", item.kind))} · ${item.identified ? "客户端会话" : "独立记录 · 无会话标识"}</span></span>
-    <span class="security-session-count"><strong>${esc(item.requestCount || 1)} 条记录</strong><span class="muted">${item.activeCount ? `${esc(item.activeCount)} 条进行中` : item.errorCount ? `${esc(item.errorCount)} 条异常` : "已记录"}${item.incompleteCount ? ` · ${esc(item.incompleteCount)} 条待检查 / 不完整` : ""}</span></span>
+    <span class="security-session-count"><strong>${esc(item.requestCount || 1)} 条记录</strong><span class="muted">${item.activeCount ? `${esc(item.activeCount)} 条进行中` : item.errorCount ? `${esc(item.errorCount)} 条异常` : "已记录"}${item.incompleteCount ? ` · ${esc(item.incompleteCount)} 条待检查 / 不完整` : ""}${item.limitedCount ? ` · ${esc(item.limitedCount)} 条覆盖有限` : ""}</span></span>
     <span class="security-session-risk">${item.findingCount ? securityBadge(item.severity) : `<span class="muted">未发现风险</span>`}<span class="muted">${esc(item.findingCount || 0)} 项发现</span></span>
     <span class="security-session-time muted">${esc(securityTime(item.lastAtMs))}<span>查看轨迹 →</span></span>
   </button>`;
@@ -1679,7 +1685,7 @@ function renderTraceInspector() {
     <dl class="trace-facts">${[["模型", securityModelMapping(r)], ["开始", securityTime(r.at)], ["耗时", securityDuration(r.durationMs)], ["HTTP", r.httpStatus ?? "未知"], ["检查", securityInspectionLabel(r)], ["Token", r.usage ? `${r.usage.input_tokens ?? "—"} 输入 / ${r.usage.output_tokens ?? "—"} 输出` : "未报告"]].map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
     ${r.inspectionProgress?.active ? `<p role="status" class="muted">检测进度：${esc(r.inspectionProgress.processedBytes || 0)} / ${esc(r.inspectionProgress.observedBytes || r.observedBytes || 0)} 字节 · ${esc(securityInspectionLabel(r))}</p>` : ""}
     ${r.lostWrites ? `<p class="notice warning">记录到 ${esc(r.lostWrites)} 次审计写入缺口。</p>` : ""}
-    ${r.coverageReasons?.length ? `<p class="notice warning">覆盖不足：${r.coverageReasons.map(reason => esc(securityLabel("reason", reason))).join("；")}</p>` : ""}
+    ${renderSecurityCoverage(r)}
     <details class="trace-record-id"><summary>全部记录信息</summary><dl class="trace-facts">${securityRecordFacts(r).map(([k,v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>${r.coverageGaps?.length ? `<p>正文缺口范围</p><pre class="code-preview">${esc(JSON.stringify(r.coverageGaps, null, 2))}</pre>` : ""}</details>`;
   return `${tabs}<div class="trace-inspector-body">${body}</div>`;
 }
@@ -1950,6 +1956,8 @@ function renderSecurityFindings(record) {
 
 function securityRecordFacts(record) {
   const facts = [["记录 ID", record.id], ["操作", securityLabel("action", record.action)], ["配置入口", record.providerId || "本地管理"], ["发生时间", securityTime(record.at)], ["结束时间", record.finishedAt ? securityTime(record.finishedAt) : "未记录"], ["请求结果", securityLabel("outcome", record.outcome)], ["HTTP 状态", record.httpStatus ?? "未知"], ["配置修订", record.revision ?? "未知"], ["模型", securityModelMapping(record)], ["响应头耗时", record.headersMs == null ? "—" : `${record.headersMs} ms`], ["完整记录耗时", record.durationMs == null ? "—" : `${record.durationMs} ms`]];
+  if (record.responseTerminalEvent) facts.push(["响应结束依据", record.responseTerminalEvent]);
+  if (record.responseTransportState) facts.push(["响应接收", { complete: "连接完整结束", interrupted: record.responseTerminalEvent ? "收到结束事件后连接关闭" : "响应接收中断", error: "连接读取出错", not_observed: "未观察到响应" }[record.responseTransportState] || record.responseTransportState]);
   return facts;
 }
 
@@ -1959,7 +1967,7 @@ function renderSecurityDetail(record) {
     <dl class="security-facts">${facts.map(([key, value]) => `<div><dt>${esc(key)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>
     <p>${esc(securityInspectionLabel(record))}。${record.kind === "request" ? "工具真实执行状态：未知；工具结果来自客户端报告。" : "记录审计存储的完整性状态。"}</p>
     ${record.inspectionProgress ? `<p role="status">检测进度：${esc(record.inspectionProgress.processedBytes || 0)} / ${esc(record.inspectionProgress.observedBytes || record.observedBytes || 0)} 字节 · ${esc(securityInspectionLabel(record, record.inspectionProgress.state))}${record.inspectionProgress.phase === "receiving" ? "（正文接收中）" : record.inspectionProgress.phase === "queued" ? "（等待检测资源）" : ""}</p>` : ""}
-    ${record.coverageReasons?.length ? `<div class="notice warning">覆盖不足：${record.coverageReasons.map(reason => esc(securityLabel("reason", reason))).join("；")}</div>` : ""}
+    ${renderSecurityCoverage(record)}
     ${record.coverageGaps?.length ? `<details><summary>正文缺口范围</summary><pre class="code-preview">${esc(JSON.stringify(record.coverageGaps, null, 2))}</pre></details>` : ""}
     ${record.lostWrites ? `<p>记录到 ${esc(record.lostWrites)} 次审计写入缺口。</p>` : ""}
     ${record.usage && Object.keys(record.usage).length ? `<details><summary>上游报告的 Token 用量</summary><pre class="code-preview">${esc(JSON.stringify(record.usage, null, 2))}</pre></details>` : ""}

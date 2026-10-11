@@ -2008,6 +2008,25 @@ test("merged local model selection keeps its matching security hint", async () =
   assert.equal(merged.hint.hidden, false);
 });
 
+test("inspection coverage limits and missing content have distinct labels and notices", async () => {
+  const app = await controller();
+  assert.equal(app.read('securityInspectionLabel({ inspectionStatus: "limited" })'), "已检查（覆盖有限）");
+  assert.equal(app.read('securityInspectionLabel({ inspectionStatus: "partial" })'), "检测不完整");
+  let html = app.read('renderSecurityCoverage({ inspectionStatus: "limited", coverageLimitations: ["unsupported_tool", "reasoning_content_not_inspected"], inspectionIssues: [] })');
+  assert.match(html, /覆盖范围限制/);
+  assert.match(html, /推理文本已做凭据检查/);
+  assert.doesNotMatch(html, /notice warning|检查缺口/);
+  html = app.read('renderSecurityCoverage({ inspectionStatus: "partial", coverageLimitations: ["unsupported_tool"], inspectionIssues: ["body_not_complete"] })');
+  assert.match(html, /notice warning">检查缺口：正文接收未完成/);
+  assert.match(html, /覆盖范围限制：工具语义暂不支持/);
+  html = app.read('securitySessionRow({ id: "one", requestCount: 36, errorCount: 12, incompleteCount: 2, limitedCount: 34 })');
+  assert.match(html, /12 条异常/);
+  assert.match(html, /2 条待检查 \/ 不完整/);
+  assert.match(html, /34 条覆盖有限/);
+  const facts = app.read('JSON.stringify(securityRecordFacts({ outcome: "completed", responseTerminalEvent: "response.completed", responseTransportState: "interrupted" }))');
+  assert.match(facts, /收到结束事件后连接关闭/);
+});
+
 test("session trace preserves context, selects steps lazily, filters summaries and restores navigation", async () => {
   const records = [
     { id: "a", sessionKey: "session-one", kind: "request", outcome: "completed", inspectionStatus: "complete", requestPreview: "检查输入状态", responsePreview: "<script>literal</script>", clientModelId: "gpt-5.5", upstreamModelId: "<vendor-gpt>", findingCount: 0, findings: [], bodySnapshots: [] },

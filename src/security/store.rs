@@ -134,7 +134,7 @@ impl Query {
             (
                 "inspection",
                 &[
-                    "pending", "running", "complete", "partial", "failed", "skipped",
+                    "pending", "running", "complete", "limited", "partial", "failed", "skipped",
                 ][..],
             ),
             ("kind", &["request", "management", "system"][..]),
@@ -372,6 +372,7 @@ fn open(path: &Path, recover: bool) -> Result<Connection> {
         }
         db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.state','gap','$.gapReason','daemon_restarted') WHERE json_extract(data,'$.state')='receiving'",[])?;
         restore_codex_sessions(&db)?;
+        restore_security_statuses(&db)?;
     }
     maintain(&db, path)?;
     Ok(db)
@@ -433,6 +434,138 @@ fn restore_codex_sessions(db: &Connection) -> Result<()> {
                     params![record.to_string(), id],
                 )?;
             }
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn retained_terminal(
+    db: &Connection,
+    id: &str,
+    length: u64,
+    protocol: &str,
+) -> Result<Option<String>> {
+    use crate::streaming::{self, EventFramer};
+
+    let mut chunks = db.prepare("SELECT start,end,content FROM audit_body_chunks WHERE audit_id=? AND snapshot_id='response' ORDER BY start")?;
+    let mut rows = chunks.query([id])?;
+    let mut offset = 0;
+    let mut framer = EventFramer::new();
+    let mut terminal = None;
+    while let Some(row) = rows.next()? {
+        let start: u64 = row.get(0)?;
+        let end: u64 = row.get(1)?;
+        let content: String = row.get(2)?;
+        if start != offset || end != start + content.len() as u64 || end > length {
+            return Ok(None);
+        }
+        offset = end;
+        for byte in content.bytes() {
+            let Some(event) = framer.byte(byte)? else {
+                continue;
+            };
+            let data = streaming::event_data(&event)?;
+            if data.payload.len == 0 {
+                continue;
+            }
+            let Ok(info) = streaming::index(&data.payload, None) else {
+                return Ok(None);
+            };
+            let kind = config::text(&info.values["type"]).to_owned();
+            if super::status::terminal_outcome(protocol, &kind).is_some() {
+                if terminal.is_none()
+                    || matches!(
+                        kind.as_str(),
+                        "error" | "response.failed" | "response.incomplete"
+                    )
+                {
+                    terminal = Some(kind);
+                }
+            } else if terminal.is_some() && kind != "ping" {
+                return Ok(None);
+            }
+        }
+    }
+    if offset != length || framer.finish()?.is_some() {
+        return Ok(None);
+    }
+    Ok(terminal)
+}
+
+fn restore_security_statuses(db: &Connection) -> Result<()> {
+    let tx = db.unchecked_transaction()?;
+    {
+        let mut records = tx.prepare("SELECT id,data FROM audit WHERE kind='request' AND coalesce(json_extract(data,'$.statusVersion'),0)<1 ORDER BY seq")?;
+        let rows =
+            records.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, data) = row?;
+            let mut record: Value = serde_json::from_str(&data)?;
+            // Correct only settled, retained responses. Missing bytes and failed
+            // inspections never become successful based on a textual marker.
+            if record["outcome"] == "interrupted"
+                && record["inspectionStatus"] != "failed"
+                && record["requestBodyState"] == "complete"
+                && record["responseBodyState"] == "interrupted"
+                && record["captureGap"].is_null()
+                && config::array(&record["coverageGaps"]).is_empty()
+                // Saved SSE normalizes delimiters, including unfinished events.
+                // The original inspection must have confirmed no framing or parsing gaps.
+                && config::array(&record["coverageReasons"]).contains(&json!("body_not_complete"))
+                && config::array(&record["coverageReasons"]).iter().all(|reason| {
+                    *reason == "body_not_complete" || super::status::limitation(config::text(reason))
+                })
+            {
+                let manifest = tx
+                    .query_row(
+                        "SELECT data FROM audit_snapshots WHERE audit_id=? AND id='response'",
+                        [&id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok();
+                if let Some(manifest) = manifest {
+                    let mut manifest: Value = serde_json::from_str(&manifest)?;
+                    if manifest["source"] == "upstream_response"
+                        && manifest["contentMode"] == "original"
+                        && manifest["state"] == "interrupted"
+                    {
+                        if let Some(event) = manifest["byteLength"].as_u64().and_then(|len| {
+                            retained_terminal(&tx, &id, len, config::text(&record["protocol"]))
+                                .ok()
+                                .flatten()
+                        }) {
+                            record["responseTransportState"] = json!("interrupted");
+                            super::status::apply_terminal(&mut record, &event);
+                            record["responseBodyState"] = json!("complete");
+                            let reasons = config::array(&record["coverageReasons"])
+                                .iter()
+                                .filter(|r| **r != "body_not_complete")
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            record["coverageReasons"] = json!(reasons);
+                            manifest["state"] = json!("complete");
+                            tx.execute("UPDATE audit_snapshots SET data=? WHERE audit_id=? AND id='response'", params![manifest.to_string(), id])?;
+                        }
+                    }
+                }
+            }
+            super::status::classify(&mut record);
+            if record["inspectionProgress"].is_object()
+                && record["inspectionProgress"]["state"] != "failed"
+            {
+                record["inspectionProgress"]["state"] = record["inspectionStatus"].clone();
+            }
+            record["statusVersion"] = json!(1);
+            tx.execute(
+                "UPDATE audit SET outcome=?,inspection=?,data=? WHERE id=?",
+                params![
+                    record["outcome"].as_str(),
+                    record["inspectionStatus"].as_str(),
+                    record.to_string(),
+                    id
+                ],
+            )?;
         }
     }
     tx.commit()?;
@@ -836,7 +969,8 @@ fn read_sessions(
         sum(CASE WHEN coalesce(json_extract(a.data,'$.findingCount'),0)>0 THEN 1 ELSE 0 END) AS risky,
         sum(CASE WHEN a.outcome IN ('started','streaming') THEN 1 ELSE 0 END) AS active,
         sum(CASE WHEN a.outcome NOT IN ('started','streaming','completed') THEN 1 ELSE 0 END) AS errors,
-        sum(CASE WHEN a.inspection != 'complete' AND a.inspection != 'skipped' THEN 1 ELSE 0 END) AS incomplete,
+        sum(CASE WHEN a.inspection IN ('pending','running','partial','failed') THEN 1 ELSE 0 END) AS incomplete,
+        sum(CASE WHEN a.inspection = 'limited' THEN 1 ELSE 0 END) AS limited,
         sum(json_extract(a.data,'$.durationMs')) AS duration,
         max(CASE a.severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END) AS severity
         FROM audit a JOIN matching m ON m.key=coalesce(json_extract(a.data,'$.sessionKey'),a.id) WHERE a.kind = 'request' GROUP BY m.key
@@ -854,7 +988,7 @@ fn read_sessions(
     page_args.push(((query.limit + 1) as i64).into());
     let sql = format!("{cte} SELECT g.key,g.last_seq,first.data,
         json_object('firstAtMs',g.first_at,'lastAtMs',g.last_at,'requestCount',g.requests,'findingCount',g.findings,
-        'riskRecordCount',g.risky,'activeCount',g.active,'errorCount',g.errors,'incompleteCount',g.incomplete,
+        'riskRecordCount',g.risky,'activeCount',g.active,'errorCount',g.errors,'incompleteCount',g.incomplete,'limitedCount',g.limited,
         'durationMs',g.duration,'severityRank',g.severity),
         (SELECT json_extract(t.data,'$.sessionTitle') FROM audit t WHERE t.kind='request' AND coalesce(json_extract(t.data,'$.sessionKey'),t.id)=g.key AND json_extract(t.data,'$.sessionTitle') IS NOT NULL ORDER BY t.seq LIMIT 1)
         FROM grouped g JOIN audit first ON first.seq=g.first_seq {cursor} ORDER BY g.last_seq DESC LIMIT ?");
@@ -1223,6 +1357,178 @@ mod tests {
             "inspectionStatus":"complete","severity":"high","findingCount":1,
             "findings":[{"id":format!("f-{id}"),"requestId":id,"atMs":chrono::Utc::now().timestamp_millis(),
                 "category":"destructive_action","severity":"high","confidence":"high","evidenceStage":"tool_call_proposed"}]})
+    }
+
+    #[test]
+    fn startup_repairs_statuses_only_from_contiguous_framed_terminal_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let mut db = open(&path, true).unwrap();
+        for (id, content, expected) in [
+            ("completed", "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n", "completed"),
+            ("claude", "data: {\"type\":\"message_stop\"}\r\n\r\n", "completed"),
+            ("done", "data: [DONE]\n\n", "interrupted"),
+            ("done-garbage", "data: [DONE]garbage\n\n", "interrupted"),
+            ("failed", "data: {\"type\":\"response.failed\"}\n\n", "stream_error"),
+            ("incomplete", "data: {\"type\":\"response.incomplete\"}\n\n", "stream_error"),
+            ("error-done", "data: {\"type\":\"error\"}\n\ndata: [DONE]\n\n", "interrupted"),
+            ("foreign-messages", "data: {\"type\":\"message_stop\"}\n\n", "interrupted"),
+            ("foreign-responses", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("unknown-protocol", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("missing-protocol", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("reported-framing-gap", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("unframed", "data: {\"type\":\"response.completed\"}\n", "interrupted"),
+            ("item-done", "data: {\"type\":\"response.output_item.done\"}\n\n", "interrupted"),
+            ("marker-in-text", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"response.completed\"}\n\n", "interrupted"),
+            ("missing-prefix", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("wrong-length", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("capture-gap", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("worker-failed", "data: {\"type\":\"response.completed\"}\n\n", "interrupted"),
+            ("trailing-fragment", "data: {\"type\":\"response.completed\"}\n\ndata: {", "interrupted"),
+        ] {
+            let mut audit = record(id, "interrupted");
+            audit["protocol"] = json!(match id {
+                "claude" | "foreign-responses" => "anthropic.messages",
+                "unknown-protocol" => "future.protocol",
+                "missing-protocol" => "",
+                _ => "openai.responses",
+            });
+            audit["httpStatus"] = json!(200);
+            audit["requestBodyState"] = json!("complete");
+            audit["responseBodyState"] = json!("interrupted");
+            audit["inspectionStatus"] = json!(if id == "worker-failed" { "failed" } else { "partial" });
+            audit["coverageReasons"] = json!(["body_not_complete", "unsupported_tool"]);
+            if id == "reported-framing-gap" {
+                audit["coverageReasons"] = json!(["body_not_complete", "incomplete_stream_fragment", "missing_terminal_event"]);
+            }
+            if id == "capture-gap" {
+                audit["coverageGaps"] = json!([{"snapshotId":"response"}]);
+            }
+            persist(&mut db, audit).unwrap();
+            persist_body(&db, id, &json!({"id":"response","state":"receiving"})).unwrap();
+            let mid = content.len() / 2;
+            for (start, end) in [(0, mid), (mid, content.len())] {
+                persist_body(&db, id, &json!({"id":"response","start":start,"end":end,"content":&content[start..end],"annotations":[]})).unwrap();
+            }
+            persist_body(&db, id, &json!({"id":"response","source":"upstream_response","contentMode":"original","state":"interrupted","byteLength":content.len()})).unwrap();
+            if id == "missing-prefix" {
+                db.execute("DELETE FROM audit_body_chunks WHERE audit_id=? AND start=0", [id]).unwrap();
+            }
+            if id == "wrong-length" {
+                db.execute("UPDATE audit_snapshots SET data=json_set(data,'$.byteLength',999) WHERE audit_id=?", [id]).unwrap();
+            }
+            let evidence = || db.prepare("SELECT content,redactions FROM audit_body_chunks WHERE audit_id=? ORDER BY start").unwrap().query_map([id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            let before = evidence();
+            restore_security_statuses(&db).unwrap();
+            assert_eq!(before, evidence(), "{id}: body bytes and annotations stay unchanged");
+            let data: String = db.query_row("SELECT data FROM audit WHERE id=?", [id], |r| r.get(0)).unwrap();
+            let audit: Value = serde_json::from_str(&data).unwrap();
+            assert_eq!(audit["outcome"], expected, "{id}");
+            let state = if expected == "interrupted" {
+                if id == "worker-failed" { "failed" } else { "partial" }
+            } else { "limited" };
+            assert_eq!(audit["inspectionStatus"], state, "{id}");
+            let stored_state: String = db.query_row("SELECT json_extract(data,'$.state') FROM audit_snapshots WHERE audit_id=? AND id='response'", [id], |r| r.get(0)).unwrap();
+            assert_eq!(stored_state, if expected == "interrupted" { "interrupted" } else { "complete" });
+            assert_eq!(audit["findingCount"], 1);
+            assert_eq!(db.query_row("SELECT count(*) FROM findings WHERE audit_id=?", [id], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            restore_security_statuses(&db).unwrap();
+            let again: String = db.query_row("SELECT data FROM audit WHERE id=?", [id], |r| r.get(0)).unwrap();
+            assert_eq!(data, again, "{id}: repair is idempotent");
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_upgrade_delimiters_normalized_by_real_sse_capture() {
+        use crate::security::{capture::Redactor, pipeline, BodyCapture};
+        use crate::streaming::Spool;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let store = Store::start(dir.path());
+        let request = b"{\"input\":\"hello\"}";
+        let response = b"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n";
+        let spool = |bytes: &[u8]| {
+            let mut spool = Spool::new().unwrap();
+            spool.write_all(bytes).unwrap();
+            spool.seal().unwrap()
+        };
+        let mut audit = record("normalized-tail", "interrupted");
+        audit["protocol"] = json!("openai.responses");
+        audit["httpStatus"] = json!(200);
+        audit["responseBytes"] = json!(response.len());
+        audit["observedBytes"] = json!(request.len() + response.len());
+        store.write(audit.clone());
+        pipeline::run(
+            store.clone(),
+            audit,
+            json!({}),
+            Redactor::new(&json!({})),
+            BodyCapture {
+                sealed: Some(spool(request)),
+                started: true,
+                complete: true,
+                observed: request.len() as u64,
+                ..Default::default()
+            },
+            BodyCapture {
+                sealed: Some(spool(response)),
+                started: true,
+                observed: response.len() as u64,
+                ..Default::default()
+            },
+            true,
+            true,
+        );
+        store.flush().await;
+        drop(store);
+
+        let db = open(&path, false).unwrap();
+        let retained: String = db.query_row("SELECT group_concat(content,'') FROM (SELECT content FROM audit_body_chunks WHERE audit_id='normalized-tail' AND snapshot_id='response' ORDER BY start)", [], |r| r.get(0)).unwrap();
+        assert!(
+            retained.ends_with("\n\n"),
+            "the real capture fills in the missing delimiter"
+        );
+        assert_eq!(retained.len(), response.len() + 1);
+        // Recreate a pre-PR record, preserving the original capture's gap reasons.
+        db.execute("UPDATE audit SET data=json_remove(data,'$.statusVersion','$.responseTransportState','$.responseTerminalEvent','$.coverageLimitations','$.inspectionIssues') WHERE id='normalized-tail'", []).unwrap();
+        drop(db);
+
+        let db = open(&path, true).unwrap();
+        let result = read(
+            &db,
+            Query {
+                detail: Some("normalized-tail".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result["record"]["outcome"], "interrupted");
+        assert_eq!(result["record"]["responseBodyState"], "interrupted");
+        assert_eq!(result["record"]["inspectionStatus"], "partial");
+        assert!(result["record"]["responseTerminalEvent"].is_null());
+        for reason in [
+            "body_not_complete",
+            "incomplete_stream_fragment",
+            "missing_terminal_event",
+        ] {
+            assert!(
+                config::array(&result["record"]["inspectionIssues"]).contains(&json!(reason)),
+                "{reason}"
+            );
+        }
+        assert_eq!(
+            result["record"]["bodySnapshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == "response")
+                .unwrap()["state"],
+            "interrupted"
+        );
+        let after: String = db.query_row("SELECT group_concat(content,'') FROM (SELECT content FROM audit_body_chunks WHERE audit_id='normalized-tail' AND snapshot_id='response' ORDER BY start)", [], |r| r.get(0)).unwrap();
+        assert_eq!(retained, after);
     }
 
     #[test]
