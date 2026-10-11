@@ -56,9 +56,9 @@ fn matches(current: &[Value], previous: &[Value]) -> Vec<(usize, usize)> {
             next = j + 1;
         }
     }
-    // An identical last user input may be a new input or a retry. Only a later
-    // conversation item establishes that it is being carried as history.
-    let last_user = current.iter().rposition(|item| {
+    // An identical latest user input may be new or a retry. Protect all user
+    // blocks in the final message, including text followed by a tool result.
+    let last_item = current.iter().rposition(|item| {
         !matches!(
             text(&item["kind"]),
             "system" | "developer" | "tool_definition" | "reference"
@@ -68,12 +68,11 @@ fn matches(current: &[Value], previous: &[Value]) -> Vec<(usize, usize)> {
         if current[i]["kind"] != "user" {
             return true;
         }
-        let Some(last) = last_user else {
+        let Some(last) = last_item else {
             return true;
         };
         i != last
-            && !(current[last]["kind"] == "user"
-                && current[i]["messageIndex"].is_string()
+            && !(current[i]["messageIndex"].is_string()
                 && current[i]["messageIndex"] == current[last]["messageIndex"])
     });
     result
@@ -249,6 +248,14 @@ mod tests {
             json!({"fingerprint":"b","kind":"user","messageIndex":"0"}),
         ];
         assert!(matches(&blocks, &blocks).is_empty());
+        let mixed = vec![
+            json!({"fingerprint":"earlier","kind":"user","messageIndex":"0"}),
+            json!({"fingerprint":"answer","kind":"assistant","messageIndex":"1"}),
+            json!({"fingerprint":"a","kind":"user","messageIndex":"2"}),
+            json!({"fingerprint":"b","kind":"user","messageIndex":"2"}),
+            json!({"fingerprint":"tool","kind":"tool_result","messageIndex":"2"}),
+        ];
+        assert_eq!(matches(&mixed, &mixed), vec![(0, 0), (1, 1), (4, 4)]);
         let repeated = vec![
             item("a", "assistant"),
             item("x", "assistant"),

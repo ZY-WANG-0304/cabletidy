@@ -1730,22 +1730,26 @@ async function loadRetainedContent(offset, response, view) {
 
 async function loadHistoryRange(start, end, offset = start) {
   const s = state.security, record = s.detail, sequence = s.detailSequence;
-  if (!record) return;
+  const content = record?.requestContent;
+  if (!content) return;
+  const operation = { key: "requestContentOperation", token: s.requestContentOperation };
   const range = (record.historyRanges ||= {})[start] ||= {};
-  if (range.loading) return;
+  if (range.loading && range.operation === operation.token) return;
+  range.operation = operation.token;
   range.open = true; range.loading = true; range.error = null; render();
-  const current = () => record === s.detail && sequence === s.detailSequence && securityDetailVisible();
+  const current = () => record === s.detail && sequence === s.detailSequence && record.requestContent === content
+    && s[operation.key] === operation.token && record.historyRanges[start] === range && securityDetailVisible();
   try {
     const page = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset, view: "all" })}`);
     if (!current()) return;
     range.page = page;
     const loaded = (page.items || []).filter(item => item.index >= start && item.index <= end);
-    const content = record.requestContent;
     const byIndex = new Map((content.items || []).map(item => [item.index,item]));
     for (const item of loaded) byIndex.set(item.index,item);
     content.items = [...byIndex.values()];
   } catch (error) { if (current()) range.error = error.message; }
-  if (current()) { range.loading = false; render(); await loadContentRiskMarks(false); }
+  finally { if (range.operation === operation.token) range.loading = false; }
+  if (current()) { render(); await loadContentRiskMarks(false, operation); }
 }
 
 function renderTraceInspector() {

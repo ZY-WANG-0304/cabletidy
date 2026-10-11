@@ -157,7 +157,12 @@ impl Pipeline {
         let valid = learn_credentials(&spool, &mut self.redactor);
         if id == "request" && complete && valid {
             if let Ok(items) = super::content::index_spool(&spool, &mut self.record) {
-                let dependency = format!("rules-2:parser-1:{}", self.redactor.catalog_digest());
+                // Known-secret rules use the configured subset, while redaction also learns credentials.
+                let dependency = format!(
+                    "rules-2:parser-1:{}:{}",
+                    self.redactor.catalog_digest(),
+                    self.rules.secrets_digest()
+                );
                 if let Ok(prepared) = self.store.history(&self.record, items, &dependency) {
                     self.record["historyContentCount"] = json!(prepared["items"]
                         .as_array()

@@ -225,6 +225,59 @@ test("newly learned credentials invalidate completed negative checks", async t =
   assert.ok(detail.newFindingCount > 0);
 });
 
+test("configured credential changes invalidate negative checks even when the learned catalog stays unchanged", async t => {
+  const f = await fixture(t, (_req,res,body) => respond(res,body));
+  const configure = async value => {
+    const { config } = await (await f.call("api/v1/config")).json();
+    const response = await f.call("api/v1/config/commit", { baseRevision:config.revision, config, upstreamSecrets:{relay:value} });
+    assert.equal(response.status,200,await response.text());
+  };
+  const input = [{role:"user",content:"The password appears in this paragraph."},{role:"assistant",content:"Checked the paragraph"}];
+  const send = async (items, family = "configured-credential-family") => {
+    const response = await f.request({input:items,password:["password","differentpassword","Bearer password","Bearer differentpassword"]},
+      {headers:{"content-type":"application/json","session-id":family,"thread-id":"main"}});
+    assert.equal(response.status,200); await response.text();
+    const result = await f.waitFor(records => records.total === f.calls.length);
+    return (await (await f.call(`api/v1/security/audit/${result.items[0].id}`)).json()).record;
+  };
+  const paragraphFinding = record => record.findings.find(finding => finding.contentIndex === 0 && finding.ruleId === "SEC-SECRET-001");
+  await configure("differentpassword");
+  const first = await send(input);
+  assert.equal(paragraphFinding(first),undefined);
+  await configure("password");
+  const second = await send([...input,{role:"user",content:"Continue"}]);
+  assert.ok(paragraphFinding(second),"changing the configured subset invalidates the old negative result");
+  assert.equal(paragraphFinding(second).confidence,"high");
+  assert.equal(second.inspectionReuse.reusedRuleChecks,0);
+  const third = await send([...input,{role:"user",content:"Continue again"}]);
+  assert.ok(paragraphFinding(third));
+  assert.ok(third.inspectionReuse.reusedRuleChecks > 0,"unchanged configured credentials still permit reuse");
+  const control = await send(input,"fresh-configured-credential-family");
+  assert.ok(paragraphFinding(control));
+});
+
+test("Claude retries keep the latest user text visible when the message ends in a tool result", async t => {
+  const f = await fixture(t, (_req,res,body) => respondClaude(res,body), {claude:true});
+  const messages = [
+    {role:"user",content:"Review this file"},
+    {role:"assistant",content:[{type:"tool_use",id:"mixed-call",name:"Read",input:{file_path:"src/lib.rs"}}]},
+    {role:"user",content:[{type:"text",text:"Check this output carefully."},{type:"tool_result",tool_use_id:"mixed-call",content:"Client reported output"}]},
+  ];
+  const send = async items => {
+    const response = await f.request({messages:items},{headers:{"content-type":"application/json","x-claude-code-session-id":"mixed-user-family","x-claude-code-agent-id":"main"}});
+    assert.equal(response.status,200); await response.text();
+    const result = await f.waitFor(records => records.total === f.calls.length);
+    return (await (await f.call(`api/v1/security/audit/${result.items[0].id}`)).json()).record;
+  };
+  await send(messages);
+  const retry = await send(messages);
+  assert.equal(retry.requestContent.newCount,1);
+  assert.deepEqual(retry.requestContent.items.map(item => item.preview),["Check this output carefully."]);
+  assert.equal(retry.requestContent.historicalCount,3);
+  const continuation = await send([...messages,{role:"assistant",content:"Checked the output"},{role:"user",content:"Continue"}]);
+  assert.equal(continuation.requestContent.historicalCount,4,"the text becomes history once a later message follows it");
+});
+
 test("Claude overview projects content blocks, preserves Messages payloads and associates tools across pages and restart", async t => {
   const f = await fixture(t, (_req, res, body) => respondClaude(res, body), { claude: true });
   const body = claudeRequestFixture({ history: 45 });

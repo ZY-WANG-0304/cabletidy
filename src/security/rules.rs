@@ -68,6 +68,14 @@ impl Rules {
         }
     }
 
+    pub(super) fn secrets_digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut values: Vec<_> = self.secrets.iter().collect();
+        values.sort_unstable();
+        values.dedup();
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap()))
+    }
+
     fn reason(&mut self, reason: &'static str) {
         self.reasons.insert(reason);
         if let Some((_, reasons)) = &mut self.templates {
