@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { defaultConfig } from "./helpers/native.mjs";
+import { buildTargetArtifacts, defaultConfig } from "./helpers/native.mjs";
+import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const cli = path.join(process.cwd(), "bin", "cabletidy.mjs");
@@ -88,6 +89,33 @@ test("status reads existing configuration without creating secrets, backups or r
     url: "http://127.0.0.1:43210/my-relay/v1",
     enabled: true,
   }]);
+  assert.deepEqual(await fs.readdir(home), ["config.json"]);
+  assert.equal(await fs.readFile(path.join(home, "config.json"), "utf8"), contents);
+});
+
+test("status and the default command report the Claude client base URL without /v1", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-cli-claude-"));
+  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  const config = claudeConfigFixture(undefined, 43210);
+  config.bindings["claude-main"].name = "My Claude";
+  const contents = JSON.stringify(config);
+  await fs.writeFile(path.join(home, "config.json"), contents);
+  const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+  for (const args of [["status"], []]) {
+    const result = await execFileAsync(process.execPath, [cli, ...args], {
+      env: { ...process.env, CABLETIDY_HOME: home },
+    });
+    const configured = JSON.parse(result.stdout);
+    assert.equal(configured.runtime.status, "offline");
+    assert.deepEqual(configured.configurations, [{
+      id: "my-claude",
+      name: "My Claude",
+      target: "claude-code",
+      url: "http://127.0.0.1:43210/my-claude",
+      enabled: true,
+    }]);
+    assert.equal(configured.configurations[0].url, artifacts.environment.vars.ANTHROPIC_BASE_URL);
+  }
   assert.deepEqual(await fs.readdir(home), ["config.json"]);
   assert.equal(await fs.readFile(path.join(home, "config.json"), "utf8"), contents);
 });

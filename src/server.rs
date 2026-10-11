@@ -74,11 +74,17 @@ impl AppState {
         let providers: Vec<_> = entries(&config["virtualProviders"]).map(|(id, provider)| {
             let configuration_id = id.strip_prefix("cabletidy_").unwrap_or(id);
             let base = config::base_url(config, configuration_id);
+            // Anthropic clients append /v1/messages to their base URL.
+            let base_url = if provider["ingressProtocol"] == "anthropic.messages" {
+                base
+            } else {
+                format!("{base}/v1")
+            };
             json!({
                 "id": id,
                 "configurationId": configuration_id,
                 "listen": format!("{}:{}", config::url_host(text(&config["web"]["listenHost"])), config["web"]["port"]),
-                "baseUrl": format!("{base}/v1"),
+                "baseUrl": base_url,
                 "protocol": provider["ingressProtocol"],
                 "route": provider["route"],
                 "enabled": config::enabled(provider),
