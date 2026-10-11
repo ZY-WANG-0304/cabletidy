@@ -1785,7 +1785,12 @@ mod tests {
     #[test]
     fn session_summaries_separate_legacy_risks_without_rewriting_records() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db = open(&dir.path().join("audit.sqlite3"), true).unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
         for (id, version, session, count, historical) in [
             ("legacy", Some(4), "legacy-session", 2, 0),
             ("unversioned", None, "unversioned", 1, 0),
