@@ -184,6 +184,7 @@ test("top-level settings save finite and independently unlimited audit limits", 
   assert.equal(app.read("state.page"), "settings");
   assert.equal(app.node("#page-title").textContent, "设置");
   assert.match(app.node("#page-content").innerHTML, /settings-row/);
+  assert.match(app.node("#page-content").innerHTML, /name="budgetMiB"[^>]*min="16"/);
   const bindings = clone(app.persisted().bindings);
   for (const [fields, expected] of [
     [{ retentionDays: "7", budgetMiB: "64" }, { retentionDays: 7, budgetBytes: 64 * 1048576 }],
@@ -206,7 +207,7 @@ test("settings validation and revision conflicts preserve the draft without a pa
   const app = await controller();
   for (const fields of [
     { retentionDays: "0", budgetMiB: "128" }, { retentionDays: "1.5", budgetMiB: "128" },
-    { retentionDays: "7", budgetMiB: "" }, { retentionDays: "7", budgetMiB: "0.5" },
+    { retentionDays: "7", budgetMiB: "" }, { retentionDays: "7", budgetMiB: "15.9" },
   ]) {
     const form = formNode("audit-settings-form", fields);
     await app.submit(form);
@@ -269,7 +270,8 @@ for (const [key, name] of [["retentionDays", "retentionDays"], ["budgetBytes", "
   test(`${key} number and unlimited edits conflict as one setting and remain blocked until reloaded`, async () => {
     const app = await controller();
     const editor = mountSettingsEditor(app);
-    editor.input(name).value = "7";
+    const draftValue = key === "budgetBytes" ? "64" : "7";
+    editor.input(name).value = draftValue;
     app.externalUpdate(config => { config.audit[key] = null; });
     const draft = editor.form();
     await app.submit(draft);
@@ -278,7 +280,7 @@ for (const [key, name] of [["retentionDays", "retentionDays"], ["budgetBytes", "
     for (let i = 0; i < 2; i++) {
       await app.action("refresh");
       assert.equal(editor.form(), draft);
-      assert.equal(editor.input(name).value, "7");
+      assert.equal(editor.input(name).value, draftValue);
       assert.equal(editor.input(name).disabled, false);
       assert.match(draft.feedback.innerHTML, /冲突.*暂停保存/);
       await app.submit(draft);

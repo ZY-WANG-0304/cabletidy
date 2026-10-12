@@ -2276,6 +2276,8 @@ function auditStorageLabel(bytes) {
   return bytes == null ? "存储不设上限" : `存储上限 ${esc(bytes / 1048576)} MiB`;
 }
 
+const MIN_AUDIT_BUDGET_MIB = 16;
+
 function renderSettings() {
   const audit = state.config.audit;
   const storage = state.runtime?.security?.storage;
@@ -2293,7 +2295,7 @@ function renderSettings() {
         <div class="settings-row">
           <label for="audit-budget">存储上限</label>
           <div class="settings-control">
-            <div class="settings-value"><input id="audit-budget" name="budgetMiB" aria-label="存储上限（MiB）" type="number" min="1" max="${Number.MAX_SAFE_INTEGER / 1048576}" step="any" value="${esc(audit.budgetBytes == null ? 128 : audit.budgetBytes / 1048576)}" ${audit.budgetBytes == null ? "disabled" : "required"}><span>MiB</span></div>
+            <div class="settings-value"><input id="audit-budget" name="budgetMiB" aria-label="存储上限（MiB）" type="number" min="${MIN_AUDIT_BUDGET_MIB}" max="${Number.MAX_SAFE_INTEGER / 1048576}" step="any" value="${esc(audit.budgetBytes == null ? 128 : audit.budgetBytes / 1048576)}" ${audit.budgetBytes == null ? "disabled" : "required"}><span>MiB</span></div>
             <label class="settings-unlimited"><input name="storageUnlimited" aria-label="存储不设上限" type="checkbox" ${audit.budgetBytes == null ? "checked" : ""}><span>不限</span></label>
           </div>
         </div>
@@ -2324,8 +2326,8 @@ function saveAuditSettings(data) {
   if (days !== null && (!Number.isSafeInteger(days) || days < 1)) {
     throw new Error("保存周期必须是正整数天数，或选择不设上限。");
   }
-  if (bytes !== null && (!Number.isSafeInteger(bytes) || bytes < 1048576)) {
-    throw new Error("存储上限必须至少为 1 MiB，且换算后的字节数须为有效整数，或选择不设上限。");
+  if (bytes !== null && (!Number.isSafeInteger(bytes) || bytes < MIN_AUDIT_BUDGET_MIB * 1048576)) {
+    throw new Error(`存储上限必须至少为 ${MIN_AUDIT_BUDGET_MIB} MiB，且换算后的字节数须为有效整数，或选择不设上限。`);
   }
   state.candidate.audit = { ...state.candidate.audit, retentionDays: days, budgetBytes: bytes };
 }

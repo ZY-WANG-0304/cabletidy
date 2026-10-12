@@ -79,8 +79,8 @@ pub fn validate(input: &Value) -> Value {
         ),
         (
             "budgetBytes",
-            1024 * 1024,
-            "存储上限必须是至少 1 MiB 的整数字节数，或 null（不设上限）",
+            16 * 1024 * 1024,
+            "存储上限必须是至少 16 MiB 的整数字节数，或 null（不设上限）",
         ),
     ] {
         let value = &c["audit"][key];

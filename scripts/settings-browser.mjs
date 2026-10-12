@@ -96,6 +96,11 @@ try {
   await page.getByLabel("保存周期（天）", { exact: true }).fill("0");
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).evaluate(input => input.checkValidity()), false);
   await page.getByLabel("保存周期（天）", { exact: true }).fill("14");
+  const budgetInput = page.getByLabel("存储上限（MiB）", { exact: true });
+  assert.equal(await budgetInput.getAttribute("min"), "16");
+  await budgetInput.fill("15.9");
+  assert.equal(await budgetInput.evaluate(input => input.checkValidity()), false);
+  await budgetInput.fill("256");
   await page.setViewportSize({ width: 375, height: 812 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   assert.equal(await page.getByRole("button", { name: "保存设置", exact: true }).isVisible(), true);

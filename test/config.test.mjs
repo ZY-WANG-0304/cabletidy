@@ -17,7 +17,7 @@ import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 test("audit settings default independently and preserve explicit unlimited values", () => {
   assert.deepEqual(defaultConfig().audit, { retentionDays: 30, budgetBytes: 128 * 1024 * 1024 });
   for (const audit of [
-    {}, { retentionDays: 7 }, { budgetBytes: 2 * 1024 * 1024 },
+    {}, { retentionDays: 7 }, { budgetBytes: 16 * 1024 * 1024 },
     { retentionDays: null }, { budgetBytes: null }, { retentionDays: null, budgetBytes: null },
   ]) {
     const config = normalizeConfig({ audit });
@@ -38,7 +38,8 @@ test("audit settings reject malformed objects and unsafe or invalid limits", () 
     }
   }
   assert.equal(validateConfig({ audit: { retentionDays: Number.MAX_SAFE_INTEGER, budgetBytes: Number.MAX_SAFE_INTEGER } }).ok, true);
-  assert.ok(validateConfig({ audit: { budgetBytes: 1024 * 1024 - 1 } }).errors.some(({ path }) => path === "audit.budgetBytes"));
+  assert.equal(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 } }).ok, true);
+  assert.ok(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 - 1 } }).errors.some(({ path }) => path === "audit.budgetBytes"));
 });
 
 test("Claude family options support Fable and preserve existing custom values without an official whitelist", () => {
