@@ -342,3 +342,21 @@ test("files exported before cables were renamed still import", async t => {
     assert.equal((await call("/import", { bundle: invalid, preview: true })).status, 422);
   }
 });
+
+test("files holding both bindings and cables are rejected without writing config", async t => {
+  const { call, paths } = await fixture(t);
+  const before = await fs.readFile(paths.config, "utf8");
+  const { config: { cables, ...config }, ...bundle } = (await call("/export", { cableIds: ["alpha", "beta"] })).body;
+  // Split the two cables so each group is individually valid and only the conflict can reject the file.
+  const { alpha, beta } = cables;
+  for (const [format, version] of [["cabletidy.cables", 3], ["cabletidy.configuration-suites", 2]]) {
+    const conflicting = { ...bundle, format, config: { ...config, version, cables: { alpha }, bindings: { beta } } };
+    const preview = await call("/import", { bundle: conflicting, preview: true });
+    assert.equal(preview.status, 422, JSON.stringify(preview.body));
+    assert.match(preview.body.error.message, /bindings/);
+    const baseRevision = JSON.parse(before).revision;
+    const result = await call("/import", { bundle: conflicting, baseRevision, choices: { alpha: "create", beta: "create" } });
+    assert.equal(result.status, 422, JSON.stringify(result.body));
+    assert.equal(await fs.readFile(paths.config, "utf8"), before);
+  }
+});

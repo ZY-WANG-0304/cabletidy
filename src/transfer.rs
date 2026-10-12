@@ -239,6 +239,10 @@ pub fn import(
     use_credentials: bool,
 ) -> Result<(Value, Value, Value)> {
     let mut raw = bundle["config"].clone();
+    // Reject the ambiguity before any field is removed, overwritten or projected away.
+    if raw.get("bindings").is_some() && raw.get("cables").is_some() {
+        bail!("线路文件不能同时包含 bindings 和 cables");
+    }
     if bundle["format"] == LEGACY_FORMAT && bundle["version"] == 1 && raw["version"] == 2 {
         // Files exported before cables were renamed store them as bindings.
         if let Some(cables) = raw.as_object_mut().unwrap().remove("bindings") {
@@ -595,5 +599,27 @@ mod tests {
         assert_eq!(crate::validation::validate(&next)["ok"], true);
         bundle["config"]["version"] = json!(3);
         assert!(import(&c, &bundle, &Value::Null, true, false).is_err());
+    }
+
+    #[test]
+    fn files_holding_both_bindings_and_cables_are_rejected_before_projection() {
+        let c = configuration("Cable");
+        let bundle = export(&c, &json!(["cable"]), &json!({}), false).unwrap();
+        let cables = bundle["config"]["cables"].clone();
+        for (format, version) in [(FORMAT, 3), (LEGACY_FORMAT, 2)] {
+            let mut conflicting = bundle.clone();
+            conflicting["format"] = json!(format);
+            conflicting["config"]["version"] = json!(version);
+            // A second cable keeps both groups individually valid, so only the conflict can reject it.
+            conflicting["config"]["bindings"] = json!({"other": cables["cable"].clone()});
+            conflicting["config"]["bindings"]["other"]["id"] = json!("other");
+            conflicting["config"]["bindings"]["other"]["name"] = json!("Other");
+            for preview in [true, false] {
+                let error = import(&c, &conflicting, &json!({"cable":"create"}), preview, false)
+                    .expect_err("conflicting files must not import")
+                    .to_string();
+                assert!(error.contains("bindings"), "{error}");
+            }
+        }
     }
 }

@@ -46,7 +46,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 ## 线路导出与导入
 
-“配置套装”在 rc.5 之后尚未发布的源码调整中更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到一个或多个上游。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。
+“配置套装”在 rc.5 之后尚未发布的源码调整中更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到一个或多个上游。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。仍发送旧字段 `bindingId` 或 `bindingIds` 的请求会返回 `422 renamed_request_field`，不会退回默认选择，避免旧脚本看似成功却接到错误上游。
 
 在管理台的“线路”列表点击“导出线路”，勾选需要的线路后下载 JSON 文件。文件包含所选线路的客户端接入、模型映射与可选参数、路由、上游地址和认证方式；共用的路由与上游只保存一次。
 
@@ -56,7 +56,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 导入复用配置提交的校验、修订冲突检查和备份流程，文件无效时不会部分写入；预览后若本机配置已变更，需要重新预览。带可选模型设置的 Codex 线路会按本机官方目录校验，纯透传线路不依赖该目录。
 
-本地管理接口：`POST /api/v1/cables/export` 接收 `{ "cableIds": ["线路ID"], "includeCredentials": false }` 并返回线路文件；`POST /api/v1/cables/import` 接收 `{ "bundle": 文件内容, "preview": true }` 返回预览、`baseRevision` 和 `hasCredentials`，正式导入使用 `{ "bundle": 文件内容, "baseRevision": 预览修订号, "choices": { "同名的源线路ID": "update 或 create" }, "useImportedCredentials": true }`。预览中的每条线路提供 `sourceId` 和 `conflict`，所有同名线路都必须明确选择；`choices` 也可用于预览所选更新方案。含凭据的文件通过顶层 `upstreamSecrets` 保存所选上游 ID 与密钥的对应关系，不包含本机密钥引用。`includeCredentials` 默认 `false`，`useImportedCredentials` 默认 `true`。文件标识为 `cabletidy.cables`，文件版本为 `1`，内部配置版本为 `3`。旧的 `cabletidy.configuration-suites` 文件（内部配置版本 `2`）仍可导入，其中的 `bindings` 按 `cables` 读取。
+本地管理接口：`POST /api/v1/cables/export` 接收 `{ "cableIds": ["线路ID"], "includeCredentials": false }` 并返回线路文件；`POST /api/v1/cables/import` 接收 `{ "bundle": 文件内容, "preview": true }` 返回预览、`baseRevision` 和 `hasCredentials`，正式导入使用 `{ "bundle": 文件内容, "baseRevision": 预览修订号, "choices": { "同名的源线路ID": "update 或 create" }, "useImportedCredentials": true }`。预览中的每条线路提供 `sourceId` 和 `conflict`，所有同名线路都必须明确选择；`choices` 也可用于预览所选更新方案。含凭据的文件通过顶层 `upstreamSecrets` 保存所选上游 ID 与密钥的对应关系，不包含本机密钥引用。`includeCredentials` 默认 `false`，`useImportedCredentials` 默认 `true`。文件标识为 `cabletidy.cables`，文件版本为 `1`，内部配置版本为 `3`。旧的 `cabletidy.configuration-suites` 文件（内部配置版本 `2`）仍可导入，其中的 `bindings` 按 `cables` 读取；同时包含 `bindings` 和 `cables` 的文件一律拒绝，不部分导入。
 
 ## 模型透传与可选设置
 

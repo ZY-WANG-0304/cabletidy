@@ -166,6 +166,18 @@ test("target APIs select cables consistently and retired aliases return 404", as
   assert.equal(unsupported.body.cableId, "generic");
   await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
 
+  // The renamed field must be rejected instead of silently applying the first enabled cable.
+  for (const endpoint of ["/config/preview-target-artifacts", "/targets/apply", "/targets/restore"]) {
+    for (const body of [{ bindingId: "relay" }, { bindingId: "relay", cableId: "relay" }]) {
+      const renamed = await call(endpoint, body);
+      assert.equal(renamed.status, 422, `${endpoint} ${JSON.stringify(body)}`);
+      assert.equal(renamed.body.error.code, "renamed_request_field");
+      assert.match(renamed.body.error.message, /bindingId/);
+    }
+  }
+  assert.equal((await call("/cables/export", { bindingIds: ["relay"] })).body.error.code, "renamed_request_field");
+  await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
+
   const current = await call("/targets/apply", { cableId: "relay" });
   assert.equal(current.status, 200);
   assert.equal(current.body.target, "codex");

@@ -774,6 +774,16 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     if method != Method::POST {
         return Ok(error(404, "not_found", "API endpoint 不存在"));
     }
+    // Reject renamed request fields instead of falling back to a default selection.
+    for (old, new) in [("bindingId", "cableId"), ("bindingIds", "cableIds")] {
+        if body.get(old).is_some() {
+            return Ok(error(
+                422,
+                "renamed_request_field",
+                &format!("请求字段 {old} 已更名为 {new}"),
+            ));
+        }
+    }
     if path == "/api/v1/config/validate" {
         let candidate =
             config::normalize(&config::strip_presentation(body.get("config").unwrap_or(c)));
