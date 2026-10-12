@@ -11,7 +11,8 @@ const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-transfer-browser
 let app, browser;
 try {
   app = await createApplication({ paths: getPaths(home) });
-  const config = namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta" });
+  const longName = "a".repeat(40);
+  const config = namedCodexConfigFixture({ alpha: "Alpha", [longName]: longName });
   for (const provider of Object.values(config.virtualProviders)) {
     provider.models = {};
     delete provider.defaultModel;
@@ -52,7 +53,7 @@ try {
   await returnToOverview("取消");
   await openTransfer("导出配置");
   assert.equal(await page.locator('input[name="includeCredentials"]').isChecked(), false);
-  await page.locator('input[name="bindingIds"][value="beta"]').uncheck();
+  await page.locator(`input[name="bindingIds"][value="${longName}"]`).uncheck();
   const downloadReady = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载配置文件" }).click();
   const download = await downloadReady;
@@ -144,12 +145,14 @@ try {
   assert.equal(await page.locator(".suite-table").count(), 0);
   assert.equal(Object.keys((await (await fetch(`${app.url}api/v1/config`)).json()).config.bindings).length, expectedRows);
   await returnToOverview("取消");
-  await page.setViewportSize({ width: 390, height: 844 });
-  for (const name of ["导出配置", "导入配置"]) {
-    await openTransfer(name);
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-    assert.equal(overflow, false, "transfer controls should fit a mobile viewport");
-    await returnToOverview();
+  for (const width of [375, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const name of ["导出配置", "导入配置"]) {
+      await openTransfer(name);
+      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      assert.equal(scrollWidth, width, `${name} should fit a ${width}px viewport with long configuration names`);
+      await returnToOverview();
+    }
   }
   assert.deepEqual(errors, []);
   console.log("Configuration transfer browser checks passed (pages, navigation, download, selection, preview, import, errors, mobile).");

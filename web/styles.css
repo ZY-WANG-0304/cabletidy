@@ -277,9 +277,11 @@ h3 {
 
 .transfer-selection {
   display: grid;
+  min-width: 0;
   gap: 12px;
   border: 1px solid var(--line);
   padding: 16px;
+  overflow-wrap: anywhere;
 }
 
 .suite-list {
