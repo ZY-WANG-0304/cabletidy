@@ -270,16 +270,18 @@ h3 {
   gap: 8px;
 }
 
-.transfer-panel {
+.transfer-fields {
   display: grid;
   gap: 16px;
 }
 
 .transfer-selection {
   display: grid;
+  min-width: 0;
   gap: 12px;
   border: 1px solid var(--line);
   padding: 16px;
+  overflow-wrap: anywhere;
 }
 
 .suite-list {

@@ -11,7 +11,8 @@ const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-transfer-browser
 let app, browser;
 try {
   app = await createApplication({ paths: getPaths(home) });
-  const config = namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta" });
+  const longName = "a".repeat(40);
+  const config = namedCodexConfigFixture({ alpha: "Alpha", [longName]: longName });
   for (const provider of Object.values(config.virtualProviders)) {
     provider.models = {};
     delete provider.defaultModel;
@@ -24,10 +25,35 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const errors = [];
   page.on("pageerror", error => errors.push(String(error)));
+  const openTransfer = async name => {
+    await page.getByRole("button", { name, exact: true }).click();
+    assert.equal(await page.locator("#page-title").textContent(), name);
+    assert.equal(await page.locator(".suite-table, .suite-toolbar").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "返回列表", exact: true }).isVisible(), true);
+  };
+  const returnToOverview = async (name = "返回列表") => {
+    const acceptLeave = async dialog => {
+      assert.equal(dialog.type(), "confirm");
+      assert.equal(dialog.message(), "有未保存的修改，确定放弃并离开？");
+      await dialog.accept();
+    };
+    page.on("dialog", acceptLeave);
+    try {
+      await page.getByRole("button", { name, exact: true }).click();
+      await page.getByRole("heading", { name: "配置套装", exact: true }).waitFor();
+      assert.equal(await page.locator("#suite-import-form, #suite-export-form").count(), 0);
+    } finally {
+      page.off("dialog", acceptLeave);
+    }
+  };
   await page.goto(app.url);
-  await page.getByRole("button", { name: "导出配置", exact: true }).click();
+  await openTransfer("导入配置");
+  await returnToOverview();
+  await openTransfer("导出配置");
+  await returnToOverview("取消");
+  await openTransfer("导出配置");
   assert.equal(await page.locator('input[name="includeCredentials"]').isChecked(), false);
-  await page.locator('input[name="bindingIds"][value="beta"]').uncheck();
+  await page.locator(`input[name="bindingIds"][value="${longName}"]`).uncheck();
   const downloadReady = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载配置文件" }).click();
   const download = await downloadReady;
@@ -36,19 +62,33 @@ try {
   const exported = await fs.readFile(filename, "utf8");
   assert.doesNotMatch(exported, /browser-api-key|secretRef|secretConfigured/);
   assert.deepEqual(Object.keys(JSON.parse(exported).config.bindings), ["alpha"]);
-  await page.getByRole("button", { name: "导入配置", exact: true }).click();
+  assert.equal(await page.locator("#page-title").textContent(), "导出配置");
+  await returnToOverview();
+  await openTransfer("导入配置");
   await page.locator('input[type="file"]').setInputFiles(filename);
   await page.getByRole("button", { name: "预览导入" }).click();
   await page.locator('select[name="choice:alpha"]').waitFor();
-  assert.equal(await page.locator(".suite-table tbody tr").count(), 2);
+  assert.equal(await page.locator(".suite-table").count(), 0);
+  assert.equal(Object.keys((await (await fetch(`${app.url}api/v1/config`)).json()).config.bindings).length, 2);
+  await page.getByRole("button", { name: "重新选择文件", exact: true }).click();
+  await page.locator('input[type="file"]').waitFor();
+  assert.equal(await page.locator('select[name="choice:alpha"]').count(), 0);
+  assert.equal(await page.locator("#page-title").textContent(), "导入配置");
+  await page.locator('input[type="file"]').setInputFiles(filename);
+  await page.getByRole("button", { name: "预览导入" }).click();
   await page.locator('select[name="choice:alpha"]').selectOption("create");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "返回列表", exact: true }).click();
+  assert.equal(await page.locator("#page-title").textContent(), "导入配置");
+  assert.equal(await page.locator('select[name="choice:alpha"]').inputValue(), "create");
   await page.getByRole("button", { name: "确认导入" }).click();
   await page.getByRole("button", { name: "Alpha (import 2)", exact: true }).waitFor();
+  assert.equal(await page.locator("#page-title").textContent(), "配置套装");
   assert.equal(await page.locator(".suite-table tbody tr").count(), 3);
   const loaded = (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   assert.equal(loaded.upstreams.alpha.secretConfigured, true);
   assert.equal(loaded.upstreams["alpha-2"].secretConfigured, false);
-  await page.getByRole("button", { name: "导入配置", exact: true }).click();
+  await openTransfer("导入配置");
   await page.locator('input[type="file"]').setInputFiles(filename);
   await page.getByRole("button", { name: "预览导入" }).click();
   await page.locator('select[name="choice:alpha"]').selectOption("update");
@@ -59,7 +99,7 @@ try {
   assert.equal(updated.bindings.alpha.name, "Alpha");
   const route = updated.routes[updated.virtualProviders.cabletidy_alpha.route];
   assert.equal(updated.upstreams[route.backends[0].upstream].secretConfigured, true);
-  await page.getByRole("button", { name: "导出配置", exact: true }).click();
+  await openTransfer("导出配置");
   for (const checkbox of await page.locator('input[name="bindingIds"]').all()) await checkbox.uncheck();
   await page.locator('input[name="bindingIds"][value="alpha"]').check();
   await page.locator('input[name="includeCredentials"]').check();
@@ -72,10 +112,11 @@ try {
   assert.equal(credentialBundle.upstreamSecrets[sourceUpstream], "browser-api-key");
   credentialBundle.upstreamSecrets[sourceUpstream] = "imported-browser-key";
   await fs.writeFile(credentialsFilename, JSON.stringify(credentialBundle));
+  await returnToOverview();
   let expectedRows = 3;
   for (const action of ["create", "update"]) {
     for (const useCredentials of [false, true]) {
-      await page.getByRole("button", { name: "导入配置", exact: true }).click();
+      await openTransfer("导入配置");
       await page.locator('input[type="file"]').setInputFiles(credentialsFilename);
       await page.getByRole("button", { name: "预览导入" }).click();
       const checkbox = page.locator('input[name="useImportedCredentials"]');
@@ -97,18 +138,24 @@ try {
     }
   }
   // Invalid files show local feedback and do not change persisted suites.
-  await page.getByRole("button", { name: "导入配置", exact: true }).click();
+  await openTransfer("导入配置");
   await page.locator('input[type="file"]').setInputFiles({ name: "bad.json", mimeType: "application/json", buffer: Buffer.from("invalid") });
   await page.getByRole("button", { name: "预览导入" }).click();
   await page.getByText("配置套装文件不是有效的 JSON。", { exact: true }).waitFor();
-  assert.equal(await page.locator(".suite-table tbody tr").count(), expectedRows);
-  await page.getByRole("button", { name: "取消", exact: true }).click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "导出配置", exact: true }).click();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
-  assert.equal(overflow, false, "transfer controls should fit a mobile viewport");
+  assert.equal(await page.locator(".suite-table").count(), 0);
+  assert.equal(Object.keys((await (await fetch(`${app.url}api/v1/config`)).json()).config.bindings).length, expectedRows);
+  await returnToOverview("取消");
+  for (const width of [375, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    for (const name of ["导出配置", "导入配置"]) {
+      await openTransfer(name);
+      const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      assert.equal(scrollWidth, width, `${name} should fit a ${width}px viewport with long configuration names`);
+      await returnToOverview();
+    }
+  }
   assert.deepEqual(errors, []);
-  console.log("Configuration transfer browser checks passed (download, selection, preview, import, errors, mobile).");
+  console.log("Configuration transfer browser checks passed (pages, navigation, download, selection, preview, import, errors, mobile).");
 } finally {
   await browser?.close();
   await app?.close();
