@@ -20,7 +20,7 @@ export function catalogFixture() {
 
 export function codexConfigFixture() {
   return {
-    version: 2,
+    version: 3,
     upstreams: { relay: { id: "relay", name: "Relay", protocol: "openai.responses", baseUrl: "https://example.invalid/v1" } },
     routes: { route: { id: "route", backends: [{ upstream: "relay" }] } },
     virtualProviders: { cabletidy_relay: {
@@ -30,13 +30,13 @@ export function codexConfigFixture() {
         codex: { metadataMode: "official" }, upstreamModelId: "VENDOR-GPT",
       } },
     } },
-    bindings: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "gpt-5.5", codex: {} } },
+    cables: { relay: { id: "relay", name: "relay", target: "codex", virtualProvider: "cabletidy_relay", defaultModel: "gpt-5.5", codex: {} } },
   };
 }
 
 export function namedCodexConfigFixture(names) {
   const template = codexConfigFixture();
-  const config = { version: 2, upstreams: {}, routes: {}, virtualProviders: {}, bindings: {} };
+  const config = { version: 3, upstreams: {}, routes: {}, virtualProviders: {}, cables: {} };
   for (const [id, name] of Object.entries(names)) {
     config.upstreams[id] = {
       ...template.upstreams.relay, id, name: `Upstream ${id}`, baseUrl: `https://${id}.example.invalid/v1`,
@@ -46,8 +46,8 @@ export function namedCodexConfigFixture(names) {
       ...template.virtualProviders.cabletidy_relay, id: `cabletidy_${id}`, route: id,
       models: { "gpt-5.5": { ...structuredClone(template.virtualProviders.cabletidy_relay.models["gpt-5.5"]), upstreamModelId: `VENDOR-${id}` } },
     };
-    config.bindings[id] = {
-      ...template.bindings.relay, id, name, virtualProvider: `cabletidy_${id}`,
+    config.cables[id] = {
+      ...template.cables.relay, id, name, virtualProvider: `cabletidy_${id}`,
     };
   }
   return config;

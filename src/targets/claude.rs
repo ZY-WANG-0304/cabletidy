@@ -49,10 +49,15 @@ async fn read(home: &Path) -> Result<Current> {
             bail!("Claude settings changed during an interrupted apply; restore from backup before retrying.");
         }
     }
+    // Version 1 records named the owning cable bindingId.
+    if state["version"] == 1 {
+        if let Some(id) = state.as_object_mut().unwrap().remove("bindingId") {
+            state["cableId"] = id;
+            state["version"] = json!(2);
+        }
+    }
     if !state.is_null()
-        && (state["version"] != 1
-            || !state["fields"].is_object()
-            || !state["bindingId"].is_string())
+        && (state["version"] != 2 || !state["fields"].is_object() || !state["cableId"].is_string())
     {
         bail!("Invalid CableTidy ownership record");
     }
@@ -120,7 +125,7 @@ fn plan(current: &Current, vars: &Value, id: &str) -> Value {
     } else {
         next.as_object_mut().unwrap().remove("env");
     }
-    json!({"next":next,"conflicts":conflicts,"changed":changed,"state":{"version":1,"bindingId":id,"fields":fields,"hadEnv":had_env}})
+    json!({"next":next,"conflicts":conflicts,"changed":changed,"state":{"version":2,"cableId":id,"fields":fields,"hadEnv":had_env}})
 }
 fn warnings(settings: &Value, vars: &Value) -> Vec<String> {
     let mut w = Vec::new();
@@ -142,11 +147,11 @@ fn warnings(settings: &Value, vars: &Value) -> Vec<String> {
 }
 pub async fn prepare(mut a: Value, o: &Options) -> Result<Value> {
     let current = read(&o.claude_home).await?;
-    let plan = plan(&current, &a["environment"]["vars"], text(&a["bindingId"]));
+    let plan = plan(&current, &a["environment"]["vars"], text(&a["cableId"]));
     a["settingsPath"] = json!(o.claude_home.join("settings.json"));
     a["changes"] = plan["changed"].clone();
     a["canApply"] = json!(crate::config::array(&plan["conflicts"]).is_empty());
-    a["canRestore"] = json!(current.state["bindingId"] == a["bindingId"]);
+    a["canRestore"] = json!(current.state["cableId"] == a["cableId"]);
     a["conflicts"] = plan["conflicts"].clone();
     a["warnings"] = json!(warnings(&current.settings, &a["environment"]["vars"]));
     Ok(a)
@@ -216,7 +221,7 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     let lock = acquire(o).await?;
     let result = async {
         let current = read(&o.claude_home).await?;
-        let plan = plan(&current, &a["environment"]["vars"], text(&a["bindingId"]));
+        let plan = plan(&current, &a["environment"]["vars"], text(&a["cableId"]));
         let mut out = commit(&current, &plan, o, false).await?;
         out["environment"] = a["environment"].clone();
         out["warnings"] = json!(warnings(&current.settings, &a["environment"]["vars"]));
@@ -233,10 +238,10 @@ pub async fn restore(id: &str, o: &Options) -> Result<Value> {
         if current.state.is_null() {
             bail!("No Claude settings are managed by CableTidy.");
         }
-        if current.state["bindingId"] != id {
+        if current.state["cableId"] != id {
             bail!(
                 "Claude Code currently uses another CableTidy configuration: {}",
-                text(&current.state["bindingId"])
+                text(&current.state["cableId"])
             );
         }
         let plan = plan(&current, &json!({}), id);

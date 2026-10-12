@@ -51,7 +51,7 @@ test("status and the default command do not initialize an unused store or invent
     assert.match(output.runtime.liveness, /cabletidy start/);
     assert.equal(output.runtime.web, undefined);
     assert.equal(output.configRevision, undefined);
-    assert.equal(output.configurations, undefined);
+    assert.equal(output.cables, undefined);
     await assert.rejects(fs.access(home), { code: "ENOENT" });
   }
   await fs.mkdir(home);
@@ -68,7 +68,7 @@ test("status reads existing configuration without creating secrets, backups or r
   await fs.mkdir(home);
   const config = defaultConfig();
   config.web.port = 43210;
-  config.bindings = {
+  config.cables = {
     relay: { id: "relay", name: "My Relay", target: "codex", virtualProvider: "cabletidy_relay" },
   };
   config.virtualProviders = {
@@ -82,7 +82,7 @@ test("status reads existing configuration without creating secrets, backups or r
   })).stdout);
   assert.equal(configured.runtime.status, "offline");
   assert.equal(configured.runtime.web.url, "http://127.0.0.1:43210/");
-  assert.deepEqual(configured.configurations, [{
+  assert.deepEqual(configured.cables, [{
     id: "my-relay",
     name: "My Relay",
     target: "codex",
@@ -97,24 +97,24 @@ test("status and the default command report the Claude client base URL without /
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-cli-claude-"));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const config = claudeConfigFixture(undefined, 43210);
-  config.bindings["claude-main"].name = "My Claude";
+  config.cables["claude-main"].name = "My Claude";
   const contents = JSON.stringify(config);
   await fs.writeFile(path.join(home, "config.json"), contents);
-  const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+  const artifacts = buildTargetArtifacts(config, { cableId: "claude-main" });
   for (const args of [["status"], []]) {
     const result = await execFileAsync(process.execPath, [cli, ...args], {
       env: { ...process.env, CABLETIDY_HOME: home },
     });
     const configured = JSON.parse(result.stdout);
     assert.equal(configured.runtime.status, "offline");
-    assert.deepEqual(configured.configurations, [{
+    assert.deepEqual(configured.cables, [{
       id: "my-claude",
       name: "My Claude",
       target: "claude-code",
       url: "http://127.0.0.1:43210/my-claude",
       enabled: true,
     }]);
-    assert.equal(configured.configurations[0].url, artifacts.environment.vars.ANTHROPIC_BASE_URL);
+    assert.equal(configured.cables[0].url, artifacts.environment.vars.ANTHROPIC_BASE_URL);
   }
   assert.deepEqual(await fs.readdir(home), ["config.json"]);
   assert.equal(await fs.readFile(path.join(home, "config.json"), "utf8"), contents);

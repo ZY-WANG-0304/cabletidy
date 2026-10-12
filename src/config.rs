@@ -88,7 +88,7 @@ impl Paths {
 }
 pub fn defaults() -> Value {
     let audit = AuditSettings::default();
-    json!({"version":2,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}})
+    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {
@@ -111,6 +111,12 @@ fn remove(v: &mut Value, keys: &[&str]) {
 pub fn normalize(input: &Value) -> Value {
     let mut c = defaults();
     merge(&mut c, input);
+    // Version 3 renamed bindings to cables. Keep both when present so validation rejects the ambiguity.
+    if input.get("cables").is_none() {
+        if let Some(cables) = c.as_object_mut().unwrap().remove("bindings") {
+            c["cables"] = cables;
+        }
+    }
     if input.get("version").is_none()
         && (input.get("models").is_some()
             || entries(&input["virtualProviders"]).any(|(_, p)| p.get("allowedModels").is_some()))
@@ -124,7 +130,7 @@ pub fn normalize(input: &Value) -> Value {
             .unwrap_or(default);
         c[key] = json!(if key == "version" && n == 0 { 1 } else { n });
     }
-    for key in ["upstreams", "routes", "virtualProviders", "bindings"] {
+    for key in ["upstreams", "routes", "virtualProviders", "cables"] {
         if !c[key].is_object() {
             c[key] = json!({});
         }
@@ -154,6 +160,9 @@ pub fn normalize(input: &Value) -> Value {
             c = migrated;
         }
     }
+    if c["version"] == 2 {
+        c["version"] = json!(3);
+    }
     for m in c["virtualProviders"]
         .as_object_mut()
         .unwrap()
@@ -172,7 +181,7 @@ pub fn normalize(input: &Value) -> Value {
     for p in c["virtualProviders"].as_object_mut().unwrap().values_mut() {
         remove(p, &["localAuth", "listenHost", "listenPort"]);
     }
-    for b in c["bindings"].as_object_mut().unwrap().values_mut() {
+    for b in c["cables"].as_object_mut().unwrap().values_mut() {
         remove(b, &["providerFormat", "legacyCodex"]);
         if let Some(v) = b.get_mut("codex") {
             remove(
@@ -262,7 +271,7 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
             names.insert(old_id.to_owned(), name.to_owned());
             referenced.insert(old_id.to_owned());
         }
-        let claude = entries(&c["bindings"])
+        let claude = entries(&c["cables"])
             .any(|(_, b)| b["virtualProvider"] == pid && b["target"] == "claude-code");
         let p = &mut c["virtualProviders"][&pid];
         if let Some(name) = names
@@ -280,7 +289,7 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
             bail!("models.{id}: 模型设置未归属任何配置，请先关联或移除后再迁移");
         }
     }
-    for b in c["bindings"].as_object_mut().unwrap().values_mut() {
+    for b in c["cables"].as_object_mut().unwrap().values_mut() {
         if let Some(names) = names_by_provider.get(text(&b["virtualProvider"])) {
             if let Some(name) = names
                 .get(text(&b["defaultModel"]))
@@ -384,7 +393,7 @@ fn unique_renames(ids: HashMap<String, String>) -> HashMap<String, String> {
     out
 }
 fn normalize_identities(c: &mut Value) {
-    let binding_ids: HashMap<_, _> = entries(&c["bindings"])
+    let cable_ids: HashMap<_, _> = entries(&c["cables"])
         .map(|(id, b)| {
             (
                 id.clone(),
@@ -398,7 +407,7 @@ fn normalize_identities(c: &mut Value) {
         .collect();
     let provider_ids = entries(&c["virtualProviders"])
         .map(|(id, p)| {
-            let owners: Vec<_> = entries(&c["bindings"])
+            let owners: Vec<_> = entries(&c["cables"])
                 .filter(|(_, b)| b["virtualProvider"] == *id)
                 .collect();
             let new = if !p.is_object() || owners.len() > 1 {
@@ -406,7 +415,7 @@ fn normalize_identities(c: &mut Value) {
             } else {
                 let suffix = owners
                     .first()
-                    .map(|(id, _)| binding_ids[*id].clone())
+                    .map(|(id, _)| cable_ids[*id].clone())
                     .unwrap_or_else(|| {
                         configuration_id(id.strip_prefix("cabletidy_").unwrap_or(id), "codex")
                     });
@@ -415,10 +424,10 @@ fn normalize_identities(c: &mut Value) {
             (id.clone(), new)
         })
         .collect();
-    let bs = unique_renames(binding_ids);
+    let bs = unique_renames(cable_ids);
     let ps = unique_renames(provider_ids);
-    c["bindings"] = Value::Object(
-        entries(&c["bindings"])
+    c["cables"] = Value::Object(
+        entries(&c["cables"])
             .map(|(id, b)| {
                 let mut b = b.clone();
                 if b.is_object() {
@@ -716,5 +725,30 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn version_2_bindings_migrate_to_cables() {
+        let legacy = json!({
+            "version":2,
+            "revision":7,
+            "upstreams":{"relay":{"protocol":"openai.responses","baseUrl":"https://example.invalid/v1"}},
+            "routes":{"route":{"backends":[{"upstream":"relay"}]}},
+            "virtualProviders":{"cabletidy_main":{"ingressProtocol":"openai.responses","route":"route","models":{}}},
+            "bindings":{"main":{"name":"main","target":"codex","virtualProvider":"cabletidy_main","codex":{}}}
+        });
+        let c = normalize(&legacy);
+        assert_eq!(c["version"], 3);
+        assert_eq!(c["revision"], 7);
+        assert!(c.get("bindings").is_none());
+        assert_eq!(c["cables"]["main"]["virtualProvider"], "cabletidy_main");
+        assert_eq!(normalize(&c), c);
+        assert_eq!(crate::validation::validate(&legacy)["ok"], true);
+
+        let mut both = legacy.clone();
+        both["cables"] = both["bindings"].clone();
+        let check = crate::validation::validate(&both);
+        assert_eq!(check["ok"], false);
+        assert!(check["errors"].to_string().contains("bindings"));
     }
 }

@@ -1,8 +1,11 @@
-//! Portable configuration suites. Project the schema rather than copying arbitrary fields.
+//! Portable configuration cables. Project the schema rather than copying arbitrary fields.
 use crate::config::{self, array, entries, text};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+
+const FORMAT: &str = "cabletidy.cables";
+const LEGACY_FORMAT: &str = "cabletidy.configuration-suites";
 
 fn fields(v: &Value, keys: &[&str]) -> Value {
     Value::Object(
@@ -31,8 +34,7 @@ fn connection_url(v: &Value) -> Result<Value> {
     Ok(json!(url.as_str()))
 }
 fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
-    let mut out =
-        json!({"version":2,"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}});
+    let mut out = json!({"version":3,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}});
     for (id, u) in entries(&c["upstreams"]) {
         let mut u2 = fields(
             u,
@@ -103,7 +105,7 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         p2["models"] = Value::Object(models);
         out["virtualProviders"][id] = p2;
     }
-    for (id, b) in entries(&c["bindings"]) {
+    for (id, b) in entries(&c["cables"]) {
         let mut b2 = fields(
             b,
             &[
@@ -131,32 +133,32 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         if let Some(env) = b.get("env") {
             b2["env"] = fields(env, &["prefix"]);
         }
-        out["bindings"][id] = b2;
+        out["cables"][id] = b2;
     }
     Ok(out)
 }
 
 pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool) -> Result<Value> {
-    let ids = ids.as_array().context("请选择要导出的配置套装")?;
+    let ids = ids.as_array().context("请选择要导出的线路")?;
     if ids.is_empty() {
-        bail!("请至少选择一套配置");
+        bail!("请至少选择一条线路");
     }
     let mut subset =
-        json!({"version":2,"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}});
+        json!({"version":3,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}});
     for id in ids {
-        let id = id.as_str().context("配置 ID 必须是字符串")?;
-        let b = &c["bindings"][id];
+        let id = id.as_str().context("线路 ID 必须是字符串")?;
+        let b = &c["cables"][id];
         if !b.is_object() {
-            bail!("所选配置不存在，请刷新列表");
+            bail!("所选线路不存在，请刷新列表");
         }
         let pid = text(&b["virtualProvider"]);
         let p = &c["virtualProviders"][pid];
         let rid = text(&p["route"]);
         let r = &c["routes"][rid];
         if !p.is_object() || !r.is_object() {
-            bail!("配置依赖不完整");
+            bail!("线路依赖不完整");
         }
-        subset["bindings"][id] = b.clone();
+        subset["cables"][id] = b.clone();
         subset["virtualProviders"][pid] = p.clone();
         subset["routes"][rid] = r.clone();
         for backend in array(&r["backends"]) {
@@ -168,7 +170,7 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool
         }
     }
     let data = portable(&subset, include_credentials)?;
-    let mut bundle = json!({"format":"cabletidy.configuration-suites","version":1,"config":data});
+    let mut bundle = json!({"format":FORMAT,"version":1,"config":data});
     if include_credentials {
         let credentials: Map<String, Value> = entries(&subset["upstreams"])
             .filter_map(|(id, upstream)| {
@@ -221,7 +223,7 @@ fn import_name(base_name: &str, n: u64) -> String {
     loop {
         let name = format!("{prefix} (import {n})");
         // Check the complete name: trailing separators become internal when the suffix is added.
-        if config::configuration_id(&name, "suite").ends_with(&suffix) {
+        if config::configuration_id(&name, "cable").ends_with(&suffix) {
             return name;
         }
         // Even an empty prefix leaves a valid, bounded suffix (u64 has at most 20 digits).
@@ -236,45 +238,53 @@ pub fn import(
     preview: bool,
     use_credentials: bool,
 ) -> Result<(Value, Value, Value)> {
-    if bundle["format"] != "cabletidy.configuration-suites"
-        || bundle["version"] != 1
-        || bundle["config"]["version"] != 2
-    {
-        bail!("不支持的配置套装文件或版本");
+    let mut raw = bundle["config"].clone();
+    // Reject the ambiguity before any field is removed, overwritten or projected away.
+    if raw.get("bindings").is_some() && raw.get("cables").is_some() {
+        bail!("线路文件不能同时包含 bindings 和 cables");
     }
-    let raw = &bundle["config"];
-    for key in ["bindings", "virtualProviders", "routes", "upstreams"] {
+    if bundle["format"] == LEGACY_FORMAT && bundle["version"] == 1 && raw["version"] == 2 {
+        // Files exported before cables were renamed store them as bindings.
+        if let Some(cables) = raw.as_object_mut().unwrap().remove("bindings") {
+            raw["cables"] = cables;
+        }
+        raw["version"] = json!(3);
+    } else if bundle["format"] != FORMAT || bundle["version"] != 1 || raw["version"] != 3 {
+        bail!("不支持的线路文件或版本");
+    }
+    let raw = &raw;
+    for key in ["cables", "virtualProviders", "routes", "upstreams"] {
         if !raw[key].is_object() || entries(&raw[key]).any(|(_, v)| !v.is_object()) {
-            bail!("配置套装结构不合法");
+            bail!("线路文件结构不合法");
         }
     }
-    if entries(&raw["bindings"]).next().is_none() {
-        bail!("配置套装文件为空");
+    if entries(&raw["cables"]).next().is_none() {
+        bail!("线路文件为空");
     }
     // Validate before projection: malformed references must never disappear during normalization.
-    let mut validation_input = json!({"version":2});
-    for key in ["bindings", "virtualProviders", "routes", "upstreams"] {
+    let mut validation_input = json!({"version":3});
+    for key in ["cables", "virtualProviders", "routes", "upstreams"] {
         validation_input[key] = raw[key].clone();
     }
     let check = crate::validation::validate(&validation_input);
     if check["ok"] != true {
-        bail!("配置套装校验失败: {}", check["errors"]);
+        bail!("线路校验失败: {}", check["errors"]);
     }
     if let Some(credentials) = bundle.get("upstreamSecrets") {
         if !credentials.is_object()
             || entries(credentials)
                 .any(|(id, value)| raw["upstreams"].get(id).is_none() || !config::nonempty(value))
         {
-            bail!("配置套装认证凭据格式不合法");
+            bail!("线路文件认证凭据格式不合法");
         }
     }
     let source = portable(&config::normalize(raw), use_credentials)?;
     if !choices.is_null() && !choices.is_object() {
-        bail!("同名配置处理选项必须是 object");
+        bail!("同名线路处理选项必须是 object");
     }
     for (id, choice) in entries(choices) {
-        if source["bindings"].get(id).is_none() || !["update", "create"].contains(&text(choice)) {
-            bail!("同名配置处理选项不合法");
+        if source["cables"].get(id).is_none() || !["update", "create"].contains(&text(choice)) {
+            bail!("同名线路处理选项不合法");
         }
     }
     let mut result = current.clone();
@@ -286,7 +296,7 @@ pub fn import(
     let mut used_routes = entries(&current["routes"])
         .map(|(k, _)| k.clone())
         .collect();
-    let mut used_suites: HashSet<_> = entries(&current["bindings"])
+    let mut used_cables: HashSet<_> = entries(&current["cables"])
         .map(|(k, _)| k.clone())
         .chain(
             entries(&current["virtualProviders"])
@@ -299,21 +309,21 @@ pub fn import(
     let mut replaced_routes = HashSet::new();
     let mut replaced_upstreams = HashSet::new();
     // Share imported dependencies only when their retained credential references agree.
-    for (old_id, b) in entries(&source["bindings"]) {
+    for (old_id, b) in entries(&source["cables"]) {
         let base_name = b["name"]
             .as_str()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(old_id);
         let mut name = base_name.to_owned();
         let mut id = config::configuration_id(&name, old_id);
-        let existing = current["bindings"].get(&id);
+        let existing = current["cables"].get(&id);
         let conflict = existing.is_some();
         let choice = text(&choices[old_id]);
         if conflict && choice.is_empty() && !preview {
-            bail!("请选择同名配置的处理方式：更新已有配置或创建新配置");
+            bail!("请选择同名线路的处理方式：更新已有线路或创建新线路");
         }
         if !conflict && choice == "update" {
-            bail!("没有可更新的同名配置，请重新预览");
+            bail!("没有可更新的同名线路，请重新预览");
         }
         let update = conflict && choice == "update";
         let mut retained_secret_ref = String::new();
@@ -329,12 +339,12 @@ pub fn import(
             }
         }
         let mut n = 2u64;
-        while !update && used_suites.contains(&id) {
+        while !update && used_cables.contains(&id) {
             name = import_name(base_name, n);
             id = config::configuration_id(&name, old_id);
             n += 1;
         }
-        used_suites.insert(id.clone());
+        used_cables.insert(id.clone());
         let pid = format!("cabletidy_{id}");
         let mut p = source["virtualProviders"][text(&b["virtualProvider"])].clone();
         let old_rid = text(&p["route"]);
@@ -392,11 +402,11 @@ pub fn import(
         b["name"] = json!(name);
         b["virtualProvider"] = json!(pid);
         summaries.push(json!({"id":id,"name":name,"target":b["target"],"sourceId":old_id,"sourceName":base_name,"conflict":conflict,"existingName":existing.map(|b| b["name"].as_str().unwrap_or(old_id)),"action":if update {"update"} else {"create"}}));
-        result["bindings"][&id] = b;
+        result["cables"][&id] = b;
     }
     // Remove only superseded dependencies; shared connections retain their own credentials.
     for pid in replaced_providers {
-        if !entries(&result["bindings"]).any(|(_, b)| b["virtualProvider"] == pid) {
+        if !entries(&result["cables"]).any(|(_, b)| b["virtualProvider"] == pid) {
             result["virtualProviders"]
                 .as_object_mut()
                 .unwrap()
@@ -423,14 +433,14 @@ mod tests {
     use super::*;
 
     fn configuration(name: &str) -> Value {
-        let id = config::configuration_id(name, "suite");
+        let id = config::configuration_id(name, "cable");
         let pid = format!("cabletidy_{id}");
         config::normalize(&json!({
-            "version":2,
+            "version":3,
             "upstreams":{"relay":{"protocol":"openai.responses","baseUrl":"https://example.invalid/v1","secretRef":"secret://local"}},
             "routes":{"route":{"backends":[{"upstream":"relay"}]}},
             "virtualProviders":{pid.clone():{"ingressProtocol":"openai.responses","route":"route","models":{}}},
-            "bindings":{id:{"name":name,"target":"codex","virtualProvider":pid,"codex":{}}}
+            "cables":{id:{"name":name,"target":"codex","virtualProvider":pid,"codex":{}}}
         }))
     }
 
@@ -439,19 +449,15 @@ mod tests {
         let name = "\u{0130}".repeat(30);
         let c = configuration(&name);
         assert_eq!(crate::validation::validate(&c)["ok"], true);
-        let ids = json!(c["bindings"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .collect::<Vec<_>>());
+        let ids = json!(c["cables"].as_object().unwrap().keys().collect::<Vec<_>>());
         let bundle = export(&c, &ids, &json!({}), false).unwrap();
-        let (next, suites, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
-        let new_id = text(&suites[0]["id"]);
+        let (next, cables, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
+        let new_id = text(&cables[0]["id"]);
         assert!(new_id.ends_with("import-2"));
         assert_ne!(new_id, text(&ids[0]));
         assert_eq!(crate::validation::validate(&next)["ok"], true);
-        let (next, suites, _) = import(&next, &bundle, &Value::Null, true, true).unwrap();
-        assert!(text(&suites[0]["id"]).ends_with("import-3"));
+        let (next, cables, _) = import(&next, &bundle, &Value::Null, true, true).unwrap();
+        assert!(text(&cables[0]["id"]).ends_with("import-3"));
         assert_eq!(crate::validation::validate(&next)["ok"], true);
     }
 
@@ -462,10 +468,10 @@ mod tests {
         assert_eq!(crate::validation::validate(&c)["ok"], true);
         let bundle = export(&c, &json!(["alpha"]), &json!({}), false).unwrap();
         for n in 2..=4 {
-            let (next, suites, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
-            let id = text(&suites[0]["id"]);
+            let (next, cables, _) = import(&c, &bundle, &Value::Null, true, true).unwrap();
+            let id = text(&cables[0]["id"]);
             assert!(id.ends_with(&format!("import-{n}")));
-            assert!(!c["bindings"].as_object().unwrap().contains_key(id));
+            assert!(!c["cables"].as_object().unwrap().contains_key(id));
             assert_eq!(crate::validation::validate(&next)["ok"], true);
             c = next;
         }
@@ -482,7 +488,7 @@ mod tests {
         ] {
             for n in [2, 3, 100000, u64::MAX] {
                 let candidate = import_name(&name, n);
-                let id = config::configuration_id(&candidate, "suite");
+                let id = config::configuration_id(&candidate, "cable");
                 assert!(id.ends_with(&format!("import-{n}")), "{candidate}: {id}");
                 assert!(id.len() <= 54);
             }
@@ -491,26 +497,26 @@ mod tests {
 
     #[test]
     fn optional_credentials_export_only_selected_secrets_and_import_with_new_references() {
-        let mut c = configuration("Suite");
+        let mut c = configuration("Cable");
         c["upstreams"]["relay"]["baseUrl"] =
             json!("https://user:password@example.invalid/v1?key=query-key#secret");
         let secrets = json!({"secret://local":"saved-key","secret://other":"unrelated-key"});
-        let default = export(&c, &json!(["suite"]), &secrets, false).unwrap();
+        let default = export(&c, &json!(["cable"]), &secrets, false).unwrap();
         assert!(default.get("upstreamSecrets").is_none());
         assert_eq!(
             default["config"]["upstreams"]["relay"]["baseUrl"],
             "https://example.invalid/v1"
         );
-        let bundle = export(&c, &json!(["suite"]), &secrets, true).unwrap();
+        let bundle = export(&c, &json!(["cable"]), &secrets, true).unwrap();
         assert_eq!(bundle["upstreamSecrets"], json!({"relay":"saved-key"}));
         assert!(!bundle.to_string().contains("unrelated-key"));
         assert!(has_credentials(&bundle));
         for update in [false, true] {
             for use_credentials in [false, true] {
-                let choices = json!({"suite":if update {"update"} else {"create"}});
-                let (next, suites, payload) =
+                let choices = json!({"cable":if update {"update"} else {"create"}});
+                let (next, cables, payload) =
                     import(&c, &bundle, &choices, false, use_credentials).unwrap();
-                let b = &next["bindings"][text(&suites[0]["id"])];
+                let b = &next["cables"][text(&cables[0]["id"])];
                 let p = &next["virtualProviders"][text(&b["virtualProvider"])];
                 let uid = text(&next["routes"][text(&p["route"])]["backends"][0]["upstream"]);
                 let u = &next["upstreams"][uid];
@@ -529,8 +535,8 @@ mod tests {
 
     #[test]
     fn imported_credentials_are_validated_even_when_ignored() {
-        let c = configuration("Suite");
-        let mut bundle = export(&c, &json!(["suite"]), &json!({}), false).unwrap();
+        let c = configuration("Cable");
+        let mut bundle = export(&c, &json!(["cable"]), &json!({}), false).unwrap();
         for invalid in [
             json!([]),
             json!({"missing":"key"}),
@@ -538,21 +544,21 @@ mod tests {
             json!({"relay":""}),
         ] {
             bundle["upstreamSecrets"] = invalid;
-            assert!(import(&c, &bundle, &json!({"suite":"create"}), false, false).is_err());
+            assert!(import(&c, &bundle, &json!({"cable":"create"}), false, false).is_err());
         }
     }
 
     #[test]
     fn using_file_credentials_does_not_replace_a_shared_local_secret() {
-        let mut c = configuration("Suite");
-        c["bindings"]["other"] =
+        let mut c = configuration("Cable");
+        c["cables"]["other"] =
             json!({"name":"Other","target":"codex","virtualProvider":"cabletidy_other"});
-        c["virtualProviders"]["cabletidy_other"] = c["virtualProviders"]["cabletidy_suite"].clone();
+        c["virtualProviders"]["cabletidy_other"] = c["virtualProviders"]["cabletidy_cable"].clone();
         let local = json!({"secret://local":"local-key"});
-        let mut bundle = export(&c, &json!(["suite"]), &local, true).unwrap();
+        let mut bundle = export(&c, &json!(["cable"]), &local, true).unwrap();
         bundle["upstreamSecrets"]["relay"] = json!("file-key");
-        let (mut next, suites, payload) =
-            import(&c, &bundle, &json!({"suite":"update"}), false, true).unwrap();
+        let (mut next, cables, payload) =
+            import(&c, &bundle, &json!({"cable":"update"}), false, true).unwrap();
         let applied = config::apply_secrets(&mut next, &local, &json!({"upstreamSecrets":payload}));
         assert_eq!(applied["secret://local"], "local-key");
         assert_eq!(
@@ -560,7 +566,7 @@ mod tests {
             "local-key"
         );
         let provider = &next["virtualProviders"]
-            [text(&next["bindings"][text(&suites[0]["id"])]["virtualProvider"])];
+            [text(&next["cables"][text(&cables[0]["id"])]["virtualProvider"])];
         let uid = text(&next["routes"][text(&provider["route"])]["backends"][0]["upstream"]);
         assert_eq!(
             config::secret(&next["upstreams"][uid], &applied),
@@ -570,5 +576,50 @@ mod tests {
             next["virtualProviders"]["cabletidy_other"]["route"],
             "route"
         );
+    }
+
+    #[test]
+    fn legacy_configuration_suite_files_import_as_cables() {
+        let c = configuration("Cable");
+        let mut bundle = export(&c, &json!(["cable"]), &json!({}), false).unwrap();
+        assert_eq!(bundle["format"], "cabletidy.cables");
+        assert_eq!(bundle["config"]["version"], 3);
+        bundle["format"] = json!("cabletidy.configuration-suites");
+        bundle["config"]["version"] = json!(2);
+        let cables = bundle["config"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cables")
+            .unwrap();
+        bundle["config"]["bindings"] = cables;
+        let (next, cables, _) =
+            import(&c, &bundle, &json!({"cable":"create"}), false, false).unwrap();
+        assert!(next["cables"][text(&cables[0]["id"])].is_object());
+        assert!(next.get("bindings").is_none());
+        assert_eq!(crate::validation::validate(&next)["ok"], true);
+        bundle["config"]["version"] = json!(3);
+        assert!(import(&c, &bundle, &Value::Null, true, false).is_err());
+    }
+
+    #[test]
+    fn files_holding_both_bindings_and_cables_are_rejected_before_projection() {
+        let c = configuration("Cable");
+        let bundle = export(&c, &json!(["cable"]), &json!({}), false).unwrap();
+        let cables = bundle["config"]["cables"].clone();
+        for (format, version) in [(FORMAT, 3), (LEGACY_FORMAT, 2)] {
+            let mut conflicting = bundle.clone();
+            conflicting["format"] = json!(format);
+            conflicting["config"]["version"] = json!(version);
+            // A second cable keeps both groups individually valid, so only the conflict can reject it.
+            conflicting["config"]["bindings"] = json!({"other": cables["cable"].clone()});
+            conflicting["config"]["bindings"]["other"]["id"] = json!("other");
+            conflicting["config"]["bindings"]["other"]["name"] = json!("Other");
+            for preview in [true, false] {
+                let error = import(&c, &conflicting, &json!({"cable":"create"}), preview, false)
+                    .expect_err("conflicting files must not import")
+                    .to_string();
+                assert!(error.contains("bindings"), "{error}");
+            }
+        }
     }
 }

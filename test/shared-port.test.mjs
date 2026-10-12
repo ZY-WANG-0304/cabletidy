@@ -57,8 +57,8 @@ async function fixture(t, configure = () => {}) {
     ...config.virtualProviders.cabletidy_relay, id: "cabletidy_other", route: "other",
     models: { "gpt-5.5": { ...structuredClone(config.virtualProviders.cabletidy_relay.models["gpt-5.5"]), upstreamModelId: "OTHER-GPT" } }, defaultModel: "gpt-5.5",
   };
-  config.bindings.other = {
-    ...config.bindings.relay, id: "other", name: "Other", virtualProvider: "cabletidy_other", defaultModel: "gpt-5.5",
+  config.cables.other = {
+    ...config.cables.relay, id: "other", name: "Other", virtualProvider: "cabletidy_other", defaultModel: "gpt-5.5",
   };
   configure(config);
   await fs.writeFile(paths.config, JSON.stringify(config));
@@ -126,7 +126,7 @@ test("saving an API key uses it on outbound requests despite legacy environment 
   assert.equal(publicConfig.upstreams.relay.secretConfigured, true);
   assert.equal(publicConfig.upstreams.other.secretConfigured, false);
   assert.doesNotMatch(JSON.stringify(publicConfig), /envKey|stale-environment-key/);
-  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "other" });
+  const preview = await call("api/v1/config/preview-target-artifacts", { cableId: "other" });
   assert.equal(preview.status, 200);
   assert.equal(preview.body.artifacts.upstream.secretConfigured, false);
   assert.equal(Object.hasOwn(preview.body.artifacts.upstream, "envKey"), false);
@@ -158,10 +158,10 @@ test("upstream-only configuration commits, previews and relays JSON and SSE with
   delete config.routes.route.backends[0].models;
   delete config.virtualProviders.cabletidy_relay.models;
   delete config.virtualProviders.cabletidy_relay.defaultModel;
-  delete config.bindings.relay.defaultModel;
+  delete config.cables.relay.defaultModel;
   app.state.loadCodexCatalog = async () => { throw new Error("catalog unavailable"); };
   assert.equal((await commit(config)).status, 200);
-  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "relay" });
+  const preview = await call("api/v1/config/preview-target-artifacts", { cableId: "relay" });
   assert.equal(preview.status, 200);
   assert.doesNotMatch(preview.body.artifacts.files[0].contents, /^model =/m);
   assert.deepEqual((await call("relay/v1/models")).body.data, []);
@@ -201,12 +201,12 @@ test("renames and removals update shared paths without interrupting an existing 
   assert.equal(response.status, 200);
   const body = response.text();
   const candidate = structuredClone(app.state.config);
-  candidate.bindings.relay.name = "Renamed Relay";
+  candidate.cables.relay.name = "Renamed Relay";
   assert.equal((await commit(candidate)).status, 200);
   assert.equal((await call("relay/v1/models")).status, 404);
   assert.equal((await call("renamed-relay/v1/models")).status, 200);
   assert.equal((await call("other/v1/models")).status, 200);
-  const preview = await call("api/v1/config/preview-target-artifacts", { bindingId: "renamed-relay" });
+  const preview = await call("api/v1/config/preview-target-artifacts", { cableId: "renamed-relay" });
   assert.equal(preview.status, 200);
   assert.ok(preview.body.artifacts.files[0].contents.includes(`${app.url}renamed-relay/v1`));
   streams.forEach(finish => finish());
@@ -215,7 +215,7 @@ test("renames and removals update shared paths without interrupting an existing 
   assert.doesNotMatch(text, /VENDOR-GPT/);
   assert.match(text, /"model":"gpt-5.5"/);
   const removed = structuredClone(app.state.config);
-  delete removed.bindings["renamed-relay"];
+  delete removed.cables["renamed-relay"];
   delete removed.virtualProviders["cabletidy_renamed-relay"];
   assert.equal((await commit(removed)).status, 200);
   assert.equal((await call("renamed-relay/v1/models")).status, 404);
@@ -227,7 +227,7 @@ test("failed saves preserve active paths and concurrent commits still compare re
   const original = structuredClone(app.state.config);
   await fs.rmdir(paths.backups);
   const rejected = structuredClone(original);
-  rejected.bindings.relay.name = "Unpublished";
+  rejected.cables.relay.name = "Unpublished";
   for (const blockedByFile of [false, true]) {
     if (blockedByFile) await fs.writeFile(paths.backups, "block backup directory creation");
     assert.equal((await commit(rejected)).status, 500);
@@ -239,8 +239,8 @@ test("failed saves preserve active paths and concurrent commits still compare re
   await fs.mkdir(paths.backups);
   const left = structuredClone(original);
   const right = structuredClone(original);
-  left.bindings.relay.name = "First Save";
-  right.bindings.relay.name = "Second Save";
+  left.cables.relay.name = "First Save";
+  right.cables.relay.name = "Second Save";
   const outcomes = await Promise.all([commit(left), commit(right)]);
   assert.deepEqual(outcomes.map(result => result.status).sort(), [200, 409]);
   const winner = outcomes[0].status === 200 ? "first-save" : "second-save";

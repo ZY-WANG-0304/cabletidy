@@ -45,16 +45,16 @@ test("audit settings reject malformed objects and unsafe or invalid limits", () 
 
 test("Claude family options support Fable and preserve existing custom values without an official whitelist", () => {
   const config = claudeConfigFixture();
-  const binding = config.bindings["claude-main"];
+  const cable = config.cables["claude-main"];
   for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-    binding.claude.models = { [family]: "custom-client-model" };
+    cable.claude.models = { [family]: "custom-client-model" };
     assert.equal(validateConfig(config).ok, true);
-    binding.claude.models = { [family]: "" };
-    assert.ok(validateConfig(config).errors.some(({ path }) => path === `bindings.claude-main.claude.models.${family}`));
+    cable.claude.models = { [family]: "" };
+    assert.ok(validateConfig(config).errors.some(({ path }) => path === `cables.claude-main.claude.models.${family}`));
   }
-  binding.claude.models = { subagent: "sonnet" };
+  cable.claude.models = { subagent: "sonnet" };
   assert.equal(validateConfig(config).ok, true);
-  binding.claude.models = {};
+  cable.claude.models = {};
   config.virtualProviders["cabletidy_claude-main"].models = {};
   assert.equal(validateConfig(config).ok, true);
 });
@@ -63,12 +63,12 @@ test("upstream-only configurations allow empty or omitted model settings and opt
   const config = codexConfigFixture();
   config.virtualProviders.cabletidy_relay.models = {};
   delete config.virtualProviders.cabletidy_relay.defaultModel;
-  delete config.bindings.relay.defaultModel;
+  delete config.cables.relay.defaultModel;
   assert.equal(validateConfig(config).ok, true);
   assert.deepEqual(validateConfig(config).warnings, []);
   delete config.routes.route.backends[0].models;
   delete config.virtualProviders.cabletidy_relay.models;
-  config.bindings.relay.defaultModel = "unconfigured-model";
+  config.cables.relay.defaultModel = "unconfigured-model";
   config.virtualProviders.cabletidy_relay.defaultModel = "unconfigured-model";
   assert.equal(validateConfig(config).ok, true);
 });
@@ -173,13 +173,13 @@ test("legacy names and provider ports migrate to the shared listener without cha
   original.daemon = { proxyPortRange: "43101-43199" };
   original.virtualProviders.cabletidy_relay.listenHost = "127.0.0.1";
   original.virtualProviders.cabletidy_relay.listenPort = 43101;
-  original.bindings = { "codex-main": { ...original.bindings.relay, id: "codex-main", name: "My Relay", virtualProvider: "codex-main" } };
+  original.cables = { "codex-main": { ...original.cables.relay, id: "codex-main", name: "My Relay", virtualProvider: "codex-main" } };
   original.virtualProviders = { "codex-main": { ...original.virtualProviders.cabletidy_relay, id: "codex-main" } };
   const config = normalizeConfig(original);
-  assert.deepEqual(Object.keys(config.bindings), ["my-relay"]);
+  assert.deepEqual(Object.keys(config.cables), ["my-relay"]);
   assert.deepEqual(Object.keys(config.virtualProviders), ["cabletidy_my-relay"]);
-  assert.equal(config.bindings["my-relay"].id, "my-relay");
-  assert.equal(config.bindings["my-relay"].virtualProvider, "cabletidy_my-relay");
+  assert.equal(config.cables["my-relay"].id, "my-relay");
+  assert.equal(config.cables["my-relay"].virtualProvider, "cabletidy_my-relay");
   assert.equal(config.virtualProviders["cabletidy_my-relay"].id, "cabletidy_my-relay");
   assert.equal(config.virtualProviders["cabletidy_my-relay"].listenPort, undefined);
   assert.equal(config.virtualProviders["cabletidy_my-relay"].listenHost, undefined);
@@ -188,29 +188,29 @@ test("legacy names and provider ports migrate to the shared listener without cha
   assert.deepEqual(config.virtualProviders["cabletidy_my-relay"].models, original.virtualProviders["codex-main"].models);
   assert.deepEqual(config.upstreams, original.upstreams);
   assert.deepEqual(normalizeConfig(config), config);
-  assert.equal(original.bindings["codex-main"].virtualProvider, "codex-main");
+  assert.equal(original.cables["codex-main"].virtualProvider, "codex-main");
   assert.equal(validateConfig(config).ok, true);
 });
 
 test("configuration names that normalize to the same ID are rejected without losing records", () => {
   const config = codexConfigFixture();
-  config.bindings.relay.name = "My Relay";
+  config.cables.relay.name = "My Relay";
   config.virtualProviders.cabletidy_relay.name = "First provider";
-  config.bindings.second = { ...config.bindings.relay, id: "second", name: "my-relay", virtualProvider: "second" };
+  config.cables.second = { ...config.cables.relay, id: "second", name: "my-relay", virtualProvider: "second" };
   config.virtualProviders.second = { ...config.virtualProviders.cabletidy_relay, id: "second", name: "Second provider" };
   const result = validateConfig(config);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => /配置名称规范化后.*重复/.test(error.message)));
-  assert.equal(Object.keys(result.config.bindings).length, 2);
+  assert.equal(Object.keys(result.config.cables).length, 2);
   assert.equal(Object.keys(result.config.virtualProviders).length, 2);
-  assert.equal(result.config.virtualProviders[result.config.bindings.relay.virtualProvider].name, "First provider");
-  assert.equal(result.config.virtualProviders[result.config.bindings.second.virtualProvider].name, "Second provider");
+  assert.equal(result.config.virtualProviders[result.config.cables.relay.virtualProvider].name, "First provider");
+  assert.equal(result.config.virtualProviders[result.config.cables.second.virtualProvider].name, "Second provider");
   assert.deepEqual(normalizeConfig(result.config), result.config);
 });
 
-test("multiple bindings cannot share a Virtual Provider", () => {
+test("multiple cables cannot share a Virtual Provider", () => {
   const config = codexConfigFixture();
-  config.bindings.second = { ...config.bindings.relay, id: "second", name: "Second" };
+  config.cables.second = { ...config.cables.relay, id: "second", name: "Second" };
   const result = validateConfig(config);
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((error) => /配置与 Virtual Provider 必须一对一/.test(error.message)));
@@ -220,9 +220,9 @@ test("multiple bindings cannot share a Virtual Provider", () => {
 
 test("identity migration can swap keys without overwriting either provider", () => {
   const config = codexConfigFixture();
-  config.bindings.relay.name = "Second";
+  config.cables.relay.name = "Second";
   config.virtualProviders.cabletidy_relay.name = "First provider";
-  config.bindings.second = { ...config.bindings.relay, id: "second", name: "Relay", virtualProvider: "cabletidy_second" };
+  config.cables.second = { ...config.cables.relay, id: "second", name: "Relay", virtualProvider: "cabletidy_second" };
   config.virtualProviders.cabletidy_second = { ...config.virtualProviders.cabletidy_relay, id: "cabletidy_second", name: "Second provider" };
   const result = validateConfig(config);
   assert.equal(result.ok, true, JSON.stringify(result.errors));
@@ -233,23 +233,23 @@ test("identity migration can swap keys without overwriting either provider", () 
 
 test("non-ASCII configuration names retain a stable fallback ID", () => {
   const config = codexConfigFixture();
-  config.bindings.relay.name = "开发配置";
+  config.cables.relay.name = "开发配置";
   const normalized = normalizeConfig(config);
-  assert.equal(normalized.bindings.relay.name, "开发配置");
-  assert.equal(normalized.bindings.relay.virtualProvider, "cabletidy_relay");
+  assert.equal(normalized.cables.relay.name, "开发配置");
+  assert.equal(normalized.cables.relay.virtualProvider, "cabletidy_relay");
   assert.deepEqual(normalizeConfig(normalized), normalized);
   assert.equal(validateConfig(normalized).ok, true);
 });
 
 test("configuration paths cannot shadow the management API namespace", () => {
   const config = codexConfigFixture();
-  config.bindings.relay.name = "API";
+  config.cables.relay.name = "API";
   const result = validateConfig(config);
   assert.equal(result.ok, false);
-  assert.ok(result.errors.some(error => error.path === "bindings.api.name" && /保留路径/.test(error.message)));
+  assert.ok(result.errors.some(error => error.path === "cables.api.name" && /保留路径/.test(error.message)));
 });
 
-test("provider models inherit the configuration upstream instead of storing separate bindings", () => {
+test("provider models inherit the configuration upstream instead of storing separate cables", () => {
   const config = codexConfigFixture();
   config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreams = { other: { upstreamModelId: "other" } };
   const result = validateConfig(config);
@@ -294,7 +294,7 @@ test("prototype Codex fields are discarded without migration and old target form
     delete original.virtualProviders.cabletidy_relay.models["gpt-5.5"].clientModelId;
     Object.assign(original.virtualProviders.cabletidy_relay.models["gpt-5.5"], metadata);
     original.upstreams.relay.providerFormat = "codex.toml.v1";
-    Object.assign(original.bindings.relay, {
+    Object.assign(original.cables.relay, {
       providerFormat: "codex.toml.v1",
       targetFormat: "codex.toml.v1",
       codex: { profileFiles: ["../escape.toml"], sourceUpstream: "relay", sourceProviderId: "legacy" },
@@ -303,16 +303,16 @@ test("prototype Codex fields are discarded without migration and old target form
 
     const { config, ok, errors } = validateConfig(original);
     assert.equal(config.upstreams.relay.integration, undefined);
-    assert.equal(config.bindings.relay.integration, undefined);
+    assert.equal(config.cables.relay.integration, undefined);
     for (const field of ["clientModelId", "contextWindow", "compact", "personality"]) {
       assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"][field], undefined, field);
     }
-    assert.deepEqual(config.bindings.relay.codex, {});
+    assert.deepEqual(config.cables.relay.codex, {});
     assert.doesNotMatch(JSON.stringify(config), /profileFile|profileId|targetOverrides|legacyCodex|providerFormat/);
-    assert.equal(config.bindings.relay.targetFormat, "codex.toml.v1");
+    assert.equal(config.cables.relay.targetFormat, "codex.toml.v1");
     assert.equal(ok, false);
-    assert.ok(errors.some((error) => error.path === "bindings.relay.targetFormat"));
-    config.bindings.relay.targetFormat = "codex.config.toml.v1";
+    assert.ok(errors.some((error) => error.path === "cables.relay.targetFormat"));
+    config.cables.relay.targetFormat = "codex.config.toml.v1";
     assert.equal(validateConfig(config).ok, true);
   }
 });
@@ -356,7 +356,7 @@ test("validation reports malformed graph nodes instead of throwing", () => {
         models: { broken: null },
       },
     },
-    bindings: { broken: null },
+    cables: { broken: null },
   });
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((item) => item.path === "upstreams.broken"));
@@ -372,12 +372,12 @@ test("legacy local auth is discarded without changing upstream secrets or genera
       codex: { listenHost: "127.0.0.1", localAuth: { secretRef: "secret://virtual-providers/codex" } },
       fresh: { listenHost: "127.0.0.1" },
     },
-    bindings: { codex: { codex: { localEnvKey: "LEGACY_KEY", providerId: "cabletidy_relay" } } },
+    cables: { codex: { codex: { localEnvKey: "LEGACY_KEY", providerId: "cabletidy_relay" } } },
   };
   const config = normalizeConfig(legacy);
   assert.equal(config.virtualProviders.cabletidy_codex.localAuth, undefined);
-  assert.equal(config.bindings.codex.codex.localEnvKey, undefined);
-  assert.equal(config.bindings.codex.codex.providerId, undefined);
+  assert.equal(config.cables.codex.codex.localEnvKey, undefined);
+  assert.equal(config.cables.codex.codex.providerId, undefined);
   assert.ok(legacy.virtualProviders.codex.localAuth);
   const secrets = {
     "secret://upstreams/relay": "upstream-key",

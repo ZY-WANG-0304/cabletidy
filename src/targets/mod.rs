@@ -48,20 +48,20 @@ pub fn digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
 }
-pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> {
+pub fn build(input: &Value, cable_id: &str, secrets: &Value) -> Result<Value> {
     let mut names = std::collections::HashSet::new();
-    for (id, b) in entries(&input["bindings"]) {
+    for (id, b) in entries(&input["cables"]) {
         let name = configuration_id(text(&b["name"]), id);
         if !names.insert(name.clone()) {
             bail!("配置名称规范化后重复: {name}");
         }
     }
-    let requested = input["bindings"]
-        .get(binding_id)
-        .map(|b| configuration_id(text(&b["name"]), binding_id))
-        .unwrap_or_else(|| binding_id.to_owned());
+    let requested = input["cables"]
+        .get(cable_id)
+        .map(|b| configuration_id(text(&b["name"]), cable_id))
+        .unwrap_or_else(|| cable_id.to_owned());
     let c = normalize(input);
-    let (id, b) = entries(&c["bindings"])
+    let (id, b) = entries(&c["cables"])
         .find(|(id, b)| {
             if requested.is_empty() {
                 b["enabled"] != false
@@ -69,13 +69,13 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
                 id.as_str() == requested || b["id"] == requested
             }
         })
-        .context("找不到 Target binding")?;
+        .context("找不到线路")?;
     let p = &c["virtualProviders"][text(&b["virtualProvider"])];
     if !p.is_object() {
-        bail!("Binding 引用的 Virtual Provider 不存在");
+        bail!("线路引用的 Virtual Provider 不存在");
     }
     if p["id"] != format!("cabletidy_{id}")
-        || entries(&c["bindings"])
+        || entries(&c["cables"])
             .filter(|(_, b)| b["virtualProvider"] == p["id"])
             .count()
             != 1
@@ -108,19 +108,19 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
         }
         let u = &c["upstreams"][text(&backends[0]["upstream"])];
         if !u.is_object() {
-            bail!("找不到 binding 对应的 upstream");
+            bail!("找不到线路对应的 upstream");
         }
         let provider = text(&p["id"]);
         let active=format!("# >>> CABLETIDY MANAGED ACTIVE PROVIDER {provider} -->\nmodel_provider = {}\n{}# <<< CABLETIDY MANAGED ACTIVE PROVIDER {provider} <--\n",json!(provider),default.as_ref().map(|d|format!("model = {}\n",json!(d))).unwrap_or_default());
         let provider_contents=format!("# >>> CABLETIDY MANAGED PROVIDER {provider} -->\n[model_providers.{provider}]\nname = {}\nbase_url = {}\nwire_api = \"responses\"\nrequires_openai_auth = false\n# <<< CABLETIDY MANAGED PROVIDER {provider} <--\n",json!(format!("CableTidy / {}",text(u.get("name").unwrap_or(&u["id"])))),json!(format!("{base}/v1")));
         return Ok(
-            json!({"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","bindingId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"files":[{"path":"config.toml","contents":format!("{active}\n{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
+            json!({"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","cableId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"files":[{"path":"config.toml","contents":format!("{active}\n{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
         );
     }
     let mut vars = json!({});
     if target == "claude-code" {
         if p["ingressProtocol"] != "anthropic.messages" {
-            bail!("Claude Code binding 必须连接 anthropic.messages Virtual Provider");
+            bail!("Claude Code 线路必须连接 anthropic.messages Virtual Provider");
         }
         vars = json!({"ANTHROPIC_BASE_URL":base,"ANTHROPIC_AUTH_TOKEN":"cabletidy-local","ANTHROPIC_API_KEY":"","CLAUDE_CODE_OAUTH_TOKEN":"","ANTHROPIC_CUSTOM_HEADERS":"","CLAUDE_CODE_USE_BEDROCK":"0","CLAUDE_CODE_USE_VERTEX":"0","CLAUDE_CODE_USE_FOUNDRY":"0","CLAUDE_CODE_USE_ANTHROPIC_AWS":"0","CLAUDE_CODE_USE_MANTLE":"0","CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY":if b["claude"]["discoverModels"]==true{"1"}else{"0"}});
         if b["claude"]["setModel"] != false {
@@ -158,7 +158,7 @@ pub fn build(input: &Value, binding_id: &str, secrets: &Value) -> Result<Value> 
         .map(|(key, v)| format!("export {key}='{}'", text(v).replace('\'', "'\\''")))
         .collect::<Vec<_>>()
         .join("\n");
-    let mut out = json!({"format":if target=="claude-code"{"claude.settings.json.v1"}else{"generic.env.v1"},"target":target,"mode":"managed_proxy","bindingId":id,"virtualProviderId":p["id"],"clientModelId":default,"files":[],"environment":{"vars":vars,"shell":shell}});
+    let mut out = json!({"format":if target=="claude-code"{"claude.settings.json.v1"}else{"generic.env.v1"},"target":target,"mode":"managed_proxy","cableId":id,"virtualProviderId":p["id"],"clientModelId":default,"files":[],"environment":{"vars":vars,"shell":shell}});
     if target == "claude-code" {
         out["files"] = json!([{"path":"cabletidy-claude.settings.json","kind":"json","contents":format!("{}\n",serde_json::to_string_pretty(&json!({"env":vars}))?)}]);
         out["requiredEndpoints"] = claude_endpoints();

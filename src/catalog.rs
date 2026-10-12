@@ -288,7 +288,7 @@ pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> 
     Ok((original.clone(), out))
 }
 pub fn model_ids(c: &Value) -> BTreeSet<(String, String)> {
-    entries(&c["bindings"])
+    entries(&c["cables"])
         .filter(|(_, b)| b["target"] == "codex")
         .flat_map(|(_, b)| {
             let pid = text(&b["virtualProvider"]);

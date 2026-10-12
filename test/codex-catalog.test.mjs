@@ -14,7 +14,7 @@ async function fixture(t) {
   t.after(() => fs.rm(codexHome, { recursive: true, force: true }));
   return {
     config: normalizeConfig(codexConfigFixture()),
-    options: { codexHome, bindingId: "relay", paths: { backups: path.join(codexHome, "backups") }, loadCatalog: async () => catalogFixture() },
+    options: { codexHome, cableId: "relay", paths: { backups: path.join(codexHome, "backups") }, loadCatalog: async () => catalogFixture() },
     root: path.join(codexHome, "config.toml"),
   };
 }
@@ -59,7 +59,7 @@ test("passthrough can be applied without a model catalog and preserves the clien
   const { config, options, root } = await fixture(t);
   config.virtualProviders.cabletidy_relay.models = {};
   delete config.virtualProviders.cabletidy_relay.defaultModel;
-  delete config.bindings.relay.defaultModel;
+  delete config.cables.relay.defaultModel;
   options.loadCatalog = async () => { throw new Error("catalog must not be needed"); };
   let artifacts = await prepareCodexArtifacts(config, options);
   assert.equal(readCodexConfig(artifacts.files[0].contents).model, undefined);
@@ -81,7 +81,7 @@ test("metadata-only settings preserve names and restore the original catalog aft
   enableOverrides(config);
   delete config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId;
   delete config.virtualProviders.cabletidy_relay.defaultModel;
-  delete config.bindings.relay.defaultModel;
+  delete config.cables.relay.defaultModel;
   const artifacts = await prepareCodexArtifacts(config, options);
   assert.equal(JSON.parse(artifacts.files[1].contents).models[0].context_window, 128000);
   assert.equal(readCodexConfig(artifacts.files[0].contents).model, "gpt-5.6-sol");
@@ -177,12 +177,12 @@ test("only changed Codex models require validation; saved legacy models are not 
 
 test("switching a configuration to Codex validates its models even when their settings are unchanged", async () => {
   const previous = normalizeConfig(codexConfigFixture());
-  previous.bindings.relay.target = "claude-code";
+  previous.cables.relay.target = "claude-code";
   previous.virtualProviders.cabletidy_relay.ingressProtocol = "anthropic.messages";
   previous.upstreams.relay.protocol = "anthropic.messages";
   previous.virtualProviders.cabletidy_relay.models = { "custom-client": {} };
   const candidate = structuredClone(previous);
-  candidate.bindings.relay.target = "codex";
+  candidate.cables.relay.target = "codex";
   candidate.virtualProviders.cabletidy_relay.ingressProtocol = "openai.responses";
   candidate.upstreams.relay.protocol = "openai.responses";
   const errors = await validateCodexChanges(candidate, previous, async () => catalogFixture());
@@ -196,8 +196,8 @@ test("configuration name swaps compare each provider's own models", async () => 
     provider.models = { "legacy-alias": provider.models["gpt-5.5"] };
   }
   const candidate = structuredClone(previous);
-  candidate.bindings.first.name = "second";
-  candidate.bindings.second.name = "first";
+  candidate.cables.first.name = "second";
+  candidate.cables.second.name = "first";
   const renamed = normalizeConfig(candidate);
   const load = async () => catalogFixture();
   assert.deepEqual(await validateCodexChanges(renamed, previous, load), []);
@@ -215,18 +215,18 @@ for (const scenario of ["copied route", "shared route", "ambiguous old route", "
       previous.virtualProviders.cabletidy_unused = structuredClone(previous.virtualProviders.cabletidy_relay);
       previous.virtualProviders.cabletidy_unused.id = "cabletidy_unused";
     }
-    if (scenario === "switch target") previous.bindings.relay.target = "generic-env";
+    if (scenario === "switch target") previous.cables.relay.target = "generic-env";
     const candidate = structuredClone(previous);
     if (scenario === "copied route" || scenario === "shared route") {
-      candidate.bindings.copy = { ...candidate.bindings.relay, id: "copy", name: "copy", virtualProvider: "cabletidy_copy" };
+      candidate.cables.copy = { ...candidate.cables.relay, id: "copy", name: "copy", virtualProvider: "cabletidy_copy" };
       candidate.virtualProviders.cabletidy_copy = { ...structuredClone(candidate.virtualProviders.cabletidy_relay), id: "cabletidy_copy" };
       if (scenario === "copied route") {
         candidate.routes.copy = structuredClone(candidate.routes.route);
         candidate.virtualProviders.cabletidy_copy.route = "copy";
       }
     } else {
-      candidate.bindings.relay.name = "Renamed";
-      candidate.bindings.relay.target = "codex";
+      candidate.cables.relay.name = "Renamed";
+      candidate.cables.relay.target = "codex";
       if (scenario === "ambiguous old route") delete candidate.virtualProviders.cabletidy_unused;
       if (scenario === "changed route") candidate.routes.route.backends[0].enabled = false;
     }
@@ -330,12 +330,12 @@ test("catalog apply keeps foreign entries and restores the original catalog and 
   assert.equal(settings.model_context_window, 64000);
 });
 
-test("switching to a suite without overrides restores absent root settings", async (t) => {
+test("switching to a cable without overrides restores absent root settings", async (t) => {
   const { config, options, root } = await fixture(t);
   enableOverrides(config);
   await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
   restoreOfficial(config);
-  config.bindings.relay.name = "other";
+  config.cables.relay.name = "other";
   await applyCodexArtifacts(await prepareCodexArtifacts(config, options), options);
   const settings = readCodexConfig(await fs.readFile(root, "utf8"));
   assert.equal(settings.model_catalog_json, undefined);

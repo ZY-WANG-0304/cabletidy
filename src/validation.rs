@@ -51,9 +51,14 @@ pub fn validate(input: &Value) -> Value {
         }
     }
     check!(
-        c["version"] == 2,
+        c["version"] == 3,
         "version",
-        "只支持 version = 2（version = 1 自动迁移）"
+        "只支持 version = 3（旧版本自动迁移）"
+    );
+    check!(
+        c.get("bindings").is_none(),
+        "bindings",
+        "bindings 已更名为 cables，不能与 cables 同时存在"
     );
     check!(
         c.get("models").is_none(),
@@ -293,12 +298,12 @@ pub fn validate(input: &Value) -> Value {
     }
     let mut names = HashMap::new();
     let mut owners = HashMap::new();
-    for (key, b) in entries(&c["bindings"]) {
-        let p = format!("bindings.{key}");
+    for (key, b) in entries(&c["cables"]) {
+        let p = format!("cables.{key}");
         let name = configuration_id(text(&b["name"]), key);
         let provider = text(&b["virtualProvider"]);
-        check!(b.is_object(), p, "Binding 必须是 object");
-        check!(id(key), p, "Binding ID 包含非法字符");
+        check!(b.is_object(), p, "线路必须是 object");
+        check!(id(key), p, "线路 ID 包含非法字符");
         check!(
             name != "api",
             format!("{p}.name"),
@@ -345,7 +350,7 @@ pub fn validate(input: &Value) -> Value {
                 check!(
                     pv["ingressProtocol"] == protocol,
                     format!("{p}.virtualProvider"),
-                    format!("{target} binding 必须连接 {protocol} Virtual Provider")
+                    format!("{target} 线路必须连接 {protocol} Virtual Provider")
                 );
             }
         }
@@ -379,14 +384,14 @@ pub fn validate(input: &Value) -> Value {
                 check!(
                     v == "codex.config.toml.v1",
                     format!("{p}.targetFormat"),
-                    "Codex binding 必须使用本地 config.toml 接入"
+                    "Codex 线路必须使用本地 config.toml 接入"
                 );
             }
             if b["target"] == "claude-code" {
                 check!(
                     ["claude.env.v1", "claude.settings.json.v1"].contains(&text(v)),
                     format!("{p}.targetFormat"),
-                    "Claude Code binding 必须使用 Claude settings 或 env 接入"
+                    "Claude Code 线路必须使用 Claude settings 或 env 接入"
                 );
             }
         }

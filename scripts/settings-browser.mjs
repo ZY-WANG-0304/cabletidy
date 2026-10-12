@@ -153,7 +153,7 @@ try {
 
   await commit(defaults);
   await refresh();
-  await page.getByRole("button", { name: "配置套装", exact: true }).click();
+  await page.getByRole("button", { name: "线路", exact: true }).click();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const historyNavigation = async (direction, accept) => {
     const handled = new Promise(resolve => page.once("dialog", async dialog => {

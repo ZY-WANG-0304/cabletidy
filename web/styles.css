@@ -257,14 +257,14 @@ h3 {
   padding: 0 28px 36px;
 }
 
-.suite-toolbar {
+.cable-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
 }
 
-.suite-toolbar-actions {
+.cable-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -284,28 +284,28 @@ h3 {
   overflow-wrap: anywhere;
 }
 
-.suite-list {
+.cable-list {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
 }
 
-.suite-table {
+.cable-table {
   width: 100%;
   border-collapse: collapse;
   text-align: left;
   font-size: 13px;
 }
 
-.suite-table th,
-.suite-table td {
+.cable-table th,
+.cable-table td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
   font-weight: 400;
 }
 
-.suite-table thead th {
+.cable-table thead th {
   padding-block: 9px;
   color: var(--muted);
   background: var(--paper);
@@ -313,19 +313,19 @@ h3 {
   font-size: 12px;
 }
 
-.suite-table tbody tr:last-child > * {
+.cable-table tbody tr:last-child > * {
   border-bottom: 0;
 }
 
-.suite-table tbody tr:hover {
+.cable-table tbody tr:hover {
   background: var(--paper);
 }
 
-.suite-table tbody th {
+.cable-table tbody th {
   width: 32%;
 }
 
-.suite-name {
+.cable-name {
   padding: 0;
   border: 0;
   color: var(--ink);
@@ -335,12 +335,12 @@ h3 {
   overflow-wrap: anywhere;
 }
 
-.suite-name:hover {
+.cable-name:hover {
   color: var(--accent);
   text-decoration: underline;
 }
 
-.suite-upstream {
+.cable-upstream {
   display: block;
   margin-top: 3px;
   color: var(--muted);
@@ -411,97 +411,97 @@ h3 {
   color: var(--accent);
 }
 
-.suite-status,
-.suite-connection-actions {
+.cable-status,
+.cable-connection-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
 }
 
-.suite-status {
+.cable-status {
   color: var(--muted);
   font-size: 12px;
 }
 
-.suite-connection-actions {
+.cable-connection-actions {
   gap: 8px;
 }
 
-.suite-connection-actions .button {
+.cable-connection-actions .button {
   white-space: nowrap;
 }
 
-.suite-connection-facts {
+.cable-connection-facts {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
   gap: 20px;
   margin: 0;
 }
 
-.suite-connection-facts > div {
+.cable-connection-facts > div {
   min-width: 0;
 }
 
-.suite-connection-facts dt {
+.cable-connection-facts dt {
   margin-bottom: 5px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.suite-connection-facts dd {
+.cable-connection-facts dd {
   margin: 0;
   font-size: 13px;
 }
 
-.suite-section {
+.cable-section {
   padding: 20px;
 }
 
-.suite-section + .suite-section {
+.cable-section + .cable-section {
   border-top: 1px solid var(--line);
 }
 
-.suite-section-heading {
+.cable-section-heading {
   margin-bottom: 16px;
 }
 
-.suite-section-heading h2 {
+.cable-section-heading h2 {
   margin: 0;
 }
 
-.suite-section-heading p {
+.cable-section-heading p {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 12px;
 }
 
-.suite-models-heading,
-.suite-section-footer {
+.cable-models-heading,
+.cable-section-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.suite-section-footer {
+.cable-section-footer {
   margin-top: 16px;
 }
 
-.suite-section-footer .form-actions {
+.cable-section-footer .form-actions {
   margin: 0;
   flex-shrink: 0;
 }
 
-.suite-models-heading .button {
+.cable-models-heading .button {
   flex-shrink: 0;
 }
 
-.suite-section .catalog-status {
+.cable-section .catalog-status {
   margin-bottom: 16px;
 }
 
-.suite-model-list {
+.cable-model-list {
   display: grid;
   gap: 16px;
 }
@@ -522,29 +522,29 @@ h3 {
   margin-bottom: 16px;
 }
 
-.suite-model-card {
+.cable-model-card {
   min-width: 0;
 }
 
-.suite-model-card + .suite-model-card {
+.cable-model-card + .cable-model-card {
   padding-top: 16px;
   border-top: 1px solid var(--line);
 }
 
-.suite-model-mapping {
+.cable-model-mapping {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 24px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
 }
 
-.suite-model-mapping > .mini-button {
+.cable-model-mapping > .mini-button {
   min-height: 36px;
   margin-top: 24px;
   white-space: nowrap;
 }
 
-.suite-mapping-arrow {
+.cable-mapping-arrow {
   display: grid;
   align-items: center;
   min-height: 36px;
@@ -554,11 +554,11 @@ h3 {
   text-align: center;
 }
 
-.suite-model-settings {
+.cable-model-settings {
   margin-top: 10px;
 }
 
-.suite-model-settings summary {
+.cable-model-settings summary {
   width: fit-content;
   max-width: 100%;
   padding: 4px 0;
@@ -567,16 +567,16 @@ h3 {
   cursor: pointer;
 }
 
-.suite-model-settings summary > .field-hint {
+.cable-model-settings summary > .field-hint {
   margin-left: 12px;
 }
 
-.suite-model-settings summary:hover,
-.suite-model-settings[open] summary {
+.cable-model-settings summary:hover,
+.cable-model-settings[open] summary {
   color: var(--ink);
 }
 
-.suite-model-policy .checkbox-field {
+.cable-model-policy .checkbox-field {
   padding-top: 18px;
 }
 
@@ -825,7 +825,7 @@ button.list-row:hover,
   margin: 16px 20px;
 }
 
-.suite-model-policy {
+.cable-model-policy {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: start;
   margin-top: 12px;
@@ -1040,7 +1040,7 @@ button.list-row:hover,
 }
 
 @media (max-width: 1020px) {
-  .suite-model-policy {
+  .cable-model-policy {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1059,44 +1059,44 @@ button.list-row:hover,
 }
 
 @media (max-width: 720px) {
-  .suite-connection .panel-header {
+  .cable-connection .panel-header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .suite-connection-facts {
+  .cable-connection-facts {
     grid-template-columns: 1fr;
     gap: 12px;
   }
 
-  .suite-section {
+  .cable-section {
     padding: 16px;
   }
 
-  .suite-section-footer {
+  .cable-section-footer {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .suite-model-mapping {
+  .cable-model-mapping {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 12px 8px;
   }
 
-  .suite-model-mapping > .field {
+  .cable-model-mapping > .field {
     grid-column: 1 / -1;
   }
 
-  .suite-model-mapping > .mini-button {
+  .cable-model-mapping > .mini-button {
     grid-column: 2;
     margin-top: 0;
   }
 
-  .suite-mapping-arrow {
+  .cable-mapping-arrow {
     display: none;
   }
 
-  .suite-model-policy .checkbox-field {
+  .cable-model-policy .checkbox-field {
     padding-top: 0;
   }
 
@@ -1164,40 +1164,40 @@ button.list-row:hover,
     padding-inline: 16px;
   }
 
-  .suite-table,
-  .suite-table tbody,
-  .suite-table tr,
-  .suite-table th,
-  .suite-table td {
+  .cable-table,
+  .cable-table tbody,
+  .cable-table tr,
+  .cable-table th,
+  .cable-table td {
     display: block;
   }
 
-  .suite-table thead {
+  .cable-table thead {
     display: none;
   }
 
-  .suite-table tbody tr {
+  .cable-table tbody tr {
     padding: 12px 16px;
   }
 
-  .suite-table tbody tr + tr {
+  .cable-table tbody tr + tr {
     border-top: 1px solid var(--line);
   }
 
-  .suite-table tbody th,
-  .suite-table tbody td {
+  .cable-table tbody th,
+  .cable-table tbody td {
     width: 100%;
     padding: 4px 0;
     border: 0;
   }
 
-  .suite-table tbody td {
+  .cable-table tbody td {
     display: grid;
     grid-template-columns: 64px minmax(0, 1fr);
     gap: 8px;
   }
 
-  .suite-table td::before {
+  .cable-table td::before {
     content: attr(data-label);
     color: var(--muted);
     font: 12px/1.5 "Aptos", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;

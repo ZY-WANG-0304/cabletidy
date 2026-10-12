@@ -24,17 +24,17 @@ function isRecord(value) {
 }
 
 export function normalizeConfigurationIdentities(config) {
-  const bindings = Object.entries(config.bindings);
-  const bindingIds = new Map(bindings.map(([id, binding]) => [
-    id, isRecord(binding) ? configurationId(binding.name, id) : id,
+  const cables = Object.entries(config.cables);
+  const cableIds = new Map(cables.map(([id, cable]) => [
+    id, isRecord(cable) ? configurationId(cable.name, id) : id,
   ]));
   const providerIds = new Map(Object.entries(config.virtualProviders).map(([id, provider]) => {
     if (!isRecord(provider)) return [id, id];
-    const owners = bindings.filter(([, binding]) => binding?.virtualProvider === id);
+    const owners = cables.filter(([, cable]) => cable?.virtualProvider === id);
     if (owners.length > 1) return [id, id];
     const owner = owners[0];
     const suffix = id.startsWith("cabletidy_") ? id.slice("cabletidy_".length) : id;
-    return [id, providerIdForConfiguration(owner ? bindingIds.get(owner[0]) : configurationId(suffix))];
+    return [id, providerIdForConfiguration(owner ? cableIds.get(owner[0]) : configurationId(suffix))];
   }));
 
   // Leave colliding records intact so validation can report them without
@@ -55,19 +55,19 @@ export function normalizeConfigurationIdentities(config) {
     } while (changed);
     return result;
   };
-  const renamedBindings = uniqueRenames(bindingIds);
+  const renamedCables = uniqueRenames(cableIds);
   const renamedProviders = uniqueRenames(providerIds);
-  config.bindings = Object.fromEntries(bindings.map(([id, binding]) => [
-    renamedBindings.get(id),
-    isRecord(binding) ? {
-      ...binding,
-      id: renamedBindings.get(id),
-      virtualProvider: renamedProviders.get(binding.virtualProvider) ?? binding.virtualProvider,
-    } : binding,
+  config.cables = Object.fromEntries(cables.map(([id, cable]) => [
+    renamedCables.get(id),
+    isRecord(cable) ? {
+      ...cable,
+      id: renamedCables.get(id),
+      virtualProvider: renamedProviders.get(cable.virtualProvider) ?? cable.virtualProvider,
+    } : cable,
   ]));
   config.virtualProviders = Object.fromEntries(Object.entries(config.virtualProviders).map(([id, provider]) => [
     renamedProviders.get(id),
     isRecord(provider) ? { ...provider, id: renamedProviders.get(id) } : provider,
   ]));
-  return { bindingIds: renamedBindings, providerIds: renamedProviders };
+  return { cableIds: renamedCables, providerIds: renamedProviders };
 }

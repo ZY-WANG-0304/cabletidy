@@ -21,7 +21,7 @@ test("Codex renderer emits only a local config.toml provider block", () => {
   config.upstreams["relay-codex"].secretRef = "secret://upstreams/relay-codex";
   const artifacts = buildCodexArtifacts(
     config,
-    { bindingId: "relay-codex" },
+    { cableId: "relay-codex" },
     { "secret://upstreams/relay-codex": "upstream-key" },
   );
   assert.deepEqual(artifacts.files.map((file) => file.path), ["config.toml"]);
@@ -34,31 +34,31 @@ test("Codex renderer emits only a local config.toml provider block", () => {
   assert.match(artifacts.files[0].contents, /requires_openai_auth = false/);
   assert.deepEqual(artifacts.environment.vars, {});
   assert.equal(Object.hasOwn(artifacts.upstream, "envKey"), false);
-  assert.equal(artifacts.providerId, config.bindings[artifacts.bindingId].virtualProvider);
+  assert.equal(artifacts.providerId, config.cables[artifacts.cableId].virtualProvider);
   assert.equal(artifacts.providerId, artifacts.virtualProviderId);
   assert.equal(Object.hasOwn(artifacts, "modelPolicy"), false);
 });
 
 test("Codex rendering rejects a provider shared by two configurations", () => {
   const config = nativeConfig();
-  config.bindings.other = { ...config.bindings["relay-codex"], id: "other", name: "Other" };
-  assert.throws(() => buildCodexArtifacts(config, { bindingId: "relay-codex" }), /一对一/);
+  config.cables.other = { ...config.cables["relay-codex"], id: "other", name: "Other" };
+  assert.throws(() => buildCodexArtifacts(config, { cableId: "relay-codex" }), /一对一/);
 });
 
 test("Codex base URL uses the shared IPv6 listener and the normalized configuration path", () => {
   const config = nativeConfig();
   config.web = { listenHost: "::1", port: 43210 };
-  config.bindings["relay-codex"].name = "My Relay";
-  const artifacts = buildCodexArtifacts(config, { bindingId: "relay-codex" });
+  config.cables["relay-codex"].name = "My Relay";
+  const artifacts = buildCodexArtifacts(config, { cableId: "relay-codex" });
   assert.match(artifacts.providerContents, /base_url = "http:\/\/\[::1\]:43210\/my-relay\/v1"/);
   assert.equal(artifacts.providerId, "cabletidy_my-relay");
 });
 
 test("a conflicting name cannot render another configuration's provider", () => {
   const config = nativeConfig();
-  config.bindings.other = { ...config.bindings["relay-codex"], id: "other", virtualProvider: "other" };
+  config.cables.other = { ...config.cables["relay-codex"], id: "other", virtualProvider: "other" };
   config.virtualProviders.other = { ...config.virtualProviders["cabletidy_relay-codex"], id: "other" };
-  assert.throws(() => buildCodexArtifacts(config, { bindingId: "other" }), /配置名称规范化后重复/);
+  assert.throws(() => buildCodexArtifacts(config, { cableId: "other" }), /配置名称规范化后重复/);
   assert.throws(() => buildCodexArtifacts(config), /配置名称规范化后重复/);
 });
 
@@ -70,10 +70,10 @@ for (const [scenario, names] of [
     const raw = namedCodexConfigFixture(names);
     for (const config of [raw, normalizeConfig(raw)]) {
       const original = structuredClone(config);
-      for (const bindingId of [undefined, ...Object.keys(names)]) {
-        assert.throws(() => buildCodexArtifacts(config, { bindingId }), /配置名称规范化后重复/);
+      for (const cableId of [undefined, ...Object.keys(names)]) {
+        assert.throws(() => buildCodexArtifacts(config, { cableId }), /配置名称规范化后重复/);
         await assert.rejects(prepareCodexArtifacts(config, {
-          bindingId,
+          cableId,
           loadCatalog: async () => assert.fail("Conflicting identities must fail before loading the catalog"),
         }), /配置名称规范化后重复/);
       }
@@ -87,9 +87,9 @@ test("Codex artifacts preserve the requested upstream across valid ID swaps", as
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const config = namedCodexConfigFixture({ a: "b", b: "a" });
   for (const [requested, renamed] of [["a", "b"], ["b", "a"]]) {
-    const options = { bindingId: requested, codexHome: home, loadCatalog: async () => catalogFixture() };
+    const options = { cableId: requested, codexHome: home, loadCatalog: async () => catalogFixture() };
     for (const artifacts of [buildCodexArtifacts(config, options), await prepareCodexArtifacts(config, options)]) {
-      assert.equal(artifacts.bindingId, renamed);
+      assert.equal(artifacts.cableId, renamed);
       assert.equal(artifacts.providerId, `cabletidy_${renamed}`);
       assert.equal(artifacts.upstream.id, requested);
       assert.match(artifacts.providerContents, new RegExp(`/${renamed}/v1`));
@@ -109,7 +109,7 @@ test("invalid generated artifacts leave client files unchanged and allow a subse
   assert.equal(await fs.readFile(root, "utf8"), original);
   assert.deepEqual(await fs.readdir(home), ["config.toml"]);
 
-  const artifacts = buildCodexArtifacts(nativeConfig(), { bindingId: "relay-codex" });
+  const artifacts = buildCodexArtifacts(nativeConfig(), { cableId: "relay-codex" });
   const report = await applyCodexArtifacts(artifacts, options);
   assert.deepEqual(report.applied, [root]);
   assert.deepEqual((await fs.readdir(home)).sort(), ["backups", "config.toml"]);

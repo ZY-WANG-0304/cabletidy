@@ -142,8 +142,8 @@ test("new stores allocate distinct ports while status stays read-only and restar
   const output = await status(paths);
   assert.equal(output.runtime.status, "online");
   assert.equal(output.runtime.web.url, app.url);
-  assert.equal(output.configurations[0].url, `${app.url}relay/v1`);
-  const preview = await post(app, "config/preview-target-artifacts", { bindingId: "relay" });
+  assert.equal(output.cables[0].url, `${app.url}relay/v1`);
+  const preview = await post(app, "config/preview-target-artifacts", { cableId: "relay" });
   const toml = preview.artifacts.files.find(file => file.path === "config.toml").contents;
   assert.ok(toml.includes(`base_url = "${app.url}relay/v1"`));
   assert.equal((await fetch(`${app.url}relay/v1/models`)).status, 200);
@@ -155,7 +155,7 @@ test("new stores allocate distinct ports while status stays read-only and restar
   const restarted = await f.start(paths);
   assert.equal(restarted.url, app.url);
   assert.equal(await fs.readFile(paths.config, "utf8"), saved);
-  assert.equal((await status(paths)).configurations[0].url, `${app.url}relay/v1`);
+  assert.equal((await status(paths)).cables[0].url, `${app.url}relay/v1`);
 });
 
 test("an occupied saved port fails without changing configuration, releases the lock and allows retry", async t => {

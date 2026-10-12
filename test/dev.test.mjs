@@ -151,24 +151,24 @@ test("development checkouts run alongside production and apply only to their tes
     config.upstreams[id] = { id, protocol, baseUrl: "https://example.invalid/v1" };
     config.routes[id] = { id, backends: [{ upstream: id }] };
     config.virtualProviders[`cabletidy_${id}`] = { id: `cabletidy_${id}`, route: id, ingressProtocol: protocol };
-    config.bindings[id] = { id, target, virtualProvider: `cabletidy_${id}` };
+    config.cables[id] = { id, target, virtualProvider: `cabletidy_${id}` };
   }
   await post(url, "config/commit", { baseRevision: config.revision, config, upstreamSecrets: { codex: "dev-key" } });
-  for (const bindingId of ["codex", "claude"]) {
-    await post(url, "config/preview-target-artifacts", { bindingId });
-    await post(url, "targets/apply", { bindingId });
+  for (const cableId of ["codex", "claude"]) {
+    await post(url, "config/preview-target-artifacts", { cableId });
+    await post(url, "targets/apply", { cableId });
   }
   const codex = readCodexConfig(await fs.readFile(path.join(dev.paths.home, "codex", "config.toml"), "utf8"));
   assert.equal(codex.model_providers.cabletidy_codex.base_url, `${url}codex/v1`);
   const claudeFile = path.join(dev.paths.home, "claude", "settings.json");
   assert.equal(JSON.parse(await fs.readFile(claudeFile, "utf8")).env.ANTHROPIC_BASE_URL, `${url}claude`);
-  await post(url, "targets/restore", { bindingId: "claude" });
+  await post(url, "targets/restore", { cableId: "claude" });
   assert.equal(JSON.parse(await fs.readFile(claudeFile, "utf8")).env?.ANTHROPIC_BASE_URL, undefined);
   for (const [file, contents] of sentinelFiles) assert.equal(await fs.readFile(file, "utf8"), contents);
   assert.equal(await fs.readFile(productionPaths.config, "utf8"), productionConfig);
   assert.deepEqual(JSON.parse(await fs.readFile(productionPaths.secrets, "utf8")), {});
   assert.equal(JSON.parse(await fs.readFile(dev.paths.secrets, "utf8"))["secret://upstreams/codex"], "dev-key");
-  assert.deepEqual((await loadConfig(other.paths)).bindings, {});
+  assert.deepEqual((await loadConfig(other.paths)).cables, {});
   assert.equal((await fetch(production.url)).status, 200);
   await otherApp.stop();
   await app.stop();

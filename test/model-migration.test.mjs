@@ -15,7 +15,7 @@ function legacyConfig(target = "codex") {
     },
     routes: { route: { backends: [{ upstream: "relay", models: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-sol-2", "gpt-5.6-luna-2"] }] } },
     virtualProviders: { cabletidy_relay: { id: "cabletidy_relay", route: "route", ingressProtocol: protocol, allowedModels: ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-sol-2", "gpt-5.6-luna-2"], defaultModel: "gpt-5.6-sol" } },
-    bindings: { relay: { id: "relay", name: "relay", target, virtualProvider: "cabletidy_relay", defaultModel: "gpt-5.6-sol" } },
+    cables: { relay: { id: "relay", name: "relay", target, virtualProvider: "cabletidy_relay", defaultModel: "gpt-5.6-sol" } },
   };
 }
 
@@ -29,12 +29,12 @@ for (const target of ["codex", "claude-code"]) {
     const c = result.config;
     const p = c.virtualProviders.cabletidy_relay;
     assert.deepEqual(Object.keys(p.models), ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]);
-    assert.equal(c.version, 2);
+    assert.equal(c.version, 3);
     assert.equal(c.models, undefined);
     assert.equal(p.allowedModels, undefined);
     assert.equal(c.routes.route.backends[0].models, undefined);
     assert.equal(p.defaultModel, "gpt-6-sol");
-    assert.equal(c.bindings.relay.defaultModel, "gpt-6-sol");
+    assert.equal(c.cables.relay.defaultModel, "gpt-6-sol");
     assert.deepEqual(p.models["gpt-6-sol"].aliases, ["fast"]);
     assert.equal(p.models["gpt-6-sol"].name, "Saved display metadata");
     for (const field of ["id", "clientModelId", "upstreams"]) assert.equal(p.models["gpt-6-sol"][field], undefined);
@@ -42,7 +42,7 @@ for (const target of ["codex", "claude-code"]) {
     assert.equal(resolveRequest(c, p, { model: "fast", tools: [{}] }).upstreamModelId, "vendor-sol");
     assert.equal(resolveRequest(c, p, {}).upstreamModelId, "vendor-sol");
     assert.equal(resolveRequest(c, p, { model: "gpt-5.6-sol-2" }).upstreamModelId, "gpt-5.6-sol-2");
-    assert.equal(buildTargetArtifacts(c, { bindingId: "relay" }).clientModelId, "gpt-6-sol");
+    assert.equal(buildTargetArtifacts(c, { cableId: "relay" }).clientModelId, "gpt-6-sol");
     assert.deepEqual(normalizeConfig(c), c);
     assert.deepEqual(input, before);
   });
@@ -84,24 +84,24 @@ test("migration preserves Claude native default aliases instead of resolving the
   input.models = { sonnet: { clientModelId: "claude-sonnet-4-6", aliases: [], upstreams: { relay: {} } } };
   input.routes.route.backends[0].models = ["sonnet"];
   Object.assign(input.virtualProviders.cabletidy_relay, { allowedModels: ["sonnet"], defaultModel: "sonnet" });
-  input.bindings.relay.defaultModel = "sonnet";
+  input.cables.relay.defaultModel = "sonnet";
   const c = normalizeConfig(input);
   assert.equal(c.virtualProviders.cabletidy_relay.defaultModel, "sonnet");
-  assert.equal(c.bindings.relay.defaultModel, "sonnet");
-  assert.equal(buildTargetArtifacts(c, { bindingId: "relay" }).clientModelId, "sonnet");
+  assert.equal(c.cables.relay.defaultModel, "sonnet");
+  assert.equal(buildTargetArtifacts(c, { cableId: "relay" }).clientModelId, "sonnet");
 });
 
 test("Claude family and subagent selections migrate through client names to upstream mappings", () => {
   const input = legacyConfig("claude-code");
   const fields = ["opus", "sonnet", "fable", "haiku", "subagent"];
-  input.bindings.relay.claude = { models: Object.fromEntries(fields.map((field) => [field, "gpt-5.6-sol"])) };
+  input.cables.relay.claude = { models: Object.fromEntries(fields.map((field) => [field, "gpt-5.6-sol"])) };
   const result = validateConfig(input);
   assert.equal(result.ok, true, JSON.stringify(result.errors));
   const c = result.config;
-  const vars = buildTargetArtifacts(c, { bindingId: "relay" }).environment.vars;
+  const vars = buildTargetArtifacts(c, { cableId: "relay" }).environment.vars;
   for (const field of fields) {
     const variable = field === "subagent" ? "CLAUDE_CODE_SUBAGENT_MODEL" : `ANTHROPIC_DEFAULT_${field.toUpperCase()}_MODEL`;
-    assert.equal(c.bindings.relay.claude.models[field], "gpt-6-sol");
+    assert.equal(c.cables.relay.claude.models[field], "gpt-6-sol");
     assert.equal(vars[variable], "gpt-6-sol");
     assert.equal(resolveRequest(c, c.virtualProviders.cabletidy_relay, { model: vars[variable] }).upstreamModelId, "vendor-sol");
   }
@@ -114,11 +114,11 @@ for (const alias of ["best", "opus", "sonnet", "fable", "haiku", "opusplan"]) {
     input.models = { [alias]: { clientModelId: "client-model", upstreams: { relay: { upstreamModelId: "vendor-model" } } } };
     input.routes.route.backends[0].models = [alias];
     Object.assign(input.virtualProviders.cabletidy_relay, { allowedModels: [alias], defaultModel: alias });
-    Object.assign(input.bindings.relay, { defaultModel: alias, claude: { models: { sonnet: alias, subagent: alias } } });
+    Object.assign(input.cables.relay, { defaultModel: alias, claude: { models: { sonnet: alias, subagent: alias } } });
     const c = normalizeConfig(input);
     assert.equal(validateConfig(c).ok, true);
     assert.equal(c.virtualProviders.cabletidy_relay.models["client-model"].aliases, undefined);
-    const vars = buildTargetArtifacts(c, { bindingId: "relay" }).environment.vars;
+    const vars = buildTargetArtifacts(c, { cableId: "relay" }).environment.vars;
     assert.equal(c.virtualProviders.cabletidy_relay.defaultModel, alias);
     assert.equal(vars.ANTHROPIC_MODEL, alias);
     assert.equal(vars.ANTHROPIC_DEFAULT_SONNET_MODEL, "client-model");
@@ -127,15 +127,15 @@ for (const alias of ["best", "opus", "sonnet", "fable", "haiku", "opusplan"]) {
   });
 }
 
-test("Claude selection migration only resolves IDs owned by the binding's provider", () => {
+test("Claude selection migration only resolves IDs owned by the cable's provider", () => {
   const input = legacyConfig("claude-code");
   input.models.other = { clientModelId: "other-client", upstreams: { relay: { upstreamModelId: "other-vendor" } } };
   input.routes.other = { backends: [{ upstream: "relay", models: ["other"] }] };
   input.virtualProviders.cabletidy_other = { ingressProtocol: "anthropic.messages", route: "other", allowedModels: ["other"] };
-  input.bindings.other = { target: "claude-code", virtualProvider: "cabletidy_other", claude: { models: { sonnet: "other", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" } } };
+  input.cables.other = { target: "claude-code", virtualProvider: "cabletidy_other", claude: { models: { sonnet: "other", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" } } };
   const c = normalizeConfig(input);
-  assert.deepEqual(c.bindings.other.claude.models, { sonnet: "other-client", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" });
-  const vars = buildTargetArtifacts(c, { bindingId: "other" }).environment.vars;
+  assert.deepEqual(c.cables.other.claude.models, { sonnet: "other-client", subagent: "gpt-5.6-sol", haiku: "unconfigured-client" });
+  const vars = buildTargetArtifacts(c, { cableId: "other" }).environment.vars;
   assert.equal(resolveRequest(c, c.virtualProviders.cabletidy_other, { model: vars.ANTHROPIC_DEFAULT_SONNET_MODEL }).upstreamModelId, "other-vendor");
 });
 
