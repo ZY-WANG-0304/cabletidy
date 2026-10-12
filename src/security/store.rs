@@ -2488,16 +2488,20 @@ mod tests {
 
     #[test]
     fn body_budget_reclaims_completed_records_before_disk_maintenance_threshold() {
+        let settings = AuditSettings {
+            budget_bytes: Some(128 * 1024 * 1024),
+            ..AuditSettings::default()
+        };
         for restart in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("audit.sqlite3");
-            let mut db = open(&path, true, AuditSettings::default()).unwrap();
+            let mut db = open(&path, true, settings).unwrap();
             persist(&mut db, record("old", "completed")).unwrap();
             persist_body(
                 &db,
                 "old",
                 &json!({"id":"request","state":"receiving"}),
-                AuditSettings::default(),
+                settings,
             )
             .unwrap();
             // Reproduce an existing database between the old 80 MiB write limit
@@ -2519,15 +2523,32 @@ mod tests {
                 &db,
                 "old",
                 &json!({"id":"request","state":"complete","byteLength":offset}),
-                AuditSettings::default(),
+                settings,
             )
             .unwrap();
             db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
-            assert!(used_bytes(&db).unwrap() > body_budget(AuditSettings::default()).unwrap());
-            assert!(disk_bytes(&path) < AuditSettings::default().budget_bytes.unwrap() * 3 / 4);
+            assert!(used_bytes(&db).unwrap() > body_budget(settings).unwrap());
+            assert!(disk_bytes(&path) < settings.budget_bytes.unwrap() * 3 / 4);
+            // The larger default must retain history already above the old budget.
+            let defaults = AuditSettings::default();
+            apply_page_limit(&db, defaults).unwrap();
+            maintain(&db, defaults).unwrap();
+            assert_eq!(body_budget(defaults), Some(3200 * 1024 * 1024));
+            assert_eq!(
+                db.query_row("PRAGMA max_page_count", [], |r| r.get::<_, u64>(0))
+                    .unwrap(),
+                983_040
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+            apply_page_limit(&db, settings).unwrap();
             if restart {
                 drop(db);
-                db = open(&path, true, AuditSettings::default()).unwrap();
+                db = open(&path, true, settings).unwrap();
             }
             persist(&mut db, record("streaming", "streaming")).unwrap();
             let mut pending = record("pending", "completed");
@@ -2542,21 +2563,21 @@ mod tests {
                     &db,
                     &id,
                     &json!({"id":"request","state":"receiving"}),
-                    AuditSettings::default(),
+                    settings,
                 )
                 .unwrap();
                 persist_body(
                     &db,
                     &id,
                     &json!({"id":"request","start":0,"end":5,"content":"hello","redactions":[]}),
-                    AuditSettings::default(),
+                    settings,
                 )
                 .unwrap();
                 persist_body(
                     &db,
                     &id,
                     &json!({"id":"request","state":"complete","byteLength":5}),
-                    AuditSettings::default(),
+                    settings,
                 )
                 .unwrap();
                 persist(&mut db, record(&id, "completed")).unwrap();
@@ -2565,7 +2586,7 @@ mod tests {
                     "hello"
                 );
             }
-            assert!(used_bytes(&db).unwrap() < body_budget(AuditSettings::default()).unwrap());
+            assert!(used_bytes(&db).unwrap() < body_budget(settings).unwrap());
             assert_eq!(
                 db.query_row("SELECT count(*) FROM audit WHERE id='old'", [], |r| r
                     .get::<_, i64>(0))

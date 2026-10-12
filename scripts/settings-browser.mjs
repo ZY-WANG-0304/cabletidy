@@ -43,7 +43,7 @@ try {
   assert.equal(await page.locator('[data-page="settings"].nav-item').getAttribute("aria-current"), "page");
   assert.equal(await page.locator(".nav-item.is-active").count(), 1);
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "30");
-  assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).inputValue(), "128");
+  assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).inputValue(), "5120");
   assert.equal(await page.locator("#audit-settings-cleanup").isVisible(), false);
   await page.mouse.move(1250, 700);
   await page.screenshot({ path: path.join(output, "settings-desktop.png"), fullPage: true, animations: "disabled" });
@@ -69,6 +69,8 @@ try {
   assert.equal(await page.locator("#audit-settings-cleanup").isVisible(), true);
   await save({ retentionDays: 7, budgetBytes: null });
   await page.getByLabel("存储不设上限", { exact: true }).uncheck();
+  assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).inputValue(), "5120");
+  await save({ retentionDays: 7, budgetBytes: 5 * 1024 ** 3 });
   await page.getByLabel("存储上限（MiB）", { exact: true }).fill("64");
   await page.getByLabel("保存周期不设上限", { exact: true }).check();
   await save({ retentionDays: null, budgetBytes: 64 * 1048576 });

@@ -37,7 +37,7 @@ impl Default for AuditSettings {
     fn default() -> Self {
         Self {
             retention_days: Some(30),
-            budget_bytes: Some(128 * 1024 * 1024),
+            budget_bytes: Some(5 * 1024 * 1024 * 1024),
         }
     }
 }

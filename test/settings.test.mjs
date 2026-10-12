@@ -27,8 +27,9 @@ async function fixture(t) {
 test("audit settings apply immediately, persist and survive restart in every limit combination", async t => {
   const f = await fixture(t);
   let { config } = await f.get("config");
-  assert.deepEqual(config.audit, { retentionDays: 30, budgetBytes: 128 * 1048576 });
+  assert.deepEqual(config.audit, { retentionDays: 30, budgetBytes: 5 * 1024 ** 3 });
   for (const audit of [
+    { retentionDays: 7, budgetBytes: 5 * 1024 ** 3 },
     { retentionDays: 7, budgetBytes: 64 * 1048576 },
     { retentionDays: null, budgetBytes: 256 * 1048576 },
     { retentionDays: 90, budgetBytes: null },

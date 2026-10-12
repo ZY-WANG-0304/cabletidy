@@ -2295,7 +2295,7 @@ function renderSettings() {
         <div class="settings-row">
           <label for="audit-budget">存储上限</label>
           <div class="settings-control">
-            <div class="settings-value"><input id="audit-budget" name="budgetMiB" aria-label="存储上限（MiB）" type="number" min="${MIN_AUDIT_BUDGET_MIB}" max="${Number.MAX_SAFE_INTEGER / 1048576}" step="any" value="${esc(audit.budgetBytes == null ? 128 : audit.budgetBytes / 1048576)}" ${audit.budgetBytes == null ? "disabled" : "required"}><span>MiB</span></div>
+            <div class="settings-value"><input id="audit-budget" name="budgetMiB" aria-label="存储上限（MiB）" type="number" min="${MIN_AUDIT_BUDGET_MIB}" max="${Number.MAX_SAFE_INTEGER / 1048576}" step="any" value="${esc(audit.budgetBytes == null ? 5120 : audit.budgetBytes / 1048576)}" ${audit.budgetBytes == null ? "disabled" : "required"}><span>MiB</span></div>
             <label class="settings-unlimited"><input name="storageUnlimited" aria-label="存储不设上限" type="checkbox" ${audit.budgetBytes == null ? "checked" : ""}><span>不限</span></label>
           </div>
         </div>
