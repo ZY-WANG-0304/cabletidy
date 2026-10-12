@@ -270,7 +270,7 @@ h3 {
   gap: 8px;
 }
 
-.transfer-panel {
+.transfer-fields {
   display: grid;
   gap: 16px;
 }

@@ -33,6 +33,8 @@ const SECURITY_MODELS = new Map([
 const PAGE_META = {
   overview: "配置套装",
   "suite-create": "新建配置",
+  "suite-import": "导入配置",
+  "suite-export": "导出配置",
   "suite-detail": "配置详情",
   models: "模型管理",
   diagnostics: "诊断",
@@ -42,6 +44,8 @@ const PAGE_META = {
   "security-session": "会话轨迹",
 };
 
+const CONFIG_TRANSFER_NOTICE = "仅包含 CableTidy 配置套装。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。";
+
 const state = {
   page: "overview",
   config: null,
@@ -50,7 +54,7 @@ const state = {
   events: [],
   codexCatalog: null,
   createTarget: "codex",
-  transfer: { panel: null, bundle: null, preview: null },
+  transfer: { bundle: null, preview: null },
   busy: false,
   pendingSecrets: {
     upstreamSecrets: {},
@@ -174,6 +178,8 @@ function render(preservedForms = []) {
   const renderers = {
     overview: renderOverview,
     "suite-create": renderSuiteCreate,
+    "suite-import": renderSuiteImport,
+    "suite-export": renderSuiteExport,
     "suite-detail": renderSuiteDetail,
     models: renderModels,
     diagnostics: renderDiagnostics,
@@ -378,6 +384,7 @@ function navigatePage(page) {
   }
   state.security.detailSequence++;
   state.security.bodySequence = (state.security.bodySequence || 0) + 1;
+  if (state.page === "suite-import") state.transfer = { bundle: null, preview: null };
   state.page = page;
   render();
   if (page === "security") loadSecurity();
@@ -523,7 +530,6 @@ function renderOverview() {
         <button class="button button-primary" data-action="create-suite">新建配置</button>
       </div>
     </div>
-    ${renderTransfer(suites)}
     ${
       suites.length
         ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th><th scope="col">操作</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
@@ -532,36 +538,51 @@ function renderOverview() {
   `;
 }
 
-function renderTransfer(suites) {
-  const close = '<button class="button button-quiet" type="button" data-action="close-transfer">取消</button>';
-  const notice = '<p class="muted">仅包含 CableTidy 配置套装。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。</p>';
-  if (state.transfer.panel === "export") return `
-    <form id="suite-export-form" class="panel transfer-panel">
-      <h2>导出配置</h2>${notice}
-      <fieldset class="transfer-selection"><legend>选择要导出的配置套装</legend>
-        ${suites.map(suite => `<label class="checkbox-field"><input type="checkbox" name="bindingIds" value="${esc(suite.id)}" checked /><span>${esc(suite.name)} · ${esc(targetLabel(suite.target))}</span></label>`).join("")}
-      </fieldset>
-      <label class="checkbox-field"><input type="checkbox" name="includeCredentials" /><span>包含认证凭据（API Key、上游密钥及 URL 认证信息）</span></label>
-      <p class="muted">勾选后文件包含明文凭据，请妥善保管，仅分享给可信接收方。</p>
-      <div class="form-actions">${close}<button class="button button-primary" type="submit">下载配置文件</button></div>
+function renderSuiteExport() {
+  const suites = configurationSuites(state.candidate);
+  return `
+    <button class="text-button" data-action="back-overview">返回列表</button>
+    <form id="suite-export-form" class="config-form panel">
+      <section class="config-section" aria-labelledby="suite-export-selection">
+        <h2 id="suite-export-selection">选择配置套装</h2>
+        <div class="transfer-fields">
+          <p class="muted">${CONFIG_TRANSFER_NOTICE}</p>
+          <fieldset class="transfer-selection"><legend>选择要导出的配置套装</legend>
+            ${suites.map(suite => `<label class="checkbox-field"><input type="checkbox" name="bindingIds" value="${esc(suite.id)}" checked /><span>${esc(suite.name)} · ${esc(targetLabel(suite.target))}</span></label>`).join("")}
+          </fieldset>
+          <label class="checkbox-field"><input type="checkbox" name="includeCredentials" /><span>包含认证凭据（API Key、上游密钥及 URL 认证信息）</span></label>
+          <p class="muted">勾选后文件包含明文凭据，请妥善保管，仅分享给可信接收方。</p>
+        </div>
+      </section>
+      <div class="config-form-footer"><button class="button" type="button" data-action="back-overview">取消</button><button class="button button-primary" type="submit">下载配置文件</button></div>
     </form>`;
-  if (state.transfer.panel === "import") {
-    const preview = state.transfer.preview;
-    return `<form id="suite-import-form" class="panel transfer-panel">
-      <h2>导入配置</h2>${notice}
-      ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；未使用文件凭据时，更新保留已有密钥，新建配置需填写凭据。客户端文件需按需重新应用。</p>
+}
+
+function renderSuiteImport() {
+  const preview = state.transfer.preview;
+  return `
+    <button class="text-button" data-action="back-overview">返回列表</button>
+    <form id="suite-import-form" class="config-form panel">
+      <section class="config-section" aria-labelledby="suite-import-selection">
+        <h2 id="suite-import-selection">${preview ? "确认配置套装" : "选择配置文件"}</h2>
+        <div class="transfer-fields">
+          <p class="muted">${CONFIG_TRANSFER_NOTICE}</p>
+          ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；未使用文件凭据时，更新保留已有密钥，新建配置需填写凭据。客户端文件需按需重新应用。</p>
         ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用导入配置中的认证凭据</span></label><p class="muted">勾选时文件中的凭据优先于已有凭据；取消勾选时忽略文件中的密钥和 URL 认证信息。</p>` : ""}
         <div class="transfer-selection">${preview.suites.map(suite => suite.conflict
           ? `<label class="field"><span>${esc(suite.sourceName)} · ${esc(targetLabel(suite.target))}（与「${esc(suite.existingName || suite.sourceName)}」同名）</span>
             <select name="choice:${esc(suite.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有配置</option><option value="create">创建新配置（${esc(suite.name)}）</option></select></label>`
           : `<p>${esc(suite.name)} · ${esc(targetLabel(suite.target))} · 新建配置</p>`).join("")}</div>
-        ${(preview.warnings || []).map(w => `<p class="muted">${esc(w.message)}</p>`).join("")}
-        <div class="form-actions">${close}<button class="button" type="button" data-action="import-suites">重新选择文件</button><button class="button button-primary" type="submit">确认导入</button></div>`
-      : `<label class="field"><span>配置套装文件（JSON）</span><input type="file" name="bundle" accept=".json,application/json" required /></label>
-        <div class="form-actions">${close}<button class="button button-primary" type="submit">预览导入</button></div>`}
+        ${(preview.warnings || []).map(w => `<p class="muted">${esc(w.message)}</p>`).join("")}`
+      : `<label class="field"><span>配置套装文件（JSON）</span><input type="file" name="bundle" accept=".json,application/json" required /></label>`}
+        </div>
+      </section>
+      <div class="config-form-footer">
+        <button class="button" type="button" data-action="back-overview">取消</button>
+        ${preview ? `<button class="button" type="button" data-action="import-suites">重新选择文件</button><button class="button button-primary" type="submit">确认导入</button>`
+          : `<button class="button button-primary" type="submit">预览导入</button>`}
+      </div>
     </form>`;
-  }
-  return "";
 }
 
 async function exportSuites(data) {
@@ -609,7 +630,8 @@ async function importSuites(data) {
   state.config = result.config;
   state.candidate = clone(result.config);
   state.runtime = result.runtime;
-  state.transfer = { panel: null, bundle: null, preview: null };
+  state.transfer = { bundle: null, preview: null };
+  state.page = "overview";
   render();
   toast("配置已导入。请为未配置凭据的上游填写认证信息，再按需应用到客户端。");
 }
@@ -2435,15 +2457,16 @@ async function handleAction(action, element) {
     return;
   }
   if ([
-    "create-suite", "open-suite", "back-overview", "select-model",
+    "create-suite", "import-suites", "export-suites", "open-suite", "back-overview", "select-model",
     "new-model", "open-advanced-models",
   ].includes(action)) {
     if (!confirmPageLeave()) return;
   }
   const unlock = lockControls();
   try {
-    if (["import-suites", "export-suites", "close-transfer"].includes(action)) {
-      state.transfer = { panel: action === "import-suites" ? "import" : action === "export-suites" ? "export" : null, bundle: null, preview: null };
+    if (["import-suites", "export-suites"].includes(action)) {
+      state.transfer = { bundle: null, preview: null };
+      state.page = action === "import-suites" ? "suite-import" : "suite-export";
       render();
     } else if (action === "refresh") {
       await refresh();
@@ -2472,6 +2495,7 @@ async function handleAction(action, element) {
       state.page = "suite-detail";
       render();
     } else if (action === "back-overview") {
+      state.transfer = { bundle: null, preview: null };
       state.page = "overview";
       render();
     } else if (action === "delete-suite") {
