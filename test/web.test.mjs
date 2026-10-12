@@ -185,8 +185,10 @@ test("top-level settings save finite and independently unlimited audit limits", 
   assert.equal(app.node("#page-title").textContent, "设置");
   assert.match(app.node("#page-content").innerHTML, /settings-row/);
   assert.match(app.node("#page-content").innerHTML, /name="budgetMiB"[^>]*min="16"/);
+  assert.match(app.node("#page-content").innerHTML, /name="budgetMiB"[^>]*value="5120"/);
   const bindings = clone(app.persisted().bindings);
   for (const [fields, expected] of [
+    [{ retentionDays: "30", budgetMiB: "5120" }, { retentionDays: 30, budgetBytes: 5 * 1024 ** 3 }],
     [{ retentionDays: "7", budgetMiB: "64" }, { retentionDays: 7, budgetBytes: 64 * 1048576 }],
     [{ retentionUnlimited: "on", budgetMiB: "256" }, { retentionDays: null, budgetBytes: 256 * 1048576 }],
     [{ retentionDays: "90", storageUnlimited: "on" }, { retentionDays: 90, budgetBytes: null }],
@@ -197,7 +199,7 @@ test("top-level settings save finite and independently unlimited audit limits", 
     assert.deepEqual(app.persisted().bindings, bindings);
     assert.equal(app.read("state.page"), "settings");
   }
-  assert.equal(app.requests.filter(({ url }) => url === "/api/v1/config/commit").length, 4);
+  assert.equal(app.requests.filter(({ url }) => url === "/api/v1/config/commit").length, 5);
   app.read('navigatePage("overview")');
   await app.back();
   assert.equal(app.read("state.page"), "settings");
@@ -243,7 +245,7 @@ function mountSettingsEditor(app) {
     const inputs = [
       inputNode("retentionDays", String(audit.retentionDays ?? 30), { type: "number" }),
       inputNode("retentionUnlimited", "on", { type: "checkbox", checked: audit.retentionDays === null }),
-      inputNode("budgetMiB", String(audit.budgetBytes === null ? 128 : audit.budgetBytes / 1048576), { type: "number" }),
+      inputNode("budgetMiB", String(audit.budgetBytes === null ? 5120 : audit.budgetBytes / 1048576), { type: "number" }),
       inputNode("storageUnlimited", "on", { type: "checkbox", checked: audit.budgetBytes === null }),
     ];
     const form = formNode("audit-settings-form");

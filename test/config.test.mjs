@@ -15,9 +15,10 @@ import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 
 test("audit settings default independently and preserve explicit unlimited values", () => {
-  assert.deepEqual(defaultConfig().audit, { retentionDays: 30, budgetBytes: 128 * 1024 * 1024 });
+  assert.deepEqual(defaultConfig().audit, { retentionDays: 30, budgetBytes: 5 * 1024 ** 3 });
   for (const audit of [
     {}, { retentionDays: 7 }, { budgetBytes: 16 * 1024 * 1024 },
+    { budgetBytes: 128 * 1024 * 1024 }, { budgetBytes: 5 * 1024 ** 3 },
     { retentionDays: null }, { budgetBytes: null }, { retentionDays: null, budgetBytes: null },
   ]) {
     const config = normalizeConfig({ audit });
