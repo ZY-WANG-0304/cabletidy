@@ -80,7 +80,7 @@ export const publicTargetArtifacts = artifacts => native("artifacts.public", art
 export const publicArtifacts = publicTargetArtifacts;
 export const applyCodexArtifacts = (artifacts, options = {}) => nativeAsync("codex.apply", artifacts, options);
 export const applyClaudeSettings = (artifacts, options = {}) => nativeAsync("artifacts.apply", artifacts, options);
-export const restoreClaudeSettings = (bindingId, options = {}) => nativeAsync("claude.restore", bindingId, options);
+export const restoreClaudeSettings = (cableId, options = {}) => nativeAsync("claude.restore", cableId, options);
 export const claudeConfigHome = (options = {}) => native("claude.home", options);
 export const readCodexConfig = text => native("toml.read", text);
 export const processStartTime = pid => nativeAsync("process.startTime", pid);

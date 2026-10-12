@@ -25,7 +25,7 @@ test("config API allows renaming saved legacy models and still validates actual 
   initial.web.port = await freePort();
   initial.virtualProviders.cabletidy_relay.models = { "legacy-alias": { upstreamModelId: "vendor-model" } };
   initial.virtualProviders.cabletidy_relay.defaultModel = "legacy-alias";
-  initial.bindings.relay.defaultModel = "legacy-alias";
+  initial.cables.relay.defaultModel = "legacy-alias";
   await saveConfig(initial, paths);
   const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture() });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
@@ -37,7 +37,7 @@ test("config API allows renaming saved legacy models and still validates actual 
     return { status: response.status, body: await response.json() };
   };
   let candidate = (await call("")).body.config;
-  candidate.bindings.relay.name = "Renamed";
+  candidate.cables.relay.name = "Renamed";
   for (const endpoint of ["/validate", "/commit"]) {
     const result = await call(endpoint, candidate);
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -45,7 +45,7 @@ test("config API allows renaming saved legacy models and still validates actual 
   }
   candidate = (await call("")).body.config;
   assert.deepEqual(candidate.virtualProviders.cabletidy_renamed.models, initial.virtualProviders.cabletidy_relay.models);
-  candidate.bindings.renamed.name = "Web renamed";
+  candidate.cables.renamed.name = "Web renamed";
   normalizeConfigurationIdentities(candidate);
   const renamed = await call("/commit", candidate);
   assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
@@ -107,7 +107,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
     "secret://upstreams/relay": "upstream-key",
   });
-  const preview = await call("/config/preview-target-artifacts", { bindingId: "relay" });
+  const preview = await call("/config/preview-target-artifacts", { cableId: "relay" });
   assert.equal(preview.status, 200);
   assert.equal(preview.body.artifacts.files.length, 2);
   assert.equal(preview.body.artifacts.catalogPlan, undefined);
@@ -115,7 +115,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal(readCodexConfig(previewToml).model_providers.cabletidy_relay.base_url, `${app.url}relay/v1`);
   assert.doesNotMatch(previewToml, /upstream-key|profiles\./);
   assert.equal(previewToml.includes(candidate.upstreams.relay.baseUrl), false);
-  const applied = await call("/targets/apply", { bindingId: "relay" });
+  const applied = await call("/targets/apply", { cableId: "relay" });
   assert.equal(applied.status, 200);
   const root = await fs.readFile(path.join(client, "config.toml"), "utf8");
   assert.equal(root, previewToml);
@@ -125,19 +125,19 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   assert.equal(generated.models[0].base_instructions, catalogFixture().catalog.models[0].base_instructions);
   unavailable = true;
   assert.equal((await call("/codex/models?refresh=1")).body.available, false);
-  assert.equal((await call("/targets/apply", { bindingId: "relay" })).status, 422);
+  assert.equal((await call("/targets/apply", { cableId: "relay" })).status, 422);
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), root);
   assert.equal((await call("/runtime")).status, 200);
 });
 
-test("target APIs select bindings consistently and retired aliases return 404", async (t) => {
+test("target APIs select cables consistently and retired aliases return 404", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-target-api-test-"));
   const paths = getPaths(home);
   const client = path.join(home, "client");
   const config = normalizeConfig(namedCodexConfigFixture({ generic: "generic", relay: "relay" }));
   config.web.port = await freePort();
-  config.bindings.generic.target = "generic-env";
-  config.bindings.relay.enabled = false;
+  config.cables.generic.target = "generic-env";
+  config.cables.relay.enabled = false;
   await saveConfig(config, paths);
   const app = await createApplication({ paths, codexHome: client, loadCodexCatalog: async () => catalogFixture() });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
@@ -147,14 +147,14 @@ test("target APIs select bindings consistently and retired aliases return 404", 
     });
     return { status: response.status, body: await response.json() };
   };
-  for (const [body, bindingId, target] of [[{ bindingId: "relay" }, "relay", "codex"], [{}, "generic", "generic-env"]]) {
+  for (const [body, cableId, target] of [[{ cableId: "relay" }, "relay", "codex"], [{}, "generic", "generic-env"]]) {
     const preview = await call("/config/preview-target-artifacts", body);
     assert.equal(preview.status, 200);
-    assert.equal(preview.body.artifacts.bindingId, bindingId);
+    assert.equal(preview.body.artifacts.cableId, cableId);
     assert.equal(preview.body.artifacts.target, target);
   }
   for (const endpoint of ["/config/preview-codex-config", "/config/preview-provider-artifacts", "/targets/codex/apply"]) {
-    const retired = await call(endpoint, { bindingId: "relay" });
+    const retired = await call(endpoint, { cableId: "relay" });
     assert.equal(retired.status, 404);
     assert.equal(retired.body.error.code, "not_found");
   }
@@ -163,21 +163,21 @@ test("target APIs select bindings consistently and retired aliases return 404", 
   const unsupported = await call("/targets/apply");
   assert.equal(unsupported.status, 501);
   assert.equal(unsupported.body.target, "generic-env");
-  assert.equal(unsupported.body.bindingId, "generic");
+  assert.equal(unsupported.body.cableId, "generic");
   await assert.rejects(fs.access(path.join(client, "config.toml")), { code: "ENOENT" });
 
-  const current = await call("/targets/apply", { bindingId: "relay" });
+  const current = await call("/targets/apply", { cableId: "relay" });
   assert.equal(current.status, 200);
   assert.equal(current.body.target, "codex");
   const events = (await (await fetch(`${app.url}api/v1/events`)).json()).events;
   assert.equal(events[0].type, "target.apply");
   assert.deepEqual(events[0].data, {
-    bindingId: "relay", target: "codex", files: current.body.report.applied,
+    cableId: "relay", target: "codex", files: current.body.report.applied,
   });
   const contents = await fs.readFile(path.join(client, "config.toml"), "utf8");
   assert.match(contents, /cabletidy_relay/);
 
-  const failed = await call("/targets/apply", { bindingId: "missing" });
+  const failed = await call("/targets/apply", { cableId: "missing" });
   assert.equal(failed.status, 422);
   assert.equal(failed.body.error.code, "target_apply_failed");
   assert.equal(await fs.readFile(path.join(client, "config.toml"), "utf8"), contents);

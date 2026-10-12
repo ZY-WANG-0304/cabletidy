@@ -100,7 +100,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bindingId: "codex" }),
+        body: JSON.stringify({ cableId: "codex" }),
       },
     );
     const artifactPreview = await artifactResponse.json();
@@ -355,7 +355,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
         defaultModel: "claude-sonnet",
       },
     },
-    bindings: {
+    cables: {
       "claude-main": {
         id: "claude-main",
         target: "claude-code",
@@ -376,7 +376,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bindingId: "claude-main" }),
+        body: JSON.stringify({ cableId: "claude-main" }),
       },
     );
     const preview = await previewResponse.json();
@@ -389,7 +389,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ bindingId: "claude-main" }),
+        body: JSON.stringify({ cableId: "claude-main" }),
       },
     );
     const applyBody = await applyResponse.json();
@@ -479,7 +479,7 @@ test("upstream errors are returned without contacting another configured upstrea
     ...namedCodexConfigFixture({ codex: "codex" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    bindings: {},
+    cables: {},
   });
   config.upstreams.codex.baseUrl = `http://127.0.0.1:${primaryPort}/v1`;
   config.upstreams.backup = {
@@ -521,7 +521,7 @@ test("changing the shared listener requires restart and preserves the running co
     ...namedCodexConfigFixture({ primary: "primary" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    bindings: {},
+    cables: {},
   });
   await saveConfig(config, paths);
 
@@ -560,7 +560,7 @@ test("unsupported Virtual Provider ingress returns an explicit 501", async () =>
     ...namedCodexConfigFixture({ chat: "chat" }),
     revision: 1,
     web: { listenHost: "127.0.0.1", port: webPort },
-    bindings: {},
+    cables: {},
   });
   config.upstreams.chat.protocol = "openai.chat_completions";
   config.virtualProviders.cabletidy_chat.ingressProtocol = "openai.chat_completions";

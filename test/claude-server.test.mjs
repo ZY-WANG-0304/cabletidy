@@ -97,7 +97,7 @@ test("model discovery and startup HEAD stay local and all four endpoints honor p
   const runtime = await (await f.call("api/v1/runtime")).json();
   const baseUrl = runtime.virtualProviders[0].baseUrl;
   assert.equal(baseUrl, `${f.app.url}claude-main`);
-  const preview = await f.call("api/v1/config/preview-target-artifacts", { bindingId: "claude-main" });
+  const preview = await f.call("api/v1/config/preview-target-artifacts", { cableId: "claude-main" });
   assert.equal(preview.status, 200);
   assert.equal((await preview.json()).artifacts.environment.vars.ANTHROPIC_BASE_URL, baseUrl);
   assert.equal((await fetch(`${baseUrl}/v1/models`)).status, 200);
@@ -267,13 +267,13 @@ test("management applies and restores Claude settings without returning existing
   await fs.mkdir(path.dirname(file));
   const original = { env: { ANTHROPIC_AUTH_TOKEN: "old-client-secret" }, permissions: { allow: ["Read"] } };
   await fs.writeFile(file, JSON.stringify(original));
-  const preview = await f.call("api/v1/config/preview-target-artifacts", { bindingId: "claude-main" });
+  const preview = await f.call("api/v1/config/preview-target-artifacts", { cableId: "claude-main" });
   assert.doesNotMatch(await preview.text(), /old-client-secret|real-upstream-secret/);
-  const result = await f.call("api/v1/targets/apply", { bindingId: "claude-main" });
+  const result = await f.call("api/v1/targets/apply", { cableId: "claude-main" });
   assert.equal(result.status, 200);
   assert.doesNotMatch(await result.text(), /old-client-secret|real-upstream-secret/);
   assert.equal(JSON.parse(await fs.readFile(file, "utf8")).env.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
-  const restore = await f.call("api/v1/targets/restore", { bindingId: "claude-main" });
+  const restore = await f.call("api/v1/targets/restore", { cableId: "claude-main" });
   assert.equal(restore.status, 200);
   assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), original);
 });

@@ -166,7 +166,7 @@ async function fixture(t, {
     config.upstreams[id] = { id, protocol, baseUrl: `${base}/${id}/v1` };
     config.routes[id] = { id, backends: [{ upstream: id }] };
     config.virtualProviders[`cabletidy_${id}`] = { id: `cabletidy_${id}`, ingressProtocol: protocol, route: id };
-    config.bindings[id] = { id, name: id, target, virtualProvider: `cabletidy_${id}` };
+    config.cables[id] = { id, name: id, target, virtualProvider: `cabletidy_${id}` };
   }
   const post = (route, body) => fetch(`${app.url}${route}`, {
     method: "POST", headers: { "content-type": "application/json" },

@@ -92,7 +92,7 @@ impl AppState {
             })
         }).collect();
         let mut counts: serde_json::Map<_, _> =
-            ["upstreams", "routes", "virtualProviders", "bindings"]
+            ["upstreams", "routes", "virtualProviders", "cables"]
                 .into_iter()
                 .map(|key| (key.to_owned(), json!(entries(&config[key]).count())))
                 .collect();
@@ -793,20 +793,20 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     if path == "/api/v1/config/commit" {
         return commit(&state, &body).await;
     }
-    if path == "/api/v1/config/export" {
+    if path == "/api/v1/cables/export" {
         return Ok(
             match crate::transfer::export(
                 c,
-                &body["bindingIds"],
+                &body["cableIds"],
                 &snapshot.secrets,
                 body["includeCredentials"] == true,
             ) {
                 Ok(bundle) => json_response(200, bundle),
-                Err(e) => error(422, "config_export_invalid", &e.to_string()),
+                Err(e) => error(422, "cable_export_invalid", &e.to_string()),
             },
         );
     }
-    if path == "/api/v1/config/import" {
+    if path == "/api/v1/cables/import" {
         if body["preview"] != true && body["baseRevision"] != c["revision"] {
             return Ok(error(
                 409,
@@ -814,7 +814,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 "配置已变更，请重新选择文件并预览导入",
             ));
         }
-        let (candidate, suites, imported_secrets) = match crate::transfer::import(
+        let (candidate, cables, imported_secrets) = match crate::transfer::import(
             c,
             &body["bundle"],
             &body["choices"],
@@ -822,7 +822,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             body["useImportedCredentials"] != false,
         ) {
             Ok(value) => value,
-            Err(e) => return Ok(error(422, "config_import_invalid", &e.to_string())),
+            Err(e) => return Ok(error(422, "cable_import_invalid", &e.to_string())),
         };
         if body["preview"] == true {
             let mut check = validation::validate(&candidate);
@@ -835,12 +835,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             if !array(&check["errors"]).is_empty() {
                 return Ok(json_response(
                     422,
-                    json!({"error":{"code":"config_import_invalid","message":"配置套装校验失败"},"errors":check["errors"]}),
+                    json!({"error":{"code":"cable_import_invalid","message":"线路校验失败"},"errors":check["errors"]}),
                 ));
             }
             return Ok(json_response(
                 200,
-                json!({"ok":true,"baseRevision":c["revision"],"suites":suites,"warnings":check["warnings"],"hasCredentials":crate::transfer::has_credentials(&body["bundle"])}),
+                json!({"ok":true,"baseRevision":c["revision"],"cables":cables,"warnings":check["warnings"],"hasCredentials":crate::transfer::has_credentials(&body["bundle"])}),
             ));
         }
         return commit(
@@ -888,7 +888,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
         return Ok(
             match targets::prepare(
                 &candidate,
-                text(&body["bindingId"]),
+                text(&body["cableId"]),
                 &secrets,
                 &state.catalog,
                 &state.targets,
@@ -904,7 +904,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
         let _guard = state.target_operation.lock().await;
         let a = match targets::prepare(
             c,
-            text(&body["bindingId"]),
+            text(&body["cableId"]),
             &snapshot.secrets,
             &state.catalog,
             &state.targets,
@@ -917,12 +917,15 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
         if a["target"] != "codex" && a["target"] != "claude-code" {
             return Ok(json_response(
                 501,
-                json!({"error":{"code":"target_apply_not_supported","message":"此 target 没有可持久化写入的客户端配置；请使用管理台预览环境变量"},"target":a["target"],"bindingId":a["bindingId"],"artifacts":targets::public(&a)}),
+                json!({"error":{"code":"target_apply_not_supported","message":"此 target 没有可持久化写入的客户端配置；请使用管理台预览环境变量"},"target":a["target"],"cableId":a["cableId"],"artifacts":targets::public(&a)}),
             ));
         }
         return Ok(match targets::apply(&a, &state.targets).await {
             Ok(report) => {
-                state.event("target.apply",json!({"bindingId":a["bindingId"],"target":a["target"],"files":report["applied"]}));
+                state.event(
+                    "target.apply",
+                    json!({"cableId":a["cableId"],"target":a["target"],"files":report["applied"]}),
+                );
                 json_response(200, json!({"ok":true,"target":a["target"],"report":report}))
             }
             Err(e) => error(422, "target_apply_failed", &e.to_string()),
@@ -930,8 +933,8 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     }
     if path == "/api/v1/targets/restore" {
         let _guard = state.target_operation.lock().await;
-        let id = text(&body["bindingId"]);
-        if c["bindings"][id]["target"] != "claude-code" {
+        let id = text(&body["cableId"]);
+        if c["cables"][id]["target"] != "claude-code" {
             return Ok(error(
                 422,
                 "target_restore_failed",
@@ -942,7 +945,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             Ok(report) => {
                 state.event(
                     "target.restore",
-                    json!({"bindingId":id,"target":"claude-code"}),
+                    json!({"cableId":id,"target":"claude-code"}),
                 );
                 json_response(
                     200,

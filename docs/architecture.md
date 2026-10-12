@@ -83,7 +83,7 @@ Codex 的 reasoning effort 由请求选择；旧 compact 数据保留但不生�
                            |
                     route selector
                            |
-          upstream binding + capability checks
+          upstream cable + capability checks
                            |
                  protocol transform layer
                            |
@@ -219,7 +219,7 @@ Virtual Provider 与管理台共用一个本机回环监听器，不生成或校
 监听地址由 `web.listenHost` / `web.port` 决定；旧配置中的 `localAuth`、独立
 `listenHost` / `listenPort` 和 `daemon.proxyPortRange` 在加载时移除。
 首次启动且没有配置文件时，优先绑定 `43100`，遇到 `EADDRINUSE` 则在同一个服务对象上绑定端口 `0`，由操作系统选择可用端口。监听器始终保持打开，实际端口保存到配置和运行状态中，所有入口和客户端配置均使用这个端口。已有配置的端口被占用时直接报错，需要手动修改后重启并重新应用客户端配置。
-配置 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数。以下示例假设最终端口为 `43100`：
+线路 ID 用作第一级路径，转发给上游前去掉此前缀并保留请求的查询参数。以下示例假设最终端口为 `43100`：
 
 ```text
 127.0.0.1:43100/                       Web 管理台
@@ -228,13 +228,13 @@ Virtual Provider 与管理台共用一个本机回环监听器，不生成或校
 127.0.0.1:43100/claude-main/v1/...     Claude anthropic.messages
 ```
 
-不使用额外的 `/providers` 前缀，路径中的配置 ID 也不带 `cabletidy_`。
-`api` 是保留配置 ID。未知或已删除的配置路径返回 404，暂停的配置返回 503；
+不使用额外的 `/providers` 前缀，路径中的线路 ID 也不带 `cabletidy_`。
+`api` 是保留线路 ID。未知或已删除的线路路径返回 404，暂停的线路返回 503；
 管理接口和其他配置继续可用。配置重命名后旧路径失效，需要重新应用客户端配置。
 
-### 4.8 Target Binding
+### 4.8 Cable
 
-Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如何生成客户端原生配置：
+Cable（线路）把一个 Target 和一个 Virtual Provider 连接起来，并决定如何生成客户端原生配置：
 
 ```json
 {
@@ -249,10 +249,10 @@ Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如�
 }
 ```
 
-配置（Target Binding）与 Virtual Provider 一对一，不允许多个 Binding 引用同一个 Virtual Provider。一个 Target 可以有多份配置，每份配置使用自己的 Virtual Provider。
+线路与 Virtual Provider 一对一，不允许多条线路引用同一个 Virtual Provider。一个 Target 可以有多条线路，每条线路使用自己的 Virtual Provider。
 
-配置 ID 由配置名称规范化生成，例如填写 `my-relay` 时配置 ID 为 `my-relay`；Virtual Provider 的记录键、`id` 和 Binding 的 `virtualProvider` 均为 `cabletidy_my-relay`。名称包含大写或空格时仍会规范化为同样的配置 ID。Codex 的 `model_provider` 直接使用这个 Virtual Provider ID，不再另行生成。
-旧配置加载时同步迁移记录键和引用，保留模型映射及上游连接；规范化名称冲突时保留原记录并报告校验错误，不覆盖配置。名称修改会同步改变配置 ID、入口路径和 Virtual Provider ID。
+线路 ID 由线路名称规范化生成，例如填写 `my-relay` 时线路 ID 为 `my-relay`；Virtual Provider 的记录键、`id` 和线路的 `virtualProvider` 均为 `cabletidy_my-relay`。名称包含大写或空格时仍会规范化为同样的线路 ID。Codex 的 `model_provider` 直接使用这个 Virtual Provider ID，不再另行生成。
+旧配置加载时同步迁移记录键和引用，保留模型映射及上游连接；规范化名称冲突时保留原记录并报告校验错误，不覆盖配置。名称修改会同步改变线路 ID、入口路径和 Virtual Provider ID。
 
 ## 5. Codex 接入语义
 
@@ -261,7 +261,7 @@ Binding 把一个 Target 和一个 Virtual Provider 连接起来，并决定如�
 Web 配置表单会将以下信息保存到 CableTidy：
 
 ```text
-Target Binding -> Virtual Provider -> Route -> Upstream
+Cable -> Virtual Provider -> Route -> Upstream
                          |
                          +--> models[客户端模型名]
                                 upstreamModelId（可选）
@@ -385,14 +385,14 @@ Model Profile:
   compact
   family / name
 
-Route / Virtual Provider / Binding:
+Route / Virtual Provider / Cable:
   name
-  binding 的 target、virtualProvider、targetFormat、defaultModel
+  线路的 target、virtualProvider、targetFormat、defaultModel
   这些用于管理台、Codex artifact 和目标 CLI 接入，不参与上游 model 映射。
 ```
 
-配置 ID 由 binding 的配置名称规范化生成，Virtual Provider ID 为
-`cabletidy_<configuration-id>`，Codex `providerId` 直接使用该值。Upstream 的内部 ID 只作为 CableTidy
+线路 ID 由线路名称规范化生成，Virtual Provider ID 为
+`cabletidy_<cable-id>`，Codex `providerId` 直接使用该值。Upstream 的内部 ID 只作为 CableTidy
 配置图中的关联键，用于模型绑定和 Route，不参与 Codex provider 命名；已有
 Codex 配置只有在用户主动执行应用操作时才会写入新的 provider。
 
@@ -424,10 +424,10 @@ client_model_id
   > 拒绝请求
 ```
 
-Target Binding 的 `defaultModel` 只用于客户端接入生成；新建配置不自动设置默认模型，客户端自行选择。未登记模型默认透传，不套用其他模型的能力限制；无请求模型且未设置默认模型时返回 `model_required`。
+线路的 `defaultModel` 只用于客户端接入生成；新建线路不自动设置默认模型，客户端自行选择。未登记模型默认透传，不套用其他模型的能力限制；无请求模型且未设置默认模型时返回 `model_required`。
 
 名称和 alias 的唯一性限定在 Virtual Provider 的 `models` 字典内。请求先精确匹配该字典的客户端名称，再匹配显式别名，未匹配时原名透传。
-不同套装可用相同官方模型名并分别映射不同上游名称；字典为空或省略时不得回退到其他配置的模型设置。配置引用不参与请求名称匹配。
+不同线路可用相同官方模型名并分别映射不同上游名称；字典为空或省略时不得回退到其他线路的模型设置。线路引用不参与请求名称匹配。
 
 ### 6.2 能力判断
 
@@ -469,20 +469,20 @@ anthropic.messages -> anthropic.messages
 
 ### 7.1 页面职责
 
-Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按“配置套装”管理，
+Web 管理台是 MVP 的 P0 组件，不是未来可选功能。普通用户按“线路”管理，
 而不是按底层资源表逐个拼装：
 
 ```text
-配置套装 = 一个上游 + 可选模型设置 + 自动路由 + 一个 CLI 接入
+线路 = 一个 CLI 接入 + 一个或多个上游 + 可选模型设置 + 自动路由
 ```
 
 一级页面只保留：
 
-1. 配置套装：查看套装列表、创建套装、进入某套配置的详情页。
-2. 诊断：执行模型解析测试和脱敏事件查看。上游连通性测试位于套装详情页，配置校验由保存接口执行。
+1. 线路：查看线路列表、创建线路、进入某条线路的详情页。
+2. 诊断：执行模型解析测试和脱敏事件查看。上游连通性测试位于线路详情页，配置校验由保存接口执行。
 3. 安全：统一审计列表与风险筛选，详情复核关联风险、正文和检测快照。
 
-套装详情页按上游连接、可选模型设置、客户端接入的顺序纵向排列。底部展示本地地址、
+线路详情页按上游连接、可选模型设置、客户端接入的顺序纵向排列。底部展示本地地址、
 Virtual Provider ID 以及服务启停、预览和应用操作。一个 Virtual Provider 只连接
 一个上游，内部 Route 由 CableTidy 自动创建，不向用户暴露主备或优先级配置。
 上游连接单独编辑，只需地址和凭据；Claude Code 还可选择 API Key 或 Bearer 认证。
@@ -499,8 +499,8 @@ Codex 的通栏可选模型设置区域每行展示：
 
 CableTidy 将模型名、上游模型名及元数据统一保存在当前 Virtual Provider 的 `models` 中。Route 随配置自动创建，只指定唯一上游；需要另一个上游时创建另一份配置。修改模型名会同步更新相关默认模型和 Claude 客户端模型选择，不维护额外的内部 ID 或重复引用列表。
 
-套装详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
-底层的 Upstream、Virtual Provider、Binding 和 Route 不再作为普通用户需要
+线路详情页只保留上游连接、模型映射和 CLI 配置预览所需的最小字段；
+底层的 Upstream、Virtual Provider、Cable 和 Route 不再作为普通用户需要
 理解或点击的高级设置入口，也不再作为一级导航和首次配置的必经步骤。
 Claude Code 模型行只提供客户端模型 ID 和可选的上游模型 ID，不套用 Codex 的
 模型能力和上下文元数据。客户端 ID 使用可搜索、允许手动填写的输入框，
@@ -515,7 +515,7 @@ Claude Code 模型行只提供客户端模型 ID 和可选的上游模型 ID，�
 默认行为和当前配置客户端 ID。创建页使用本次填写的 ID，详情页使用已保存的 ID；不使用上游
 模型 ID 或其他配置的模型。已有模型发现开关保留在表单底部，不新增分组。
 改名或移除模型时同步家族别名、启动模型和子代理模型中的客户端 ID 引用，并同时维护
-Binding 与 Virtual Provider 的默认模型。官方启动别名优先于同名内部 profile ID 或 profile
+线路与 Virtual Provider 的默认模型。官方启动别名优先于同名内部 profile ID 或 profile
 自定义别名，生成配置时保留原文，由 Claude 解析；普通别名不随模型映射删除而清空。
 四个家族均生成官方 `ANTHROPIC_DEFAULT_*_MODEL` 变量。
 启动模型不暴露 `[1m]` 选项：该后缀是 Claude Code 的上下文模式控制，客户端会在上游请求前移除，
@@ -545,7 +545,7 @@ Claude Code 模型选择（仅 Claude Code，可选）
   选择保存别名本身；不在候选列表中的旧值在正常保存时清空，不自动回写配置
 
 创建配置
-  自动创建 Route、Virtual Provider 和所选 CLI 的 Target Binding
+  自动创建 Route、Virtual Provider 和所选 CLI 的线路
   保存成功后进入详情页，再按需预览或应用客户端配置
 ```
 
@@ -561,7 +561,7 @@ browser draft
 ```
 
 详情页用于编辑当前配置的唯一上游和模型映射。需要接入另一个 upstream 时创建另一份配置，使用独立的 Virtual Provider。
-内部 Route 与 Target Binding 由套装流程维护，不提供独立的路由或绑定编辑页面。
+内部 Route 与线路记录由线路流程维护，不提供独立的路由或绑定编辑页面。
 
 ## 8. Control API
 
@@ -584,7 +584,7 @@ POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
 
-预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `bindingId` 时选择首个启用的 binding；要应用特定配置，应显式传入其 `bindingId`。Codex 和 Claude Code 均支持持久化应用。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。`/api/v1/targets/restore` 仅用于撤销当前已应用的 Claude Code binding，恢复原有受管理字段，保留其他用户设置；失败返回 `422 target_restore_failed`。
+预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `cableId` 时选择首个启用的线路；要应用特定线路，应显式传入其 `cableId`。Codex 和 Claude Code 均支持持久化应用。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。`/api/v1/targets/restore` 仅用于撤销当前已应用的 Claude Code 线路，恢复原有受管理字段，保留其他用户设置；失败返回 `422 target_restore_failed`。
 
 原型接口 `preview-codex-config`、`preview-provider-artifacts` 和 `/api/v1/targets/codex/apply` 已退役，均返回 `404 not_found`。
 
@@ -606,8 +606,8 @@ GET  /api/v1/integrations
 
 原型 Codex 配置不再自动迁移。`providerFormat`、`targetOverrides.codex`、`legacyCodex` 和原型 profile 文件元数据在规范化时被丢弃，保存时不再保留，也不会填充当前字段。仍使用原型格式的配置应在升级前备份并手动转换：
 
-- upstream 或 binding 的 `providerFormat: "codex.toml.v1"` 改为 `integration: "codex-native-provider"`。
-- binding 的 `targetFormat: "codex.toml.v1"` 改为 `"codex.config.toml.v1"`；旧值会被校验拒绝。
+- upstream 或线路的 `providerFormat: "codex.toml.v1"` 改为 `integration: "codex-native-provider"`。
+- 线路的 `targetFormat: "codex.toml.v1"` 改为 `"codex.config.toml.v1"`；旧值会被校验拒绝。
 - 模型 `targetOverrides.codex` 或 `legacyCodex` 中的 `model`、`modelContextWindow`、`personality` 分别移至 `models` 的客户端名称键、模型的 `contextWindow`、`personality`。
 - 若需要保留历史 compact 元数据，将 `modelAutoCompactTokenLimit` 移至模型的 `compact: { strategy: "auto", tokenLimit: ... }`；该元数据仍不改变运行时压缩行为。
 
@@ -615,9 +615,11 @@ GET  /api/v1/integrations
 
 新配置不再生成 `web.enabled`；旧值保留但不影响监听。配置入口的启停由 `virtualProviders.<id>.enabled` 控制。有效能力覆盖位于 `virtualProviders.<id>.models.<客户端模型名>.capabilityOverrides`。
 
-配置版本为 2。加载版本 1 时，将 `allowedModels` 引用的全局模型迁入所属配置，使用原 `clientModelId`（缺省时取首个别名，再缺省时取原记录键）作为客户端名称，并展开该配置上游的映射字段。移除内部 `id`、重复的 `clientModelId`、全局 `models`、`allowedModels` 和 backend 的 `models`。旧模型顶层无效的 `capabilityOverrides` 丢弃，仅迁移原上游映射中实际生效的覆盖。默认模型及 `binding.claude.models` 中归属当前配置的内部引用转换成客户端名称。Claude 的默认模型和 subagent 选择按各自支持的原生别名保留字面值；模型家族映射中的旧内部 ID 则转换为客户端名称。
+配置版本为 3。加载版本 1 时，将 `allowedModels` 引用的全局模型迁入所属配置，使用原 `clientModelId`（缺省时取首个别名，再缺省时取原记录键）作为客户端名称，并展开该配置上游的映射字段。移除内部 `id`、重复的 `clientModelId`、全局 `models`、`allowedModels` 和 backend 的 `models`。旧模型顶层无效的 `capabilityOverrides` 丢弃，仅迁移原上游映射中实际生效的覆盖。默认模型及线路 `claude.models` 中归属当前线路的内部引用转换成客户端名称。Claude 的默认模型和 subagent 选择按各自支持的原生别名保留字面值；模型家族映射中的旧内部 ID 则转换为客户端名称。
 
-迁移在内存中完成，成功保存配置后写入版本 2。迁移遇到重复客户端名、缺失模型、错误上游绑定或未归属配置的模型记录时拒绝迁移并保留原数据，不静默覆盖或删除；显式别名冲突由新结构的校验报告。旧内部 ID 不会自动变成请求别名。若要回退旧版本，应恢复迁移前的版本 1 配置。
+加载版本 2 时，把 `bindings` 读为 `cables`，其余结构不变；两个字段同时存在时拒绝加载，不猜测使用哪一个。
+
+迁移在内存中完成，成功保存配置后写入版本 3；在首次保存前磁盘上仍是原文件，保存时按既有流程备份。迁移遇到重复客户端名、缺失模型、错误上游绑定或未归属线路的模型记录时拒绝迁移并保留原数据，不静默覆盖或删除；显式别名冲突由新结构的校验报告。旧内部 ID 不会自动变成请求别名。若要回退旧版本，应恢复迁移前的配置文件。
 
 配置和密钥读取不初始化 store；缺失时分别返回无配置和空密钥。`status` 只读，未初始化时仅报告未启动，不生成 URL 或创建文件。`start` 先取得数据目录的实例锁，再读取配置和监听；首次监听成功后保存配置。锁在请求排空和运行状态清理完成后释放，防止重复启动或退出期间启动第二个实例；启动失败也会释放锁。
 
@@ -639,11 +641,11 @@ Windows 的 Codex 查询通过系统 PowerShell 启动固定参数的 `codex` �
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "upstreams": {},
   "routes": {},
   "virtualProviders": {},
-  "bindings": {}
+  "cables": {}
 }
 ```
 
@@ -731,7 +733,7 @@ MVP 至少覆盖：
 - Rust daemon 和内嵌的 loopback-only Web 管理台。
 - Web 配置创建与详情编辑。
 - `openai.responses` 和 `anthropic.messages` 同协议 Virtual Provider。
-- Upstream、配置内模型设置、Route、Virtual Provider、Target Binding。
+- Upstream、线路内模型设置、Route、Virtual Provider、Cable。
 - Codex Native Provider Integration 的 Web 配置和原生配置生成。
 - Codex 只生成本地 `config.toml` managed block。
 - Claude Code 官方 Base URL 接入、四个本地接口、模型映射与上游连通性测试。
@@ -758,7 +760,7 @@ CableTidy 的核心链路是：
 
 ```text
 Target
-  -> Target Binding
+  -> Cable
   -> Virtual Provider
   -> Model Resolver
   -> 当前配置的模型设置（可选上游名称映射）
@@ -772,7 +774,7 @@ CableTidy 的 Codex 集成链路是：
 ```text
 Codex Native Provider Integration
   -> Web 表单填写 CableTidy 配置
-  -> Upstream / Model Profile / Binding / Route
+  -> Upstream / Model Profile / Cable / Route
   -> local Virtual Provider
   -> ~/.codex/config.toml managed block
 ```

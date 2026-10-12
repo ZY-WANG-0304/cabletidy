@@ -779,7 +779,7 @@ test("configuration operations stay outside auditing; agent failures are recorde
   const bad = await f.request({}, { body: "{" });
   assert.equal(bad.status, 400);
   assert.equal((await f.list("audit", "kind=request&outcome=local_error")).total, 1);
-  const apply = await f.call("api/v1/targets/apply", { bindingId: "missing" });
+  const apply = await f.call("api/v1/targets/apply", { cableId: "missing" });
   assert.equal(apply.status, 422);
   const pause = await f.call(`api/v1/virtual-providers/${f.provider}/pause`, {});
   assert.equal(pause.status, 200);

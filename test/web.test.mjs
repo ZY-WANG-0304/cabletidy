@@ -28,8 +28,8 @@ function formNode(id, fields = {}, rows = []) {
 }
 
 function creationForm() {
-  return formNode("suite-create-form", {
-    suiteName: "Development", target: "codex",
+  return formNode("cable-create-form", {
+    cableName: "Development", target: "codex",
     upstreamBaseUrl: "https://example.invalid/v1", upstreamSecret: "test-key",
   }, [{
     querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "gpt-5.5" : "vendor-gpt" }),
@@ -124,9 +124,9 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         "/api/v1/tests/upstream": { ok: true, message: "上游可连接", latencyMs: 1, secretConfigured: true },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
         "/api/v1/codex/models?refresh=1": options.refreshCatalog || publicCodexCatalog(options.catalog || catalogFixture()),
-        "/api/v1/targets/apply": { target: persisted.bindings[body?.bindingId]?.target },
+        "/api/v1/targets/apply": { target: persisted.cables[body?.cableId]?.target },
         "/api/v1/targets/restore": { target: "claude-code", report: { mode: "restored" } },
-        "/api/v1/config/preview-target-artifacts": { artifacts: { target: persisted.bindings[body?.bindingId]?.target } },
+        "/api/v1/config/preview-target-artifacts": { artifacts: { target: persisted.cables[body?.cableId]?.target } },
       };
       assert.ok(url in responses, "Unexpected endpoint: " + url);
       return { ok: true, json: async () => responses[url] };
@@ -186,7 +186,7 @@ test("top-level settings save finite and independently unlimited audit limits", 
   assert.match(app.node("#page-content").innerHTML, /settings-row/);
   assert.match(app.node("#page-content").innerHTML, /name="budgetMiB"[^>]*min="16"/);
   assert.match(app.node("#page-content").innerHTML, /name="budgetMiB"[^>]*value="5120"/);
-  const bindings = clone(app.persisted().bindings);
+  const cables = clone(app.persisted().cables);
   for (const [fields, expected] of [
     [{ retentionDays: "30", budgetMiB: "5120" }, { retentionDays: 30, budgetBytes: 5 * 1024 ** 3 }],
     [{ retentionDays: "7", budgetMiB: "64" }, { retentionDays: 7, budgetBytes: 64 * 1048576 }],
@@ -196,7 +196,7 @@ test("top-level settings save finite and independently unlimited audit limits", 
   ]) {
     await app.submit(formNode("audit-settings-form", fields));
     assert.deepEqual(app.persisted().audit, expected);
-    assert.deepEqual(app.persisted().bindings, bindings);
+    assert.deepEqual(app.persisted().cables, cables);
     assert.equal(app.read("state.page"), "settings");
   }
   assert.equal(app.requests.filter(({ url }) => url === "/api/v1/config/commit").length, 5);
@@ -765,17 +765,17 @@ test("Claude configurations can be created without a Codex catalog and retain na
   const form = creationForm();
   form.fields.target = "claude-code";
   form.fields.upstreamAuth = "authorization";
-  form.fields.suiteName = "";
+  form.fields.cableName = "";
   form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "claude-sonnet-4-6" : "vendor-sonnet" }) }];
-  assert.match(app.read("renderSuiteCreate()"), /value="claude-code" selected/);
+  assert.match(app.read("renderCableCreate()"), /value="claude-code" selected/);
   assert.doesNotMatch(app.read("createModelRow()"), /data-official-model/);
   await app.submit(form);
   const config = app.persisted();
-  const binding = config.bindings["claude-code-example-invalid"];
-  assert.equal(binding.target, "claude-code");
-  assert.equal(binding.targetFormat, "claude.settings.json.v1");
-  assert.equal(binding.defaultModel, undefined);
-  const provider = config.virtualProviders[binding.virtualProvider];
+  const cable = config.cables["claude-code-example-invalid"];
+  assert.equal(cable.target, "claude-code");
+  assert.equal(cable.targetFormat, "claude.settings.json.v1");
+  assert.equal(cable.defaultModel, undefined);
+  const provider = config.virtualProviders[cable.virtualProvider];
   const backend = config.routes[provider.route].backends[0];
   assert.equal(provider.ingressProtocol, "anthropic.messages");
   assert.equal(config.upstreams[backend.upstream].protocol, "anthropic.messages");
@@ -787,11 +787,11 @@ test("Claude configurations can be created without a Codex catalog and retain na
   assert.equal(model.contextWindow, undefined);
   assert.ok(config.virtualProviders.cabletidy_relay.models["gpt-5.5"]);
   assert.equal(validateConfig(config).ok, true);
-  const html = app.read("renderSuiteDetail()");
+  const html = app.read("renderCableDetail()");
   assert.match(html, /应用到 Claude Code/);
   assert.match(html, /撤销接入/);
   assert.doesNotMatch(html, /Compact strategy|850000|data-codex-metadata|open-advanced-models/);
-  assert.equal(app.read("suiteEndpoint(selectedSuite())"), "http://127.0.0.1:43100/claude-code-example-invalid");
+  assert.equal(app.read("cableEndpoint(selectedCable())"), "http://127.0.0.1:43100/claude-code-example-invalid");
 });
 
 test("Claude creation saves family aliases and selectable defaults without applying or changing existing Codex configurations", async () => {
@@ -805,17 +805,17 @@ test("Claude creation saves family aliases and selectable defaults without apply
   form.querySelectorAll = () => [{ querySelector: (selector) => ({ value: selector.includes("clientModelId") ? "custom-client" : "upstream-custom" }) }];
   await app.submit(form);
   const config = app.persisted();
-  const binding = config.bindings.development;
-  assert.equal(binding.defaultModel, "opus");
-  assert.equal(config.virtualProviders[binding.virtualProvider].defaultModel, "opus");
-  assert.deepEqual(binding.claude, {
+  const cable = config.cables.development;
+  assert.equal(cable.defaultModel, "opus");
+  assert.equal(config.virtualProviders[cable.virtualProvider].defaultModel, "opus");
+  assert.deepEqual(cable.claude, {
     setModel: true,
     models: { opus: "custom-client", sonnet: "custom-client", fable: "custom-client", haiku: "custom-client", subagent: "haiku" },
   });
-  assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "opus");
+  assert.equal(app.read("claudeDefaultModel(selectedCable())"), "opus");
   assert.equal(validateConfig(config).ok, true);
   assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
-  for (const section of ["upstreams", "routes", "virtualProviders", "bindings"]) {
+  for (const section of ["upstreams", "routes", "virtualProviders", "cables"]) {
     for (const [id, value] of Object.entries(before[section])) assert.deepEqual(config[section][id], value);
   }
 });
@@ -823,18 +823,18 @@ test("Claude creation saves family aliases and selectable defaults without apply
 test("Claude creation allows empty optional sections and clears values outside the selectable candidates", async () => {
   for (const defaultModel of ["", "unregistered-startup"]) {
     const app = await controller();
-    const form = formNode("suite-create-form", {
+    const form = formNode("cable-create-form", {
       ...creationForm().fields, target: "claude-code", defaultModel,
       opus: "", sonnet: "", fable: "", haiku: "", subagent: defaultModel ? "unregistered-worker" : " ",
     });
     await app.submit(form);
     const config = app.persisted();
-    const binding = config.bindings.development;
-    const provider = config.virtualProviders[binding.virtualProvider];
+    const cable = config.cables.development;
+    const provider = config.virtualProviders[cable.virtualProvider];
     assert.deepEqual(provider.models, {});
-    assert.equal(binding.defaultModel, undefined);
+    assert.equal(cable.defaultModel, undefined);
     assert.equal(provider.defaultModel, undefined);
-    assert.deepEqual(binding.claude, {});
+    assert.deepEqual(cable.claude, {});
     assert.equal(validateConfig(config).ok, true);
   }
 });
@@ -867,26 +867,26 @@ test("Codex creation ignores values in the hidden Claude optional sections", asy
 
 test("Claude client selection saves optional family defaults, applies explicitly, and can restore", async () => {
   const app = await controller(claudeConfigFixture());
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
   await app.submit(formNode("claude-client-form", { defaultModel: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet", discoverModels: "on" }));
-  const binding = app.persisted().bindings["claude-main"];
-  assert.equal(binding.defaultModel, "claude-sonnet-4-6");
-  assert.deepEqual(binding.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } });
+  const cable = app.persisted().cables["claude-main"];
+  assert.equal(cable.defaultModel, "claude-sonnet-4-6");
+  assert.deepEqual(cable.claude, { setModel: true, discoverModels: true, models: { sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } });
   assert.equal(app.requests.some(({ url }) => url.endsWith("/targets/apply")), false);
   await app.action("apply-target", {});
   assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
-  assert.equal(app.requests.at(-1).body.bindingId, "claude-main");
+  assert.equal(app.requests.at(-1).body.cableId, "claude-main");
   await app.action("restore-target", {});
   assert.equal(app.requests.at(-1).url, "/api/v1/targets/restore");
   await app.submit(formNode("claude-client-form", {}));
-  assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
-  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  assert.equal(app.persisted().cables["claude-main"].defaultModel, undefined);
+  assert.deepEqual(app.persisted().cables["claude-main"].claude.models, {});
 });
 
 test("Claude details use the simple connectivity action without inference controls or parameters", async () => {
   const app = await controller(claudeConfigFixture());
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  const html = app.read("renderSuiteDetail()");
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  const html = app.read("renderCableDetail()");
   assert.match(html, /data-action="test-upstream" data-id="relay">测试连通性/);
   assert.doesNotMatch(html, /claude-probe-form|测试模型|测试推理|测试 SSE/);
   await app.action("test-upstream", { dataset: { id: "relay" } });
@@ -897,8 +897,8 @@ test("Claude details use the simple connectivity action without inference contro
 
 test("Claude upstream authentication can switch without replacing its saved credential", async () => {
   const app = await controller(claudeConfigFixture());
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  await app.submit(formNode("suite-upstream-form", { id: "relay", name: "Relay", protocol: "anthropic.messages", baseUrl: "https://example.invalid/v1", authHeader: "authorization", secret: "" }));
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  await app.submit(formNode("cable-upstream-form", { id: "relay", name: "Relay", protocol: "anthropic.messages", baseUrl: "https://example.invalid/v1", authHeader: "authorization", secret: "" }));
   assert.deepEqual(app.persisted().upstreams.relay.auth, { header: "authorization", scheme: "Bearer" });
   assert.equal(app.persisted().upstreams.relay.secretRef, "secret://upstreams/relay");
   const commit = app.requests.find(({ url }) => url.endsWith("config/commit"));
@@ -907,9 +907,9 @@ test("Claude upstream authentication can switch without replacing its saved cred
 
 test("Claude mapping edits do not invent capability or compaction policies", async () => {
   const app = await controller(claudeConfigFixture());
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  const controls = { "[data-suite-model-client]": "claude-sonnet-4-6", '[data-suite-model-upstream="relay"]': "new-model" };
-  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  const controls = { "[data-cable-model-client]": "claude-sonnet-4-6", '[data-cable-model-upstream="relay"]': "new-model" };
+  await app.submit(formNode("cable-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
   const model = app.persisted().virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"];
   assert.equal(model.upstreamModelId, "new-model");
   assert.equal(model.id, undefined);
@@ -923,7 +923,7 @@ test("Claude mapping edits do not invent capability or compaction policies", asy
 test("Claude model suggestions allow custom IDs and empty upstream mappings without changing Codex selection", async () => {
   const app = await controller();
   app.read('state.createTarget = "claude-code"');
-  assert.match(app.read("renderSuiteCreate()"), /datalist id="claude-model-suggestions"/);
+  assert.match(app.read("renderCableCreate()"), /datalist id="claude-model-suggestions"/);
   assert.match(app.read("createModelRow()"), /list="claude-model-suggestions"/);
   assert.match(app.read("claudeModelSuggestions()"), /claude-fable-5-1/);
   const form = creationForm();
@@ -934,11 +934,11 @@ test("Claude model suggestions allow custom IDs and empty upstream mappings with
   assert.equal(validateConfig(config).ok, true);
   const model = config.virtualProviders.cabletidy_development.models["custom-client-model"];
   assert.equal(model.upstreamModelId, undefined);
-  assert.match(app.read('claudeAliasSelect(selectedSuite(), "fable")'), /value="custom-client-model"/);
-  const html = app.read("renderSuiteDetail()");
+  assert.match(app.read('claudeAliasSelect(selectedCable(), "fable")'), /value="custom-client-model"/);
+  const html = app.read("renderCableDetail()");
   assert.doesNotMatch(html, /data-claude-model-name|data-claude-model-description|显示名称|模型列表显示/);
-  await app.action("open-suite", { dataset: { id: "relay" } });
-  const codexHtml = app.read("renderSuiteDetail()");
+  await app.action("open-cable", { dataset: { id: "relay" } });
+  const codexHtml = app.read("renderCableDetail()");
   assert.match(codexHtml, /data-official-model/);
   assert.doesNotMatch(codexHtml, /claude-model-suggestions|别名指向/);
 });
@@ -947,8 +947,8 @@ test("Claude alias choices are scoped to saved client IDs and keep references th
   const config = claudeConfigFixture();
   config.virtualProviders.cabletidy_other = { ...clone(config.virtualProviders["cabletidy_claude-main"]), id: "cabletidy_other", models: { "other-configuration-model": {} } };
   const app = await controller(config);
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  const choices = app.read('claudeAliasSelect(selectedSuite(), "opus")');
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  const choices = app.read('claudeAliasSelect(selectedCable(), "opus")');
   assert.match(choices, /由 Claude 默认决定/);
   assert.doesNotMatch(choices, /other-configuration-model|vendor-sonnet/);
   const invalid = formNode("claude-client-form", { opus: "not-configured" });
@@ -956,54 +956,54 @@ test("Claude alias choices are scoped to saved client IDs and keep references th
   assert.match(invalid.feedback.innerHTML, /已保存的客户端模型 ID/);
   assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
   await app.submit(formNode("claude-client-form", { opus: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", haiku: "claude-sonnet-4-6" }));
-  const controls = { "[data-suite-model-client]": "my-claude", '[data-suite-model-upstream="relay"]': "" };
-  await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
-  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, { opus: "my-claude", sonnet: "my-claude", fable: "my-claude", haiku: "my-claude" });
+  const controls = { "[data-cable-model-client]": "my-claude", '[data-cable-model-upstream="relay"]': "" };
+  await app.submit(formNode("cable-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+  assert.deepEqual(app.persisted().cables["claude-main"].claude.models, { opus: "my-claude", sonnet: "my-claude", fable: "my-claude", haiku: "my-claude" });
   assert.equal(validateConfig(app.persisted()).ok, true);
-  await app.submit(formNode("suite-models-form"));
-  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  await app.submit(formNode("cable-models-form"));
+  assert.deepEqual(app.persisted().cables["claude-main"].claude.models, {});
   assert.equal(validateConfig(app.persisted()).ok, true);
 });
 
 test("Claude legacy alias values stay visible until the user chooses a registered model or the default", async () => {
   const config = claudeConfigFixture();
-  config.bindings["claude-main"].claude.models = { haiku: "legacy-unregistered-model" };
+  config.cables["claude-main"].claude.models = { haiku: "legacy-unregistered-model" };
   const app = await controller(config);
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  assert.match(app.read('claudeAliasSelect(selectedSuite(), "haiku")'), /legacy-unregistered-model.*selected disabled/);
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  assert.match(app.read('claudeAliasSelect(selectedCable(), "haiku")'), /legacy-unregistered-model.*selected disabled/);
   const untouched = formNode("claude-client-form", {});
   await app.submit(untouched);
   assert.match(untouched.feedback.innerHTML, /未配置的模型/);
-  assert.equal(app.persisted().bindings["claude-main"].claude.models.haiku, "legacy-unregistered-model");
+  assert.equal(app.persisted().cables["claude-main"].claude.models.haiku, "legacy-unregistered-model");
   await app.submit(formNode("claude-client-form", { haiku: "" }));
-  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  assert.deepEqual(app.persisted().cables["claude-main"].claude.models, {});
 });
 
 test("Claude default client IDs follow mapping renames and removals in saved settings and artifacts", async () => {
   for (const useProviderDefault of [false, true]) {
     const config = claudeConfigFixture();
     config.virtualProviders["cabletidy_claude-main"].defaultModel = "claude-sonnet-4-6";
-    if (!useProviderDefault) config.bindings["claude-main"].defaultModel = "claude-sonnet-4-6";
-    config.bindings["claude-main"].claude = { discoverModels: true, models: { sonnet: "claude-sonnet-4-6", subagent: "claude-sonnet-4-6" } };
+    if (!useProviderDefault) config.cables["claude-main"].defaultModel = "claude-sonnet-4-6";
+    config.cables["claude-main"].claude = { discoverModels: true, models: { sonnet: "claude-sonnet-4-6", subagent: "claude-sonnet-4-6" } };
     const app = await controller(config);
-    await app.action("open-suite", { dataset: { id: "claude-main" } });
-    const controls = { "[data-suite-model-client]": "renamed-client", '[data-suite-model-upstream="relay"]': "vendor-sonnet" };
-    await app.submit(formNode("suite-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
+    await app.action("open-cable", { dataset: { id: "claude-main" } });
+    const controls = { "[data-cable-model-client]": "renamed-client", '[data-cable-model-upstream="relay"]': "vendor-sonnet" };
+    await app.submit(formNode("cable-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
     let saved = app.persisted();
-    assert.equal(saved.bindings["claude-main"].defaultModel, "renamed-client");
+    assert.equal(saved.cables["claude-main"].defaultModel, "renamed-client");
     assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, "renamed-client");
-    assert.deepEqual(saved.bindings["claude-main"].claude, { setModel: true, discoverModels: true, models: { sonnet: "renamed-client", subagent: "renamed-client" } });
-    let env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.deepEqual(saved.cables["claude-main"].claude, { setModel: true, discoverModels: true, models: { sonnet: "renamed-client", subagent: "renamed-client" } });
+    let env = buildTargetArtifacts(saved, { cableId: "claude-main" }).environment.vars;
     assert.equal(env.ANTHROPIC_MODEL, "renamed-client");
     assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, "renamed-client");
-    assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "renamed-client");
-    await app.submit(formNode("suite-models-form"));
+    assert.equal(app.read("claudeDefaultModel(selectedCable())"), "renamed-client");
+    await app.submit(formNode("cable-models-form"));
     saved = app.persisted();
-    assert.equal(saved.bindings["claude-main"].defaultModel, undefined);
+    assert.equal(saved.cables["claude-main"].defaultModel, undefined);
     assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, undefined);
-    assert.deepEqual(saved.bindings["claude-main"].claude, { setModel: false, discoverModels: true, models: {} });
-    assert.equal(app.read("claudeDefaultModel(selectedSuite())"), "");
-    env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.deepEqual(saved.cables["claude-main"].claude, { setModel: false, discoverModels: true, models: {} });
+    assert.equal(app.read("claudeDefaultModel(selectedCable())"), "");
+    env = buildTargetArtifacts(saved, { cableId: "claude-main" }).environment.vars;
     assert.equal(env.ANTHROPIC_MODEL, undefined);
     assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
     assert.equal(validateConfig(saved).ok, true);
@@ -1016,14 +1016,14 @@ test("Claude default aliases survive removal of a same-named model profile or cl
     const config = claudeConfigFixture();
     config.virtualProviders["cabletidy_claude-main"].models = { [clientModelId]: config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"] };
     const app = await controller(config);
-    await app.action("open-suite", { dataset: { id: "claude-main" } });
+    await app.action("open-cable", { dataset: { id: "claude-main" } });
     await app.submit(formNode("claude-client-form", { defaultModel: "sonnet", subagent: "sonnet", sonnet: clientModelId }));
-    await app.submit(formNode("suite-models-form"));
+    await app.submit(formNode("cable-models-form"));
     const saved = app.persisted();
-    assert.equal(saved.bindings["claude-main"].defaultModel, "sonnet");
+    assert.equal(saved.cables["claude-main"].defaultModel, "sonnet");
     assert.equal(saved.virtualProviders["cabletidy_claude-main"].defaultModel, "sonnet");
-    assert.deepEqual(saved.bindings["claude-main"].claude.models, { subagent: "sonnet" });
-    const env = buildTargetArtifacts(saved, { bindingId: "claude-main" }).environment.vars;
+    assert.deepEqual(saved.cables["claude-main"].claude.models, { subagent: "sonnet" });
+    const env = buildTargetArtifacts(saved, { cableId: "claude-main" }).environment.vars;
     assert.equal(env.ANTHROPIC_MODEL, "sonnet");
     assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, "sonnet");
     assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined);
@@ -1033,11 +1033,11 @@ test("Claude default aliases survive removal of a same-named model profile or cl
 test("Claude default model selectors expose field-specific aliases and current client IDs only", async () => {
   const config = claudeConfigFixture();
   config.virtualProviders.cabletidy_other = { ...clone(config.virtualProviders["cabletidy_claude-main"]), id: "cabletidy_other", models: { "other-configuration-model": {} } };
-  config.bindings["claude-main"].defaultModel = "legacy-startup";
-  config.bindings["claude-main"].claude.models = { subagent: "legacy-subagent" };
+  config.cables["claude-main"].defaultModel = "legacy-startup";
+  config.cables["claude-main"].claude.models = { subagent: "legacy-subagent" };
   const app = await controller(config);
-  await app.action("open-suite", { dataset: { id: "claude-main" } });
-  const html = app.read("renderSuiteDetail()");
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  const html = app.read("renderCableDetail()");
   assert.match(html, /<h3 id="claude-defaults-title">默认模型/);
   assert.match(html, /name="defaultModel" data-claude-default-model/);
   assert.match(html, /name="subagent" data-claude-default-model/);
@@ -1057,17 +1057,17 @@ test("Claude default model selectors expose field-specific aliases and current c
   assert.match(subagentOptions, /value="opus"/);
   assert.match(subagentOptions, /value="claude-sonnet-4-6"/);
   await app.submit(formNode("claude-client-form", { defaultModel: "", subagent: "", opus: "", sonnet: "", fable: "", haiku: "" }));
-  assert.equal(app.persisted().bindings["claude-main"].defaultModel, undefined);
-  assert.deepEqual(app.persisted().bindings["claude-main"].claude.models, {});
+  assert.equal(app.persisted().cables["claude-main"].defaultModel, undefined);
+  assert.deepEqual(app.persisted().cables["claude-main"].claude.models, {});
 });
 
-test("suite upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {
+test("cable upstream edits preserve authentication and disabled state when an input shadows the form ID", async () => {
   const config = normalizeConfig(codexConfigFixture());
   config.upstreams.relay.auth = { header: "x-custom-key", prefix: "Token " };
   config.upstreams.relay.secretRef = "secret://upstreams/custom-relay";
   config.upstreams.relay.enabled = false;
   const app = await controller(config);
-  const form = formNode("suite-upstream-form", {
+  const form = formNode("cable-upstream-form", {
     id: "relay", name: "Edited relay", protocol: "openai.responses",
     baseUrl: "https://example.invalid/v1", secret: "",
   });
@@ -1085,22 +1085,22 @@ test("suite upstream edits preserve authentication and disabled state when an in
   assert.equal(app.read("state.busy"), false);
 });
 
-test("preview and apply follow the selected suite after creation, switching and cancellation", async () => {
+test("preview and apply follow the selected cable after creation, switching and cancellation", async () => {
   const app = await controller();
   await app.submit(creationForm());
   for (const id of ["development", "relay"]) {
-    await app.action("open-suite", { dataset: { id } });
+    await app.action("open-cable", { dataset: { id } });
     await app.action("preview-artifacts", {});
-    assert.equal(app.requests.at(-1).body.bindingId, id);
+    assert.equal(app.requests.at(-1).body.cableId, id);
     await app.action("apply-target", {});
     assert.equal(app.requests.at(-1).url, "/api/v1/targets/apply");
-    assert.equal(app.requests.at(-1).body.bindingId, id);
+    assert.equal(app.requests.at(-1).body.cableId, id);
   }
-  await app.action("create-suite", {});
+  await app.action("create-cable", {});
   await app.action("back-overview", {});
-  await app.action("open-suite", { dataset: { id: "development" } });
+  await app.action("open-cable", { dataset: { id: "development" } });
   await app.action("apply-target", {});
-  assert.equal(app.requests.at(-1).body.bindingId, "development");
+  assert.equal(app.requests.at(-1).body.cableId, "development");
 });
 
 for (const [target, fixture, id] of [
@@ -1109,27 +1109,27 @@ for (const [target, fixture, id] of [
 ]) {
   test(`${target} configuration deletion removes its dependencies and returns to an empty list`, async () => {
     const app = await controller(normalizeConfig(fixture()));
-    assert.match(app.read("renderOverview()"), new RegExp(`data-action="delete-suite" data-id="${id}"`));
-    await app.action("open-suite", { dataset: { id } });
-    assert.match(app.read("renderSuiteDetail()"), /data-action="delete-suite"/);
-    const name = app.read("selectedSuite().name");
-    app.read(`state.artifactPreview = { bindingId: ${JSON.stringify(id)} }; state.resolveResult = { ok: true }`);
-    await app.action("delete-suite", { dataset: { id }, closest: () => null });
+    assert.match(app.read("renderOverview()"), new RegExp(`data-action="delete-cable" data-id="${id}"`));
+    await app.action("open-cable", { dataset: { id } });
+    assert.match(app.read("renderCableDetail()"), /data-action="delete-cable"/);
+    const name = app.read("selectedCable().name");
+    app.read(`state.artifactPreview = { cableId: ${JSON.stringify(id)} }; state.resolveResult = { ok: true }`);
+    await app.action("delete-cable", { dataset: { id }, closest: () => null });
 
     const saved = app.persisted();
-    for (const field of ["bindings", "virtualProviders", "routes", "upstreams"]) assert.deepEqual(saved[field], {});
+    for (const field of ["cables", "virtualProviders", "routes", "upstreams"]) assert.deepEqual(saved[field], {});
     assert.equal(validateConfig(saved).ok, true);
     assert.equal(app.read("state.page"), "overview");
-    assert.equal(app.read("state.selected.suite"), null);
+    assert.equal(app.read("state.selected.cable"), null);
     assert.equal(app.read("state.selected.virtualProvider"), null);
     assert.equal(app.read("state.selected.model"), null);
     assert.equal(app.read("state.artifactPreview"), null);
     assert.equal(app.read("state.resolveResult"), null);
     assert.equal(app.read("state.busy"), false);
-    assert.match(app.read("renderOverview()"), /暂无配置/);
+    assert.match(app.read("renderOverview()"), /暂无线路/);
     assert.ok(app.confirmations[0].includes(`「${name}」`));
     assert.match(app.confirmations[0], /本地地址将停止服务/);
-    if (target === "Claude Code") assert.match(app.confirmations[0], /先撤销接入或切换其他配置/);
+    if (target === "Claude Code") assert.match(app.confirmations[0], /先撤销接入或切换其他线路/);
     assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
     assert.ok(!app.requests.some(({ url }) => url.includes("/targets/")));
     assert.deepEqual(app.messages, ["配置已删除并生效。"]);
@@ -1140,16 +1140,16 @@ for (const deletedId of ["first", "second"]) {
   test(`deleting ${deletedId} preserves the other configuration and keeps a valid selection`, async () => {
     const initial = normalizeConfig(namedCodexConfigFixture({ first: "first", second: "second" }));
     const app = await controller(initial);
-    await app.action("delete-suite", { dataset: { id: deletedId }, closest: () => null });
+    await app.action("delete-cable", { dataset: { id: deletedId }, closest: () => null });
     const remainingId = deletedId === "first" ? "second" : "first";
     const saved = app.persisted();
-    assert.deepEqual(Object.keys(saved.bindings), [remainingId]);
-    for (const field of ["bindings", "routes", "upstreams"]) {
+    assert.deepEqual(Object.keys(saved.cables), [remainingId]);
+    for (const field of ["cables", "routes", "upstreams"]) {
       assert.deepEqual(saved[field][remainingId], initial[field][remainingId]);
       assert.equal(saved[field][deletedId], undefined);
     }
     assert.deepEqual(saved.virtualProviders, { [`cabletidy_${remainingId}`]: initial.virtualProviders[`cabletidy_${remainingId}`] });
-    assert.equal(app.read("state.selected.suite"), remainingId);
+    assert.equal(app.read("state.selected.cable"), remainingId);
     assert.equal(app.read("state.selected.virtualProvider"), `cabletidy_${remainingId}`);
     assert.equal(app.read("state.selected.model"), "gpt-5.5");
     assert.equal(validateConfig(saved).ok, true);
@@ -1158,10 +1158,10 @@ for (const deletedId of ["first", "second"]) {
 
 test("deletion after cancelling creation clears stale provider and model selections", async () => {
   const app = await controller();
-  await app.action("create-suite", {});
+  await app.action("create-cable", {});
   await app.action("back-overview", {});
-  await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
-  assert.equal(app.read("state.selected.suite"), null);
+  await app.action("delete-cable", { dataset: { id: "relay" }, closest: () => null });
+  assert.equal(app.read("state.selected.cable"), null);
   assert.equal(app.read("state.selected.virtualProvider"), null);
   assert.equal(app.read("state.selected.model"), null);
 });
@@ -1169,15 +1169,15 @@ test("deletion after cancelling creation clears stale provider and model selecti
 for (const shared of ["route", "upstream"]) {
   test(`configuration deletion preserves a shared ${shared} and unrelated unused resources`, async () => {
     const initial = namedCodexConfigFixture({ first: "first", second: "second", unused: "unused" });
-    delete initial.bindings.unused;
+    delete initial.cables.unused;
     delete initial.virtualProviders.cabletidy_unused;
     if (shared === "route") initial.virtualProviders.cabletidy_second.route = "first";
     else initial.routes.second.backends[0].upstream = "first";
     const app = await controller(normalizeConfig(initial));
     const before = app.persisted();
-    await app.action("delete-suite", { dataset: { id: "first" }, closest: () => null });
+    await app.action("delete-cable", { dataset: { id: "first" }, closest: () => null });
     const saved = app.persisted();
-    assert.equal(saved.bindings.first, undefined);
+    assert.equal(saved.cables.first, undefined);
     assert.equal(saved.virtualProviders.cabletidy_first, undefined);
     assert.deepEqual(saved.upstreams, before.upstreams);
     assert.deepEqual(saved.routes.unused, before.routes.unused);
@@ -1190,15 +1190,15 @@ for (const shared of ["route", "upstream"]) {
 
 test("cancelling deletion retains unsaved edits and makes no commit", async () => {
   const app = await controller(undefined, { confirmLeave: false });
-  app.read('state.page = "suite-detail"');
+  app.read('state.page = "cable-detail"');
   const input = inputNode("name", "Relay");
-  const form = mountTrackedForm(app, "suite-upstream-form", [input]);
+  const form = mountTrackedForm(app, "cable-upstream-form", [input]);
   input.value = "Unsaved relay";
   const before = app.persisted();
-  await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
+  await app.action("delete-cable", { dataset: { id: "relay" }, closest: () => null });
   assert.deepEqual(app.persisted(), before);
-  assert.equal(app.read("state.page"), "suite-detail");
-  assert.equal(app.read("state.selected.suite"), "relay");
+  assert.equal(app.read("state.page"), "cable-detail");
+  assert.equal(app.read("state.selected.cable"), "relay");
   assert.equal(input.value, "Unsaved relay");
   assert.equal(app.edited(form), true);
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 0);
@@ -1209,18 +1209,18 @@ test("cancelling deletion retains unsaved edits and makes no commit", async () =
 for (const status of [409, 422, 500]) {
   test(`failed deletion (${status}) retains the configuration, selection and unsaved form`, async () => {
     const app = await controller(undefined, { onCommit: () => ({ status, body: { error: { message: "删除失败" } } }) });
-    app.read('state.page = "suite-detail"; state.artifactPreview = { bindingId: "relay" }');
+    app.read('state.page = "cable-detail"; state.artifactPreview = { cableId: "relay" }');
     const input = inputNode("name", "Relay");
-    const form = mountTrackedForm(app, "suite-upstream-form", [input]);
+    const form = mountTrackedForm(app, "cable-upstream-form", [input]);
     input.value = "Unsaved relay";
     const before = app.persisted();
-    await app.action("delete-suite", { dataset: { id: "relay" }, closest: () => null });
+    await app.action("delete-cable", { dataset: { id: "relay" }, closest: () => null });
     assert.deepEqual(app.persisted(), before);
     assert.deepEqual(clone(app.read("state.candidate")), before);
-    assert.equal(app.read("state.selected.suite"), "relay");
+    assert.equal(app.read("state.selected.cable"), "relay");
     assert.equal(app.read("state.selected.virtualProvider"), "cabletidy_relay");
-    assert.equal(app.read("state.artifactPreview.bindingId"), "relay");
-    assert.equal(app.read("state.page"), "suite-detail");
+    assert.equal(app.read("state.artifactPreview.cableId"), "relay");
+    assert.equal(app.read("state.page"), "cable-detail");
     assert.equal(input.value, "Unsaved relay");
     assert.equal(app.edited(form), true);
     assert.equal(app.read("state.busy"), false);
@@ -1233,32 +1233,32 @@ test("a pending deletion cannot submit a second change", async () => {
   const pending = new Promise(resolve => { release = resolve; });
   const app = await controller(undefined, { onCommit: () => pending });
   const button = { dataset: { id: "relay" }, closest: () => null };
-  const first = app.action("delete-suite", button);
+  const first = app.action("delete-cable", button);
   await setImmediate();
   assert.equal(app.read("state.busy"), true);
-  await app.action("delete-suite", button);
+  await app.action("delete-cable", button);
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
   release();
   await first;
-  assert.deepEqual(app.persisted().bindings, {});
+  assert.deepEqual(app.persisted().cables, {});
   assert.equal(app.read("state.busy"), false);
 });
 
 test("creation commits immediately and clears transient secrets", async () => {
   const app = await controller(normalizeConfig({}));
-  app.read('state.page = "suite-create"');
+  app.read('state.page = "cable-create"');
   await app.submit(creationForm());
-  assert.equal(app.read("state.page"), "suite-detail");
+  assert.equal(app.read("state.page"), "cable-detail");
   const config = app.persisted();
-  const binding = Object.values(config.bindings)[0];
-  assert.equal(binding.name, "Development");
-  assert.equal(binding.id, "development");
-  assert.equal(binding.virtualProvider, "cabletidy_development");
-  assert.equal(config.virtualProviders.cabletidy_development.id, binding.virtualProvider);
-  assert.equal(app.read("state.selected.suite"), binding.id);
-  assert.equal(app.read("state.selected.virtualProvider"), binding.virtualProvider);
-  assert.match(app.read("renderSuiteDetail()"), /cabletidy_development/);
-  assert.match(app.read("renderSuiteDetail()"), /http:\/\/127\.0\.0\.1:43100\/development\/v1/);
+  const cable = Object.values(config.cables)[0];
+  assert.equal(cable.name, "Development");
+  assert.equal(cable.id, "development");
+  assert.equal(cable.virtualProvider, "cabletidy_development");
+  assert.equal(config.virtualProviders.cabletidy_development.id, cable.virtualProvider);
+  assert.equal(app.read("state.selected.cable"), cable.id);
+  assert.equal(app.read("state.selected.virtualProvider"), cable.virtualProvider);
+  assert.match(app.read("renderCableDetail()"), /cabletidy_development/);
+  assert.match(app.read("renderCableDetail()"), /http:\/\/127\.0\.0\.1:43100\/development\/v1/);
   assert.equal(config.virtualProviders.cabletidy_development.listenPort, undefined);
   assert.deepEqual(Object.keys(config.virtualProviders.cabletidy_development.models), ["gpt-5.5"]);
   assert.equal(config.virtualProviders.cabletidy_development.models["gpt-5.5"].upstreamModelId, "vendor-gpt");
@@ -1273,12 +1273,12 @@ test("creation commits immediately and clears transient secrets", async () => {
 test("an empty configuration name derives a stable identity from the upstream host", async () => {
   const app = await controller(normalizeConfig({}));
   const form = creationForm();
-  form.fields.suiteName = "";
+  form.fields.cableName = "";
   await app.submit(form);
-  const binding = Object.values(app.persisted().bindings)[0];
-  assert.equal(binding.name, "Codex / example.invalid");
-  assert.equal(binding.id, "codex-example-invalid");
-  assert.equal(binding.virtualProvider, "cabletidy_codex-example-invalid");
+  const cable = Object.values(app.persisted().cables)[0];
+  assert.equal(cable.name, "Codex / example.invalid");
+  assert.equal(cable.id, "codex-example-invalid");
+  assert.equal(cable.virtualProvider, "cabletidy_codex-example-invalid");
 });
 
 test("creating a duplicate normalized name preserves the existing configuration", async () => {
@@ -1286,7 +1286,7 @@ test("creating a duplicate normalized name preserves the existing configuration"
   await app.submit(creationForm());
   const first = app.persisted();
   const form = creationForm();
-  form.fields.suiteName = "development";
+  form.fields.cableName = "development";
   await app.submit(form);
   assert.match(form.feedback.innerHTML, /ID 已存在/);
   assert.deepEqual(app.persisted(), first);
@@ -1296,30 +1296,30 @@ test("creating a duplicate normalized name preserves the existing configuration"
 test("creation needs only upstream credentials and keeps other configurations' model settings isolated", async () => {
   const app = await controller();
   app.read('state.codexCatalog = { available: false, models: [], error: { message: "unavailable" } }');
-  assert.doesNotMatch(app.read("renderSuiteCreate()"), /data-create-model[ >]/);
-  await app.submit(formNode("suite-create-form", creationForm().fields));
+  assert.doesNotMatch(app.read("renderCableCreate()"), /data-create-model[ >]/);
+  await app.submit(formNode("cable-create-form", creationForm().fields));
   const config = app.persisted();
-  assert.equal(config.bindings.development.defaultModel, undefined);
+  assert.equal(config.cables.development.defaultModel, undefined);
   assert.deepEqual(config.virtualProviders.cabletidy_development.models, {});
   assert.equal(config.virtualProviders.cabletidy_development.defaultModel, undefined);
   assert.equal(config.routes[config.virtualProviders.cabletidy_development.route].backends[0].models, undefined);
   assert.deepEqual(Object.keys(config.virtualProviders.cabletidy_relay.models), ["gpt-5.5"]);
   assert.equal(validateConfig(config).ok, true);
-  assert.match(app.read("renderSuiteDetail()"), /模型名直接透传/);
-  assert.doesNotMatch(app.read("renderSuiteDetail()"), /data-model-id="model"/);
+  assert.match(app.read("renderCableDetail()"), /模型名直接透传/);
+  assert.doesNotMatch(app.read("renderCableDetail()"), /data-model-id="model"/);
   const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
   assert.deepEqual(Object.values(commit.body.upstreamSecrets), ["test-key"]);
 });
 
 test("model settings can override context without a rename and can all be removed", async () => {
   const app = await controller();
-  await app.submit(formNode("suite-models-form", {}, [{
+  await app.submit(formNode("cable-models-form", {}, [{
     dataset: { modelId: "gpt-5.5" },
     querySelector(selector) {
-      if (selector === "[data-suite-model-client]") return { value: "gpt-5.5" };
-      if (selector.startsWith("[data-suite-model-upstream=")) return { value: "" };
+      if (selector === "[data-cable-model-client]") return { value: "gpt-5.5" };
+      if (selector.startsWith("[data-cable-model-upstream=")) return { value: "" };
       if (selector === "[data-codex-metadata-mode]") return { value: "override" };
-      if (selector === "[data-suite-model-context]") return { value: "128000" };
+      if (selector === "[data-cable-model-context]") return { value: "128000" };
       if (selector === "[data-codex-vision]") return { checked: true };
       return null;
     },
@@ -1329,25 +1329,25 @@ test("model settings can override context without a rename and can all be remove
   assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex.metadataMode, "override");
   assert.equal(config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, undefined);
   assert.equal(validateConfig(config).ok, true);
-  await app.submit(formNode("suite-models-form"));
+  await app.submit(formNode("cable-models-form"));
   config = app.persisted();
   assert.equal(config.models, undefined);
   assert.deepEqual(config.virtualProviders.cabletidy_relay.models, {});
   assert.equal(config.routes.route.backends[0].models, undefined);
   assert.equal(config.virtualProviders.cabletidy_relay.defaultModel, undefined);
-  assert.equal(config.bindings.relay.defaultModel, undefined);
+  assert.equal(config.cables.relay.defaultModel, undefined);
   assert.equal(validateConfig(config).ok, true);
 });
 
 test("optional creation rows may leave the upstream model name blank", async () => {
   const app = await controller(normalizeConfig({}));
-  await app.submit(formNode("suite-create-form", creationForm().fields, [{
+  await app.submit(formNode("cable-create-form", creationForm().fields, [{
     querySelector: selector => ({ value: selector.includes("clientModelId") ? "gpt-5.5" : "" }),
   }]));
   const config = app.persisted();
   const model = Object.values(config.virtualProviders.cabletidy_development.models)[0];
   assert.equal(model.upstreamModelId, undefined);
-  assert.equal(config.bindings.development.defaultModel, undefined);
+  assert.equal(config.cables.development.defaultModel, undefined);
   assert.equal(validateConfig(config).ok, true);
 });
 
@@ -1355,13 +1355,13 @@ test("separate configurations each keep their own upstream and model mappings", 
   const app = await controller(normalizeConfig({}));
   await app.submit(creationForm());
   const second = creationForm();
-  second.fields.suiteName = "Production";
+  second.fields.cableName = "Production";
   await app.submit(second);
   const config = app.persisted();
-  assert.equal(Object.keys(config.bindings).length, 2);
+  assert.equal(Object.keys(config.cables).length, 2);
   const upstreamIds = new Set();
-  for (const binding of Object.values(config.bindings)) {
-    const provider = config.virtualProviders[binding.virtualProvider];
+  for (const cable of Object.values(config.cables)) {
+    const provider = config.virtualProviders[cable.virtualProvider];
     const route = config.routes[provider.route];
     assert.equal(route.backends.length, 1);
     const upstreamId = route.backends[0].upstream;
@@ -1391,14 +1391,14 @@ test("advanced model editor exposes one upstream and saves only its model mappin
 
 test("Generic CLI model editing preserves legacy policies without exposing inactive controls", async () => {
   const config = normalizeConfig(codexConfigFixture());
-  config.bindings.relay.target = "generic-env";
+  config.cables.relay.target = "generic-env";
   const model = config.virtualProviders.cabletidy_relay.models["gpt-5.5"];
   model.contextWindow = 64000;
   model.compact = { strategy: "auto", tokenLimit: 50000 };
   const app = await controller(config);
-  const suiteHtml = app.read("renderSuiteDetail()");
-  assert.match(suiteHtml, /高级模型设置/);
-  assert.doesNotMatch(suiteHtml, /Context window|Compact strategy|compactTokenLimit|contextWindow/);
+  const cableHtml = app.read("renderCableDetail()");
+  assert.match(cableHtml, /高级模型设置/);
+  assert.doesNotMatch(cableHtml, /Context window|Compact strategy|compactTokenLimit|contextWindow/);
   const html = app.read("renderModels()");
   assert.doesNotMatch(html, /Context window|Compact strategy|compactTokenLimit|contextWindow/);
   await app.submit(formNode("model-form", {
@@ -1420,27 +1420,27 @@ test("a rejected creation stays on the form and can be retried without duplicate
       body: { error: { message: "配置校验失败" }, errors: [{ path: "upstreams.relay-main.baseUrl", message: "地址不合法" }] },
     } : null,
   });
-  app.read('state.page = "suite-create"');
+  app.read('state.page = "cable-create"');
   const form = creationForm();
   await app.submit(form);
-  assert.equal(app.read("state.page"), "suite-create");
-  assert.equal(app.read("Object.keys(state.candidate.bindings).length"), 0);
-  assert.equal(Object.keys(app.persisted().bindings).length, 0);
-  assert.equal(app.read("state.selected.suite"), null);
+  assert.equal(app.read("state.page"), "cable-create");
+  assert.equal(app.read("Object.keys(state.candidate.cables).length"), 0);
+  assert.equal(Object.keys(app.persisted().cables).length, 0);
+  assert.equal(app.read("state.selected.cable"), null);
   assert.equal(app.read("Object.keys(state.pendingSecrets.upstreamSecrets).length"), 0);
   assert.match(form.feedback.innerHTML, /地址不合法/);
   assert.equal(form.fields.upstreamSecret, "test-key");
   assert.equal(app.messages.length, 0);
   reject = false;
   await app.submit(form);
-  assert.equal(Object.keys(app.persisted().bindings).length, 1);
+  assert.equal(Object.keys(app.persisted().cables).length, 1);
   assert.equal(Object.keys(app.persisted().upstreams).length, 1);
-  assert.equal(app.read("state.page"), "suite-detail");
+  assert.equal(app.read("state.page"), "cable-detail");
 });
 
 test("local form validation does not write or leave a partial candidate", async () => {
   const app = await controller(normalizeConfig({}));
-  app.read('state.page = "suite-create"');
+  app.read('state.page = "cable-create"');
   const form = creationForm();
   form.fields.upstreamSecret = "";
   await app.submit(form);
@@ -1456,8 +1456,8 @@ for (const failure of [
 ]) {
   test("save failure " + failure.status + " preserves the active configuration and form input", async () => {
     const app = await controller(undefined, { onCommit: () => failure });
-    app.read('state.page = "suite-detail"');
-    const form = formNode("suite-upstream-form", {
+    app.read('state.page = "cable-detail"');
+    const form = formNode("cable-upstream-form", {
       id: "relay", name: "Unsaved relay", protocol: "openai.responses",
       baseUrl: "https://example.invalid/v1", secret: "new-key",
     });
@@ -1466,7 +1466,7 @@ for (const failure of [
     assert.equal(form.fields.name, "Unsaved relay");
     assert.equal(app.read("state.config.upstreams.relay.name"), "Relay");
     assert.equal(app.read("state.candidate.upstreams.relay.name"), "Relay");
-    assert.equal(app.read("state.page"), "suite-detail");
+    assert.equal(app.read("state.page"), "cable-detail");
     assert.equal(app.read("state.busy"), false);
     assert.equal(app.messages.length, 0);
   });
@@ -1484,7 +1484,7 @@ test("a pending save cannot submit a second change", async () => {
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
   release();
   await first;
-  assert.equal(Object.keys(app.persisted().bindings).length, 1);
+  assert.equal(Object.keys(app.persisted().cables).length, 1);
   assert.equal(app.read("state.busy"), false);
 });
 
@@ -1557,18 +1557,18 @@ for (const color of ["blue", "red"]) {
   test(`Daybreak ${color} can be created and existing mappings can be saved without changing model IDs`, async () => {
     const id = `gpt-daybreak-${color}-latest`;
     const app = await controller(normalizeConfig({}), { catalog: securityCatalogFixture() });
-    await app.submit(formNode("suite-create-form", creationForm().fields, [{
+    await app.submit(formNode("cable-create-form", creationForm().fields, [{
       querySelector: (selector) => ({ value: selector.includes("clientModelId") ? id : "vendor-security" }),
     }]));
     const model = app.persisted().virtualProviders.cabletidy_development.models[id];
-    const upstreamId = app.read("selectedSuite().upstreamId");
+    const upstreamId = app.read("selectedCable().upstreamId");
     assert.ok(model);
-    assert.match(app.read('renderSuiteDetail()'), new RegExp(`value="${id}" selected`));
-    await app.submit(formNode("suite-models-form", {}, [{
+    assert.match(app.read('renderCableDetail()'), new RegExp(`value="${id}" selected`));
+    await app.submit(formNode("cable-models-form", {}, [{
       dataset: { modelId: id },
       querySelector(selector) {
-        if (selector === "[data-suite-model-client]") return { value: id };
-        if (selector.startsWith("[data-suite-model-upstream=")) return { value: "updated-security" };
+        if (selector === "[data-cable-model-client]") return { value: id };
+        if (selector.startsWith("[data-cable-model-upstream=")) return { value: "updated-security" };
         if (selector === "[data-codex-metadata-mode]") return { value: "official" };
         return null;
       },
@@ -1629,7 +1629,7 @@ for (const target of ["claude-code", "codex"]) {
     const page = app.node("#page-content");
     let current;
     const makeForm = () => {
-      const form = formNode("suite-create-form");
+      const form = formNode("cable-create-form");
       const inputs = Object.entries({ ...creationForm().fields, target: app.read("state.createTarget"), defaultModel: "", subagent: "" })
         .map(([name, value]) => inputNode(name, value, { type: name === "target" ? "select-one" : "text" }));
       form.rows = [];
@@ -1642,13 +1642,13 @@ for (const target of ["claude-code", "codex"]) {
         : selector === '[data-create-field="clientModelId"]' ? form.rows.map(row => row.inputs[0]) : [];
       const cli = form.input("target");
       cli.closest = (selector) => selector === "form" ? form : null;
-      cli.matches = (selector) => selector === '#suite-create-form [name="target"]';
+      cli.matches = (selector) => selector === '#cable-create-form [name="target"]';
       return form;
     };
     Object.defineProperty(page, "innerHTML", { configurable: true, set: () => { current = makeForm(); } });
     page.querySelectorAll = (selector) => selector === "form" ? [current] : [];
-    page.querySelector = (selector) => selector === "#suite-create-form" ? current : null;
-    await app.action("create-suite");
+    page.querySelector = (selector) => selector === "#cable-create-form" ? current : null;
+    await app.action("create-cable");
     const draft = current;
     for (const cli of ["claude-code", target]) {
       draft.input("target").value = cli;
@@ -1670,9 +1670,9 @@ for (const target of ["claude-code", "codex"]) {
     }
     await app.submit(draft);
     const config = app.persisted();
-    assert.equal(config.bindings.development.target, target);
-    assert.equal(config.bindings.development.defaultModel, target === "claude-code" ? "opus" : undefined);
-    assert.equal(config.bindings.development.claude?.models?.subagent, target === "claude-code" ? "haiku" : undefined);
+    assert.equal(config.cables.development.target, target);
+    assert.equal(config.cables.development.defaultModel, target === "claude-code" ? "opus" : undefined);
+    assert.equal(config.cables.development.claude?.models?.subagent, target === "claude-code" ? "haiku" : undefined);
     assert.equal(config.upstreams.relay.name, "Other window update");
     assert.equal(validateConfig(config).ok, true);
     const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
@@ -1688,7 +1688,7 @@ test("dirty state follows current text, select, checkbox and secret values rathe
     inputNode("enabled", "on", { type: "checkbox", checked: true }),
     inputNode("secret", "", { type: "password" }),
   ];
-  const form = mountTrackedForm(app, "suite-upstream-form", inputs);
+  const form = mountTrackedForm(app, "cable-upstream-form", inputs);
   for (const input of inputs) {
     const key = input.type === "checkbox" ? "checked" : "value";
     const original = input[key];
@@ -1705,9 +1705,9 @@ test("dirty state follows current text, select, checkbox and secret values rathe
 
 test("adding and removing the same model row restores a clean form", async () => {
   const app = await controller();
-  const inputs = [inputNode("", "gpt-5.5", { dataset: { suiteModelClient: "" } })];
-  const form = mountTrackedForm(app, "suite-models-form", inputs);
-  inputs.push(inputNode("", "gpt-daybreak-blue-latest", { dataset: { suiteModelClient: "" } }));
+  const inputs = [inputNode("", "gpt-5.5", { dataset: { cableModelClient: "" } })];
+  const form = mountTrackedForm(app, "cable-models-form", inputs);
+  inputs.push(inputNode("", "gpt-daybreak-blue-latest", { dataset: { cableModelClient: "" } }));
   assert.equal(app.edited(form), true);
   inputs.pop();
   assert.equal(app.edited(form), false);
@@ -1716,14 +1716,14 @@ test("adding and removing the same model row restores a clean form", async () =>
 test("cancelled navigation retains the page, selection and unsaved input", async () => {
   const app = await controller(undefined, { confirmLeave: false });
   const input = inputNode("name", "Relay");
-  const form = mountTrackedForm(app, "suite-upstream-form", [input]);
-  app.read('state.page = "suite-detail"');
+  const form = mountTrackedForm(app, "cable-upstream-form", [input]);
+  app.read('state.page = "cable-detail"');
   input.value = "Unsaved relay";
   app.read('navigatePage("diagnostics")');
-  assert.equal(app.read("state.page"), "suite-detail");
+  assert.equal(app.read("state.page"), "cable-detail");
   assert.equal(app.edited(form), true);
   await app.action("back-overview");
-  assert.equal(app.read("state.page"), "suite-detail");
+  assert.equal(app.read("state.page"), "cable-detail");
   assert.equal(input.value, "Unsaved relay");
   assert.equal(app.confirmations.length, 2);
   assert.equal(app.read("state.busy"), false);
@@ -1732,8 +1732,8 @@ test("cancelled navigation retains the page, selection and unsaved input", async
 test("confirmed navigation proceeds, while reverted edits need no confirmation", async () => {
   const app = await controller();
   const input = inputNode("name", "Relay");
-  mountTrackedForm(app, "suite-upstream-form", [input]);
-  app.read('state.page = "suite-detail"');
+  mountTrackedForm(app, "cable-upstream-form", [input]);
+  app.read('state.page = "cable-detail"');
   input.value = "Changed";
   app.read('navigatePage("diagnostics")');
   assert.equal(app.read("state.page"), "diagnostics");
@@ -1792,10 +1792,10 @@ test("cancelling back to an older history entry preserves the settings draft wit
 test("clicking the active navigation page does not rerender or discard input", async () => {
   const app = await controller();
   const input = inputNode("name", "Relay");
-  const form = mountTrackedForm(app, "suite-upstream-form", [input]);
-  app.read('state.page = "suite-detail"');
+  const form = mountTrackedForm(app, "cable-upstream-form", [input]);
+  app.read('state.page = "cable-detail"');
   input.value = "Unsaved";
-  app.read('navigatePage("suite-detail")');
+  app.read('navigatePage("cable-detail")');
   assert.equal(app.edited(form), true);
   assert.equal(app.confirmations.length, 0);
 });
@@ -1803,7 +1803,7 @@ test("clicking the active navigation page does not rerender or discard input", a
 test("browser unload is guarded only for actual configuration changes", async () => {
   const app = await controller();
   const input = inputNode("name", "Relay");
-  mountTrackedForm(app, "suite-upstream-form", [input]);
+  mountTrackedForm(app, "cable-upstream-form", [input]);
   const event = { prevented: 0, preventDefault() { this.prevented++; } };
   app.beforeUnload(event);
   assert.equal(event.prevented, 0);
@@ -1823,7 +1823,7 @@ test("browser unload is guarded only for actual configuration changes", async ()
 test("reverting edits allows Codex apply without an unnecessary commit", async () => {
   const app = await controller();
   const input = inputNode("name", "Relay");
-  mountTrackedForm(app, "suite-upstream-form", [input]);
+  mountTrackedForm(app, "cable-upstream-form", [input]);
   input.value = "Changed";
   await app.action("apply-target");
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/targets/apply")).length, 0);
@@ -1835,23 +1835,23 @@ test("reverting edits allows Codex apply without an unnecessary commit", async (
 
 function metadataRow(mode = "official") {
   const select = officialSelectNode("gpt-5.5");
-  Object.assign(select, { name: "", type: "select-one", dataset: { suiteModelClient: "", officialModel: "" } });
-  const context = inputNode("", "272000", { dataset: { suiteModelContext: "" }, type: "number", disabled: mode === "official" });
+  Object.assign(select, { name: "", type: "select-one", dataset: { cableModelClient: "", officialModel: "" } });
+  const context = inputNode("", "272000", { dataset: { cableModelContext: "" }, type: "number", disabled: mode === "official" });
   const vision = inputNode("", "on", { dataset: { codexVision: "" }, type: "checkbox", checked: true, disabled: mode === "official" });
   const metadataMode = inputNode("", mode, { dataset: { codexMetadataMode: "" }, type: "select-one" });
   const instructions = { textContent: "Original definition" };
   const row = {
     dataset: { modelId: "gpt-5.5" },
     querySelector: (selector) => ({
-      "[data-suite-model-client]": select,
-      "[data-suite-model-context]": context,
+      "[data-cable-model-client]": select,
+      "[data-cable-model-context]": context,
       "[data-codex-vision]": vision,
       "[data-codex-metadata-mode]": metadataMode,
       "[data-codex-instructions]": instructions,
     })[selector] || null,
   };
   const inputs = [select, context, vision, metadataMode];
-  inputs.forEach(input => { input.closest = (selector) => selector === "[data-suite-model]" ? row : null; });
+  inputs.forEach(input => { input.closest = (selector) => selector === "[data-cable-model]" ? row : null; });
   return { row, select, context, vision, metadataMode, instructions, inputs };
 }
 
@@ -1861,7 +1861,7 @@ for (const mode of ["official", "override"]) {
     Object.assign(latest.models[0], { name: "Updated model", contextWindow: 128000, maxContextWindow: 512000, inputModalities: ["text"] });
     const app = await controller(undefined, { refreshCatalog: latest });
     const metadata = metadataRow(mode);
-    const form = mountTrackedForm(app, "suite-models-form", metadata.inputs);
+    const form = mountTrackedForm(app, "cable-models-form", metadata.inputs);
     if (mode === "override") {
       metadata.context.value = "64000";
       metadata.vision.checked = false;
@@ -1884,7 +1884,7 @@ for (const mode of ["official", "override"]) {
 test("official metadata changes are ignored when determining whether a form is dirty", async () => {
   const app = await controller();
   const metadata = metadataRow();
-  const form = mountTrackedForm(app, "suite-models-form", metadata.inputs);
+  const form = mountTrackedForm(app, "cable-models-form", metadata.inputs);
   metadata.context.value = "128000";
   metadata.vision.checked = false;
   assert.equal(app.edited(form), false);
@@ -1906,7 +1906,7 @@ test("renaming saved models frees their old client names for new rows without hi
     "gpt-5.6-luna": { ...profile, upstreamModelId: "old-luna" },
   };
   config.virtualProviders.cabletidy_relay.defaultModel = "gpt-5.6-sol";
-  config.bindings.relay.defaultModel = "gpt-5.6-sol";
+  config.cables.relay.defaultModel = "gpt-5.6-sol";
   const catalog = catalogFixture();
   catalog.catalog.models = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna"].map(slug => ({ ...catalog.catalog.models[0], slug }));
   const app = await controller(config, { catalog });
@@ -1917,10 +1917,10 @@ test("renaming saved models frees their old client names for new rows without hi
     ["", "gpt-5.6-luna", "old-luna"],
   ].map(([oldName, name, upstreamModelId]) => ({
     dataset: { modelId: oldName },
-    querySelector: selector => selector === "[data-suite-model-client]" ? { value: name }
-      : selector === '[data-suite-model-upstream="relay"]' ? { value: upstreamModelId } : null,
+    querySelector: selector => selector === "[data-cable-model-client]" ? { value: name }
+      : selector === '[data-cable-model-upstream="relay"]' ? { value: upstreamModelId } : null,
   }));
-  const form = formNode("suite-models-form", {}, rows);
+  const form = formNode("cable-models-form", {}, rows);
   await app.submit(form);
   assert.equal(form.feedback, null);
   const saved = app.persisted();
@@ -1929,7 +1929,7 @@ test("renaming saved models frees their old client names for new rows without hi
   assert.equal(provider.models["gpt-6-sol"].upstreamModelId, "new-sol");
   assert.equal(provider.models["gpt-5.6-sol"].upstreamModelId, "old-sol");
   assert.equal(provider.defaultModel, "gpt-6-sol");
-  assert.equal(saved.bindings.relay.defaultModel, "gpt-6-sol");
+  assert.equal(saved.cables.relay.defaultModel, "gpt-6-sol");
   assert.equal(saved.models, undefined);
   assert.equal(provider.allowedModels, undefined);
   assert.equal(validateConfig(saved).ok, true);
@@ -1941,10 +1941,10 @@ test("model names can be swapped while mappings and defaults follow the edited r
   const app = await controller(config);
   const rows = [["gpt-5.5", "gpt-5.6-sol", "first"], ["gpt-5.6-sol", "gpt-5.5", "second"]].map(([oldName, name, mapping]) => ({
     dataset: { modelId: oldName },
-    querySelector: selector => selector === "[data-suite-model-client]" ? { value: name }
-      : selector === '[data-suite-model-upstream="relay"]' ? { value: mapping } : null,
+    querySelector: selector => selector === "[data-cable-model-client]" ? { value: name }
+      : selector === '[data-cable-model-upstream="relay"]' ? { value: mapping } : null,
   }));
-  const form = formNode("suite-models-form", {}, rows);
+  const form = formNode("cable-models-form", {}, rows);
   await app.submit(form);
   assert.equal(form.feedback, null);
   const provider = app.persisted().virtualProviders.cabletidy_relay;
@@ -1954,16 +1954,16 @@ test("model names can be swapped while mappings and defaults follow the edited r
 });
 
 // Model the form replacement lifecycle, not just the saved configuration object.
-function mountSuiteEditor(app) {
+function mountCableEditor(app) {
   const page = app.node("#page-content");
   let current;
   const makeForm = () => {
     const config = app.read("state.candidate");
-    const form = formNode("suite-models-form");
+    const form = formNode("cable-models-form");
     form.rows = [];
     const attribute = form.getAttribute;
-    form.getAttribute = (name) => name === "data-suite-context"
-      ? JSON.stringify(["relay", "codex", config.bindings.relay.virtualProvider, "route", config.routes.route.backends[0].upstream]) : attribute(name);
+    form.getAttribute = (name) => name === "data-cable-context"
+      ? JSON.stringify(["relay", "codex", config.cables.relay.virtualProvider, "route", config.routes.route.backends[0].upstream]) : attribute(name);
     form.replaceWith = (replacement) => { current = replacement; };
     const list = {
       querySelector: () => null,
@@ -1973,9 +1973,9 @@ function mountSuiteEditor(app) {
         form.rows.push(row);
       },
     };
-    form.querySelector = (selector) => selector === "#suite-model-list" ? list
+    form.querySelector = (selector) => selector === "#cable-model-list" ? list
       : selector === "[data-form-feedback]" ? form.feedback : null;
-    form.querySelectorAll = (selector) => selector === "[data-suite-model]" ? [...form.rows]
+    form.querySelectorAll = (selector) => selector === "[data-cable-model]" ? [...form.rows]
       : selector === "input, select, textarea" ? form.rows.flatMap(row => row.inputs)
       : selector === "[data-official-model]" ? form.rows.flatMap(row => row.inputs.filter(input => "officialModel" in input.dataset)) : [];
     for (const id of Object.keys(config.virtualProviders.cabletidy_relay.models)) {
@@ -1987,10 +1987,10 @@ function mountSuiteEditor(app) {
       context.value = String(model.contextWindow || 272000);
       vision.checked = model.codex?.inputModalities?.includes("image") ?? true;
       const mapping = inputNode("", model.upstreamModelId, {
-        dataset: { suiteModelUpstream: "relay" }, closest: () => row,
+        dataset: { cableModelUpstream: "relay" }, closest: () => row,
       });
       const query = row.querySelector;
-      row.querySelector = (selector) => selector === '[data-suite-model-upstream="relay"]' ? mapping : query(selector);
+      row.querySelector = (selector) => selector === '[data-cable-model-upstream="relay"]' ? mapping : query(selector);
       row.inputs = [...metadata.inputs, mapping];
       row.mapping = mapping;
       row.context = context;
@@ -1999,17 +1999,17 @@ function mountSuiteEditor(app) {
     }
     return form;
   };
-  app.read('state.page = "suite-detail"');
+  app.read('state.page = "cable-detail"');
   Object.defineProperty(page, "innerHTML", { configurable: true, set: () => { current = makeForm(); } });
   page.querySelectorAll = (selector) => selector === "form" ? [current] : [];
-  page.querySelector = (selector) => selector === "#suite-models-form" ? current : null;
+  page.querySelector = (selector) => selector === "#cable-models-form" ? current : null;
   app.read("render()");
   return { form: () => current, row: (id = "gpt-5.5") => current.rows.find(row => row.dataset.modelId === id) };
 }
 
 test("conflict refresh merges another window's added model before retrying a local mapping edit", async () => {
   const app = await controller();
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => addFixtureModel(config));
   await app.submit(editor.form());
@@ -2034,7 +2034,7 @@ test("refresh merges disjoint fields on the same model and does not keep stale s
   config.virtualProviders.cabletidy_relay.models["gpt-5.5"].codex = { metadataMode: "override", inputModalities: ["text"] };
   config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 64000;
   const app = await controller(config);
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => { config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 128000; });
   await app.action("refresh");
@@ -2047,7 +2047,7 @@ test("refresh merges disjoint fields on the same model and does not keep stale s
 
 test("overlapping edits remain blocked across repeated refreshes until explicitly reloaded", async () => {
   const app = await controller();
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   const local = editor.form();
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => { config.virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId = "REMOTE-MAPPING"; });
@@ -2077,7 +2077,7 @@ test("local model removal and remote model addition are merged independently", a
   const catalog = catalogFixture();
   catalog.catalog.models.push({ ...catalog.catalog.models[0], slug: "gpt-5.6-luna" });
   const app = await controller(config, { catalog });
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   editor.row().remove();
   app.externalUpdate(config => addFixtureModel(config, "gpt-5.6-luna"));
   await app.action("refresh");
@@ -2091,7 +2091,7 @@ for (const localDeletes of [true, false]) {
     const config = normalizeConfig(codexConfigFixture());
     addFixtureModel(config);
     const app = await controller(config);
-    const editor = mountSuiteEditor(app);
+    const editor = mountCableEditor(app);
     if (localDeletes) editor.row("gpt-5.6-sol").remove();
     else editor.row("gpt-5.6-sol").mapping.value = "LOCAL-MAPPING";
     app.externalUpdate(config => {
@@ -2109,12 +2109,12 @@ for (const localDeletes of [true, false]) {
 
 test("pending new rows survive remote additions and the refreshed baseline tracks only local edits", async () => {
   const app = await controller();
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   const added = metadataRow().row;
   added.dataset.modelId = "";
-  added.inputs = [inputNode("", "new-model", { dataset: { suiteModelClient: "" }, closest: () => added })];
+  added.inputs = [inputNode("", "new-model", { dataset: { cableModelClient: "" }, closest: () => added })];
   added.remove = () => {};
-  editor.form().querySelector("#suite-model-list").append(added);
+  editor.form().querySelector("#cable-model-list").append(added);
   app.externalUpdate(config => addFixtureModel(config));
   await app.action("refresh");
   assert.deepEqual(editor.form().rows.map(row => row.dataset.modelId), ["gpt-5.5", "gpt-5.6-sol", ""]);
@@ -2123,9 +2123,9 @@ test("pending new rows survive remote additions and the refreshed baseline track
   assert.equal(app.edited(editor.form()), false);
 });
 
-test("a changed suite upstream cannot silently retarget local model edits", async () => {
+test("a changed cable upstream cannot silently retarget local model edits", async () => {
   const app = await controller();
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => { config.routes.route.backends[0].upstream = "another-upstream"; });
   await app.action("refresh");
@@ -2137,7 +2137,7 @@ test("a changed suite upstream cannot silently retarget local model edits", asyn
 for (const property of ["model", "metadata mode"]) {
   test(`concurrent ${property} changes cannot reinterpret local mapping edits`, async () => {
     const app = await controller();
-    const editor = mountSuiteEditor(app);
+    const editor = mountCableEditor(app);
     editor.row().mapping.value = "LOCAL-MAPPING";
     app.externalUpdate(config => {
       if (property === "model") config.virtualProviders.cabletidy_relay.models = { "gpt-5.6-sol": config.virtualProviders.cabletidy_relay.models["gpt-5.5"] };
@@ -2154,7 +2154,7 @@ test("an unchanged model removed remotely is not resurrected by a local edit to 
   const config = normalizeConfig(codexConfigFixture());
   addFixtureModel(config);
   const app = await controller(config);
-  const editor = mountSuiteEditor(app);
+  const editor = mountCableEditor(app);
   editor.row().mapping.value = "LOCAL-MAPPING";
   app.externalUpdate(config => {
     delete config.virtualProviders.cabletidy_relay.models["gpt-5.6-sol"];
@@ -2168,13 +2168,13 @@ test("an unchanged model removed remotely is not resurrected by a local edit to 
 
 test("merged local model selection keeps its matching security hint", async () => {
   const app = await controller(undefined, { catalog: securityCatalogFixture() });
-  const editor = mountSuiteEditor(app);
-  const select = editor.row().querySelector("[data-suite-model-client]");
+  const editor = mountCableEditor(app);
+  const select = editor.row().querySelector("[data-cable-model-client]");
   select.value = "gpt-daybreak-blue-latest";
   app.change(select);
   app.externalUpdate(config => addFixtureModel(config));
   await app.action("refresh");
-  const merged = editor.row().querySelector("[data-suite-model-client]");
+  const merged = editor.row().querySelector("[data-cable-model-client]");
   assert.equal(merged.value, "gpt-daybreak-blue-latest");
   assert.match(merged.hint.textContent, /防御性安全工作/);
   assert.equal(merged.hint.hidden, false);

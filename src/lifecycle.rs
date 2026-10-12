@@ -436,7 +436,7 @@ pub async fn status(paths: &Paths) -> Result<Value> {
         "unresponsive" => "实例持有锁，但控制通道无响应；可能正在启动、清理或进程暂停",
         _ => "CableTidy daemon 未运行",
     });
-    let configurations: Vec<_> = crate::config::entries(&config["bindings"])
+    let cables: Vec<_> = crate::config::entries(&config["cables"])
         .map(|(id, b)| {
             let base = crate::config::base_url(&config, id);
             let url = if b["target"] == "claude-code" {
@@ -453,9 +453,7 @@ pub async fn status(paths: &Paths) -> Result<Value> {
             })
         })
         .collect();
-    Ok(
-        json!({"configRevision":config["revision"],"runtime":runtime,"configurations":configurations}),
-    )
+    Ok(json!({"configRevision":config["revision"],"runtime":runtime,"cables":cables}))
 }
 
 #[cfg(test)]

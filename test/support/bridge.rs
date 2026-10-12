@@ -71,12 +71,12 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
             let (left, right) = tokio::join!(catalog.load(false), catalog.load(false));
             json!([reply(left), reply(right)])
         }
-        "artifacts.build" => targets::build(x, text(&y["bindingId"]), z)?,
+        "artifacts.build" => targets::build(x, text(&y["cableId"]), z)?,
         "artifacts.prepare" => {
             let fixture = a.get(3).map(|snapshot| Catalog::fixture(snapshot.clone()));
             targets::prepare(
                 x,
-                text(&y["bindingId"]),
+                text(&y["cableId"]),
                 z,
                 fixture.as_ref().unwrap_or(catalog),
                 &options(y)?,

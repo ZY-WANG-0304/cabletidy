@@ -73,7 +73,7 @@ try {
   config.upstreams.claude = { ...claudeConfig.upstreams.relay, id: "claude", secretRef: "secret://upstreams/claude" };
   config.routes.claude = { id: "claude", backends: [{ upstream: "claude" }] };
   config.virtualProviders["cabletidy_claude-main"] = { ...claudeConfig.virtualProviders["cabletidy_claude-main"], route: "claude" };
-  config.bindings["claude-main"] = claudeConfig.bindings["claude-main"];
+  config.cables["claude-main"] = claudeConfig.cables["claude-main"];
   const post = async (route, body) => {
     const response = await fetch(`${app.url}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const text = await response.text();

@@ -19,14 +19,14 @@ async function fixture(t, settings) {
   }
   const options = { claudeHome, paths: { backups: path.join(home, "backups") } };
   const config = claudeConfigFixture();
-  const artifacts = () => buildTargetArtifacts(config, { bindingId: "claude-main" });
+  const artifacts = () => buildTargetArtifacts(config, { cableId: "claude-main" });
   const read = async () => JSON.parse(await fs.readFile(file, "utf8"));
   return { home, file, options, config, artifacts, read };
 }
 
 test("Claude preview is read-only, uses public placeholders, and exports portable settings", async (t) => {
   const f = await fixture(t);
-  const artifacts = await prepareTargetArtifacts(f.config, { ...f.options, bindingId: "claude-main" });
+  const artifacts = await prepareTargetArtifacts(f.config, { ...f.options, cableId: "claude-main" });
   await assert.rejects(fs.stat(f.options.claudeHome), { code: "ENOENT" });
   const view = publicTargetArtifacts(artifacts);
   assert.equal(view.settingsPath, f.file);
@@ -45,9 +45,9 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
     ANTHROPIC_API_KEY: "old-api-key", ANTHROPIC_MODEL: "old-model", CUSTOM_VALUE: "keep", CLAUDE_CODE_USE_BEDROCK: "1" },
     model: "user-choice", permissions: { allow: ["Read"] }, hooks: { Stop: [] }, apiKeyHelper: "my-helper" };
   const f = await fixture(t, original);
-  f.config.bindings["claude-main"].defaultModel = "claude-sonnet-4-6";
-  f.config.bindings["claude-main"].claude = { discoverModels: true, models: { haiku: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } };
-  const preview = await prepareTargetArtifacts(f.config, { ...f.options, bindingId: "claude-main" });
+  f.config.cables["claude-main"].defaultModel = "claude-sonnet-4-6";
+  f.config.cables["claude-main"].claude = { discoverModels: true, models: { haiku: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", subagent: "sonnet" } };
+  const preview = await prepareTargetArtifacts(f.config, { ...f.options, cableId: "claude-main" });
   assert.doesNotMatch(JSON.stringify(preview), /old-secret|old-api-key|my-helper/);
   const report = await applyClaudeSettings(f.artifacts(), f.options);
   assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), original);
@@ -62,7 +62,7 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
   applied.env.UNRELATED = "new";
   await fs.writeFile(f.file, JSON.stringify(applied));
   const second = f.artifacts();
-  second.bindingId = "another";
+  second.cableId = "another";
   second.environment.vars.ANTHROPIC_BASE_URL = "http://127.0.0.1:43100/another";
   delete second.environment.vars.ANTHROPIC_MODEL;
   delete second.environment.vars.ANTHROPIC_DEFAULT_HAIKU_MODEL;
@@ -83,7 +83,7 @@ test("restore and reapply reject hand-edited managed fields without exposing the
   const changed = await f.read();
   changed.env.ANTHROPIC_AUTH_TOKEN = "manual-secret";
   await fs.writeFile(f.file, JSON.stringify(changed));
-  const preview = await prepareTargetArtifacts(f.config, { ...f.options, bindingId: "claude-main" });
+  const preview = await prepareTargetArtifacts(f.config, { ...f.options, cableId: "claude-main" });
   assert.equal(preview.canApply, false);
   assert.deepEqual(preview.conflicts, ["env.ANTHROPIC_AUTH_TOKEN"]);
   assert.doesNotMatch(JSON.stringify(preview), /manual-secret/);
@@ -129,6 +129,18 @@ test("an interrupted ledger write recovers either side of the settings replaceme
     await restoreClaudeSettings("claude-main", f.options);
     assert.deepEqual(await f.read(), JSON.parse(before));
   }
+});
+test("ownership records written before cables were renamed can still be restored", async (t) => {
+  const f = await fixture(t, { env: { ANTHROPIC_AUTH_TOKEN: "original" } });
+  const before = await f.read();
+  await applyClaudeSettings(f.artifacts(), f.options);
+  const stateFile = path.join(f.options.claudeHome, ".cabletidy-settings.json");
+  const { cableId, ...state } = JSON.parse(await fs.readFile(stateFile, "utf8"));
+  assert.equal(state.version, 2);
+  await fs.writeFile(stateFile, JSON.stringify({ ...state, version: 1, bindingId: cableId }));
+  await assert.rejects(restoreClaudeSettings("another", f.options), /claude-main/);
+  await restoreClaudeSettings("claude-main", f.options);
+  assert.deepEqual(await f.read(), before);
 });
 
 test("Claude config directory honors the official environment variable and explicit test isolation", () => {

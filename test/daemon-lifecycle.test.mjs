@@ -63,7 +63,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   config.upstreams.relay = { id: "relay", protocol: "openai.responses", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1` };
   config.routes.relay = { id: "relay", backends: [{ upstream: "relay" }] };
   config.virtualProviders.cabletidy_relay = { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "relay" };
-  config.bindings.relay = { id: "relay", target: "codex", virtualProvider: "cabletidy_relay" };
+  config.cables.relay = { id: "relay", target: "codex", virtualProvider: "cabletidy_relay" };
   await fs.writeFile(path.join(directory, "config.json"), JSON.stringify(config));
   let env = fixtureEnvironment({ CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") });
   const releaseCatalog = path.join(directory, "release-catalog");

@@ -57,7 +57,7 @@ for (const sharedSecret of [false, true]) {
     assert.deepEqual((await get("api/v1/config")).config, current);
 
     const candidate = structuredClone(current);
-    for (const key of ["bindings", "routes", "upstreams"]) delete candidate[key].first;
+    for (const key of ["cables", "routes", "upstreams"]) delete candidate[key].first;
     delete candidate.virtualProviders.cabletidy_first;
     await commit(candidate, current.revision + 1, 409);
     assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), secrets);
@@ -65,20 +65,20 @@ for (const sharedSecret of [false, true]) {
 
     const deleted = await commit(candidate, current.revision);
     assert.equal(deleted.revision, current.revision + 1);
-    assert.deepEqual(Object.keys(deleted.config.bindings), ["second"]);
+    assert.deepEqual(Object.keys(deleted.config.cables), ["second"]);
     assert.deepEqual(deleted.config.upstreams.second, current.upstreams.second);
     assert.deepEqual(deleted.runtime.virtualProviders.map(({ id }) => id), ["cabletidy_second"]);
     assert.equal((await fetch(`${app.url}first/v1/models`)).status, 404);
     await get("second/v1/models");
     const saved = JSON.parse(await fs.readFile(paths.config, "utf8"));
-    for (const key of ["bindings", "routes", "upstreams"]) assert.equal(saved[key].first, undefined);
+    for (const key of ["cables", "routes", "upstreams"]) assert.equal(saved[key].first, undefined);
     assert.equal(saved.virtualProviders.cabletidy_first, undefined);
     assert.deepEqual(JSON.parse(await fs.readFile(paths.secrets, "utf8")), {
       [secondRef]: "second-key", unrelated: "preserved-key",
     });
 
     const recreated = structuredClone(deleted.config);
-    for (const key of ["bindings", "routes", "upstreams"]) recreated[key].first = initial[key].first;
+    for (const key of ["cables", "routes", "upstreams"]) recreated[key].first = initial[key].first;
     recreated.virtualProviders.cabletidy_first = initial.virtualProviders.cabletidy_first;
     const result = await commit(recreated, deleted.revision);
     assert.equal(result.config.upstreams.first.secretConfigured, sharedSecret);
@@ -136,7 +136,7 @@ for (const format of ["v1 client names", "v1 dictionary keys", "v2 dictionary ke
       return result;
     };
     const checkModels = (config, saved = false) => {
-      assert.equal(config.version, 2);
+      assert.equal(config.version, 3);
       const actual = config.virtualProviders[providerId].models;
       assert.deepEqual(Object.keys(actual).sort(), [...names].sort());
       for (const name of names) {
@@ -174,3 +174,33 @@ for (const format of ["v1 client names", "v1 dictionary keys", "v2 dictionary ke
     });
   });
 }
+
+test("version 2 bindings load as cables and are persisted only on the next commit", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-legacy-bindings-"));
+  let app;
+  t.after(async () => { await app?.close(); await fs.rm(home, { recursive: true, force: true }); });
+  const paths = getPaths(home);
+  const { cables, ...rest } = namedCodexConfigFixture({ first: "first" });
+  const legacy = { ...rest, version: 2, web: { listenHost: "127.0.0.1", port: await freePort() }, bindings: cables };
+  const conflicting = { ...legacy, cables };
+  await fs.writeFile(paths.config, JSON.stringify(conflicting));
+  await assert.rejects(createApplication({ paths }), /bindings/);
+  await fs.writeFile(paths.config, JSON.stringify(legacy));
+  app = await createApplication({ paths });
+  const current = (await (await fetch(`${app.url}api/v1/config`)).json()).config;
+  assert.equal(current.version, 3);
+  assert.equal(current.bindings, undefined);
+  assert.equal(current.cables.first.virtualProvider, "cabletidy_first");
+  assert.deepEqual(JSON.parse(await fs.readFile(paths.config, "utf8")), legacy);
+  const response = await fetch(`${app.url}api/v1/config/commit`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ config: current, baseRevision: current.revision }),
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  const disk = JSON.parse(await fs.readFile(paths.config, "utf8"));
+  assert.equal(disk.version, 3);
+  assert.equal(disk.bindings, undefined);
+  assert.deepEqual(Object.keys(disk.cables), ["first"]);
+  const backup = (await fs.readdir(paths.backups)).find(name => name.endsWith(`-config-${disk.revision}.json`));
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(paths.backups, backup), "utf8")), legacy);
+});

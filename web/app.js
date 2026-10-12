@@ -31,11 +31,11 @@ const SECURITY_MODELS = new Map([
 ]);
 
 const PAGE_META = {
-  overview: "配置套装",
-  "suite-create": "新建配置",
-  "suite-import": "导入配置",
-  "suite-export": "导出配置",
-  "suite-detail": "配置详情",
+  overview: "线路",
+  "cable-create": "新建线路",
+  "cable-import": "导入线路",
+  "cable-export": "导出线路",
+  "cable-detail": "线路详情",
   models: "模型管理",
   diagnostics: "诊断",
   settings: "设置",
@@ -44,7 +44,7 @@ const PAGE_META = {
   "security-session": "会话轨迹",
 };
 
-const CONFIG_TRANSFER_NOTICE = "仅包含 CableTidy 配置套装。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。";
+const CABLE_TRANSFER_NOTICE = "仅包含 CableTidy 线路。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。";
 
 const state = {
   page: "overview",
@@ -62,7 +62,7 @@ const state = {
   selected: {
     model: null,
     virtualProvider: null,
-    suite: null,
+    cable: null,
   },
   artifactPreview: null,
   resolveResult: null,
@@ -137,8 +137,8 @@ async function bootstrap() {
     state.codexCatalog = codexCatalog;
     state.events = events.events || [];
     state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
-    state.selected.suite = firstKey(state.candidate.bindings);
-    state.selected.model = selectedSuite()?.modelIds[0] || null;
+    state.selected.cable = firstKey(state.candidate.cables);
+    state.selected.model = selectedCable()?.modelIds[0] || null;
     railStatus.textContent = "服务运行中";
     railStatus.parentElement.classList.remove("is-offline");
     if (window.location.hash === "#settings") state.page = "settings";
@@ -164,8 +164,8 @@ function renderUnavailable(message) {
 }
 
 function render(preservedForms = []) {
-  pageTitle.textContent = state.page === "suite-detail"
-    ? selectedSuite()?.name || PAGE_META["suite-detail"]
+  pageTitle.textContent = state.page === "cable-detail"
+    ? selectedCable()?.name || PAGE_META["cable-detail"]
     : pageMeta();
   versionLabel.textContent = state.runtime?.version ? `v${state.runtime.version}` : "版本未知";
   document.querySelectorAll(".nav-item").forEach((item) => {
@@ -177,10 +177,10 @@ function render(preservedForms = []) {
 
   const renderers = {
     overview: renderOverview,
-    "suite-create": renderSuiteCreate,
-    "suite-import": renderSuiteImport,
-    "suite-export": renderSuiteExport,
-    "suite-detail": renderSuiteDetail,
+    "cable-create": renderCableCreate,
+    "cable-import": renderCableImport,
+    "cable-export": renderCableExport,
+    "cable-detail": renderCableDetail,
     models: renderModels,
     diagnostics: renderDiagnostics,
     settings: renderSettings,
@@ -229,7 +229,7 @@ function render(preservedForms = []) {
 function fieldSnapshot(control) {
   return [
     control.name || "", control.type, { ...control.dataset },
-    control.closest("[data-suite-model]")?.dataset.modelId || "",
+    control.closest("[data-cable-model]")?.dataset.modelId || "",
     ["checkbox", "radio"].includes(control.type) ? control.checked
       : control.multiple ? [...control.selectedOptions].map((option) => option.value)
         : control.value,
@@ -239,8 +239,8 @@ function fieldSnapshot(control) {
 function formSnapshot(form) {
   const fields = [...form.querySelectorAll("input, select, textarea")].filter((control) => {
     // Official metadata is derived, not an editable configuration value.
-    if ("suiteModelContext" in control.dataset || "codexVision" in control.dataset) {
-      const mode = control.closest("[data-suite-model]")?.querySelector("[data-codex-metadata-mode]");
+    if ("cableModelContext" in control.dataset || "codexVision" in control.dataset) {
+      const mode = control.closest("[data-cable-model]")?.querySelector("[data-codex-metadata-mode]");
       if (mode?.value === "official") return false;
     }
     return !["submit", "button", "reset"].includes(control.type);
@@ -261,7 +261,7 @@ function mergeFormFields(base, local, remote) {
   for (const field of base) {
     const key = fieldKey(field);
     if (field[0] === "id" && !same(field, theirs.get(key))) return null;
-    if (!("suiteModelClient" in field[2] || "codexMetadataMode" in field[2])) continue;
+    if (!("cableModelClient" in field[2] || "codexMetadataMode" in field[2])) continue;
     if (same(field, ours.get(key)) && same(field, theirs.get(key))) continue;
     const row = (fields) => fields.filter((item) => item[3] === field[3]);
     // A changed model or metadata mode changes the meaning of its other fields.
@@ -300,19 +300,19 @@ function restoreFormChanges(form, replacement) {
   const baseline = formBaselines.get(form);
   const latest = formBaselines.get(replacement);
   const current = formSnapshot(form);
-  const sameContext = form.getAttribute("data-suite-context") === replacement.getAttribute("data-suite-context");
+  const sameContext = form.getAttribute("data-cable-context") === replacement.getAttribute("data-cable-context");
   if (sameContext && current === latest) return;
   // Creation drafts have no remote record to merge, even after switching CLI.
-  if (form.getAttribute("id") === "suite-create-form" || (sameContext && baseline === latest)) {
+  if (form.getAttribute("id") === "cable-create-form" || (sameContext && baseline === latest)) {
     if (formConflicts.has(form)) form.querySelector("[data-form-feedback]")?.remove();
     formConflicts.delete(form);
     replacement.replaceWith(form);
     return;
   }
-  const suiteModels = form.getAttribute("id") === "suite-models-form";
-  const savedFields = (snapshot) => JSON.parse(snapshot).filter((field) => !suiteModels || field[3]);
+  const cableModels = form.getAttribute("id") === "cable-models-form";
+  const savedFields = (snapshot) => JSON.parse(snapshot).filter((field) => !cableModels || field[3]);
   const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
-  const sameStructure = baseline !== undefined && (suiteModels
+  const sameStructure = baseline !== undefined && (cableModels
     || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
   const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields : mergeFormFields;
   const merged = sameContext && sameStructure
@@ -333,14 +333,14 @@ function restoreFormChanges(form, replacement) {
       for (const option of control.options) option.selected = field[4].includes(option.value);
     } else control.value = field[4];
   }
-  if (suiteModels) {
+  if (cableModels) {
     const retained = new Set(merged.map((field) => field[3]));
-    replacement.querySelectorAll("[data-suite-model]").forEach((row) => {
+    replacement.querySelectorAll("[data-cable-model]").forEach((row) => {
       if (!retained.has(row.dataset.modelId)) row.remove();
       else syncCodexMetadata(row);
     });
-    const list = replacement.querySelector("#suite-model-list");
-    form.querySelectorAll("[data-suite-model]").forEach((row) => {
+    const list = replacement.querySelector("#cable-model-list");
+    form.querySelectorAll("[data-cable-model]").forEach((row) => {
       if (!row.dataset.modelId) {
         list.querySelector(".empty")?.remove();
         list.append(row);
@@ -384,7 +384,7 @@ function navigatePage(page) {
   }
   state.security.detailSequence++;
   state.security.bodySequence = (state.security.bodySequence || 0) + 1;
-  if (state.page === "suite-import") state.transfer = { bundle: null, preview: null };
+  if (state.page === "cable-import") state.transfer = { bundle: null, preview: null };
   state.page = page;
   render();
   if (page === "security") loadSecurity();
@@ -440,28 +440,27 @@ function targetLabel(target) {
   }[target] || target || "CLI";
 }
 
-function suiteRouteBackend(route) {
+function cableRouteBackend(route) {
   return route?.backends?.length === 1 ? route.backends[0] : null;
 }
 
-function configurationSuites(config) {
-  return entries(config.bindings).map(([bindingId, binding]) => {
-    const virtualProvider = config.virtualProviders?.[binding.virtualProvider] || {};
+function configurationCables(config) {
+  return entries(config.cables).map(([cableId, record]) => {
+    const virtualProvider = config.virtualProviders?.[record.virtualProvider] || {};
     const route = config.routes?.[virtualProvider.route] || {};
-    const routeBackend = suiteRouteBackend(route);
+    const routeBackend = cableRouteBackend(route);
     const upstreamId = routeBackend?.upstream || null;
     const upstream = upstreamId ? config.upstreams?.[upstreamId] || null : null;
     const modelIds = Object.keys(virtualProvider.models || {});
     const name =
-      binding.name ||
+      record.name ||
       virtualProvider.name ||
-      `${targetLabel(binding.target)} / ${upstream?.name || upstreamId || "未配置上游"}`;
+      `${targetLabel(record.target)} / ${upstream?.name || upstreamId || "未配置上游"}`;
     return {
-      id: bindingId,
-      bindingId,
+      id: cableId,
       name,
-      target: binding.target,
-      binding,
+      target: record.target,
+      record,
       virtualProvider,
       route,
       routeBackend,
@@ -473,24 +472,24 @@ function configurationSuites(config) {
   });
 }
 
-function selectedSuite() {
-  return configurationSuites(state.candidate || {}).find(
-    (suite) => suite.id === state.selected.suite,
+function selectedCable() {
+  return configurationCables(state.candidate || {}).find(
+    (cable) => cable.id === state.selected.cable,
   ) || null;
 }
 
-function selectSuite(id) {
-  const suite = configurationSuites(state.candidate || {}).find((item) => item.id === id);
-  state.selected.suite = id || null;
-  if (state.artifactPreview?.bindingId !== id) state.artifactPreview = null;
-  if (!suite) return;
-  state.selected.virtualProvider = suite.binding.virtualProvider;
-  state.selected.model = suite.modelIds[0] || null;
+function selectCable(id) {
+  const cable = configurationCables(state.candidate || {}).find((item) => item.id === id);
+  state.selected.cable = id || null;
+  if (state.artifactPreview?.cableId !== id) state.artifactPreview = null;
+  if (!cable) return;
+  state.selected.virtualProvider = cable.record.virtualProvider;
+  state.selected.model = cable.modelIds[0] || null;
 }
 
-function suiteProviderStatus(suite) {
+function cableProviderStatus(cable) {
   const runtimeProvider = state.runtime?.virtualProviders?.find(
-    (item) => item.id === suite.binding.virtualProvider,
+    (item) => item.id === cable.record.virtualProvider,
   );
   if (runtimeProvider?.status === "paused") {
     return { label: "已暂停", className: "warning" };
@@ -501,128 +500,128 @@ function suiteProviderStatus(suite) {
   return { label: "未启动", className: "neutral" };
 }
 
-function suiteEndpoint(suite) {
-  return `${configurationBaseUrl(state.candidate, suite.bindingId)}${suite.target === "claude-code" ? "" : "/v1"}`;
+function cableEndpoint(cable) {
+  return `${configurationBaseUrl(state.candidate, cable.id)}${cable.target === "claude-code" ? "" : "/v1"}`;
 }
 
-function suiteRow(suite) {
-  const providerStatus = suiteProviderStatus(suite);
+function cableRow(cable) {
+  const providerStatus = cableProviderStatus(cable);
   return `
     <tr>
-      <th scope="row"><button class="suite-name" data-action="open-suite" data-id="${esc(suite.id)}">${esc(suite.name)}</button><span class="suite-upstream">${esc(suite.upstream?.name || suite.upstreamId || "未配置上游")}</span></th>
-      <td data-label="CLI">${esc(targetLabel(suite.target))}</td>
-      <td data-label="模型设置">${suite.modelIds.length ? `${suite.modelIds.length} 项设置` : "直接透传"}</td>
-      <td data-label="本地地址" class="mono">${esc(suiteEndpoint(suite))}</td>
+      <th scope="row"><button class="cable-name" data-action="open-cable" data-id="${esc(cable.id)}">${esc(cable.name)}</button><span class="cable-upstream">${esc(cable.upstream?.name || cable.upstreamId || "未配置上游")}</span></th>
+      <td data-label="CLI">${esc(targetLabel(cable.target))}</td>
+      <td data-label="模型设置">${cable.modelIds.length ? `${cable.modelIds.length} 项设置` : "直接透传"}</td>
+      <td data-label="本地地址" class="mono">${esc(cableEndpoint(cable))}</td>
       <td data-label="本地服务"><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></td>
-      <td data-label="操作"><button class="button button-danger" type="button" data-action="delete-suite" data-id="${esc(suite.id)}" aria-label="删除配置 ${esc(suite.name)}">删除</button></td>
+      <td data-label="操作"><button class="button button-danger" type="button" data-action="delete-cable" data-id="${esc(cable.id)}" aria-label="删除线路 ${esc(cable.name)}">删除</button></td>
     </tr>
   `;
 }
 
 function renderOverview() {
-  const suites = configurationSuites(state.candidate);
+  const cables = configurationCables(state.candidate);
   return `
-    <div class="suite-toolbar">
-      <span class="muted">${suites.length} 套配置</span>
-      <div class="suite-toolbar-actions">
-        <button class="button" data-action="import-suites">导入配置</button>
-        <button class="button" data-action="export-suites" ${suites.length ? "" : "disabled"}>导出配置</button>
-        <button class="button button-primary" data-action="create-suite">新建配置</button>
+    <div class="cable-toolbar">
+      <span class="muted">${cables.length} 条线路 · 每条线路把一个 CLI 接到一个或多个上游</span>
+      <div class="cable-toolbar-actions">
+        <button class="button" data-action="import-cables">导入线路</button>
+        <button class="button" data-action="export-cables" ${cables.length ? "" : "disabled"}>导出线路</button>
+        <button class="button button-primary" data-action="create-cable">新建线路</button>
       </div>
     </div>
     ${
-      suites.length
-        ? `<div class="suite-list"><table class="suite-table" aria-label="配置套装"><thead><tr><th scope="col">配置名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th><th scope="col">操作</th></tr></thead><tbody>${suites.map(suiteRow).join("")}</tbody></table></div>`
-        : `<div class="panel"><div class="empty">暂无配置</div></div>`
+      cables.length
+        ? `<div class="cable-list"><table class="cable-table" aria-label="线路"><thead><tr><th scope="col">线路名称</th><th scope="col">CLI</th><th scope="col">模型设置</th><th scope="col">本地地址</th><th scope="col">本地服务</th><th scope="col">操作</th></tr></thead><tbody>${cables.map(cableRow).join("")}</tbody></table></div>`
+        : `<div class="panel"><div class="empty">暂无线路</div></div>`
     }
   `;
 }
 
-function renderSuiteExport() {
-  const suites = configurationSuites(state.candidate);
+function renderCableExport() {
+  const cables = configurationCables(state.candidate);
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
-    <form id="suite-export-form" class="config-form panel">
-      <section class="config-section" aria-labelledby="suite-export-selection">
-        <h2 id="suite-export-selection">选择配置套装</h2>
+    <form id="cable-export-form" class="config-form panel">
+      <section class="config-section" aria-labelledby="cable-export-selection">
+        <h2 id="cable-export-selection">选择线路</h2>
         <div class="transfer-fields">
-          <p class="muted">${CONFIG_TRANSFER_NOTICE}</p>
-          <fieldset class="transfer-selection"><legend>选择要导出的配置套装</legend>
-            ${suites.map(suite => `<label class="checkbox-field"><input type="checkbox" name="bindingIds" value="${esc(suite.id)}" checked /><span>${esc(suite.name)} · ${esc(targetLabel(suite.target))}</span></label>`).join("")}
+          <p class="muted">${CABLE_TRANSFER_NOTICE}</p>
+          <fieldset class="transfer-selection"><legend>选择要导出的线路</legend>
+            ${cables.map(cable => `<label class="checkbox-field"><input type="checkbox" name="cableIds" value="${esc(cable.id)}" checked /><span>${esc(cable.name)} · ${esc(targetLabel(cable.target))}</span></label>`).join("")}
           </fieldset>
           <label class="checkbox-field"><input type="checkbox" name="includeCredentials" /><span>包含认证凭据（API Key、上游密钥及 URL 认证信息）</span></label>
           <p class="muted">勾选后文件包含明文凭据，请妥善保管，仅分享给可信接收方。</p>
         </div>
       </section>
-      <div class="config-form-footer"><button class="button" type="button" data-action="back-overview">取消</button><button class="button button-primary" type="submit">下载配置文件</button></div>
+      <div class="config-form-footer"><button class="button" type="button" data-action="back-overview">取消</button><button class="button button-primary" type="submit">下载线路文件</button></div>
     </form>`;
 }
 
-function renderSuiteImport() {
+function renderCableImport() {
   const preview = state.transfer.preview;
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
-    <form id="suite-import-form" class="config-form panel">
-      <section class="config-section" aria-labelledby="suite-import-selection">
-        <h2 id="suite-import-selection">${preview ? "确认配置套装" : "选择配置文件"}</h2>
+    <form id="cable-import-form" class="config-form panel">
+      <section class="config-section" aria-labelledby="cable-import-selection">
+        <h2 id="cable-import-selection">${preview ? "确认线路" : "选择线路文件"}</h2>
         <div class="transfer-fields">
-          <p class="muted">${CONFIG_TRANSFER_NOTICE}</p>
-          ${preview ? `<p>共 ${preview.suites.length} 套配置。同名配置请选择更新已有配置或创建新配置；未使用文件凭据时，更新保留已有密钥，新建配置需填写凭据。客户端文件需按需重新应用。</p>
-        ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用导入配置中的认证凭据</span></label><p class="muted">勾选时文件中的凭据优先于已有凭据；取消勾选时忽略文件中的密钥和 URL 认证信息。</p>` : ""}
-        <div class="transfer-selection">${preview.suites.map(suite => suite.conflict
-          ? `<label class="field"><span>${esc(suite.sourceName)} · ${esc(targetLabel(suite.target))}（与「${esc(suite.existingName || suite.sourceName)}」同名）</span>
-            <select name="choice:${esc(suite.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有配置</option><option value="create">创建新配置（${esc(suite.name)}）</option></select></label>`
-          : `<p>${esc(suite.name)} · ${esc(targetLabel(suite.target))} · 新建配置</p>`).join("")}</div>
+          <p class="muted">${CABLE_TRANSFER_NOTICE}</p>
+          ${preview ? `<p>共 ${preview.cables.length} 条线路。同名线路请选择更新已有线路或创建新线路；未使用文件凭据时，更新保留已有密钥，新建线路需填写凭据。客户端文件需按需重新应用。</p>
+        ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用线路文件中的认证凭据</span></label><p class="muted">勾选时文件中的凭据优先于已有凭据；取消勾选时忽略文件中的密钥和 URL 认证信息。</p>` : ""}
+        <div class="transfer-selection">${preview.cables.map(cable => cable.conflict
+          ? `<label class="field"><span>${esc(cable.sourceName)} · ${esc(targetLabel(cable.target))}（与「${esc(cable.existingName || cable.sourceName)}」同名）</span>
+            <select name="choice:${esc(cable.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有线路</option><option value="create">创建新线路（${esc(cable.name)}）</option></select></label>`
+          : `<p>${esc(cable.name)} · ${esc(targetLabel(cable.target))} · 新建线路</p>`).join("")}</div>
         ${(preview.warnings || []).map(w => `<p class="muted">${esc(w.message)}</p>`).join("")}`
-      : `<label class="field"><span>配置套装文件（JSON）</span><input type="file" name="bundle" accept=".json,application/json" required /></label>`}
+      : `<label class="field"><span>线路文件（JSON）</span><input type="file" name="bundle" accept=".json,application/json" required /></label>`}
         </div>
       </section>
       <div class="config-form-footer">
         <button class="button" type="button" data-action="back-overview">取消</button>
-        ${preview ? `<button class="button" type="button" data-action="import-suites">重新选择文件</button><button class="button button-primary" type="submit">确认导入</button>`
+        ${preview ? `<button class="button" type="button" data-action="import-cables">重新选择文件</button><button class="button button-primary" type="submit">确认导入</button>`
           : `<button class="button button-primary" type="submit">预览导入</button>`}
       </div>
     </form>`;
 }
 
-async function exportSuites(data) {
-  const bindingIds = data.getAll("bindingIds");
-  if (!bindingIds.length) throw new Error("请至少选择一套配置。");
+async function exportCables(data) {
+  const cableIds = data.getAll("cableIds");
+  if (!cableIds.length) throw new Error("请至少选择一条线路。");
   const includeCredentials = data.get("includeCredentials") === "on";
-  const bundle = await api("/config/export", { method: "POST", body: JSON.stringify({ bindingIds, includeCredentials }) });
+  const bundle = await api("/cables/export", { method: "POST", body: JSON.stringify({ cableIds, includeCredentials }) });
   const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2) + "\n"], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `cabletidy-configurations-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `cabletidy-cables-${new Date().toISOString().slice(0, 10)}.json`;
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  toast(`已导出 ${bindingIds.length} 套配置${includeCredentials ? "，包含明文认证凭据，请妥善保管。" : "，不包含认证凭据。"}`);
+  toast(`已导出 ${cableIds.length} 条线路${includeCredentials ? "，包含明文认证凭据，请妥善保管。" : "，不包含认证凭据。"}`);
 }
 
-async function importSuites(data) {
+async function importCables(data) {
   if (!state.transfer.preview) {
     const file = data.get("bundle");
-    if (!file?.size) throw new Error("请选择配置套装文件。");
-    if (file.size > 8 * 1024 * 1024) throw new Error("配置套装文件不能超过 8 MiB。");
+    if (!file?.size) throw new Error("请选择线路文件。");
+    if (file.size > 8 * 1024 * 1024) throw new Error("线路文件不能超过 8 MiB。");
     let bundle;
     try { bundle = JSON.parse(await file.text()); }
-    catch { throw new Error("配置套装文件不是有效的 JSON。"); }
-    const preview = await api("/config/import", { method: "POST", body: JSON.stringify({ bundle, preview: true }) });
+    catch { throw new Error("线路文件不是有效的 JSON。"); }
+    const preview = await api("/cables/import", { method: "POST", body: JSON.stringify({ bundle, preview: true }) });
     state.transfer.bundle = bundle;
     state.transfer.preview = preview;
     render();
     return;
   }
   const choices = {};
-  for (const suite of state.transfer.preview.suites) {
-    if (!suite.conflict) continue;
-    const choice = data.get(`choice:${suite.sourceId}`);
-    if (!["update", "create"].includes(choice)) throw new Error("请选择每套同名配置的处理方式。");
-    choices[suite.sourceId] = choice;
+  for (const cable of state.transfer.preview.cables) {
+    if (!cable.conflict) continue;
+    const choice = data.get(`choice:${cable.sourceId}`);
+    if (!["update", "create"].includes(choice)) throw new Error("请选择每条同名线路的处理方式。");
+    choices[cable.sourceId] = choice;
   }
-  const result = await api("/config/import", { method: "POST", body: JSON.stringify({
+  const result = await api("/cables/import", { method: "POST", body: JSON.stringify({
     bundle: state.transfer.bundle, baseRevision: state.transfer.preview.baseRevision,
     choices,
     useImportedCredentials: state.transfer.preview.hasCredentials && data.get("useImportedCredentials") === "on",
@@ -636,32 +635,32 @@ async function importSuites(data) {
   toast("配置已导入。请为未配置凭据的上游填写认证信息，再按需应用到客户端。");
 }
 
-function suiteModelEditor(suite, modelId, profile, upstreamId) {
+function cableModelEditor(cable, modelId, profile, upstreamId) {
   const model = profile || {};
-  const isCodex = suite.target === "codex";
+  const isCodex = cable.target === "codex";
   const expanded = isCodex && (model.codex?.metadataMode === "override" || Boolean(model.compact)
     || (!model.codex && Boolean(model.contextWindow)));
   return `
-    <article class="suite-model-card" data-suite-model data-model-id="${esc(modelId)}">
-      <div class="suite-model-mapping">
+    <article class="cable-model-card" data-cable-model data-model-id="${esc(modelId)}">
+      <div class="cable-model-mapping">
         ${isCodex
-          ? officialModelSelect("data-suite-model-client", modelId || "")
-          : suite.target === "claude-code"
-            ? claudeModelInput("data-suite-model-client", modelId)
-            : `<label class="field"><span>客户端模型 ID</span><input data-suite-model-client value="${esc(modelId)}" placeholder="客户端模型 ID" required /></label>`}
-        <span class="suite-mapping-arrow" aria-hidden="true">&rarr;</span>
+          ? officialModelSelect("data-cable-model-client", modelId || "")
+          : cable.target === "claude-code"
+            ? claudeModelInput("data-cable-model-client", modelId)
+            : `<label class="field"><span>客户端模型 ID</span><input data-cable-model-client value="${esc(modelId)}" placeholder="客户端模型 ID" required /></label>`}
+        <span class="cable-mapping-arrow" aria-hidden="true">&rarr;</span>
         ${upstreamId
-          ? `<label class="field"><span>上游模型 ID（可选）</span><input data-suite-model-upstream="${esc(upstreamId)}" value="${esc(model.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
+          ? `<label class="field"><span>上游模型 ID（可选）</span><input data-cable-model-upstream="${esc(upstreamId)}" value="${esc(model.upstreamModelId || "")}" placeholder="留空使用请求中的模型名" /></label>`
           : `<div class="notice warning">请先配置上游连接</div>`}
-        <button class="mini-button" type="button" data-action="remove-suite-model" aria-label="移除模型 ${esc(modelId || "映射")}">移除</button>
+        <button class="mini-button" type="button" data-action="remove-cable-model" aria-label="移除模型 ${esc(modelId || "映射")}">移除</button>
       </div>
-      ${model.aliases?.length ? `<label class="field"><span>额外请求别名（可选）</span><input data-suite-model-aliases value="${esc(model.aliases.join(", "))}" placeholder="多个别名用逗号分隔" /></label>` : ""}
-      ${suite.target === "claude-code" ? "" : `<details class="suite-model-settings" ${expanded ? "open" : ""}>
+      ${model.aliases?.length ? `<label class="field"><span>额外请求别名（可选）</span><input data-cable-model-aliases value="${esc(model.aliases.join(", "))}" placeholder="多个别名用逗号分隔" /></label>` : ""}
+      ${cable.target === "claude-code" ? "" : `<details class="cable-model-settings" ${expanded ? "open" : ""}>
         <summary><span>${isCodex ? "模型能力与上下文" : "模型能力"}</span><span class="field-hint" data-model-policy-summary>${isCodex ? model.codex?.metadataMode === "override" ? "覆盖上游限制" : "沿用官方定义" : "自定义设置"}</span></summary>
-        <div class="form-grid suite-model-policy">
+        <div class="form-grid cable-model-policy">
           ${isCodex ? codexMetadataFields(model, modelId) : `
-          <label class="field full"><span>Capabilities</span><input data-suite-model-capabilities-common value="${esc((model.capabilities || ["streaming", "tools", "reasoning"]).join(", "))}" placeholder="streaming, tools, reasoning" /></label>
-          ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-suite-model-capabilities="${esc(upstreamId)}" value="${esc((model.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
+          <label class="field full"><span>Capabilities</span><input data-cable-model-capabilities-common value="${esc((model.capabilities || ["streaming", "tools", "reasoning"]).join(", "))}" placeholder="streaming, tools, reasoning" /></label>
+          ${upstreamId ? `<label class="field"><span>上游能力覆盖</span><input data-cable-model-capabilities="${esc(upstreamId)}" value="${esc((model.capabilityOverrides || []).join(", "))}" placeholder="可留空" /></label>` : ""}
           `}
         </div>
       </details>`}
@@ -725,7 +724,7 @@ function codexMetadataFields(model, modelId) {
       <option value="official" ${!override ? "selected" : ""}>沿用官方定义</option>
       <option value="override" ${override ? "selected" : ""}>覆盖上游限制</option>
     </select></label>
-    <label class="field"><span>上下文窗口</span><input data-suite-model-context type="number" min="1" max="${esc(definition?.maxContextWindow || "")}" value="${esc(override ? model.contextWindow ?? "" : definition?.contextWindow ?? "")}" placeholder="沿用官方" ${override ? "" : "disabled"} /></label>
+    <label class="field"><span>上下文窗口</span><input data-cable-model-context type="number" min="1" max="${esc(definition?.maxContextWindow || "")}" value="${esc(override ? model.contextWindow ?? "" : definition?.contextWindow ?? "")}" placeholder="沿用官方" ${override ? "" : "disabled"} /></label>
     <label class="field checkbox-field"><span><input data-codex-vision type="checkbox" ${vision ? "checked" : ""} ${override && definition?.inputModalities.includes("image") ? "" : "disabled"} /> 图片输入</span></label>
     <div class="field"><label>基础提示词</label><span class="field-hint" data-codex-instructions>${esc(definition?.name || "待选择官方模型")} / 官方定义</span></div>
     ${!model.codex && (model.contextWindow || model.compact) ? `<div class="notice warning full">旧策略尚未同步：context window ${esc(model.contextWindow || "未设置")}；compact ${esc(model.compact?.strategy || "未设置")} ${esc(model.compact?.tokenLimit || "")}。Compact 仍由 Codex 管理。</div>` : model.compact ? `<div class="field full"><span class="field-hint">旧 Compact 策略已保留，未同步到 Codex</span></div>` : ""}
@@ -734,9 +733,9 @@ function codexMetadataFields(model, modelId) {
 
 function syncCodexMetadata(row, resetOverrides = false) {
   if (!row || !row.querySelector("[data-codex-metadata-mode]")) return;
-  const definition = officialModel(row.querySelector("[data-suite-model-client]").value);
+  const definition = officialModel(row.querySelector("[data-cable-model-client]").value);
   const override = row.querySelector("[data-codex-metadata-mode]").value === "override";
-  const context = row.querySelector("[data-suite-model-context]");
+  const context = row.querySelector("[data-cable-model-context]");
   const vision = row.querySelector("[data-codex-vision]");
   if (resetOverrides || !override) {
     context.value = definition?.contextWindow || "";
@@ -754,7 +753,7 @@ pageContent.addEventListener("change", (event) => {
   if (event.target.matches('#audit-settings-form input[type="checkbox"]')) {
     syncAuditSettingsForm(event.target.closest("form"));
   }
-  if (event.target.matches('#suite-create-form [name="target"]')) {
+  if (event.target.matches('#cable-create-form [name="target"]')) {
     state.createTarget = event.target.value;
     const form = event.target.closest("form");
     form.querySelector(".catalog-status-wrapper").hidden = state.createTarget !== "codex";
@@ -776,7 +775,7 @@ pageContent.addEventListener("change", (event) => {
   const modelChanged = event.target.matches("[data-official-model]");
   if (modelChanged) updateOfficialModelHint(event.target);
   if (modelChanged || event.target.matches("[data-codex-metadata-mode]")) {
-    syncCodexMetadata(event.target.closest("[data-suite-model]"), modelChanged);
+    syncCodexMetadata(event.target.closest("[data-cable-model]"), modelChanged);
   }
 });
 
@@ -806,14 +805,14 @@ pageContent.addEventListener("input", (event) => {
   if (event.target.matches("#audit-settings-form input")) {
     syncAuditSettingsForm(event.target.closest("form"));
   }
-  if (event.target.matches('#suite-create-form [data-create-field="clientModelId"]')) {
+  if (event.target.matches('#cable-create-form [data-create-field="clientModelId"]')) {
     syncClaudeCreateModels(event.target.closest("form"));
   }
 });
 
 pageContent.addEventListener("invalid", (event) => {
   // Reveal invalid controls before the browser tries to focus them.
-  const settings = event.target.closest(".suite-model-settings");
+  const settings = event.target.closest(".cable-model-settings");
   if (settings) settings.open = true;
 }, true);
 
@@ -825,7 +824,7 @@ function codexModelFields(clientModelId, existing = {}, row) {
   const capabilities = [...definition.capabilities];
   let contextWindow = existing.contextWindow;
   if (mode === "override") {
-    const value = row.querySelector("[data-suite-model-context]").value.trim();
+    const value = row.querySelector("[data-cable-model-context]").value.trim();
     contextWindow = value ? Number(value) : undefined;
     if (value && (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || contextWindow > definition.maxContextWindow)) {
       throw new Error(`${clientModelId} 的上下文窗口必须在 1 到 ${definition.maxContextWindow} 之间`);
@@ -837,86 +836,86 @@ function codexModelFields(clientModelId, existing = {}, row) {
   return { codex, capabilities, contextWindow };
 }
 
-function renderSuiteDetail() {
-  const suite = selectedSuite();
-  if (!suite) {
+function renderCableDetail() {
+  const cable = selectedCable();
+  if (!cable) {
     return `
       <div class="panel empty-state-panel">
-        <div class="empty"><strong>配置不存在</strong><div class="form-actions"><button class="button" data-action="back-overview">返回列表</button></div></div>
+        <div class="empty"><strong>线路不存在</strong><div class="form-actions"><button class="button" data-action="back-overview">返回列表</button></div></div>
       </div>
     `;
   }
-  const providerStatus = suiteProviderStatus(suite);
-  const upstreamId = suite.upstreamId || "";
+  const providerStatus = cableProviderStatus(cable);
+  const upstreamId = cable.upstreamId || "";
   const upstream = upstreamId ? state.candidate.upstreams[upstreamId] : null;
-  const binding = suite.binding;
-  const provider = suite.virtualProvider;
+  const record = cable.record;
+  const provider = cable.virtualProvider;
   return `
-    <div class="suite-toolbar">
+    <div class="cable-toolbar">
       <button class="text-button" data-action="back-overview">返回列表</button>
-      <div class="suite-status"><span>${esc(targetLabel(binding.target))} · ${suite.models.length ? `${suite.models.length} 项模型设置` : "模型名直接透传"}</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span><button class="button button-danger" type="button" data-action="delete-suite" data-id="${esc(suite.id)}">删除配置</button></div>
+      <div class="cable-status"><span>${esc(targetLabel(record.target))} · ${cable.models.length ? `${cable.models.length} 项模型设置` : "模型名直接透传"}</span><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span><button class="button button-danger" type="button" data-action="delete-cable" data-id="${esc(cable.id)}">删除线路</button></div>
     </div>
-    <div class="panel suite-editor">
-      <section class="suite-section" aria-labelledby="suite-upstream-title">
-        <div class="suite-section-heading">
-          <h2 id="suite-upstream-title">上游连接</h2>
-          <p>此配置的所有模型共用这一上游。</p>
+    <div class="panel cable-editor">
+      <section class="cable-section" aria-labelledby="cable-upstream-title">
+        <div class="cable-section-heading">
+          <h2 id="cable-upstream-title">上游连接</h2>
+          <p>此线路的所有模型共用这一上游。</p>
         </div>
         ${upstream ? `
-          <form id="suite-upstream-form">
+          <form id="cable-upstream-form">
             <input type="hidden" name="id" value="${esc(upstreamId)}" />
             <input type="hidden" name="protocol" value="${esc(upstream.protocol || "openai.responses")}" />
-            <div class="form-grid suite-upstream-fields">
+            <div class="form-grid cable-upstream-fields">
               ${field("上游名称", "name", upstream.name || upstreamId, "例如 Relay A")}
               ${field("上游地址", "baseUrl", upstream.baseUrl || "", "https://relay.example.com/v1", false, "url")}
-              ${field(suite.target === "claude-code" ? "上游凭据" : "API Key", "secret", "", upstream.secretConfigured ? "已配置，留空保留现有密钥" : "粘贴上游凭据", false, "password")}
-              ${suite.target === "claude-code" ? upstreamAuthField("authHeader", upstream.auth?.header || upstream.authHeader || "x-api-key") : ""}
+              ${field(cable.target === "claude-code" ? "上游凭据" : "API Key", "secret", "", upstream.secretConfigured ? "已配置，留空保留现有密钥" : "粘贴上游凭据", false, "password")}
+              ${cable.target === "claude-code" ? upstreamAuthField("authHeader", upstream.auth?.header || upstream.authHeader || "x-api-key") : ""}
             </div>
-            <div class="suite-section-footer">
+            <div class="cable-section-footer">
               <span class="field-hint">保存后生效，测试使用已保存的连接。</span>
               <div class="form-actions"><button class="button" type="submit">保存上游</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(upstreamId)}">测试连通性</button></div>
             </div>
           </form>
         ` : `<div class="empty"><strong>未配置上游</strong></div>`}
       </section>
-      <section class="suite-section" aria-labelledby="suite-models-title">
-        <div class="suite-section-heading suite-models-heading">
-          <div><h2 id="suite-models-title">模型设置（可选）</h2><p>${suite.target === "claude-code" ? "默认透传模型名；改名时填写 Claude Code 请求中的完整模型 ID。模型能力、上下文和压缩由客户端与上游决定。" : suite.target === "generic-env" ? "默认透传请求中的模型名；需要改名或限制能力时再添加设置。" : "默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。"}</p></div>
-          <button class="button" type="button" data-action="add-suite-model">添加模型设置</button>
+      <section class="cable-section" aria-labelledby="cable-models-title">
+        <div class="cable-section-heading cable-models-heading">
+          <div><h2 id="cable-models-title">模型设置（可选）</h2><p>${cable.target === "claude-code" ? "默认透传模型名；改名时填写 Claude Code 请求中的完整模型 ID。模型能力、上下文和压缩由客户端与上游决定。" : cable.target === "generic-env" ? "默认透传请求中的模型名；需要改名或限制能力时再添加设置。" : "默认透传请求中的模型名；需要改名或覆盖上下文等参数时再添加设置。"}</p></div>
+          <button class="button" type="button" data-action="add-cable-model">添加模型设置</button>
         </div>
-        ${suite.target === "codex" ? codexCatalogStatus() : ""}
-        ${suite.target === "claude-code" ? claudeModelSuggestions() : ""}
-        <form id="suite-models-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.target, binding.virtualProvider, suite.route?.id, upstreamId]))}">
-          <div id="suite-model-list" class="suite-model-list">
-            ${suite.models.length
-              ? suite.models.map(({ id, profile }) => suiteModelEditor(suite, id, profile, upstreamId)).join("")
+        ${cable.target === "codex" ? codexCatalogStatus() : ""}
+        ${cable.target === "claude-code" ? claudeModelSuggestions() : ""}
+        <form id="cable-models-form" data-cable-context="${esc(JSON.stringify([cable.id, cable.target, record.virtualProvider, cable.route?.id, upstreamId]))}">
+          <div id="cable-model-list" class="cable-model-list">
+            ${cable.models.length
+              ? cable.models.map(({ id, profile }) => cableModelEditor(cable, id, profile, upstreamId)).join("")
               : `<div class="empty">已启用模型名直接透传，无需添加模型设置。</div>`}
           </div>
-          <div class="suite-section-footer">
-            <span class="field-hint">${suite.target === "claude-code" || suite.target === "generic-env" ? "上游模型 ID 留空时原样透传。" : "按需展开模型能力与上下文设置。"}</span>
+          <div class="cable-section-footer">
+            <span class="field-hint">${cable.target === "claude-code" || cable.target === "generic-env" ? "上游模型 ID 留空时原样透传。" : "按需展开模型能力与上下文设置。"}</span>
             <div class="form-actions">
               <button class="button" type="submit">保存模型设置</button>
-              ${suite.target === "generic-env" ? `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>` : ""}
+              ${cable.target === "generic-env" ? `<button class="button" type="button" data-action="open-advanced-models">高级模型设置</button>` : ""}
             </div>
           </div>
         </form>
       </section>
-      ${suite.target === "claude-code" ? claudeClientForm(suite) : ""}
+      ${cable.target === "claude-code" ? claudeClientForm(cable) : ""}
     </div>
-    <section class="panel suite-connection" aria-labelledby="suite-connection-title">
+    <section class="panel cable-connection" aria-labelledby="cable-connection-title">
       <div class="panel-header">
-        <h2 id="suite-connection-title">${esc(targetLabel(binding.target))} 接入</h2>
-        <div class="suite-connection-actions">
+        <h2 id="cable-connection-title">${esc(targetLabel(record.target))} 接入</h2>
+        <div class="cable-connection-actions">
           <button class="button button-quiet" type="button" data-action="toggle-vp" data-id="${esc(provider.id)}">${provider.enabled === false ? "启动服务" : "暂停服务"}</button>
           <button class="button" type="button" data-action="preview-artifacts">预览配置</button>
-          ${["codex", "claude-code"].includes(binding.target) ? `<button class="button button-primary" type="button" data-action="apply-target">应用到 ${esc(targetLabel(binding.target))}</button>` : ""}
-          ${binding.target === "claude-code" ? `<button class="button" type="button" data-action="restore-target">撤销接入</button>` : ""}
+          ${["codex", "claude-code"].includes(record.target) ? `<button class="button button-primary" type="button" data-action="apply-target">应用到 ${esc(targetLabel(record.target))}</button>` : ""}
+          ${record.target === "claude-code" ? `<button class="button" type="button" data-action="restore-target">撤销接入</button>` : ""}
         </div>
       </div>
       <div class="panel-body">
-        <dl class="suite-connection-facts">
-          <div><dt>本地地址</dt><dd class="mono">${esc(suiteEndpoint(suite))}</dd></div>
-          <div><dt>Virtual Provider ID</dt><dd class="mono">${esc(binding.virtualProvider)}</dd></div>
+        <dl class="cable-connection-facts">
+          <div><dt>本地地址</dt><dd class="mono">${esc(cableEndpoint(cable))}</dd></div>
+          <div><dt>Virtual Provider ID</dt><dd class="mono">${esc(record.virtualProvider)}</dd></div>
         </dl>
         ${state.artifactPreview ? artifactPanel(state.artifactPreview) : ""}
       </div>
@@ -933,9 +932,9 @@ function upstreamAuthField(name, header = "x-api-key") {
   return `<label class="field"><span>上游认证方式</span><select name="${esc(name)}">${options.map(([value, label]) => `<option value="${esc(value)}" ${value === header ? "selected" : ""}>${esc(label)}</option>`).join("")}</select><span class="field-hint">环境变量名用于对照 Claude 直连上游的配置；这里选择的是 CableTidy 访问上游的认证方式。</span></label>`;
 }
 
-function claudeDefaultModel(suite) {
-  if (suite.binding.claude?.setModel === false) return "";
-  return suite.binding.defaultModel || suite.virtualProvider.defaultModel || "";
+function claudeDefaultModel(cable) {
+  if (cable.record.claude?.setModel === false) return "";
+  return cable.record.defaultModel || cable.virtualProvider.defaultModel || "";
 }
 
 function claudeModelInput(attributes, value) {
@@ -947,9 +946,9 @@ function claudeModelSuggestions() {
     <datalist id="claude-model-suggestions">${CLAUDE_MODEL_CATALOG.models.map((id) => `<option value="${esc(id)}"></option>`).join("")}</datalist>`;
 }
 
-function claudeAliasSelect(suite, family) {
-  const selected = suite?.binding.claude?.models?.[family] || "";
-  const ids = (suite?.models || []).map(({ id }) => id);
+function claudeAliasSelect(cable, family) {
+  const selected = cable?.record.claude?.models?.[family] || "";
+  const ids = (cable?.models || []).map(({ id }) => id);
   return `<label class="field"><span>${family[0].toUpperCase() + family.slice(1)} 别名指向</span><select name="${family}">
     ${claudeAliasOptions(ids, selected)}
   </select></label>`;
@@ -972,7 +971,7 @@ function claudeDefaultModelOptions(name, ids, value = "") {
   const clientIds = [...new Set(ids)].filter((id) => !aliases.includes(id));
   return `<optgroup label="默认行为"><option value="" ${selected ? "" : "selected"}>${name === "defaultModel" ? "由 Claude 默认决定" : "沿用 Claude 默认行为"}</option></optgroup>
     <optgroup label="模型别名">${optionList(aliases, selected)}</optgroup>
-    ${clientIds.length ? `<optgroup label="当前配置的客户端模型 ID">${optionList(clientIds, selected)}</optgroup>` : ""}`;
+    ${clientIds.length ? `<optgroup label="当前线路的客户端模型 ID">${optionList(clientIds, selected)}</optgroup>` : ""}`;
 }
 
 function claudeDefaultModelSelect(name, ids, value = "") {
@@ -991,33 +990,33 @@ function syncClaudeCreateModels(form) {
   }
 }
 
-function claudeModelGroups(suite = null) {
-  const ids = (suite?.models || []).map(({ id }) => id);
+function claudeModelGroups(cable = null) {
+  const ids = (cable?.models || []).map(({ id }) => id);
   return `<section class="subsection" aria-labelledby="claude-aliases-title">
         <div class="subsection-header"><h3 id="claude-aliases-title">模型别名</h3></div>
-        <p class="field-hint">${suite ? "从当前配置已保存的" : "可选。从本次填写的"}客户端模型 ID 中选择，或由 Claude 默认决定。</p>
+        <p class="field-hint">${cable ? "从当前线路已保存的" : "可选。从本次填写的"}客户端模型 ID 中选择，或由 Claude 默认决定。</p>
         <div class="form-grid">
-          ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(suite, family)).join("")}
+          ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(cable, family)).join("")}
         </div>
       </section>
       <section class="subsection" aria-labelledby="claude-defaults-title">
         <div class="subsection-header"><h3 id="claude-defaults-title">默认模型</h3></div>
         <div class="form-grid">
-          ${claudeDefaultModelSelect("defaultModel", ids, suite ? claudeDefaultModel(suite) : "")}
-          ${claudeDefaultModelSelect("subagent", ids, suite?.binding.claude?.models?.subagent || "")}
+          ${claudeDefaultModelSelect("defaultModel", ids, cable ? claudeDefaultModel(cable) : "")}
+          ${claudeDefaultModelSelect("subagent", ids, cable?.record.claude?.models?.subagent || "")}
         </div>
-        <p class="field-hint">可选。选择适用的官方别名或当前配置的客户端模型 ID；默认行为不主动覆盖 Claude 的模型选择。</p>
+        <p class="field-hint">可选。选择适用的官方别名或当前线路的客户端模型 ID；默认行为不主动覆盖 Claude 的模型选择。</p>
       </section>`;
 }
 
-function claudeClientForm(suite) {
-  const options = suite.binding.claude || {};
-  return `<section class="suite-section">
-    <div class="suite-section-heading"><h2>Claude Code 模型选择</h2><p>设置模型别名和默认模型。上游改名在模型设置中配置。</p></div>
-    <form id="claude-client-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, suite.models.map(({ id }) => id)]))}">
-      ${claudeModelGroups(suite)}
+function claudeClientForm(cable) {
+  const options = cable.record.claude || {};
+  return `<section class="cable-section">
+    <div class="cable-section-heading"><h2>Claude Code 模型选择</h2><p>设置模型别名和默认模型。上游改名在模型设置中配置。</p></div>
+    <form id="claude-client-form" data-cable-context="${esc(JSON.stringify([cable.id, cable.models.map(({ id }) => id)]))}">
+      ${claudeModelGroups(cable)}
       <div class="form-actions">
-        ${checkboxField("在 /model 中发现此配置的模型", "discoverModels", options.discoverModels === true)}
+        ${checkboxField("在 /model 中发现此线路的模型", "discoverModels", options.discoverModels === true)}
       </div>
       <p class="field-hint">模型发现只列出已配置模型，不限制其他模型请求。Claude Code 可能过滤不含 claude 或 anthropic 的模型 ID。保存后需重新应用客户端配置。</p>
       <div class="form-actions"><button class="button" type="submit">保存模型选择</button></div>
@@ -1025,14 +1024,14 @@ function claudeClientForm(suite) {
   </section>`;
 }
 
-function renderSuiteCreate() {
+function renderCableCreate() {
   return `
     <button class="text-button" data-action="back-overview">返回列表</button>
-    <form id="suite-create-form" class="config-form panel">
+    <form id="cable-create-form" class="config-form panel">
       <section class="config-section" aria-labelledby="config-basics">
         <h2 id="config-basics">基本信息</h2>
         <div class="form-grid">
-          ${field("配置名称（可选）", "suiteName", "", "例如 my-relay；留空自动生成")}
+          ${field("线路名称（可选）", "cableName", "", "例如 my-relay；留空自动生成")}
           ${selectField("CLI", "target", state.createTarget, ["codex", "claude-code"])}
         </div>
       </section>
@@ -1061,7 +1060,7 @@ function renderSuiteCreate() {
       </section>
       <div class="config-form-footer">
         <button class="button" type="button" data-action="back-overview">取消</button>
-        <button class="button button-primary" type="submit">创建配置</button>
+        <button class="button button-primary" type="submit">创建线路</button>
       </div>
     </form>
   `;
@@ -1081,11 +1080,11 @@ function createModelRow(values = {}, target = state.createTarget) {
   `;
 }
 
-function suiteDefaults(target = "codex") {
+function cableDefaults(target = "codex") {
   const upstreamId = nextConfigId(state.candidate?.upstreams, "relay-main");
-  const bindingId = nextConfigId(state.candidate?.bindings, target === "claude-code" ? "claude-main" : "codex-main");
+  const cableId = nextConfigId(state.candidate?.cables, target === "claude-code" ? "claude-main" : "codex-main");
   const routeId = nextConfigId(state.candidate?.routes, `${upstreamId}-route`);
-  return { upstreamId, bindingId, routeId };
+  return { upstreamId, cableId, routeId };
 }
 
 function nextConfigId(record, base) {
@@ -1106,9 +1105,9 @@ function upstreamDisplayName(baseUrl, fallback) {
 
 function renderModels() {
   const selectedId = state.selected.model;
-  const suite = selectedSuite();
-  if (!suite) return `<div class="empty">请先选择配置</div>`;
-  const models = suite.virtualProvider.models || {};
+  const cable = selectedCable();
+  if (!cable) return `<div class="empty">请先选择配置</div>`;
+  const models = cable.virtualProvider.models || {};
   const selected = selectedId ? models[selectedId] : null;
   const mapping = selected || {};
   return `
@@ -1130,7 +1129,7 @@ function renderModels() {
       <div class="panel">
         <div class="panel-header"><h2>${selected ? esc(selectedId) : "新增模型"}</h2></div>
         <div class="panel-body">
-          <form id="model-form" data-suite-context="${esc(JSON.stringify([suite.bindingId, selectedId, suite.upstreamId]))}">
+          <form id="model-form" data-cable-context="${esc(JSON.stringify([cable.id, selectedId, cable.upstreamId]))}">
             <div class="form-grid">
               ${field("Client model ID", "clientModelId", selectedId || "", "客户端请求里的 model")}
               ${field("Aliases", "aliases", (selected?.aliases || []).join(", "), "son, codex-default")}
@@ -1140,7 +1139,7 @@ function renderModels() {
             <div class="subsection">
               <div class="subsection-header"><h3>上游模型映射</h3></div>
               <div class="form-grid">
-                <div class="field"><span>上游</span><span>${esc(suite.upstream?.name || suite.upstreamId)}</span></div>
+                <div class="field"><span>上游</span><span>${esc(cable.upstream?.name || cable.upstreamId)}</span></div>
                 ${field("上游模型 ID（可选）", "upstreamModelId", mapping.upstreamModelId || "", "留空使用请求中的模型名")}
                 ${field("能力覆盖", "capabilityOverrides", (mapping.capabilityOverrides || []).join(", "), "可留空")}
               </div>
@@ -2381,12 +2380,12 @@ function renderDiagnostics() {
 }
 
 function modelRow(id, item, active = false) {
-  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")}</p></div><span class="status-badge">当前配置</span></button>`;
+  return `<button class="list-row ${active ? "is-selected" : ""}" data-action="select-model" data-id="${esc(id)}"><div><h3>${esc(id)}</h3><p>${esc(id)} · ${(item.capabilities || []).join(" · ")}</p></div><span class="status-badge">当前线路</span></button>`;
 }
 
 function eventRow(event) {
   const details = [new Date(event.at).toLocaleString()];
-  const target = event.data?.upstreamId || event.data?.virtualProviderId || event.data?.bindingId;
+  const target = event.data?.upstreamId || event.data?.virtualProviderId || event.data?.cableId;
   if (target) details.push(target);
   if (event.data?.revision != null) details.push(`配置修订 ${event.data.revision}`);
   return `<div class="list-row"><div><h3>${esc(event.type)}</h3><p>${details.map(esc).join(" · ")}</p></div><span class="table-meta">${esc(event.id)}</span></div>`;
@@ -2457,16 +2456,16 @@ async function handleAction(action, element) {
     return;
   }
   if ([
-    "create-suite", "import-suites", "export-suites", "open-suite", "back-overview", "select-model",
+    "create-cable", "import-cables", "export-cables", "open-cable", "back-overview", "select-model",
     "new-model", "open-advanced-models",
   ].includes(action)) {
     if (!confirmPageLeave()) return;
   }
   const unlock = lockControls();
   try {
-    if (["import-suites", "export-suites"].includes(action)) {
+    if (["import-cables", "export-cables"].includes(action)) {
       state.transfer = { bundle: null, preview: null };
-      state.page = action === "import-suites" ? "suite-import" : "suite-export";
+      state.page = action === "import-cables" ? "cable-import" : "cable-export";
       render();
     } else if (action === "refresh") {
       await refresh();
@@ -2476,7 +2475,7 @@ async function handleAction(action, element) {
       pageContent.querySelectorAll("[data-official-model]").forEach((select) => {
         select.innerHTML = officialModelOptions(select.value);
         updateOfficialModelHint(select);
-        syncCodexMetadata(select.closest("[data-suite-model]"));
+        syncCodexMetadata(select.closest("[data-cable-model]"));
       });
       pageContent.querySelectorAll(".catalog-status").forEach((status) => {
         status.querySelector("span").textContent = state.codexCatalog.available ? `${state.codexCatalog.version} / ${state.codexCatalog.models.length} 个官方模型` : state.codexCatalog.error.message;
@@ -2485,28 +2484,28 @@ async function handleAction(action, element) {
     } else if (action === "reload-form") {
       if (!window.confirm("放弃此表单的本地修改并加载最新配置？")) return;
       render(captureEditedForms(element.closest("form")));
-    } else if (action === "create-suite") {
+    } else if (action === "create-cable") {
       state.createTarget = "codex";
-      state.selected.suite = null;
-      state.page = "suite-create";
+      state.selected.cable = null;
+      state.page = "cable-create";
       render();
-    } else if (action === "open-suite") {
-      selectSuite(element.dataset.id);
-      state.page = "suite-detail";
+    } else if (action === "open-cable") {
+      selectCable(element.dataset.id);
+      state.page = "cable-detail";
       render();
     } else if (action === "back-overview") {
       state.transfer = { bundle: null, preview: null };
       state.page = "overview";
       render();
-    } else if (action === "delete-suite") {
-      const suite = configurationSuites(state.config).find((item) => item.id === element.dataset.id);
-      if (!suite) throw new Error("配置不存在，请刷新列表。");
-      const clientHint = suite.target === "claude-code"
-        ? "如已应用到 Claude Code，请先撤销接入或切换其他配置；删除不会自动恢复客户端设置。"
-        : "如客户端仍在使用此配置，请先切换其他配置；删除不会自动恢复客户端设置。";
+    } else if (action === "delete-cable") {
+      const cable = configurationCables(state.config).find((item) => item.id === element.dataset.id);
+      if (!cable) throw new Error("线路不存在，请刷新列表。");
+      const clientHint = cable.target === "claude-code"
+        ? "如已应用到 Claude Code，请先撤销接入或切换其他线路；删除不会自动恢复客户端设置。"
+        : "如客户端仍在使用此线路，请先切换其他线路；删除不会自动恢复客户端设置。";
       const unsavedHint = hasUnsavedChanges() ? "\n当前未保存的修改也会丢失。" : "";
-      if (!window.confirm(`确定删除配置「${suite.name}」？删除后立即生效，该配置的本地地址将停止服务。\n${clientHint}${unsavedHint}`)) return;
-      await saveChanges(() => removeSuite(suite.id), undefined, "配置已删除并生效。");
+      if (!window.confirm(`确定删除线路「${cable.name}」？删除后立即生效，该线路的本地地址将停止服务。\n${clientHint}${unsavedHint}`)) return;
+      await saveChanges(() => removeCable(cable.id), undefined, "配置已删除并生效。");
     } else if (action === "select-model") {
       state.selected.model = element.dataset.id;
       state.page = "models";
@@ -2515,20 +2514,20 @@ async function handleAction(action, element) {
       state.selected.model = null;
       state.page = "models";
       render();
-    } else if (action === "add-suite-model") {
-      const list = pageContent.querySelector("#suite-model-list");
+    } else if (action === "add-cable-model") {
+      const list = pageContent.querySelector("#cable-model-list");
       if (!list) return;
       const wrapper = document.createElement("div");
-      const suite = selectedSuite();
-      const upstreamId = suite?.upstreamId || null;
-      wrapper.innerHTML = suiteModelEditor(suite || {}, "", {
-        ...(suite?.target === "codex" ? { codex: { metadataMode: "official" } } : suite?.target === "claude-code" ? {} : { capabilities: ["streaming", "tools", "reasoning"] }),
+      const cable = selectedCable();
+      const upstreamId = cable?.upstreamId || null;
+      wrapper.innerHTML = cableModelEditor(cable || {}, "", {
+        ...(cable?.target === "codex" ? { codex: { metadataMode: "official" } } : cable?.target === "claude-code" ? {} : { capabilities: ["streaming", "tools", "reasoning"] }),
       }, upstreamId);
       const row = wrapper.firstElementChild;
       list.querySelector(".empty")?.remove();
       list.appendChild(row);
-    } else if (action === "remove-suite-model") {
-      element.closest("[data-suite-model]")?.remove();
+    } else if (action === "remove-cable-model") {
+      element.closest("[data-cable-model]")?.remove();
     } else if (action === "add-create-model") {
       const list = pageContent.querySelector("#create-model-list");
       if (!list) return;
@@ -2553,15 +2552,15 @@ async function handleAction(action, element) {
       await applyTarget();
     } else if (action === "restore-target") {
       if (hasUnsavedChanges()) throw new Error("请先保存当前编辑，再撤销接入。");
-      const suite = selectedSuite();
-      if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
-      await api("/targets/restore", { method: "POST", body: JSON.stringify({ bindingId: suite.bindingId }) });
+      const cable = selectedCable();
+      if (cable?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+      await api("/targets/restore", { method: "POST", body: JSON.stringify({ cableId: cable.id }) });
       state.artifactPreview = null;
       toast("Claude Code 原接入配置已恢复，请重启客户端。");
       render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
-      state.selected.model = selectedSuite()?.modelIds?.[0] || null;
+      state.selected.model = selectedCable()?.modelIds?.[0] || null;
       render();
     }
   } catch (error) {
@@ -2634,8 +2633,8 @@ async function handleFormSubmit(event, form) {
   try {
     // Inputs named "id" shadow the form.id property in the browser.
     const formId = form.getAttribute("id");
-    if (formId === "suite-export-form") { await exportSuites(data); return; }
-    if (formId === "suite-import-form") { await importSuites(data); return; }
+    if (formId === "cable-export-form") { await exportCables(data); return; }
+    if (formId === "cable-import-form") { await importCables(data); return; }
     if (formId === "security-trace-search") {
       state.trace.search = String(data.get("search") || ""); render(); return;
     }
@@ -2660,9 +2659,9 @@ async function handleFormSubmit(event, form) {
     if (submitButton) submitButton.textContent = "保存中...";
     const handlers = {
       "audit-settings-form": () => saveAuditSettings(data),
-      "suite-create-form": () => saveSuiteCreate(data, form),
-      "suite-upstream-form": () => saveSuiteUpstream(data),
-      "suite-models-form": () => saveSuiteModels(form),
+      "cable-create-form": () => saveCableCreate(data, form),
+      "cable-upstream-form": () => saveCableUpstream(data),
+      "cable-models-form": () => saveCableModels(form),
       "claude-client-form": () => saveClaudeClient(data),
       "model-form": () => saveModel(data, form),
     };
@@ -2680,35 +2679,35 @@ async function handleFormSubmit(event, form) {
   }
 }
 
-function syncModelSelections(suite, renames, nextModels) {
+function syncModelSelections(cable, renames, nextModels) {
   const sync = (value, nativeAliases = []) => {
     if (nativeAliases.includes(value)) return value;
     if (renames.has(value)) return renames.get(value);
     if (Object.hasOwn(nextModels, value)) return value;
-    if (suite.target === "claude-code" || Object.hasOwn(suite.virtualProvider.models || {}, value)) return undefined;
+    if (cable.target === "claude-code" || Object.hasOwn(cable.virtualProvider.models || {}, value)) return undefined;
     return value;
   };
-  const defaults = suite.target === "claude-code" ? CLAUDE_MODEL_ALIASES.defaultModel : [];
-  const defaultModel = suite.target === "claude-code" ? sync(claudeDefaultModel(suite), defaults) : undefined;
-  suite.virtualProvider.defaultModel = suite.target === "claude-code" ? defaultModel : sync(suite.virtualProvider.defaultModel);
-  suite.binding.defaultModel = suite.target === "claude-code" ? defaultModel : sync(suite.binding.defaultModel);
-  if (suite.target === "claude-code" && suite.binding.claude) {
-    for (const [family, value] of entries(suite.binding.claude.models)) {
-      suite.binding.claude.models[family] = sync(value, family === "subagent" ? CLAUDE_MODEL_ALIASES.subagent : []);
+  const defaults = cable.target === "claude-code" ? CLAUDE_MODEL_ALIASES.defaultModel : [];
+  const defaultModel = cable.target === "claude-code" ? sync(claudeDefaultModel(cable), defaults) : undefined;
+  cable.virtualProvider.defaultModel = cable.target === "claude-code" ? defaultModel : sync(cable.virtualProvider.defaultModel);
+  cable.record.defaultModel = cable.target === "claude-code" ? defaultModel : sync(cable.record.defaultModel);
+  if (cable.target === "claude-code" && cable.record.claude) {
+    for (const [family, value] of entries(cable.record.claude.models)) {
+      cable.record.claude.models[family] = sync(value, family === "subagent" ? CLAUDE_MODEL_ALIASES.subagent : []);
     }
-    suite.binding.claude.setModel = Boolean(suite.binding.defaultModel || suite.virtualProvider.defaultModel);
+    cable.record.claude.setModel = Boolean(cable.record.defaultModel || cable.virtualProvider.defaultModel);
   }
 }
 
-function removeSuite(id) {
+function removeCable(id) {
   const config = state.candidate;
-  if (!Object.hasOwn(config.bindings, id)) throw new Error("配置不存在，请刷新列表。");
-  const providerId = config.bindings[id].virtualProvider;
+  if (!Object.hasOwn(config.cables, id)) throw new Error("线路不存在，请刷新列表。");
+  const providerId = config.cables[id].virtualProvider;
   const routeId = config.virtualProviders[providerId]?.route;
-  delete config.bindings[id];
+  delete config.cables[id];
 
   // Only remove this configuration's dependencies when no remaining record uses them.
-  if (!values(config.bindings).some((binding) => binding.virtualProvider === providerId)) {
+  if (!values(config.cables).some((record) => record.virtualProvider === providerId)) {
     delete config.virtualProviders[providerId];
     if (routeId && !values(config.virtualProviders).some((provider) => provider.route === routeId)) {
       const upstreamIds = (config.routes[routeId]?.backends || []).map((backend) => backend.upstream);
@@ -2721,34 +2720,34 @@ function removeSuite(id) {
     }
   }
 
-  if (!state.selected.suite || !Object.hasOwn(config.bindings, state.selected.suite)) {
-    state.selected = { suite: null, virtualProvider: null, model: null };
-    selectSuite(firstKey(config.bindings));
+  if (!state.selected.cable || !Object.hasOwn(config.cables, state.selected.cable)) {
+    state.selected = { cable: null, virtualProvider: null, model: null };
+    selectCable(firstKey(config.cables));
   }
   state.page = "overview";
 }
 
 function removeModel(id) {
-  const suite = selectedSuite();
-  const models = { ...suite.virtualProvider.models };
+  const cable = selectedCable();
+  const models = { ...cable.virtualProvider.models };
   delete models[id];
-  syncModelSelections(suite, new Map(), models);
-  suite.virtualProvider.models = models;
+  syncModelSelections(cable, new Map(), models);
+  cable.virtualProvider.models = models;
   state.selected.model = firstKey(models);
 }
 
-function saveSuiteModels(form) {
-  const suite = selectedSuite();
-  if (!suite) throw new Error("找不到当前配置套装");
-  const modelRows = [...form.querySelectorAll("[data-suite-model]")];
+function saveCableModels(form) {
+  const cable = selectedCable();
+  if (!cable) throw new Error("找不到当前线路");
+  const modelRows = [...form.querySelectorAll("[data-cable-model]")];
 
-  const upstreamId = suite.upstreamId;
+  const upstreamId = cable.upstreamId;
   if (!upstreamId || !state.candidate.upstreams[upstreamId]) {
-    throw new Error("当前配置套装没有可用的上游");
+    throw new Error("当前线路没有可用的上游");
   }
 
   const clientModelIds = modelRows.map(
-    (row) => row.querySelector("[data-suite-model-client]")?.value.trim() || "",
+    (row) => row.querySelector("[data-cable-model-client]")?.value.trim() || "",
   );
   if (clientModelIds.some((id) => !id)) throw new Error("每个模型都必须填写客户端模型 ID");
   if (new Set(clientModelIds).size !== clientModelIds.length) {
@@ -2759,45 +2758,45 @@ function saveSuiteModels(form) {
   const nextModels = Object.create(null);
   for (const row of modelRows) {
     const oldId = row.dataset.modelId || "";
-    const existing = suite.virtualProvider.models?.[oldId] || {};
-    const clientModelId = row.querySelector("[data-suite-model-client]").value.trim();
+    const existing = cable.virtualProvider.models?.[oldId] || {};
+    const clientModelId = row.querySelector("[data-cable-model-client]").value.trim();
     if (oldId) renames.set(oldId, clientModelId);
 
     const upstreamInput = row.querySelector(
-      `[data-suite-model-upstream="${CSS.escape(upstreamId)}"]`,
+      `[data-cable-model-upstream="${CSS.escape(upstreamId)}"]`,
     );
     const capabilityInput = row.querySelector(
-      `[data-suite-model-capabilities="${CSS.escape(upstreamId)}"]`,
+      `[data-cable-model-capabilities="${CSS.escape(upstreamId)}"]`,
     );
     const upstreamModelId = upstreamInput?.value.trim() || "";
     const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.capabilityOverrides || [];
     const capabilities = commaList(
-      row.querySelector("[data-suite-model-capabilities-common]")?.value,
+      row.querySelector("[data-cable-model-capabilities-common]")?.value,
     );
-    const aliasInput = row.querySelector("[data-suite-model-aliases]");
+    const aliasInput = row.querySelector("[data-cable-model-aliases]");
     nextModels[clientModelId] = {
       ...existing,
       ...(aliasInput ? { aliases: commaList(aliasInput.value) } : {}),
-      family: existing.family || (suite.target === "claude-code" ? "claude" : "codex"),
-      ...(suite.target === "claude-code" ? {
+      family: existing.family || (cable.target === "claude-code" ? "claude" : "codex"),
+      ...(cable.target === "claude-code" ? {
         description: undefined,
       } : { capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"] }),
-      ...(suite.target === "codex" ? codexModelFields(clientModelId, existing, row) : {}),
+      ...(cable.target === "codex" ? codexModelFields(clientModelId, existing, row) : {}),
       upstreamModelId: upstreamModelId || undefined,
       capabilityOverrides: capabilityOverrides.length ? capabilityOverrides : undefined,
     };
   }
 
-  syncModelSelections(suite, renames, nextModels);
-  suite.virtualProvider.models = nextModels;
-  selectSuite(suite.bindingId);
+  syncModelSelections(cable, renames, nextModels);
+  cable.virtualProvider.models = nextModels;
+  selectCable(cable.id);
 
 }
 
 function saveClaudeClient(data) {
-  const suite = selectedSuite();
-  if (suite?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
-  const clientIds = suite.models.map(({ id }) => id);
+  const cable = selectedCable();
+  if (cable?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+  const clientIds = cable.models.map(({ id }) => id);
   const defaultModel = claudeModelChoice("defaultModel", clientIds, data.get("defaultModel"));
   const models = Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"].map((family) =>
     [family, String(data.get(family) || "").trim()]).filter(([, value]) => value));
@@ -2806,24 +2805,24 @@ function saveClaudeClient(data) {
   else delete models.subagent;
   const ids = new Set(clientIds);
   for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-    const previous = suite.binding.claude?.models?.[family];
+    const previous = cable.record.claude?.models?.[family];
     if (data.get(family) == null && previous && !ids.has(previous)) throw new Error(`${family} 别名指向未配置的模型，请重新选择`);
-    if (models[family] && !ids.has(models[family])) throw new Error(`${family} 别名请选择当前配置中已保存的客户端模型 ID`);
+    if (models[family] && !ids.has(models[family])) throw new Error(`${family} 别名请选择当前线路中已保存的客户端模型 ID`);
   }
-  suite.binding.defaultModel = defaultModel || undefined;
-  suite.virtualProvider.defaultModel = defaultModel || undefined;
-  suite.binding.claude = { ...suite.binding.claude, setModel: Boolean(defaultModel), models, discoverModels: data.get("discoverModels") === "on" };
+  cable.record.defaultModel = defaultModel || undefined;
+  cable.virtualProvider.defaultModel = defaultModel || undefined;
+  cable.record.claude = { ...cable.record.claude, setModel: Boolean(defaultModel), models, discoverModels: data.get("discoverModels") === "on" };
 }
 
-function saveSuiteCreate(data, form) {
+function saveCableCreate(data, form) {
   const upstreamBaseUrl = String(data.get("upstreamBaseUrl") || "").trim();
   const upstreamSecret = String(data.get("upstreamSecret") || "").trim();
   const target = String(data.get("target") || "codex").trim();
   if (!["codex", "claude-code"].includes(target)) throw new Error("请选择 Codex 或 Claude Code");
-  const defaults = suiteDefaults(target);
+  const defaults = cableDefaults(target);
   const isClaude = target === "claude-code";
   const protocol = isClaude ? "anthropic.messages" : "openai.responses";
-  const suiteName = String(data.get("suiteName") || "").trim();
+  const cableName = String(data.get("cableName") || "").trim();
   const modelEntries = [...form.querySelectorAll("[data-create-model]")].map((row) => {
     const read = (key) =>
       row.querySelector(`[data-create-field="${CSS.escape(key)}"]`)?.value.trim() || "";
@@ -2860,11 +2859,11 @@ function saveSuiteCreate(data, form) {
   const upstreamId = defaults.upstreamId;
   const upstreamName = upstreamDisplayName(upstreamBaseUrl, upstreamId);
   const routeId = defaults.routeId;
-  const name = suiteName || `${targetLabel(target)} / ${upstreamName}`;
-  const bindingId = configurationId(name, defaults.bindingId);
-  const virtualProviderId = providerIdForConfiguration(bindingId);
-  if (Object.hasOwn(state.candidate.bindings, bindingId) || Object.hasOwn(state.candidate.virtualProviders, virtualProviderId)) {
-    throw new Error(`配置名称对应的 ID 已存在: ${bindingId}，请使用不同的配置名称`);
+  const name = cableName || `${targetLabel(target)} / ${upstreamName}`;
+  const cableId = configurationId(name, defaults.cableId);
+  const virtualProviderId = providerIdForConfiguration(cableId);
+  if (Object.hasOwn(state.candidate.cables, cableId) || Object.hasOwn(state.candidate.virtualProviders, virtualProviderId)) {
+    throw new Error(`线路名称对应的 ID 已存在: ${cableId}，请使用不同的线路名称`);
   }
   const models = Object.fromEntries(modelEntries.map((model) => [model.clientModelId, {
     family: isClaude ? "claude" : "codex",
@@ -2901,8 +2900,8 @@ function saveSuiteCreate(data, form) {
     ...(defaultModel ? { defaultModel } : {}),
     enabled: true,
   };
-  state.candidate.bindings[bindingId] = {
-    id: bindingId,
+  state.candidate.cables[cableId] = {
+    id: cableId,
     name,
     target,
     ...(isClaude ? {} : { integration: "codex-native-provider" }),
@@ -2922,12 +2921,12 @@ function saveSuiteCreate(data, form) {
 
   state.selected.model = modelIds[0] || null;
   state.selected.virtualProvider = virtualProviderId;
-  state.selected.suite = bindingId;
-  state.page = "suite-detail";
+  state.selected.cable = cableId;
+  state.page = "cable-detail";
 
 }
 
-function saveSuiteUpstream(data) {
+function saveCableUpstream(data) {
   const id = String(data.get("id") || "").trim();
   if (!id) throw new Error("upstream ID 不能为空");
   const existing = state.candidate.upstreams[id] || {};
@@ -2958,16 +2957,16 @@ function saveSuiteUpstream(data) {
   if (secret) {
     state.pendingSecrets.upstreamSecrets[id] = secret;
   }
-  state.page = "suite-detail";
+  state.page = "cable-detail";
 }
 
 function saveModel(data, form) {
-  const suite = selectedSuite();
-  if (!suite) throw new Error("找不到当前配置");
+  const cable = selectedCable();
+  if (!cable) throw new Error("找不到当前线路");
   const oldName = state.selected.model;
   const name = String(data.get("clientModelId") || "").trim();
   if (!name) throw new Error("客户端模型 ID 不能为空");
-  const models = { ...suite.virtualProvider.models };
+  const models = { ...cable.virtualProvider.models };
   if (name !== oldName && Object.hasOwn(models, name)) throw new Error("客户端模型 ID 不能重复");
   const existing = oldName && Object.hasOwn(models, oldName) ? models[oldName] : {};
   if (oldName) delete models[oldName];
@@ -2979,8 +2978,8 @@ function saveModel(data, form) {
     upstreamModelId: String(data.get("upstreamModelId") || "").trim() || undefined,
     capabilityOverrides: commaList(data.get("capabilityOverrides")),
   } });
-  syncModelSelections(suite, new Map(oldName ? [[oldName, name]] : []), models);
-  suite.virtualProvider.models = models;
+  syncModelSelections(cable, new Map(oldName ? [[oldName, name]] : []), models);
+  cable.virtualProvider.models = models;
   state.selected.model = name;
 }
 
@@ -3032,7 +3031,7 @@ async function previewArtifacts() {
     method: "POST",
     body: JSON.stringify({
       config: state.config,
-      bindingId: state.selected.suite,
+      cableId: state.selected.cable,
     }),
   });
   state.artifactPreview = result.artifacts;
@@ -3045,24 +3044,24 @@ async function applyTarget() {
   if (hasUnsavedChanges()) {
     throw new Error("请先保存当前编辑，再应用到 CLI。");
   }
-  const suite = selectedSuite();
-  if (!suite) throw new Error("请先选择一个配置套装。");
-  const binding = suite.binding;
-  if (!["codex", "claude-code"].includes(binding?.target)) {
+  const cable = selectedCable();
+  if (!cable) throw new Error("请先选择一条线路。");
+  const record = cable.record;
+  if (!["codex", "claude-code"].includes(record?.target)) {
     await previewArtifacts();
     return;
   }
   const result = await api("/targets/apply", {
     method: "POST",
-    body: JSON.stringify({ bindingId: suite.bindingId }),
+    body: JSON.stringify({ cableId: cable.id }),
   });
   state.artifactPreview = result.report ? {
     ...result.report,
     target: result.target,
-    bindingId: suite.bindingId,
+    cableId: cable.id,
     mode: result.report.mode || "managed_proxy",
   } : null;
-  toast(`${targetLabel(binding.target)} 配置已应用，请重启客户端。`);
+  toast(`${targetLabel(record.target)} 配置已应用，请重启客户端。`);
   render();
 }
 
@@ -3078,7 +3077,7 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
   try {
     update();
     const identities = normalizeConfigurationIdentities(state.candidate);
-    state.selected.suite = identities.bindingIds.get(state.selected.suite) ?? state.selected.suite;
+    state.selected.cable = identities.cableIds.get(state.selected.cable) ?? state.selected.cable;
     state.selected.virtualProvider = identities.providerIds.get(state.selected.virtualProvider) ?? state.selected.virtualProvider;
     // The commit endpoint validates and applies the change atomically.
     const result = await api("/config/commit", {

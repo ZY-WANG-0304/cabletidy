@@ -43,7 +43,7 @@ function claudeConfig() {
         defaultModel: "claude-sonnet",
       },
     },
-    bindings: {
+    cables: {
       "claude-main": {
         id: "claude-main",
         target: "claude-code",
@@ -59,7 +59,7 @@ function claudeConfig() {
 test("Claude Code uses a public client placeholder instead of a local secret", () => {
   const artifacts = buildTargetArtifacts(
     claudeConfig(),
-    { bindingId: "claude-main" },
+    { cableId: "claude-main" },
     { "secret://virtual-providers/claude-main": "local-secret-value" },
   );
   assert.equal(artifacts.environment.vars.ANTHROPIC_BASE_URL, "http://127.0.0.1:43100/claude-main");
@@ -76,8 +76,8 @@ test("Claude Code uses a public client placeholder instead of a local secret", (
 
 test("generic CLI environments need only a local URL and model", () => {
   const config = claudeConfig();
-  config.bindings["claude-main"].target = "generic-env";
-  const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" }, {
+  config.cables["claude-main"].target = "generic-env";
+  const artifacts = buildTargetArtifacts(config, { cableId: "claude-main" }, {
     "secret://virtual-providers/claude-main": "legacy-local-key",
   });
   assert.deepEqual(artifacts.environment.vars, {
@@ -99,11 +99,11 @@ test("Claude startup aliases remain literal when they collide with client names 
         "claude-custom-sonnet": { upstreamModelId: "custom-sonnet" },
       };
       provider.defaultModel = alias;
-      config.bindings["claude-main"].claude.models = { sonnet: "claude-custom-sonnet", subagent: "sonnet" };
+      config.cables["claude-main"].claude.models = { sonnet: "claude-custom-sonnet", subagent: "sonnet" };
       assert.equal(validateConfig(config).ok, true);
-      for (const bindingDefault of [undefined, alias]) {
-        config.bindings["claude-main"].defaultModel = bindingDefault;
-        const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+      for (const cableDefault of [undefined, alias]) {
+        config.cables["claude-main"].defaultModel = cableDefault;
+        const artifacts = buildTargetArtifacts(config, { cableId: "claude-main" });
         assert.equal(artifacts.clientModelId, alias);
         assert.equal(artifacts.environment.vars.ANTHROPIC_MODEL, alias);
         assert.equal(artifacts.environment.vars.ANTHROPIC_DEFAULT_SONNET_MODEL, "claude-custom-sonnet");
@@ -119,12 +119,12 @@ test("passthrough leaves Claude and generic CLI model selection to the client", 
     const config = claudeConfig();
     config.virtualProviders["cabletidy_claude-main"].models = {};
     delete config.virtualProviders["cabletidy_claude-main"].defaultModel;
-    delete config.bindings["claude-main"].defaultModel;
-    config.bindings["claude-main"].target = target;
-    const artifacts = buildTargetArtifacts(config, { bindingId: "claude-main" });
+    delete config.cables["claude-main"].defaultModel;
+    config.cables["claude-main"].target = target;
+    const artifacts = buildTargetArtifacts(config, { cableId: "claude-main" });
     assert.equal(artifacts.clientModelId, null);
     assert.equal(Object.keys(artifacts.environment.vars).some(key => key.endsWith("_MODEL")), false);
-    config.bindings["claude-main"].defaultModel = "unconfigured-model";
-    assert.equal(buildTargetArtifacts(config, { bindingId: "claude-main" }).clientModelId, "unconfigured-model");
+    config.cables["claude-main"].defaultModel = "unconfigured-model";
+    assert.equal(buildTargetArtifacts(config, { cableId: "claude-main" }).clientModelId, "unconfigured-model");
   }
 });

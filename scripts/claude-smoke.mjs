@@ -61,14 +61,14 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
   config.virtualProviders["cabletidy_claude-main"].models["claude-custom-sonnet"] = {
     ...config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"], upstreamModelId: "vendor-custom-sonnet",
   };
-  config.bindings["claude-main"].defaultModel = "sonnet";
-  config.bindings["claude-main"].claude = { setModel: true, models: { sonnet: "claude-custom-sonnet" } };
+  config.cables["claude-main"].defaultModel = "sonnet";
+  config.cables["claude-main"].claude = { setModel: true, models: { sonnet: "claude-custom-sonnet" } };
   const post = async (route, body) => {
     const response = await fetch(`${app.url}api/v1/${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     assert.equal(response.status, 200, await response.text());
   };
   await post("config/commit", { baseRevision: 0, config, upstreamSecrets: { relay: "smoke-upstream-key" } });
-  await post("targets/apply", { bindingId: "claude-main" });
+  await post("targets/apply", { cableId: "claude-main" });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(ANTHROPIC_|CLAUDE|AWS_|GOOGLE_|VERTEX_|CLOUD_ML_)/i.test(key)));
   Object.assign(env, { CLAUDE_CONFIG_DIR: claudeHome, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_USE_BEDROCK: "1", NO_PROXY: "127.0.0.1,localhost,::1", no_proxy: "127.0.0.1,localhost,::1" });
@@ -80,9 +80,9 @@ test("installed Claude CLI uses applied and standalone CableTidy settings with a
   for (const mode of ["applied", "standalone"]) {
     const extra = [];
     if (mode === "standalone") {
-      await post("targets/restore", { bindingId: "claude-main" });
+      await post("targets/restore", { cableId: "claude-main" });
       const file = path.join(home, "standalone.json");
-      await fs.writeFile(file, buildTargetArtifacts(config, { bindingId: "claude-main" }).files[0].contents);
+      await fs.writeFile(file, buildTargetArtifacts(config, { cableId: "claude-main" }).files[0].contents);
       extra.push("--settings", file);
     }
     for (const selection of ["explicit", "startup-alias"]) {
