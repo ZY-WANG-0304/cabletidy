@@ -1317,16 +1317,25 @@ fn worker(
                 let _ = done.send(());
             }
             Job::Query(query, done) => {
+                // Maintenance contends with concurrent readers for file locks, and
+                // Windows surfaces that contention as an error rather than a busy
+                // retry. Deferring it to the next job keeps a transient lock from
+                // failing the read or discarding an otherwise healthy connection.
+                let mut deferred = false;
                 let result = db
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("audit_unavailable"))
                     .and_then(|db| {
-                        maintain(db, settings)?;
+                        deferred = maintain(db, settings).is_err();
                         read(db, query)
                     });
                 update_health(&health, &path, result.is_ok(), "audit_read_failed");
                 if result.is_err() {
                     db = None;
+                } else if deferred {
+                    let mut h = health.lock().unwrap();
+                    h["deferredMaintenance"] =
+                        json!(h["deferredMaintenance"].as_u64().unwrap_or(0) + 1);
                 }
                 let _ = done.send(result);
             }
@@ -3098,5 +3107,50 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_maintenance_keeps_reads_available_without_dropping_the_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let settings = AuditSettings {
+            retention_days: Some(7),
+            budget_bytes: Some(1024 * 1024),
+        };
+        let store = Store::start(dir.path(), settings);
+        store.flush().await;
+        store.write(record("visible", "completed"));
+        store.flush().await;
+        // An exclusive writer blocks checkpoint and vacuum the way Windows file
+        // locking does, while plain reads still succeed.
+        let blocker = Connection::open(&path).unwrap();
+        blocker.busy_timeout(Duration::from_millis(0)).unwrap();
+        blocker
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO audit(id,at,kind,provider,outcome,inspection,severity,data) VALUES('blocker',0,'request','p','completed','skipped','informational','{}');")
+            .unwrap();
+        for _ in 0..3 {
+            let value = store
+                .query(Query {
+                    detail: Some("visible".into()),
+                    ..Query::default()
+                })
+                .await
+                .expect("reads stay available while maintenance is blocked");
+            assert_eq!(value["record"]["id"], "visible");
+        }
+        assert_eq!(store.status()["state"], "ready");
+        assert_eq!(store.status()["lastError"], Value::Null);
+        blocker.execute_batch("ROLLBACK").unwrap();
+        // Maintenance resumes once the lock is gone.
+        store.flush().await;
+        assert_eq!(store.status()["state"], "ready");
+        assert!(!store
+            .query(Query {
+                detail: Some("visible".into()),
+                ..Query::default()
+            })
+            .await
+            .unwrap()
+            .is_null());
     }
 }
