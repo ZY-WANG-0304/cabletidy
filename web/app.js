@@ -13,6 +13,9 @@ let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
 let renderedTraceTab = null;
+let navigationIndex = window.history.state?.navigationIndex || 0;
+let navigationUrl = window.location.href;
+let restoringNavigation = false;
 const securityEvidenceCache = new WeakMap();
 
 // Explicit product guidance; catalog visibility does not indicate authorization.
@@ -33,6 +36,7 @@ const PAGE_META = {
   "suite-detail": "配置详情",
   models: "模型管理",
   diagnostics: "诊断",
+  settings: "设置",
   security: "审计记录",
   "security-detail": "审计详情",
   "security-session": "会话轨迹",
@@ -133,6 +137,7 @@ async function bootstrap() {
     state.selected.model = selectedSuite()?.modelIds[0] || null;
     railStatus.textContent = "服务运行中";
     railStatus.parentElement.classList.remove("is-offline");
+    if (window.location.hash === "#settings") state.page = "settings";
     render();
     if (window.location.hash.startsWith("#security")) await restoreSecurityNavigation();
   } catch (error) {
@@ -160,7 +165,7 @@ function render(preservedForms = []) {
     : pageMeta();
   versionLabel.textContent = state.runtime?.version ? `v${state.runtime.version}` : "版本未知";
   document.querySelectorAll(".nav-item").forEach((item) => {
-    const active = item.dataset.page === (state.page.startsWith("security") ? "security" : state.page === "diagnostics" ? "diagnostics" : "overview");
+    const active = item.dataset.page === (state.page.startsWith("security") ? "security" : ["diagnostics", "settings"].includes(state.page) ? state.page : "overview");
     item.classList.toggle("is-active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
@@ -172,6 +177,7 @@ function render(preservedForms = []) {
     "suite-detail": renderSuiteDetail,
     models: renderModels,
     diagnostics: renderDiagnostics,
+    settings: renderSettings,
     security: renderSecurity,
     "security-detail": renderSecurityDetailPage,
     "security-session": renderSecuritySession,
@@ -210,6 +216,8 @@ function render(preservedForms = []) {
       showFormError(form, new Error("配置项已在其他窗口删除。"));
     }
   }
+  const settingsForm = pageContent.querySelector("#audit-settings-form");
+  if (settingsForm) syncAuditSettingsForm(settingsForm);
 }
 
 function fieldSnapshot(control) {
@@ -267,6 +275,21 @@ function mergeFormFields(base, local, remote) {
   return merged;
 }
 
+function mergeAuditSettingsFields(base, local, remote) {
+  const merged = [];
+  for (const names of [["retentionDays", "retentionUnlimited"], ["budgetMiB", "storageUnlimited"]]) {
+    const groups = [base, local, remote].map(fields => fields.filter(field => names.includes(field[0])));
+    const value = fields => fields.find(field => field[0] === names[1])[4]
+      ? null : Number(fields.find(field => field[0] === names[0])[4]);
+    const [before, ours, theirs] = groups.map(value);
+    // Each number and its unlimited checkbox represent one configuration value.
+    if (Object.is(ours, before)) merged.push(...groups[2]);
+    else if (Object.is(theirs, before) || Object.is(ours, theirs)) merged.push(...groups[1]);
+    else return null;
+  }
+  return merged;
+}
+
 function restoreFormChanges(form, replacement) {
   const baseline = formBaselines.get(form);
   const latest = formBaselines.get(replacement);
@@ -285,8 +308,9 @@ function restoreFormChanges(form, replacement) {
   const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
   const sameStructure = baseline !== undefined && (suiteModels
     || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
+  const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields : mergeFormFields;
   const merged = sameContext && sameStructure
-    ? mergeFormFields(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
+    ? merge(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
   const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
     .map((control) => [fieldKey(fieldSnapshot(control)), control]));
   if (!merged || merged.some((field) => !controls.has(fieldKey(field)))) {
@@ -339,13 +363,18 @@ function confirmPageLeave() {
   return !hasUnsavedChanges() || window.confirm("有未保存的修改，确定放弃并离开？");
 }
 
+function pushNavigation(navigation, url) {
+  window.history.pushState({ ...navigation, navigationIndex: ++navigationIndex }, "", url);
+  navigationUrl = window.location.href;
+}
+
 function navigatePage(page) {
   if (state.busy || !state.config || page === state.page || !confirmPageLeave()) return;
   if (page === "security" && state.page.startsWith("security-")) { returnSecurityList(); return; }
   if (state.page === "security") saveSecurityList();
-  if (page === "security" || state.page.startsWith("security")) {
+  if (["security", "settings"].includes(page) || state.page.startsWith("security") || state.page === "settings") {
     window.history.replaceState({ ...window.history.state, page: state.page }, "");
-    window.history.pushState({ page, ...(page === "security" ? { list: securityListState() } : {}) }, "", page === "security" ? "#security" : window.location.pathname + window.location.search);
+    pushNavigation({ page, ...(page === "security" ? { list: securityListState() } : {}) }, ["security", "settings"].includes(page) ? `#${page}` : window.location.pathname + window.location.search);
   }
   state.security.detailSequence++;
   state.security.bodySequence = (state.security.bodySequence || 0) + 1;
@@ -355,7 +384,27 @@ function navigatePage(page) {
 }
 
 window.history.scrollRestoration = "manual";
-window.addEventListener("popstate", () => state.config ? restoreSecurityNavigation() : undefined);
+window.history.replaceState({ ...window.history.state, navigationIndex }, "");
+window.addEventListener("popstate", event => {
+  if (!state.config) return;
+  if (restoringNavigation) { restoringNavigation = false; return; }
+  const nextIndex = event.state?.navigationIndex || 0;
+  if (state.busy || !confirmPageLeave()) {
+    // popstate fires after the URL changes. Return to the current entry on cancel.
+    const offset = navigationIndex - nextIndex;
+    if (offset) {
+      restoringNavigation = true;
+      window.history.go(offset);
+    } else {
+      // Entries from an older app may lack an index; go(0) would reload the draft.
+      pushNavigation({ page: state.page }, navigationUrl);
+    }
+    return;
+  }
+  navigationIndex = nextIndex;
+  navigationUrl = window.location.href;
+  return restoreSecurityNavigation();
+});
 
 pageContent.addEventListener("click", (event) => {
   const element = event.target.closest("[data-action], [data-page]");
@@ -680,6 +729,9 @@ function syncCodexMetadata(row, resetOverrides = false) {
 }
 
 pageContent.addEventListener("change", (event) => {
+  if (event.target.matches('#audit-settings-form input[type="checkbox"]')) {
+    syncAuditSettingsForm(event.target.closest("form"));
+  }
   if (event.target.matches('#suite-create-form [name="target"]')) {
     state.createTarget = event.target.value;
     const form = event.target.closest("form");
@@ -729,6 +781,9 @@ pageContent.addEventListener("toggle", (event) => {
 }, true);
 
 pageContent.addEventListener("input", (event) => {
+  if (event.target.matches("#audit-settings-form input")) {
+    syncAuditSettingsForm(event.target.closest("form"));
+  }
   if (event.target.matches('#suite-create-form [data-create-field="clientModelId"]')) {
     syncClaudeCreateModels(event.target.closest("form"));
   }
@@ -1118,7 +1173,7 @@ function securityListState() {
 
 function saveSecurityList() {
   state.security.listScroll = { x: window.scrollX, y: window.scrollY };
-  window.history.replaceState({ page: "security", list: securityListState() }, "", "#security");
+  window.history.replaceState({ ...window.history.state, page: "security", list: securityListState() }, "", "#security");
 }
 
 async function showSecurityList(list = securityListState()) {
@@ -1136,7 +1191,7 @@ async function showSecurityList(list = securityListState()) {
 
 async function returnSecurityList() {
   if (window.history.state?.returnToSecurityList) { window.history.back(); return; }
-  window.history.pushState({ page: "security", list: securityListState() }, "", "#security");
+  pushNavigation({ page: "security", list: securityListState() }, "#security");
   await showSecurityList();
 }
 
@@ -1153,7 +1208,8 @@ async function restoreSecurityNavigation() {
   if (match) { await loadSecurityDetail(decodeURIComponent(match[1])); return; }
   if (window.location.hash === "#security") { await showSecurityList(); return; }
   state.security.detailSequence++; state.security.bodySequence = (state.security.bodySequence || 0) + 1;
-  state.page = PAGE_META[navigation?.page] && !navigation.page.startsWith("security") ? navigation.page : "overview";
+  state.page = window.location.hash === "#settings" ? "settings"
+    : PAGE_META[navigation?.page] && !navigation.page.startsWith("security") ? navigation.page : "overview";
   render();
 }
 
@@ -1206,7 +1262,7 @@ function renderSecurity() {
     </div>
     <div class="notice ${ready ? "" : "warning"}" role="status">
       ${ready ? "审计存储正常" : storage?.state === "degraded" ? "审计有记录缺口" : "审计存储尚未就绪或暂不可用"}
-      <span class="muted">最近写入：${esc(securityTime(storage?.lastWrittenAt))} · 保留 ${esc(storage?.retentionDays || 30)} 天 · ${esc(((storage?.bytes || 0) / 1048576).toFixed(1))} MiB</span>
+      <span class="muted">最近写入：${esc(securityTime(storage?.lastWrittenAt))} · ${auditRetentionLabel(storage?.retentionDays === undefined ? state.config.audit.retentionDays : storage.retentionDays)} · 已用 ${esc(((storage?.bytes || 0) / 1048576).toFixed(1))} MiB · ${auditStorageLabel(storage?.budgetBytes === undefined ? state.config.audit.budgetBytes : storage.budgetBytes)}</span>
       ${(storage?.droppedWrites || storage?.failedWrites) ? `<p>本次运行丢弃 ${esc(storage.droppedWrites || 0)} 次写入，失败 ${esc(storage.failedWrites || 0)} 次；代理继续运行，记录可能不完整。</p>` : ""}
     </div>
     ${s.error ? `<div class="notice warning" role="alert">${esc(s.error)}<p class="muted">最近成功读取：${esc(securityTime(s.updatedAt))}</p></div>` : ""}
@@ -2097,7 +2153,7 @@ async function securityAction(action, element) {
   const t = state.trace;
   if (action === "security-session") {
     saveSecurityList();
-    window.history.pushState({ page: "security-session", list: securityListState(), returnToSecurityList: true }, "", `#security/session/${encodeURIComponent(element.dataset.id)}`);
+    pushNavigation({ page: "security-session", list: securityListState(), returnToSecurityList: true }, `#security/session/${encodeURIComponent(element.dataset.id)}`);
     await loadSecuritySession(element.dataset.id); return;
   }
   if (action === "security-session-refresh") { await loadSecuritySession(t.id, false); return; }
@@ -2146,7 +2202,7 @@ async function securityAction(action, element) {
   if (action === "security-detail") {
     const fromList = state.page === "security";
     if (fromList) saveSecurityList();
-    window.history.pushState({ page: "security-detail", list: securityListState(), returnToSecurityList: fromList }, "", `#security/audit/${encodeURIComponent(element.dataset.id)}`);
+    pushNavigation({ page: "security-detail", list: securityListState(), returnToSecurityList: fromList }, `#security/audit/${encodeURIComponent(element.dataset.id)}`);
     await loadSecurityDetail(element.dataset.id);
     return;
   }
@@ -2210,6 +2266,70 @@ async function securityAction(action, element) {
     s.history.push(s.cursor); s.cursor = s.result.nextCursor;
   } else if (action === "security-prev" && s.history.length) { s.cursor = s.history.pop(); }
   await loadSecurity();
+}
+
+function auditRetentionLabel(days) {
+  return days == null ? "保存周期不设上限" : `保留 ${esc(days)} 天`;
+}
+
+function auditStorageLabel(bytes) {
+  return bytes == null ? "存储不设上限" : `存储上限 ${esc(bytes / 1048576)} MiB`;
+}
+
+const MIN_AUDIT_BUDGET_MIB = 16;
+
+function renderSettings() {
+  const audit = state.config.audit;
+  const storage = state.runtime?.security?.storage;
+  return `<div class="settings-page">
+    <section class="panel" aria-labelledby="audit-settings-title">
+      <div class="panel-header"><h2 id="audit-settings-title">审计记录</h2>${storage ? `<span class="muted">已用 ${esc(((storage.bytes || 0) / 1048576).toFixed(1))} MiB</span>` : ""}</div>
+      <form id="audit-settings-form">
+        <div class="settings-row">
+          <label for="audit-retention">保存周期</label>
+          <div class="settings-control">
+            <div class="settings-value"><input id="audit-retention" name="retentionDays" aria-label="保存周期（天）" type="number" min="1" max="9007199254740991" step="1" value="${esc(audit.retentionDays ?? 30)}" ${audit.retentionDays == null ? "disabled" : "required"}><span>天</span></div>
+            <label class="settings-unlimited"><input name="retentionUnlimited" aria-label="保存周期不设上限" type="checkbox" ${audit.retentionDays == null ? "checked" : ""}><span>不限</span></label>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="audit-budget">存储上限</label>
+          <div class="settings-control">
+            <div class="settings-value"><input id="audit-budget" name="budgetMiB" aria-label="存储上限（MiB）" type="number" min="${MIN_AUDIT_BUDGET_MIB}" max="${Number.MAX_SAFE_INTEGER / 1048576}" step="any" value="${esc(audit.budgetBytes == null ? 128 : audit.budgetBytes / 1048576)}" ${audit.budgetBytes == null ? "disabled" : "required"}><span>MiB</span></div>
+            <label class="settings-unlimited"><input name="storageUnlimited" aria-label="存储不设上限" type="checkbox" ${audit.budgetBytes == null ? "checked" : ""}><span>不限</span></label>
+          </div>
+        </div>
+        <p class="settings-cleanup" id="audit-settings-cleanup" aria-live="polite" hidden>调低限制后，超出范围的历史记录将被清理。</p>
+        <div class="settings-footer"><span class="muted">保存后立即生效</span><button class="button button-primary" type="submit">保存设置</button></div>
+      </form>
+    </section>
+  </div>`;
+}
+
+function syncAuditSettingsForm(form) {
+  let reducing = false;
+  for (const [name, toggle, key, unit] of [["retentionDays", "retentionUnlimited", "retentionDays", 1], ["budgetMiB", "storageUnlimited", "budgetBytes", 1048576]]) {
+    const input = form.querySelector(`[name="${name}"]`);
+    const unlimited = form.querySelector(`[name="${toggle}"]`).checked;
+    setControlDisabled(input, unlimited);
+    input.required = !unlimited;
+    const next = Number(input.value) * unit;
+    const saved = state.config.audit[key];
+    reducing ||= !unlimited && next > 0 && (saved == null || next < saved);
+  }
+  form.querySelector("#audit-settings-cleanup").hidden = !reducing;
+}
+
+function saveAuditSettings(data) {
+  const days = data.has("retentionUnlimited") ? null : Number(data.get("retentionDays"));
+  const bytes = data.has("storageUnlimited") ? null : Number(data.get("budgetMiB")) * 1048576;
+  if (days !== null && (!Number.isSafeInteger(days) || days < 1)) {
+    throw new Error("保存周期必须是正整数天数，或选择不设上限。");
+  }
+  if (bytes !== null && (!Number.isSafeInteger(bytes) || bytes < MIN_AUDIT_BUDGET_MIB * 1048576)) {
+    throw new Error(`存储上限必须至少为 ${MIN_AUDIT_BUDGET_MIB} MiB，且换算后的字节数须为有效整数，或选择不设上限。`);
+  }
+  state.candidate.audit = { ...state.candidate.audit, retentionDays: days, budgetBytes: bytes };
 }
 
 function renderDiagnostics() {
@@ -2515,6 +2635,7 @@ async function handleFormSubmit(event, form) {
     }
     if (submitButton) submitButton.textContent = "保存中...";
     const handlers = {
+      "audit-settings-form": () => saveAuditSettings(data),
       "suite-create-form": () => saveSuiteCreate(data, form),
       "suite-upstream-form": () => saveSuiteUpstream(data),
       "suite-models-form": () => saveSuiteModels(form),

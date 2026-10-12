@@ -28,6 +28,35 @@ pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditSettings {
+    pub retention_days: Option<u64>,
+    pub budget_bytes: Option<u64>,
+}
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self {
+            retention_days: Some(30),
+            budget_bytes: Some(128 * 1024 * 1024),
+        }
+    }
+}
+impl AuditSettings {
+    pub fn from_config(config: &Value) -> Self {
+        let defaults = Self::default();
+        Self {
+            retention_days: config["audit"]
+                .get("retentionDays")
+                .map(Value::as_u64)
+                .unwrap_or(defaults.retention_days),
+            budget_bytes: config["audit"]
+                .get("budgetBytes")
+                .map(Value::as_u64)
+                .unwrap_or(defaults.budget_bytes),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub home: PathBuf,
@@ -58,7 +87,8 @@ impl Paths {
     }
 }
 pub fn defaults() -> Value {
-    json!({"version":2,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}})
+    let audit = AuditSettings::default();
+    json!({"version":2,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"upstreams":{},"routes":{},"virtualProviders":{},"bindings":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {

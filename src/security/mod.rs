@@ -32,9 +32,9 @@ pub struct Security {
     jobs: Arc<AtomicUsize>,
 }
 impl Security {
-    pub fn new(home: &std::path::Path) -> Self {
+    pub fn new(home: &std::path::Path, settings: config::AuditSettings) -> Self {
         Self {
-            store: store::Store::start(home),
+            store: store::Store::start(home, settings),
             workers: Arc::new(Semaphore::new(4)),
             jobs: Arc::new(AtomicUsize::new(0)),
         }

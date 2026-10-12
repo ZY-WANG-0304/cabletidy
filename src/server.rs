@@ -179,7 +179,7 @@ pub async fn create(
             config_operation: AsyncMutex::new(()),
             target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
-            security: security::Security::new(&paths.home),
+            security: security::Security::new(&paths.home, config::AuditSettings::from_config(&config)),
             client: upstream_client(reqwest::redirect::Policy::default())?,
             claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
@@ -979,6 +979,13 @@ async fn save_snapshot(state: &AppState, previous: &Snapshot, next: &Snapshot) -
         return Err(e);
     }
     *state.snapshot.write().unwrap() = Arc::new(next.clone());
+    if next.config["audit"] != previous.config["audit"] {
+        state
+            .security
+            .store
+            .configure(config::AuditSettings::from_config(&next.config))
+            .await;
+    }
     if let Err(e) =
         lifecycle::persist_runtime(&state.paths, &state.identity, &next.config, &state.started)
             .await
@@ -1645,7 +1652,7 @@ mod tests {
     #[tokio::test]
     async fn internal_local_errors_retain_the_returned_body_with_sensitive_ranges() {
         let dir = tempfile::tempdir().unwrap();
-        let security = security::Security::new(dir.path());
+        let security = security::Security::new(dir.path(), config::AuditSettings::default());
         let audit = security.audit(
             json!({"kind":"request","action":"model.request"}),
             &json!({"relay":"test-error-credential"}),

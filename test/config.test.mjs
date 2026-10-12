@@ -14,6 +14,34 @@ import { resolveRequest } from "./helpers/native.mjs";
 import { codexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 
+test("audit settings default independently and preserve explicit unlimited values", () => {
+  assert.deepEqual(defaultConfig().audit, { retentionDays: 30, budgetBytes: 128 * 1024 * 1024 });
+  for (const audit of [
+    {}, { retentionDays: 7 }, { budgetBytes: 16 * 1024 * 1024 },
+    { retentionDays: null }, { budgetBytes: null }, { retentionDays: null, budgetBytes: null },
+  ]) {
+    const config = normalizeConfig({ audit });
+    assert.deepEqual(config.audit, { ...defaultConfig().audit, ...audit });
+    assert.equal(validateConfig(config).ok, true);
+    assert.deepEqual(normalizeConfig(config).audit, config.audit);
+  }
+});
+
+test("audit settings reject malformed objects and unsafe or invalid limits", () => {
+  for (const audit of [null, false, [], "unlimited", 30]) {
+    assert.ok(validateConfig({ audit }).errors.some(({ path }) => path === "audit"));
+  }
+  for (const key of ["retentionDays", "budgetBytes"]) {
+    for (const value of [0, -1, 1.5, "30", true, {}, [], Number.MAX_SAFE_INTEGER + 1]) {
+      const result = validateConfig({ audit: { [key]: value } });
+      assert.ok(result.errors.some(({ path }) => path === `audit.${key}`), `${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  assert.equal(validateConfig({ audit: { retentionDays: Number.MAX_SAFE_INTEGER, budgetBytes: Number.MAX_SAFE_INTEGER } }).ok, true);
+  assert.equal(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 } }).ok, true);
+  assert.ok(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 - 1 } }).errors.some(({ path }) => path === "audit.budgetBytes"));
+});
+
 test("Claude family options support Fable and preserve existing custom values without an official whitelist", () => {
   const config = claudeConfigFixture();
   const binding = config.bindings["claude-main"];

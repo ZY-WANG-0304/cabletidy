@@ -70,6 +70,29 @@ pub fn validate(input: &Value) -> Value {
         "web.listenHost",
         "Web 管理台必须监听 127.0.0.1、localhost 或 ::1；本地管理台不支持远程监听"
     );
+    check!(c["audit"].is_object(), "audit", "审计设置必须是 object");
+    for (key, minimum, message) in [
+        (
+            "retentionDays",
+            1,
+            "保存周期必须是正整数天数，或 null（不设上限）",
+        ),
+        (
+            "budgetBytes",
+            16 * 1024 * 1024,
+            "存储上限必须是至少 16 MiB 的整数字节数，或 null（不设上限）",
+        ),
+    ] {
+        let value = &c["audit"][key];
+        check!(
+            value.is_null()
+                || value
+                    .as_u64()
+                    .is_some_and(|n| (minimum..=9_007_199_254_740_991).contains(&n)),
+            format!("audit.{key}"),
+            message
+        );
+    }
     for (key, u) in entries(&c["upstreams"]) {
         let p = format!("upstreams.{key}");
         check!(u.is_object(), p, "upstream 必须是 object");

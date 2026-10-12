@@ -724,6 +724,105 @@ button.list-row:hover,
   gap: 14px;
 }
 
+.settings-page {
+  max-width: 48rem;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--line);
+}
+
+.settings-control,
+.settings-value,
+.settings-unlimited,
+.settings-footer {
+  display: flex;
+  align-items: center;
+}
+
+.settings-control {
+  gap: 16px;
+}
+
+.settings-value {
+  width: 10rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.settings-value input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  outline: 0;
+  color: var(--ink);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.settings-value:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(37, 184, 120, 0.14);
+}
+
+.settings-value:has(input:disabled) {
+  background: var(--rail);
+}
+
+.settings-value input:disabled {
+  color: var(--muted);
+  background: var(--rail);
+}
+
+.settings-value > span {
+  padding-right: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-unlimited {
+  min-height: 36px;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-unlimited input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.settings-footer {
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+
+.settings-cleanup {
+  margin: 0;
+  padding: 0 20px 16px;
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.settings-page .form-feedback {
+  margin: 16px 20px;
+}
+
 .suite-model-policy {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: start;
@@ -1024,7 +1123,7 @@ button.list-row:hover,
   }
 
   .nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .nav-item {
@@ -1046,6 +1145,17 @@ button.list-row:hover,
   .topbar-actions {
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .main:has(.settings-page) .topbar {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .settings-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 18px 20px;
   }
 
   .page-content {
