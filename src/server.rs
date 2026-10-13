@@ -41,7 +41,6 @@ pub struct AppState {
     events: Mutex<VecDeque<Value>>,
     health: Mutex<Value>,
     config_operation: AsyncMutex<()>,
-    target_operation: AsyncMutex<()>,
     pub catalog: Catalog,
     pub security: security::Security,
     client: reqwest::Client,
@@ -177,7 +176,6 @@ pub async fn create(
             events: Mutex::new(VecDeque::new()),
             health: Mutex::new(json!({})),
             config_operation: AsyncMutex::new(()),
-            target_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
             security: security::Security::new(&paths.home, config::AuditSettings::from_config(&config)),
             client: upstream_client(reqwest::redirect::Policy::default())?,
@@ -348,7 +346,58 @@ fn json_response(status: u16, body: Value) -> Response {
 fn error(status: u16, code: &str, message: &str) -> Response {
     json_response(status, json!({"error":{"code":code,"message":message}}))
 }
-fn target_error(code: &str, err: &anyhow::Error) -> Response {
+fn target_confirmation<'a>(
+    config: &Value,
+    cable_id: &str,
+    action: &str,
+    token: Option<&'a str>,
+) -> Result<(String, Option<&'a str>)> {
+    let scope = (|| -> Result<String> {
+        let (id, cable) = entries(&config["cables"])
+            .find(|(id, cable)| {
+                if cable_id.is_empty() {
+                    cable["enabled"] != false
+                } else {
+                    id.as_str() == cable_id || cable["id"] == cable_id
+                }
+            })
+            .context("找不到线路")?;
+        let provider = &config["virtualProviders"][text(&cable["virtualProvider"])];
+        let route = &config["routes"][text(&provider["route"])];
+        let upstreams: Vec<_> = array(&route["backends"])
+            .iter()
+            .map(|backend| &config["upstreams"][text(&backend["upstream"])])
+            .collect();
+        Ok(targets::digest(&serde_json::to_vec(&json!([
+            action,
+            id,
+            cable,
+            provider,
+            route,
+            upstreams,
+            config::base_url(config, id)
+        ]))?))
+    })();
+    let scope = match scope {
+        Ok(scope) => scope,
+        Err(_) if token.is_some() => return Err(targets::ConfirmationExpired.into()),
+        Err(e) => return Err(e),
+    };
+    let confirmation = match token {
+        Some(token) => match token.split_once('.') {
+            Some((confirmed_scope, files)) if confirmed_scope == scope && !files.is_empty() => {
+                Some(files)
+            }
+            _ => return Err(targets::ConfirmationExpired.into()),
+        },
+        None => None,
+    };
+    Ok((scope, confirmation))
+}
+fn target_error(code: &str, err: &anyhow::Error, scope: &str) -> Response {
+    if err.is::<targets::ConfirmationExpired>() {
+        return error(409, "target_configuration_changed", &err.to_string());
+    }
     if let Some(conflict) = err.downcast_ref::<targets::claude::SettingsConflict>() {
         return json_response(
             409,
@@ -358,7 +407,7 @@ fn target_error(code: &str, err: &anyhow::Error) -> Response {
                 "details":{
                     "fields":conflict.fields,
                     "settingsPath":conflict.settings_path,
-                    "confirmationToken":conflict.confirmation_token
+                    "confirmationToken":format!("{scope}.{}",conflict.confirmation_token)
                 }
             }}),
         );
@@ -928,7 +977,19 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
         );
     }
     if path == "/api/v1/targets/apply" {
-        let _guard = state.target_operation.lock().await;
+        // Keep the selected cable stable from confirmation validation through client writes.
+        let _guard = state.config_operation.lock().await;
+        let snapshot = state.snapshot();
+        let c = &snapshot.config;
+        let (scope, confirmation) = match target_confirmation(
+            c,
+            text(&body["cableId"]),
+            "apply",
+            body["confirmationToken"].as_str(),
+        ) {
+            Ok(confirmation) => confirmation,
+            Err(e) => return Ok(target_error("target_apply_failed", &e, "")),
+        };
         let a = match targets::prepare(
             c,
             text(&body["cableId"]),
@@ -948,7 +1009,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             ));
         }
         return Ok(
-            match targets::apply(&a, &state.targets, body["confirmationToken"].as_str()).await {
+            match targets::apply(&a, &state.targets, confirmation).await {
                 Ok(report) => {
                     state.event(
                         "target.apply",
@@ -956,13 +1017,20 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                     );
                     json_response(200, json!({"ok":true,"target":a["target"],"report":report}))
                 }
-                Err(e) => target_error("target_apply_failed", &e),
+                Err(e) => target_error("target_apply_failed", &e, &scope),
             },
         );
     }
     if path == "/api/v1/targets/restore" {
-        let _guard = state.target_operation.lock().await;
+        let _guard = state.config_operation.lock().await;
+        let snapshot = state.snapshot();
+        let c = &snapshot.config;
         let id = text(&body["cableId"]);
+        let (scope, confirmation) =
+            match target_confirmation(c, id, "restore", body["confirmationToken"].as_str()) {
+                Ok(confirmation) => confirmation,
+                Err(e) => return Ok(target_error("target_restore_failed", &e, "")),
+            };
         if c["cables"][id]["target"] != "claude-code" {
             return Ok(error(
                 422,
@@ -971,7 +1039,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             ));
         }
         return Ok(
-            match targets::restore(id, &state.targets, body["confirmationToken"].as_str()).await {
+            match targets::restore(id, &state.targets, confirmation).await {
                 Ok(report) => {
                     state.event(
                         "target.restore",
@@ -982,7 +1050,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                         json!({"ok":true,"target":"claude-code","report":report}),
                     )
                 }
-                Err(e) => target_error("target_restore_failed", &e),
+                Err(e) => target_error("target_restore_failed", &e, &scope),
             },
         );
     }
@@ -1672,6 +1740,166 @@ fn rewrite_spooled_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    async fn confirmation_fixture() -> (tempfile::TempDir, Application, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().to_owned());
+        let options = targets::Options {
+            paths: paths.clone(),
+            codex_home: dir.path().join("codex"),
+            claude_home: dir.path().join("claude"),
+        };
+        let app = create(paths, options, 0).await.unwrap();
+        let mut config = config::normalize(&json!({
+            "version":3,
+            "upstreams":{"relay":{"protocol":"anthropic.messages","baseUrl":"https://relay.invalid"}},
+            "routes":{"route":{"backends":[{"upstream":"relay"}]}},
+            "virtualProviders":{"cabletidy_claude":{"ingressProtocol":"anthropic.messages","route":"route","models":{}}},
+            "cables":{"claude":{"name":"claude","target":"claude-code","virtualProvider":"cabletidy_claude"}}
+        }));
+        config["web"] = app.state.snapshot().config["web"].clone();
+        let response = commit(&app.state, &json!({"baseRevision":0,"config":config}))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let uri: Uri = "/api/v1/targets/apply".parse().unwrap();
+        let response = api(
+            app.state.clone(),
+            &Method::POST,
+            &uri,
+            json!({"cableId":"claude"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), 200);
+        let file = app.state.targets.claude_home.join("settings.json");
+        let mut settings = config::read_json(&file).await.unwrap().unwrap();
+        settings["env"]["ANTHROPIC_AUTH_TOKEN"] = json!("manual-secret");
+        config::write_json(&file, &settings).await.unwrap();
+        let response = api(
+            app.state.clone(),
+            &Method::POST,
+            &uri,
+            json!({"cableId":"claude"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), 409);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        let token = text(&body["error"]["details"]["confirmationToken"]).to_owned();
+        (dir, app, token)
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn queued_confirmation_validates_the_snapshot_after_the_config_lock() {
+        let (_dir, app, token) = confirmation_fixture().await;
+        let state = &app.state;
+        let held = state.config_operation.lock().await;
+        let before = state.snapshot();
+        let mut config = before.config.clone();
+        config["cables"]["claude"]["target"] = json!("codex");
+        config["virtualProviders"]["cabletidy_claude"]["ingressProtocol"] =
+            json!("openai.responses");
+        config["upstreams"]["relay"]["protocol"] = json!("openai.responses");
+        let change = json!({"baseRevision":before.config["revision"],"config":config});
+        let committing = commit(state, &change);
+        tokio::pin!(committing);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut committing)
+                .await
+                .is_err()
+        );
+        let uri: Uri = "/api/v1/targets/apply".parse().unwrap();
+        let applying = api(
+            state.clone(),
+            &Method::POST,
+            &uri,
+            json!({"cableId":"claude","confirmationToken":token}),
+        );
+        tokio::pin!(applying);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut applying)
+                .await
+                .is_err()
+        );
+        drop(held);
+        let (changed, applied) = tokio::join!(committing, applying);
+        assert_eq!(changed.unwrap().status(), 200);
+        let response = applied.unwrap();
+        assert_eq!(response.status(), 409);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["error"]["code"], "target_configuration_changed");
+        assert!(!state.targets.codex_home.join("config.toml").exists());
+        let settings = config::read_json(&state.targets.claude_home.join("settings.json"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "manual-secret");
+        state.security.flush().await;
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn config_commit_waits_until_confirmed_client_write_finishes() {
+        let (_dir, app, token) = confirmation_fixture().await;
+        let state = &app.state;
+        let canonical = tokio::fs::canonicalize(&state.targets.claude_home)
+            .await
+            .unwrap();
+        let mut paths = Paths::new(canonical.clone());
+        paths.lock = canonical.with_file_name("claude.lock");
+        let client_lock = lifecycle::InstanceLock::acquire(&paths).await.unwrap();
+        let uri: Uri = "/api/v1/targets/apply".parse().unwrap();
+        let applying = api(
+            state.clone(),
+            &Method::POST,
+            &uri,
+            json!({"cableId":"claude","confirmationToken":token}),
+        );
+        tokio::pin!(applying);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut applying)
+                .await
+                .is_err()
+        );
+        assert!(state.config_operation.try_lock().is_err());
+        let before = state.snapshot();
+        let mut config = before.config.clone();
+        config["cables"]["claude"]["defaultModel"] = json!("sonnet");
+        let change = json!({"baseRevision":before.config["revision"],"config":config});
+        let committing = commit(state, &change);
+        tokio::pin!(committing);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut committing)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            state.snapshot().config["revision"],
+            before.config["revision"]
+        );
+        client_lock.release().await.unwrap();
+        let (applied, changed) = tokio::join!(applying, committing);
+        assert_eq!(applied.unwrap().status(), 200);
+        assert_eq!(changed.unwrap().status(), 200);
+        let settings = config::read_json(&state.targets.claude_home.join("settings.json"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "cabletidy-local");
+        assert!(settings["env"].get("ANTHROPIC_MODEL").is_none());
+        assert_eq!(
+            state.snapshot().config["cables"]["claude"]["defaultModel"],
+            "sonnet"
+        );
+        state.security.flush().await;
+    }
 
     fn rewrite_sse(bytes: &[u8], client: &str, mapped: &str, claude: bool) -> Vec<u8> {
         let mut spool = Spool::new().unwrap();

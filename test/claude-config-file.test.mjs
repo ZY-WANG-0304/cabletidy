@@ -175,6 +175,16 @@ test("apply confirmation cannot approve a different configuration", async (t) =>
   assert.deepEqual(await f.read(), changed);
 });
 
+test("Claude confirmation is rejected before dispatching a Codex write", async (t) => {
+  const f = await fixture(t, {});
+  const codexHome = path.join(f.home, "codex");
+  await assert.rejects(applyClaudeSettings({ ...f.artifacts(), target: "codex" }, {
+    ...f.options, codexHome, confirmationToken: "previous-claude-confirmation",
+  }), /线路已被其他窗口修改，请刷新后重新应用/);
+  await assert.rejects(fs.stat(codexHome), { code: "ENOENT" });
+  assert.deepEqual(await f.read(), {});
+});
+
 test("concurrent applies retain the first original settings and can be fully restored", async (t) => {
   const f = await fixture(t, { env: {}, permissions: { deny: ["Bash(rm *)"] } });
   await Promise.all(Array.from({ length: 4 }, () => applyClaudeSettings(f.artifacts(), f.options)));

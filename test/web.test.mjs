@@ -1163,6 +1163,28 @@ test("Claude apply failures other than conflicts do not offer to overwrite", asy
   assert.ok(app.messages.includes("Invalid Claude settings object"));
 });
 
+for (const action of ["apply", "restore"]) {
+  test(`Claude ${action} stops after a cable change without asking for another confirmation`, async () => {
+    const app = await controller(normalizeConfig(claudeConfigFixture()), {
+      onTarget(url, body) {
+        if (body.confirmationToken) return { status: 409, body: { error: {
+          code: "target_configuration_changed", message: "线路已被其他窗口修改，请刷新后重新应用",
+        } } };
+        return { status: 409, body: { error: { code: "claude_settings_conflict", details: {
+          settingsPath: "/client/settings.json", fields: ["env.ANTHROPIC_API_KEY"], confirmationToken: "previous-cable.files",
+        } } } };
+      },
+    });
+    await app.action("open-cable", { dataset: { id: "claude-main" } });
+    await app.action(`${action}-target`, { closest: () => null });
+    assert.equal(app.requests.filter(({ url }) => url === `/api/v1/targets/${action}`).length, 2);
+    assert.equal(app.confirmations.length, 1);
+    assert.ok(app.messages.includes("线路已被其他窗口修改，请刷新后重新应用"));
+    assert.equal(app.messages.some(message => /配置已应用|原接入配置已恢复/.test(message)), false);
+    assert.equal(app.read("state.busy"), false);
+  });
+}
+
 for (const [target, fixture, id] of [
   ["Codex", codexConfigFixture, "relay"],
   ["Claude Code", claudeConfigFixture, "claude-main"],

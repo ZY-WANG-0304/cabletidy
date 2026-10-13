@@ -48,6 +48,16 @@ pub fn digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
 }
+
+#[derive(Debug)]
+pub struct ConfirmationExpired;
+impl std::fmt::Display for ConfirmationExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("线路已被其他窗口修改，请刷新后重新应用")
+    }
+}
+impl std::error::Error for ConfirmationExpired {}
+
 pub fn build(input: &Value, cable_id: &str, secrets: &Value) -> Result<Value> {
     let mut names = std::collections::HashSet::new();
     for (id, b) in entries(&input["cables"]) {
@@ -194,6 +204,9 @@ pub async fn prepare(
     }
 }
 pub async fn apply(a: &Value, options: &Options, confirmation: Option<&str>) -> Result<Value> {
+    if confirmation.is_some() && a["target"] != "claude-code" {
+        return Err(ConfirmationExpired.into());
+    }
     match text(&a["target"]) {
         "codex" => codex::apply(a, options).await,
         "claude-code" => claude::apply(a, options, confirmation).await,
