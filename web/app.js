@@ -13,6 +13,8 @@ let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
 let renderedTraceTab = null;
+let renderedTraceScale = null;
+let traceOverviewObserver = null;
 let navigationIndex = window.history.state?.navigationIndex || 0;
 let navigationUrl = window.location.href;
 let restoringNavigation = false;
@@ -188,22 +190,29 @@ function render(preservedForms = []) {
     "security-detail": renderSecurityDetailPage,
     "security-session": renderSecuritySession,
   };
-  const traceListFocused = document.activeElement?.classList?.contains("trace-event-list");
+  const traceFocus = ["trace-event-list", "trace-map-viewport", "trace-scroll-control"]
+    .find(name => document.activeElement?.classList?.contains(name));
+  const revealTraceSelection = renderedTraceId !== state.trace.id || renderedTraceDetailId !== state.security.detailId || renderedTraceScale !== state.trace.scale;
   const paneScroll = state.page === "security-session" && renderedTraceId === state.trace.id
-    ? [...pageContent.querySelectorAll(".trace-event-list, .trace-inspector-body")].map(node => ({
-      selector: node.classList.contains("trace-event-list") ? ".trace-event-list" : ".trace-inspector-body",
+    ? [...pageContent.querySelectorAll(".trace-event-list, .trace-inspector-body, .trace-map-viewport")].map(node => ({
+      selector: node.classList.contains("trace-event-list") ? ".trace-event-list" : node.classList.contains("trace-map-viewport") ? ".trace-map-viewport" : ".trace-inspector-body",
       top: node.scrollTop,
+      left: node.scrollLeft,
     })) : [];
+  traceOverviewObserver?.disconnect();
+  traceOverviewObserver = null;
   pageContent.innerHTML = renderers[state.page]();
   for (const pane of paneScroll) {
     if (pane.selector === ".trace-inspector-body" && (renderedTraceDetailId !== state.security.detailId || renderedTraceTab !== state.trace.tab)) continue;
     const node = pageContent.querySelector(pane.selector);
-    if (node) node.scrollTop = pane.top;
+    if (node) { node.scrollTop = pane.top; node.scrollLeft = pane.left; }
   }
-  if (traceListFocused) pageContent.querySelector(".trace-event-list")?.focus({ preventScroll: true });
+  if (state.page === "security-session") setupTraceOverview(revealTraceSelection);
+  if (traceFocus) pageContent.querySelector(`.${traceFocus}`)?.focus({ preventScroll: true });
   renderedTraceId = state.page === "security-session" ? state.trace.id : null;
   renderedTraceDetailId = state.security.detailId;
   renderedTraceTab = state.trace.tab;
+  renderedTraceScale = state.trace.scale;
   if (state.page === "security-session") {
     pageContent.querySelector(".trace-event-list")?.addEventListener("scroll", event => {
       const list = event.currentTarget;
@@ -1422,20 +1431,41 @@ async function loadMoreSecurityTrace() {
   t.loadingMore = false; render();
 }
 
-// Keep the overview usable even after scrolling through thousands of requests.
+// Each request keeps its own ordinal and target in the horizontally scrollable overview.
 function traceSegments(items) {
-  const size = Math.max(1, Math.ceil(items.length / 60));
-  const segments = [];
-  for (let i = 0; i < items.length; i += size) {
-    const group = items.slice(i, i + size);
-    segments.push({ id: group[0].id, first: i + 1, last: i + group.length,
-      duration: group.reduce((n, item) => n + (item.durationMs || 0), 0),
-      legacyFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).legacy, 0),
-      newFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).new, 0),
-      historicalFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).historical, 0),
-      selected: group.some(item => item.id === state.security.detailId) });
+  return items.map((item, i) => {
+    const risk = securityRiskCounts(item);
+    return { id: item.id, order: i + 1, duration: item.durationMs || 0,
+      legacyFindingCount: risk.legacy, newFindingCount: risk.new, historicalFindingCount: risk.historical,
+      selected: item.id === state.security.detailId };
+  });
+}
+
+function setupTraceOverview(revealSelection) {
+  const viewport = pageContent.querySelector(".trace-map-viewport");
+  if (!viewport) return;
+  const rail = pageContent.querySelector(".trace-scroll-rail");
+  const control = rail.querySelector(".trace-scroll-control");
+  const syncScrollbar = () => {
+    const maximum = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    rail.hidden = maximum === 0;
+    control.max = maximum;
+    control.value = viewport.scrollLeft;
+    control.style.setProperty("--thumb-width", `${Math.max(24, rail.clientWidth * viewport.clientWidth / viewport.scrollWidth)}px`);
+  };
+  if (revealSelection) {
+    const selected = viewport.querySelector(".trace-segment.is-selected");
+    if (selected) {
+      const bounds = viewport.getBoundingClientRect(), item = selected.getBoundingClientRect();
+      if (item.left < bounds.left + 6) viewport.scrollLeft -= bounds.left + 6 - item.left;
+      else if (item.right > bounds.right - 6) viewport.scrollLeft += item.right - bounds.right + 6;
+    }
   }
-  return segments;
+  control.addEventListener("input", () => { viewport.scrollLeft = Number(control.value); });
+  viewport.addEventListener("scroll", syncScrollbar, { passive: true });
+  traceOverviewObserver = new ResizeObserver(syncScrollbar);
+  traceOverviewObserver.observe(viewport);
+  syncScrollbar();
 }
 
 function traceItems() {
@@ -1868,10 +1898,13 @@ function renderSecuritySession() {
   const all = t.result?.items || [], items = traceItems();
   const hasLegacy = all.some(item => !securityHasRiskHistory(item)), hasModern = all.some(securityHasRiskHistory);
   const segments = traceSegments(all);
-  const maxDuration = Math.max(1, ...segments.map(item => item.duration));
-  const segmentDescription = all.length > 60
-    ? "相邻请求合并显示，点击定位该组首条请求"
-    : "每格对应一条请求";
+  const maxDuration = segments.reduce((max, item) => Math.max(max, item.duration), 1);
+  const weights = segments.map(item => t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : 1);
+  const minimumWidth = weights.reduce((width, weight) => width + Math.max(12, weight * 12) + 2, 20);
+  const minimap = segments.map((item, i) => {
+    const label = `请求 ${item.order}`;
+    return `<div class="trace-step" style="flex-grow:${weights[i]}">${item.order % 5 === 0 ? `<span class="trace-axis-tick" aria-hidden="true"><span>${item.order}</span></span>` : ""}<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button></div>`;
+  }).join("");
   const positions = new Map(all.map((item, i) => [item.id, i]));
   return `<nav class="security-detail-nav"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 会话轨迹</span><span class="status-badge">仅记录</span></nav>
     <header class="trace-heading"><div><h2>${esc(summary ? securitySessionTitle(summary) : "会话轨迹")}</h2><p class="muted">${esc(summary?.providerId || "未记录配置")} · ${summary?.identified ? "按客户端会话标识归组" : "独立记录 · 未获取会话标识"}${summary ? ` · ${esc(securityTime(summary.firstAtMs))}` : ""}</p></div>
@@ -1879,7 +1912,10 @@ function renderSecuritySession() {
     ${t.error ? `<p class="notice warning" role="alert">${esc(t.error)}<button class="button" data-action="security-session-refresh">重试</button></p>` : ""}
     <section class="trace-workspace" aria-label="会话轨迹">
       <div class="trace-toolbar"><strong>轨迹</strong><span class="muted">按请求顺序 · 已加载 ${all.length} 条 / 共 ${esc(t.result?.total ?? "—")} 条</span><button class="mini-button" data-action="security-session-refresh" ${t.loading ? "disabled" : ""}>${t.loading ? "读取中…" : "刷新会话"}</button></div>
-      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>${segmentDescription}</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击）</span>" : ""}</p></div>
+      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div>
+        <div class="trace-map-viewport" tabindex="0" aria-label="可横向滚动的请求导航，刻度为请求序号"><div class="trace-map-track" style="min-width:${minimumWidth}px"><div class="trace-minimap">${minimap}</div></div></div>
+        <div class="trace-scroll-rail" hidden><input class="trace-scroll-control" type="range" min="0" max="0" step="1" value="0" aria-label="左右滚动请求轨迹"></div>
+        <p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>每格对应一条请求</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击），刻度为请求序号</span>" : ""}</p></div>
       <div class="trace-columns"><section class="trace-events" aria-label="请求列表"><form id="security-trace-search" class="trace-search"><input name="search" aria-label="搜索已加载轨迹" placeholder="搜索已加载输入、输出、工具或模型" value="${esc(t.search)}"><button class="mini-button" type="submit">搜索</button><button class="mini-button" type="button" data-action="security-trace-risk" aria-pressed="${t.riskOnly}">仅看风险</button></form>
         <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id), risk = securityRiskCounts(item); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span><span class="${risk.new || risk.legacy ? "trace-risk-count" : "muted"}">${esc(securityRiskSummary(item))}</span></span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span><span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
       </section><aside class="trace-inspector" aria-label="选中步骤详情">${renderTraceInspector()}</aside></div>

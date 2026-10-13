@@ -2388,7 +2388,7 @@ test("legacy session summaries and legends never describe old findings as new", 
   assert.doesNotMatch(app.read("renderSecurity()"), /新增风险|项新增|历史关联/);
 });
 
-test("mixed session summaries and grouped navigation keep legacy risks separate from modern findings", async () => {
+test("mixed session summaries and individual navigation keep legacy risks separate from modern findings", async () => {
   const app = await controller();
   const summary = { id: "mixed-session", findingCount: 6, legacyFindingCount: 3, newFindingCount: 1, historicalFindingCount: 2 };
   const list = app.read(`securitySessionRow(${JSON.stringify(summary)})`);
@@ -2402,13 +2402,18 @@ test("mixed session summaries and grouped navigation keep legacy risks separate 
   app.read(`state.trace.summary = ${JSON.stringify(summary)}; state.trace.result = ${JSON.stringify({ items: records })}`);
   const html = app.read("renderSecuritySession()");
   assert.match(html, /<strong>4<\/strong> 项风险（含旧记录 3 项） · 2 次历史关联/);
-  assert.match(html, /title="请求 1–3[^\"]*风险 3 项（旧记录） · 新增风险 1 项 · 历史风险 2 项/);
-  assert.match(html, /class="trace-segment has-new-risk [^\"]*"[^>]*data-id="legacy"/);
+  assert.match(html, /title="请求 1[^\"]*风险 3 项"/);
+  assert.match(html, /title="请求 2[^\"]*新增风险 1 项"/);
+  assert.match(html, /title="请求 3[^\"]*仅历史风险 2 项"/);
+  assert.match(html, /class="trace-segment has-risk [^\"]*"[^>]*data-id="legacy"/);
+  assert.match(html, /class="trace-segment has-new-risk [^\"]*"[^>]*data-id="new"/);
+  assert.match(html, /class="trace-segment has-history-risk [^\"]*"[^>]*data-id="history"/);
   app.read(`state.trace.result.items[1] = ${JSON.stringify({ id: "legacy-clean", schemaVersion: 4, findingCount: 0 })}`);
   const withHistory = app.read("renderSecuritySession()");
   assert.match(withHistory, /class="trace-segment has-risk [^\"]*"[^>]*data-id="legacy"/);
-  assert.match(withHistory, /风险 3 项（旧记录） · 历史风险 2 项/);
-  assert.doesNotMatch(withHistory, /title="请求 1–3[^\"]*仅历史风险/);
+  assert.match(withHistory, /title="请求 1[^\"]*风险 3 项"/);
+  assert.match(withHistory, /title="请求 3[^\"]*仅历史风险 2 项"/);
+  assert.doesNotMatch(withHistory, /相邻请求合并显示/);
 });
 
 test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {
@@ -2910,7 +2915,11 @@ test("scroll loading appends requests without replacing selection and refresh re
   assert.equal(app.read("state.trace.result.items.length"), 120);
   assert.equal(app.read("state.security.detail.id"), "r80");
   assert.match(app.read("renderSecuritySession()"), /已显示全部请求/);
-  assert.ok(app.read("traceSegments(state.trace.result.items).length") <= 60);
+  assert.equal(app.read("traceSegments(state.trace.result.items).length"), 120);
+  assert.equal(app.read("traceSegments(state.trace.result.items).find(item => item.selected).order"), 81);
+  assert.match(app.read("renderSecuritySession()"), /aria-label="选择请求 81" aria-pressed="true"/);
+  assert.match(app.read("renderSecuritySession()"), /trace-axis-tick[^>]*><span>120<\/span>/);
+  assert.doesNotMatch(app.read("renderSecuritySession()"), /相邻请求合并显示/);
   await app.action("security-session-refresh", {});
   assert.equal(app.read("state.trace.result.items.length"), 120);
   assert.equal(app.read("state.security.detail.id"), "r80");

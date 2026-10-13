@@ -246,7 +246,7 @@ try {
   report.checks.push("scrolling appends requests beyond 50 without replacing prior rows or the selected request; refresh retains the loaded range and scroll position");
   const durationToggle = page.getByRole("button", { name: "耗时占比", exact: true });
   assert.equal(await durationToggle.getAttribute("aria-pressed"), "false");
-  const segmentWidths = () => page.locator(".trace-segment").evaluateAll(nodes => nodes.map(node => node.style.flexGrow));
+  const segmentWidths = () => page.locator(".trace-segment").evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().width));
   const requestOrder = () => page.locator(".trace-event-row").evaluateAll(nodes => nodes.map(node => node.dataset.id));
   const defaultWidths = await segmentWidths(), initialOrder = await requestOrder();
   await durationToggle.click();
@@ -807,6 +807,94 @@ try {
     assert.equal(await page.locator(".trace-event-row").count(), 1);
   }
   report.checks.push("legacy records use only no-risk/risk labels in session summaries, trace rows and legends, and remain filterable on desktop/mobile");
+  await page.unroute("**/api/v1/security/**");
+  const overviewRecords = Array.from({ length: 180 }, (_, i) => ({ ...noRiskDetail, id: `overview-${i + 1}`,
+    durationMs: 200 + (i * 37) % 1800, requestPreview: `轨迹坐标轴请求 ${i + 1}` }));
+  let overviewLoaded = 120;
+  const overviewSummary = { ...modernSessions.items[0], id: "overview-axis", sessionTitle: "轨迹概览坐标轴与横向滚动", requestCount: overviewRecords.length };
+  await page.route("**/api/v1/security/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/sessions")) return route.fulfill({ json: { ...modernSessions, sessionId: overviewSummary.id, items: [overviewSummary], total: 1, nextCursor: null } });
+    if (url.pathname.endsWith("/audit")) {
+      const offset = Number(url.searchParams.get("cursor") || 0);
+      if (offset) overviewLoaded = overviewRecords.length;
+      return route.fulfill({ json: { items: overviewRecords.slice(offset, overviewLoaded), total: overviewRecords.length,
+        nextCursor: overviewLoaded < overviewRecords.length ? String(overviewLoaded) : null } });
+    }
+    const record = overviewRecords.find(record => url.pathname.endsWith(`/audit/${record.id}`));
+    if (record) return route.fulfill({ json: { record } });
+    return route.continue();
+  });
+  await page.setViewportSize(report.viewport);
+  await page.goto(`${app.url}#security/session/${overviewSummary.id}`);
+  await page.locator(".trace-inspector-heading").waitFor();
+  assert.equal(await page.locator(".trace-segment").count(), 120, "each loaded request remains individually selectable beyond 60");
+  assert.deepEqual(await page.locator(".trace-axis-tick > span").allTextContents(), Array.from({ length: 24 }, (_, i) => String((i + 1) * 5)));
+  const checkOverviewGeometry = async () => {
+    const layout = await page.locator(".trace-map-viewport").evaluate(viewport => {
+      const ticks = [...viewport.querySelectorAll(".trace-axis-tick")];
+      return { overflows: viewport.scrollWidth > viewport.clientWidth,
+        aligned: ticks.every(tick => {
+          const marker = tick.getBoundingClientRect(), segment = tick.parentElement.querySelector(".trace-segment").getBoundingClientRect();
+          return marker.bottom < segment.top && Math.abs(marker.left - segment.left - segment.width / 2) <= 1;
+        }) };
+    });
+    assert.ok(layout.overflows);
+    assert.ok(layout.aligned, "every ordinal tick sits above and at the center of its request, including duration scale");
+    assert.ok(await page.locator(".trace-scroll-rail").isVisible());
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  };
+  await checkOverviewGeometry();
+  const scrollControl = page.getByLabel("左右滚动请求轨迹", { exact: true });
+  const scrollBounds = await scrollControl.boundingBox();
+  const thumbWidth = await scrollControl.evaluate(node => parseFloat(node.style.getPropertyValue("--thumb-width")));
+  await page.mouse.move(scrollBounds.x + thumbWidth / 2, scrollBounds.y + scrollBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(scrollBounds.x + thumbWidth / 2 + 150, scrollBounds.y + scrollBounds.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => document.querySelector(".trace-map-viewport").scrollLeft > 100);
+  let overviewScroll = await page.locator(".trace-map-viewport").evaluate(node => node.scrollLeft);
+  await page.getByRole("button", { name: "继续加载", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".trace-segment").length === 180);
+  assert.equal(await page.locator(".trace-map-viewport").evaluate(node => node.scrollLeft), overviewScroll, "appending requests retains horizontal scroll");
+  await page.getByRole("button", { name: "刷新会话", exact: true }).click();
+  await page.waitForFunction(x => !document.querySelector('[data-action="security-session-refresh"]').disabled
+    && document.querySelector(".trace-inspector-heading") && document.querySelector(".trace-map-viewport").scrollLeft === x, overviewScroll);
+  assert.equal(await page.evaluate(() => document.querySelector(".trace-map-viewport").scrollLeft), overviewScroll, "refresh retains horizontal scroll");
+  await page.getByLabel("搜索已加载轨迹", { exact: true }).fill("轨迹坐标轴请求 175");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  assert.equal(await page.locator(".trace-event-row").count(), 1);
+  await page.locator('.trace-event-row[data-id="overview-175"]').click();
+  await page.locator(".trace-inspector-heading").waitFor();
+  const selectedVisible = await page.locator(".trace-map-viewport").evaluate(viewport => {
+    const bounds = viewport.getBoundingClientRect(), selected = viewport.querySelector(".trace-segment.is-selected").getBoundingClientRect();
+    return selected.left >= bounds.left && selected.right <= bounds.right;
+  });
+  assert.ok(selectedVisible, "selecting a list request reveals its exact overview segment");
+  assert.equal(await page.locator(".trace-segment.is-selected").getAttribute("data-id"), "overview-175");
+  overviewScroll = await page.locator(".trace-map-viewport").evaluate(node => node.scrollLeft);
+  await page.getByLabel("搜索已加载轨迹", { exact: true }).fill("");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  assert.equal(await page.locator(".trace-map-viewport").evaluate(node => node.scrollLeft), overviewScroll);
+  await screenshot("21-desktop-trace-axis.png");
+  await durationToggle.click();
+  await checkOverviewGeometry();
+  await durationToggle.click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => !document.querySelector(".trace-scroll-rail").hidden);
+  await checkOverviewGeometry();
+  await page.locator(".trace-map-viewport").evaluate(node => { node.scrollLeft = 800; });
+  await page.waitForFunction(() => Number(document.querySelector(".trace-scroll-control").value) === 800);
+  await screenshot("21-mobile-trace-axis.png");
+  await page.setViewportSize(report.viewport);
+  overviewLoaded = 4;
+  await page.evaluate(() => history.replaceState(null, ""));
+  await page.goto(`${app.url}#security/session/${overviewSummary.id}`);
+  await page.locator(".trace-inspector-heading").waitFor();
+  assert.equal(await page.locator(".trace-segment").count(), 4);
+  assert.equal(await page.locator(".trace-axis-tick").count(), 0);
+  assert.ok(await page.locator(".trace-scroll-rail").isHidden(), "short traces do not show a scrollbar");
+  report.checks.push("overview uses an upper ordinal axis every five requests, individual request targets, a draggable scrollbar, preserved horizontal scroll through append/refresh/search, exact selection reveal and aligned duration-mode ticks on desktop/mobile");
   assert.deepEqual(errors, []);
   report.checks.push("no browser errors or horizontal page overflow; body content remains escaped and original credentials are highlighted");
   report.savedListScrollY = savedScroll;
