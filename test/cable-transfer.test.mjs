@@ -71,7 +71,7 @@ test("selective export preserves cable dependencies and settings while omitting 
   assert.deepEqual(bundle.config.cables["claude-main"].claude, {
     setModel: true, models: { sonnet: "claude-sonnet-4-6", subagent: "sonnet" },
   });
-  for (const key of ["web", "daemon", "revision", "secrets", "runtime"]) assert.equal(bundle.config[key], undefined);
+  for (const key of ["web", "daemon", "audit", "temporaryDirectory", "revision", "secrets", "runtime"]) assert.equal(bundle.config[key], undefined);
   assert.doesNotMatch(JSON.stringify(bundle), /saved-api-key|orphan-secret|url-user|url-password|query-secret|fragment-secret|header-secret|cookie-secret|inline-secret|nested-secret|model-secret|model-key|unknown-secret|claude-secret|auth-password/);
   assert.equal(await fs.readFile(paths.config, "utf8"), before);
   assert.equal((await call("/export", { cableIds: [] })).status, 422);

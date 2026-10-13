@@ -40,6 +40,18 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 设置保存到 `config.json` 的 `audit` 字段：`retentionDays` 为天数，`budgetBytes` 为字节数，`null` 表示该项不设上限；旧配置缺少字段时使用默认值。设置复用 `POST /api/v1/config/commit` 的校验、修订冲突检查和备份流程，不随线路导出或导入。
 
+“临时目录”是独立的服务设置，默认使用 `${CABLETIDY_HOME}/tmp`（通常为 `~/.cabletidy/tmp`，开发实例为 `.cabletidy-debug/tmp`）。可填写服务器上的绝对路径，留空恢复默认；保存时检查目录是否可创建及写入，重启后生效，页面显示当前使用目录与待重启状态。该设置保存在 `config.json` 顶级 `temporaryDirectory` 字段，`null` 表示默认位置，不随线路导出或导入。
+
+临时目录按用途包含 `spool`（请求、响应及流式事件的加密暂存）、`sqlite`（数据库排序、分组等临时文件）和 `helpers`（辅助脚本）。正文暂存继续采用匿名文件，转发与后台审计不再引用后关闭并回收，进程退出时也由系统回收。Unix 目录必须属于当前用户且权限为 `0700`，已有的共享目录或符号链接会被拒绝，程序不会修改其权限；Windows 使用目录继承的访问权限，应选择当前用户的私有目录。启动时为 daemon 设置 SQLite 的系统临时目录环境，优先于继承的系统临时路径。
+
+正文加密暂存仍受 512 MiB 共享预算限制，SQLite 临时文件不计入该预算；选择同一分区时，临时文件和审计库会共同消耗磁盘空间。修改目录不会迁移审计库，也不会删除旧目录中的其他文件。
+
+[XDG Base Directory 规范](https://specifications.freedesktop.org/basedir-spec/latest/)按用途区分配置、数据、状态、缓存和运行时目录，并不提供自动清理机制。CableTidy 目前沿用 `.cabletidy` 数据根目录；大体积正文暂存不使用可能位于内存文件系统的 `XDG_RUNTIME_DIR`。
+
+Unix 控制 socket 优先使用 `$XDG_RUNTIME_DIR/cabletidy/<数据目录哈希>/<实例 UUID>.sock`。运行时根目录必须已存在、为绝对路径、属于当前用户且权限为 `0700`；未设置、目录不可用或完整 socket 路径超过可移植长度限制时，回退到 `/tmp/cabletidy-<uid>-<数据目录哈希>/<实例 UUID>.sock`，不会创建或修改运行时根目录。实际地址保存在 `runtime.json` 的 `controlAddress` 字段，`status`、`stop` 和 `restart` 使用记录的地址，因此客户端与 daemon 的环境变量可以不同；没有该字段的旧实例仍按原 `/tmp` 规则连接。正常退出时主动删除 socket，重启同一数据目录时仅清理所选实例目录中的旧 UUID socket，保留其他文件和实例。Windows 继续使用用户私有命名管道。
+
+`XDG_RUNTIME_DIR` 的生命周期通常随用户登录会话结束；需要跨注销持续运行时，应通过服务管理器提供稳定的运行时目录。修改设置页面中的正文临时目录不影响控制 socket 的位置。
+
 5 GiB 默认值自 `0.4.0-rc.6` 提供。已有配置中保存的上限（包括 128 MiB）或“不限”继续沿用；要提高已有上限，在“设置”中将存储上限改为 5120 MiB 并保存。容量按需使用，不会预占 5 GiB。
 
 界面预览：[桌面](docs/screenshots/service-settings-desktop.png) · [手机](docs/screenshots/service-settings-mobile.png)。

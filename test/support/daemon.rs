@@ -5,8 +5,20 @@ use cabletidy::{
 };
 use tokio::io::AsyncBufReadExt;
 
-#[tokio::main(worker_threads = 2)]
-async fn main() {
+fn main() {
+    if let Err(error) = cabletidy::temporary::initialize() {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(run());
+}
+
+async fn run() {
     let result = async {
         let paths = Paths::from_env()?;
         let options = targets::Options::new(paths.clone())?;

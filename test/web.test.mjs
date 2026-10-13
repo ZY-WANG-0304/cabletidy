@@ -333,6 +333,25 @@ test("settings validation and revision conflicts preserve the draft without a pa
   assert.equal(app.persisted().audit.retentionDays, 90);
 });
 
+test("temporary directory form saves independently, restores the default and preserves conflicts", async () => {
+  const app = await controller(undefined, { url: "http://test/#settings" });
+  const audit = clone(app.persisted().audit);
+  assert.match(app.node("#page-content").innerHTML, /id="temporary-settings-form"/);
+  assert.match(app.node("#page-content").innerHTML, /保存后重启生效/);
+  await app.submit(formNode("temporary-settings-form", { temporaryDirectory: " /data/cabletidy temporary " }));
+  assert.equal(app.persisted().temporaryDirectory, "/data/cabletidy temporary");
+  assert.deepEqual(app.persisted().audit, audit);
+  assert.ok(app.messages.some(message => /重启 CableTidy 后生效/.test(message)));
+  await app.submit(formNode("temporary-settings-form", { temporaryDirectory: "" }));
+  assert.equal(app.persisted().temporaryDirectory, null);
+  app.externalUpdate(config => { config.temporaryDirectory = "/other/temp"; });
+  const form = formNode("temporary-settings-form", { temporaryDirectory: "/draft/temp" });
+  await app.submit(form);
+  assert.ok(form.feedback);
+  assert.equal(form.fields.temporaryDirectory, "/draft/temp");
+  assert.equal(app.persisted().temporaryDirectory, "/other/temp");
+});
+
 test("audit status displays unlimited retention and storage without default fallbacks", async () => {
   const app = await controller(undefined, { onSecurity(url) {
     if (url.endsWith("/status")) return { body: { storage: { state: "ready", retentionDays: null, budgetBytes: null } } };

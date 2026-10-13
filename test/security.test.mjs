@@ -52,6 +52,7 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
   assert.equal(commit.status, 200, await commit.text());
   return {
     call, calls, home, provider, model, endpoint, upstream,
+    get pid() { return app.child.pid; },
     request: (body = {}, options) => call(endpoint, { model, max_tokens: 100, ...body }, options),
     async list(view = "audit", query = "") {
       const response = await call(`api/v1/security/${view}?${query}`);
@@ -109,6 +110,92 @@ function respondClaude(res, body) {
     content: [{ type: "text", text: "Overview checked" }], stop_reason: "end_turn", stop_sequence: null,
     usage: { input_tokens: 12, output_tokens: 8 } }));
 }
+
+test("encrypted request and response files use the active temporary directory and close after inspection", async t => {
+  let entered, release;
+  const marker = "temporary-storage-plaintext-sentinel";
+  const content = marker + "a".repeat(192 * 1024);
+  const f = await fixture(t, async (_req, res, body) => {
+    const bytes = JSON.stringify({ type: "response", model: body.model,
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: content }] }] });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write(bytes.slice(0, 128 * 1024));
+    entered();
+    await new Promise(resolve => { release = resolve; });
+    res.end(bytes.slice(128 * 1024));
+  });
+  const inherited = path.join(f.home, "unusable-system-temp");
+  await fs.writeFile(inherited, "not a directory");
+  const env = { TMPDIR: inherited, SQLITE_TMPDIR: inherited, TMP: inherited, TEMP: inherited };
+  const spoolFiles = async () => {
+    if (process.platform !== "linux") return [];
+    const directory = `/proc/${f.pid}/fd`;
+    const targets = await Promise.all((await fs.readdir(directory)).map(async name => {
+      const file = path.join(directory, name);
+      const target = await fs.readlink(file).catch(error => {
+        if (error.code === "ENOENT") return "";
+        throw error;
+      });
+      return { file, target };
+    }));
+    return targets.filter(({ target }) => target.includes(`${path.sep}spool${path.sep}`));
+  };
+  let total = 0;
+  for (const setting of [null, path.join(f.home, "custom temporary files")]) {
+    const { config } = await (await f.call("api/v1/config")).json();
+    const commit = await f.call("api/v1/config/commit", {
+      baseRevision: config.revision, config: { ...config, temporaryDirectory: setting },
+    });
+    assert.equal(commit.status, 200, await commit.text());
+    await f.restart(env);
+    const root = await fs.realpath(setting || path.join(f.home, "tmp"));
+    const runtime = await (await f.call("api/v1/runtime")).json();
+    assert.equal(runtime.temporaryStorage.activeDirectory, root);
+    assert.equal(runtime.temporaryStorage.sqliteDirectory, path.join(root, "sqlite"));
+    const started = new Promise(resolve => { entered = resolve; });
+    const pending = f.request({ input: [{ role: "user", content }] });
+    pending.catch(() => {});
+    try {
+      await started;
+      let files, resources;
+      for (let i = 0; i < 500; i++) {
+        resources = (await (await f.call("api/v1/security/status")).json()).resources;
+        files = await spoolFiles();
+        if (resources.encryptedSpoolBytes > Buffer.byteLength(content) + 128 * 1024
+          && (process.platform !== "linux" || files.length >= 2)) break;
+        await delay(20);
+      }
+      assert.ok(resources.encryptedSpoolBytes > Buffer.byteLength(content) + 128 * 1024,
+        "both request and incomplete response occupy temporary storage");
+      if (process.platform === "linux") {
+        assert.ok(files.length >= 2);
+        for (const { file, target } of files) {
+          assert.ok(target.startsWith(`${path.join(root, "spool")}${path.sep}`), target);
+          const metadata = await fs.stat(file);
+          assert.equal(metadata.nlink, 0, "anonymous temporary files are already unlinked");
+          assert.ok(metadata.blocks > 0, "the file has allocated disk space");
+          assert.equal((await fs.readFile(file)).includes(Buffer.from(marker)), false, "temporary bodies are encrypted");
+        }
+      }
+    } finally {
+      release?.();
+    }
+    const response = await pending;
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).output[0].content[0].text, content);
+    total += 1;
+    await f.waitFor(result => result.total === total);
+    let resources;
+    for (let i = 0; i < 500; i++) {
+      resources = (await (await f.call("api/v1/security/status")).json()).resources;
+      if (resources.encryptedSpoolBytes === 0 && (await spoolFiles()).length === 0) break;
+      await delay(20);
+    }
+    assert.equal(resources.encryptedSpoolBytes, 0, "completed forwarding and inspection release the disk budget");
+    assert.deepEqual(await spoolFiles(), [], "all spool file descriptors have closed");
+    assert.deepEqual(await fs.readdir(path.join(root, "spool")), [], "no named temporary files remain");
+  }
+});
 
 test("request history folds across pages, reuses checks and preserves current evidence and new calls", async t => {
   const f = await fixture(t, (_req, res, body) => respond(res, body));

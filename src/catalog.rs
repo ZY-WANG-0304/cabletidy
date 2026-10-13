@@ -79,7 +79,8 @@ async fn execute(args: &[&str]) -> Result<String> {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
-    let script = std::env::temp_dir().join(format!("cabletidy-codex-{}.ps1", uuid::Uuid::new_v4()));
+    let script = crate::temporary::helpers_directory()
+        .join(format!("cabletidy-codex-{}.ps1", uuid::Uuid::new_v4()));
     #[cfg(windows)]
     crate::config::atomic_write(&script, include_bytes!("windows-codex.ps1")).await?;
     #[cfg(windows)]

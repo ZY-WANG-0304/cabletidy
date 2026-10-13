@@ -76,6 +76,11 @@ pub fn validate(input: &Value) -> Value {
         "Web 管理台必须监听 127.0.0.1、localhost 或 ::1；本地管理台不支持远程监听"
     );
     check!(c["audit"].is_object(), "audit", "审计设置必须是 object");
+    check!(
+        crate::temporary::valid_setting(&c["temporaryDirectory"]),
+        "temporaryDirectory",
+        "临时目录必须是服务器上的绝对路径，或 null（使用默认目录）"
+    );
     for (key, minimum, message) in [
         (
             "retentionDays",

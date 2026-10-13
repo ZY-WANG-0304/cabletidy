@@ -2017,6 +2017,7 @@ const MIN_AUDIT_BUDGET_MIB = 16;
 function renderSettings() {
   const audit = state.config.audit;
   const storage = state.runtime?.security?.storage;
+  const temporary = state.runtime?.temporaryStorage;
   return `<div class="settings-page">
     <section class="panel" aria-labelledby="audit-settings-title">
       <div class="panel-header"><h2 id="audit-settings-title">审计记录</h2>${storage ? `<span class="muted">已用 ${esc(((storage.bytes || 0) / 1048576).toFixed(1))} MiB</span>` : ""}</div>
@@ -2037,6 +2038,19 @@ function renderSettings() {
         </div>
         <p class="settings-cleanup" id="audit-settings-cleanup" aria-live="polite" hidden>调低限制后，超出范围的历史记录将被清理。</p>
         <div class="settings-footer"><span class="muted">保存后立即生效</span><button class="button button-primary" type="submit">保存设置</button></div>
+      </form>
+    </section>
+    <section class="panel" aria-labelledby="temporary-settings-title">
+      <div class="panel-header"><h2 id="temporary-settings-title">临时目录</h2></div>
+      <form id="temporary-settings-form">
+        <div class="settings-directory">
+          <label for="temporary-directory">服务器目录</label>
+          <input id="temporary-directory" name="temporaryDirectory" type="text" autocomplete="off" spellcheck="false" value="${esc(state.config.temporaryDirectory || "")}" placeholder="${esc(temporary?.defaultDirectory || "留空使用数据目录下的 tmp")}" aria-describedby="temporary-directory-help">
+          <p class="muted" id="temporary-directory-help">填写服务器上当前用户的私有目录绝对路径；留空使用数据目录下的 tmp。用于请求、响应暂存和数据库查询临时文件，按用途自动建立子目录。</p>
+          ${temporary?.activeDirectory ? `<p class="settings-active-directory">当前使用：<span>${esc(temporary.activeDirectory)}</span></p>` : ""}
+          ${temporary?.restartRequired ? `<p class="notice warning" role="status">已保存新的临时目录，重启 CableTidy 后生效。重启前继续使用当前目录。</p>` : ""}
+        </div>
+        <div class="settings-footer"><span class="muted">保存后重启生效</span><button class="button button-primary" type="submit">保存临时目录</button></div>
       </form>
     </section>
   </div>`;
@@ -2066,6 +2080,11 @@ function saveAuditSettings(data) {
     throw new Error(`存储上限必须至少为 ${MIN_AUDIT_BUDGET_MIB} MiB，且换算后的字节数须为有效整数，或选择不设上限。`);
   }
   state.candidate.audit = { ...state.candidate.audit, retentionDays: days, budgetBytes: bytes };
+}
+
+function saveTemporarySettings(data) {
+  const directory = String(data.get("temporaryDirectory") || "").trim();
+  state.candidate.temporaryDirectory = directory || null;
 }
 
 function renderDiagnostics() {
@@ -2374,6 +2393,7 @@ async function handleFormSubmit(event, form) {
     if (submitButton) submitButton.textContent = "保存中...";
     const handlers = {
       "audit-settings-form": () => saveAuditSettings(data),
+      "temporary-settings-form": () => saveTemporarySettings(data),
       "cable-create-form": () => saveCableCreate(data, form),
       "cable-upstream-form": () => saveCableUpstream(data),
       "cable-models-form": () => saveCableModels(form),
@@ -2384,7 +2404,9 @@ async function handleFormSubmit(event, form) {
     const successAlert = formId === "claude-client-form"
       ? "模型选择已保存。请点击“应用到 Claude Code”，重新应用配置后才会生效。"
       : "";
-    await saveChanges(handlers[formId], form, undefined, successAlert);
+    await saveChanges(handlers[formId], form,
+      formId === "temporary-settings-form" ? "临时目录已保存，重启 CableTidy 后生效。" : undefined,
+      successAlert);
   } catch (error) {
     showFormError(form, error);
   } finally {

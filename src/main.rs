@@ -2,9 +2,26 @@ use anyhow::{bail, Result};
 use cabletidy::{config::Paths, lifecycle, server, targets};
 use tokio::io::AsyncBufReadExt;
 
-#[tokio::main(worker_threads = 2)]
-async fn main() {
-    if let Err(error) = run().await {
+fn main() {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|arg| matches!(arg.as_str(), "start" | "restart"))
+        && std::env::args().len() == 2
+    {
+        if let Err(error) = cabletidy::temporary::initialize() {
+            cabletidy::daemon_log::error(format_args!("{error:#}"));
+            std::process::exit(1);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap_or_else(|error| {
+            cabletidy::daemon_log::error(format_args!("{error:#}"));
+            std::process::exit(1);
+        });
+    if let Err(error) = runtime.block_on(run()) {
         cabletidy::daemon_log::error(format_args!("{error:#}"));
         std::process::exit(1);
     }
