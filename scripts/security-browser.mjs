@@ -834,12 +834,14 @@ try {
     const layout = await page.locator(".trace-map-viewport").evaluate(viewport => {
       const ticks = [...viewport.querySelectorAll(".trace-axis-tick")];
       return { overflows: viewport.scrollWidth > viewport.clientWidth,
+        axisLine: getComputedStyle(viewport.querySelector(".trace-minimap"), "::before").content,
         aligned: ticks.every(tick => {
           const marker = tick.getBoundingClientRect(), segment = tick.parentElement.querySelector(".trace-segment").getBoundingClientRect();
           return marker.bottom < segment.top && Math.abs(marker.left - segment.left - segment.width / 2) <= 1;
         }) };
     });
     assert.ok(layout.overflows);
+    assert.equal(layout.axisLine, "none", "the upper ruler has independent ticks without a continuous axis line");
     assert.ok(layout.aligned, "every ordinal tick sits above and at the center of its request, including duration scale");
     assert.ok(await page.locator(".trace-scroll-rail").isVisible());
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -861,6 +863,13 @@ try {
   await page.waitForFunction(x => !document.querySelector('[data-action="security-session-refresh"]').disabled
     && document.querySelector(".trace-inspector-heading") && document.querySelector(".trace-map-viewport").scrollLeft === x, overviewScroll);
   assert.equal(await page.evaluate(() => document.querySelector(".trace-map-viewport").scrollLeft), overviewScroll, "refresh retains horizontal scroll");
+  await page.locator(".trace-map-viewport").evaluate(node => { node.scrollLeft = node.scrollWidth; });
+  await page.waitForFunction(() => document.querySelector(".trace-map-viewport").scrollLeft > 0);
+  await page.locator('.trace-event-row[data-id="overview-1"]').click();
+  await page.waitForFunction(() => document.querySelector(".trace-inspector-heading")
+    && document.querySelector(".trace-segment.is-selected")?.dataset.id === "overview-1");
+  assert.equal(await page.evaluate(() => document.querySelector(".trace-map-viewport").scrollLeft), 0, "reselecting the current request reveals its segment after scrolling away");
+  report.checks.push("explicitly reselecting the current request reveals its overview segment even when its ID is unchanged");
   await page.getByLabel("搜索已加载轨迹", { exact: true }).fill("轨迹坐标轴请求 175");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   assert.equal(await page.locator(".trace-event-row").count(), 1);
@@ -876,6 +885,21 @@ try {
   await page.getByLabel("搜索已加载轨迹", { exact: true }).fill("");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   assert.equal(await page.locator(".trace-map-viewport").evaluate(node => node.scrollLeft), overviewScroll);
+  for (const mobile of [false, true]) {
+    await page.setViewportSize(mobile ? { width: 390, height: 844 } : report.viewport);
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    await page.locator("#audit-settings-form").waitFor();
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelector(".trace-inspector-heading")
+      && document.querySelector(".trace-event-row.is-selected")?.dataset.id === "overview-175");
+    assert.equal(await page.locator(".trace-segment.is-selected").getAttribute("data-id"), "overview-175");
+    assert.ok(await page.locator(".trace-map-viewport").evaluate(viewport => {
+      const bounds = viewport.getBoundingClientRect(), selected = viewport.querySelector(".trace-segment.is-selected").getBoundingClientRect();
+      return selected.left >= bounds.left && selected.right <= bounds.right;
+    }), "returning from settings reveals the restored request after its segment is rendered");
+  }
+  report.checks.push("returning from settings to the same long session restores and reveals request 175 after loading on desktop/mobile");
+  await page.setViewportSize(report.viewport);
   await screenshot("21-desktop-trace-axis.png");
   await durationToggle.click();
   await checkOverviewGeometry();

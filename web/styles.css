@@ -1352,7 +1352,6 @@ button.list-row:hover,
 .trace-map-viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .trace-map-track { width: 100%; padding: 6px 16px 6px 6px; }
 .trace-minimap { position: relative; display: flex; gap: 2px; align-items: stretch; height: 56px; padding-top: 30px; }
-.trace-minimap::before { content: ""; position: absolute; top: 22px; left: 0; right: 0; height: 1px; background: #cbd2d7; }
 .trace-step { position: relative; min-width: 12px; flex-basis: 0; }
 .trace-axis-tick { position: absolute; bottom: calc(100% + 7px); left: 50%; width: 0; height: 5px; border-left: 1px solid #b9c1c8; }
 .trace-axis-tick > span { position: absolute; bottom: 7px; left: 0; transform: translateX(-50%); color: var(--muted); font-size: 10px; line-height: 12px; white-space: nowrap; }

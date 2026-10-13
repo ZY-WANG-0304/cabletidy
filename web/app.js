@@ -15,6 +15,7 @@ let renderedTraceDetailId = null;
 let renderedTraceTab = null;
 let renderedTraceScale = null;
 let traceOverviewObserver = null;
+let pendingTraceSelection = false;
 let navigationIndex = window.history.state?.navigationIndex || 0;
 let navigationUrl = window.location.href;
 let restoringNavigation = false;
@@ -192,7 +193,8 @@ function render(preservedForms = []) {
   };
   const traceFocus = ["trace-event-list", "trace-map-viewport", "trace-scroll-control"]
     .find(name => document.activeElement?.classList?.contains(name));
-  const revealTraceSelection = renderedTraceId !== state.trace.id || renderedTraceDetailId !== state.security.detailId || renderedTraceScale !== state.trace.scale;
+  if (state.page !== "security-session") pendingTraceSelection = false;
+  else if (renderedTraceId !== state.trace.id || renderedTraceDetailId !== state.security.detailId || renderedTraceScale !== state.trace.scale) pendingTraceSelection = true;
   const paneScroll = state.page === "security-session" && renderedTraceId === state.trace.id
     ? [...pageContent.querySelectorAll(".trace-event-list, .trace-inspector-body, .trace-map-viewport")].map(node => ({
       selector: node.classList.contains("trace-event-list") ? ".trace-event-list" : node.classList.contains("trace-map-viewport") ? ".trace-map-viewport" : ".trace-inspector-body",
@@ -207,7 +209,7 @@ function render(preservedForms = []) {
     const node = pageContent.querySelector(pane.selector);
     if (node) { node.scrollTop = pane.top; node.scrollLeft = pane.left; }
   }
-  if (state.page === "security-session") setupTraceOverview(revealTraceSelection);
+  if (state.page === "security-session") setupTraceOverview();
   if (traceFocus) pageContent.querySelector(`.${traceFocus}`)?.focus({ preventScroll: true });
   renderedTraceId = state.page === "security-session" ? state.trace.id : null;
   renderedTraceDetailId = state.security.detailId;
@@ -1441,7 +1443,7 @@ function traceSegments(items) {
   });
 }
 
-function setupTraceOverview(revealSelection) {
+function setupTraceOverview() {
   const viewport = pageContent.querySelector(".trace-map-viewport");
   if (!viewport) return;
   const rail = pageContent.querySelector(".trace-scroll-rail");
@@ -1453,12 +1455,14 @@ function setupTraceOverview(revealSelection) {
     control.value = viewport.scrollLeft;
     control.style.setProperty("--thumb-width", `${Math.max(24, rail.clientWidth * viewport.clientWidth / viewport.scrollWidth)}px`);
   };
-  if (revealSelection) {
+  if (pendingTraceSelection) {
     const selected = viewport.querySelector(".trace-segment.is-selected");
     if (selected) {
       const bounds = viewport.getBoundingClientRect(), item = selected.getBoundingClientRect();
       if (item.left < bounds.left + 6) viewport.scrollLeft -= bounds.left + 6 - item.left;
       else if (item.right > bounds.right - 6) viewport.scrollLeft += item.right - bounds.right + 6;
+      // Loading renders have no selected segment; consume the request only once it exists.
+      pendingTraceSelection = false;
     }
   }
   control.addEventListener("input", () => { viewport.scrollLeft = Number(control.value); });
@@ -2215,6 +2219,7 @@ async function securityAction(action, element) {
   }
   if (action === "security-session-refresh") { await loadSecuritySession(t.id, false); return; }
   if (action === "security-trace-select") {
+    pendingTraceSelection = true;
     await loadSecurityDetail(element.dataset.id, true, true);
     pageContent.querySelector(`.trace-event-row.is-selected`)?.scrollIntoView({ block: "nearest", behavior: "instant" });
     return;
