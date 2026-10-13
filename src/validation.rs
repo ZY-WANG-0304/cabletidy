@@ -419,8 +419,8 @@ pub fn validate(input: &Value) -> Value {
                     );
                     for (key, v) in entries(v) {
                         check!(
-                            ["opus", "sonnet", "fable", "haiku", "subagent"]
-                                .contains(&key.as_str())
+                            (crate::targets::claude::MODEL_FAMILIES.contains(&key.as_str())
+                                || key == "subagent")
                                 && nonempty(v),
                             format!("{p}.claude.models.{key}"),
                             "仅支持 opus、sonnet、fable、haiku、subagent 的非空模型 ID"

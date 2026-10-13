@@ -4,7 +4,9 @@ use anyhow::{bail, Result};
 use cabletidy::{
     catalog::{self, Catalog},
     config::{self, text, Paths},
-    lifecycle, model, targets, validation,
+    lifecycle, model,
+    security::evidence,
+    targets, validation,
 };
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -35,7 +37,33 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
     let y = a.get(1).unwrap_or(&empty);
     let z = a.get(2).unwrap_or(&empty);
     Ok(match command {
+        "evidence.fixture" => evidence::fixture_projection(
+            x, config::array(y), z, a.get(3) == Some(&json!(true)), a.get(4).and_then(Value::as_str),
+        )?,
+        "evidence.ranges" => evidence::content_ranges(text(x), y, text(z), a.get(3) == Some(&json!(true))),
+        "evidence.associated" => json!(evidence::associated(x, y, z == &json!(true))),
+        "evidence.record" => {
+            let mut record = x.clone();
+            evidence::normalize_record(&mut record);
+            record
+        }
+        "evidence.legacy" => evidence::legacy_text(x, text(y), z),
+        "evidence.body" => {
+            let mut page = x.clone();
+            evidence::normalize_body(&mut page, config::array(y), text(z));
+            page
+        }
+        "evidence.selections" => evidence::risk_selections(config::array(x), text(y)),
         "config.defaults" => config::defaults(),
+        "config.endpoints" => json!(config::entries(&x["cables"]).map(|(id, b)| {
+            json!({"id":b["virtualProvider"],"baseUrl":format!("{}{}",config::base_url(x,id),if b["target"]=="claude-code" {""} else {"/v1"})})
+        }).collect::<Vec<_>>()),
+        "config.operation" => {
+            cabletidy::config_operations::apply(x, y, &Catalog::fixture(z.clone())).await?
+        }
+        "claude.models" => {
+            json!({"aliases": {"defaultModel":targets::claude::DEFAULT_MODEL_ALIASES,"subagent":targets::claude::SUBAGENT_MODEL_ALIASES,"families":targets::claude::MODEL_FAMILIES}})
+        }
         "config.normalize" => config::normalize(x),
         "config.validate" => validation::validate(x),
         "config.public" => config::public(x, y),

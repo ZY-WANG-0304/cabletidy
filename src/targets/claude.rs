@@ -1,3 +1,8 @@
+pub const DEFAULT_MODEL_ALIASES: &[&str] =
+    &["best", "opus", "sonnet", "fable", "haiku", "opusplan"];
+pub const SUBAGENT_MODEL_ALIASES: &[&str] = &["opus", "sonnet", "fable", "haiku"];
+pub const MODEL_FAMILIES: &[&str] = &["opus", "sonnet", "fable", "haiku"];
+
 use super::{digest, Options};
 use crate::config::{atomic_write, backup, ensure_dir, entries, read_optional, text, write_json};
 use anyhow::{bail, Result};

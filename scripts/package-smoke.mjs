@@ -106,7 +106,7 @@ test("packed CLI installs, serves assets, shuts down and preserves data on unins
       assert.equal(runtime.web.url, url);
       assert.equal(await fs.readFile(configFile, "utf8"), savedConfig);
     }
-    for (const asset of ["", "app.js", "styles.css", "config-identity.js", "claude-models.js"]) {
+    for (const asset of ["", "app.js", "styles.css", "claude-models.js"]) {
       const response = await fetch(`${url}${asset}`, { signal: AbortSignal.timeout(3000) });
       assert.equal(response.status, 200);
       const body = await response.text();

@@ -1414,11 +1414,50 @@ test("changed streamed tool arguments retain every risk version and deduplicate 
   assert.deepEqual(findings.map(f => record.bodySnapshots.find(s => s.id === f.evidence.bodyRef.snapshotId).body.cmd), versions.map(v => v.cmd));
   assert.deepEqual(findings.map(f => JSON.parse(record.bodySnapshots.find(s => s.id === f.evidence.bodyRef.sourceSnapshotId).body.arguments)), versions);
   assert.ok(findings.every(f => f.executionStatus === "unknown"));
+  const projected = record.responseContent.items[0];
+  assert.ok(findings.every(f => projected.findingIds.includes(f.id)));
+  assert.equal(projected.riskVersions.length, 2);
+  assert.deepEqual(projected.riskVersions.map(v => JSON.parse(v.text).cmd), [versions[0].cmd, versions[2].cmd]);
+  assert.deepEqual(projected.riskGaps, []);
   const filtered = await f.list("audit", "severity=critical&category=destructive_action");
   assert.equal(filtered.riskRecordCount, 1);
   assert.equal(filtered.findingCount, 4);
   await f.restart();
   assert.deepEqual((await review(f, audit.id)).record.findings, record.findings);
+  assert.deepEqual((await review(f, audit.id)).record.responseContent, record.responseContent);
+});
+
+test("risk projection locates later Unicode content pages and original byte offsets across restart", async t => {
+  const f = await fixture(t, (_req, res, body) => respond(res, body));
+  const text = `普通上下文🙂 ${secret} 保留上下文 <script>literal</script>`;
+  const input = [...Array.from({ length: 85 }, (_, i) => ({ role: "assistant", content: `history ${i}` })), { role: "user", content: text }];
+  await (await f.request({ input })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const record = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  const finding = record.findings.find(f => f.ruleId === "SEC-SECRET-001" && f.evidence.bodyRef.snapshotId === "request");
+  assert.ok(finding);
+  assert.equal(finding.contentSide, "request");
+  const content = await (await f.call(`api/v1/security/audit/${audit.id}/content?view=folded&finding=${finding.id}`)).json();
+  assert.equal(content.view, "all");
+  assert.equal(content.offset, 80);
+  const item = content.items.find(i => i.index === 85);
+  assert.ok(item.findingIds.includes(finding.id));
+  const ranges = item.riskRanges.preview.filter(r => r.findingId === finding.id);
+  assert.equal(ranges.length, 1);
+  assert.equal(item.preview.slice(ranges[0].start, ranges[0].end), secret);
+  const body = await (await f.call(`api/v1/security/audit/${audit.id}/body?snapshot=request&finding=${finding.id}`)).json();
+  assert.equal(body.findingSelection.hitUnavailable, false);
+  const selection = body.findingSelection;
+  const hit = body.chunks.map(c => Buffer.from(c.content).subarray(Math.max(0, selection.start-c.start), Math.max(0, selection.end-c.start)).toString()).join("");
+  assert.equal(hit, secret);
+  const originalEvidence = structuredClone(finding.evidence);
+  await f.restart();
+  const again = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.deepEqual(again.findings.find(f => f.id === finding.id).evidence, originalEvidence);
+  const retained = await (await f.call(`api/v1/security/audit/${audit.id}/content?finding=${finding.id}`)).json();
+  delete retained.storage;
+  delete content.storage;
+  assert.deepEqual(retained, content);
 });
 
 test("body capacity reclaims completed history after restart and during subsequent requests", async t => {
@@ -1853,6 +1892,20 @@ test("unchanged streamed tool arguments preserve full content and filtered detec
   assert.equal(content.items[0].preview, tool.arguments);
   assert.deepEqual(JSON.parse(content.items[0].structure), tool);
   assert.ok(content.items[0].contentSnapshotIds.includes(findings[0].evidence.bodyRef.sourceSnapshotId));
+  const item = content.items[0];
+  assert.ok(item.findingIds.includes(findings[0].id));
+  assert.deepEqual(item.riskVersions, []);
+  assert.deepEqual(item.riskGaps, []);
+  for (const field of ["preview", "structure"]) {
+    const ranges = item.riskRanges[field].filter(range => range.findingId === findings[0].id);
+    assert.equal(ranges.length, 1);
+    const hit = item[field].slice(ranges[0].start, ranges[0].end);
+    assert.equal(hit, args.cmd);
+  }
+  assert.equal(findings[0].contentSide, "response");
+  assert.equal(findings[0].bodyLocation.snapshotId, "response");
+  const located = await (await f.call(`api/v1/security/audit/${audit.id}/response-content?finding=${findings[0].id}`)).json();
+  assert.deepEqual(located.items, content.items);
   await f.restart();
   assert.deepEqual((await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent, content);
 });

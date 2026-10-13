@@ -126,8 +126,12 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         if let Some(claude) = b.get("claude") {
             b2["claude"] = fields(claude, &["setModel", "discoverModels"]);
             if let Some(models) = claude.get("models") {
-                b2["claude"]["models"] =
-                    fields(models, &["opus", "sonnet", "fable", "haiku", "subagent"]);
+                let keys: Vec<_> = crate::targets::claude::MODEL_FAMILIES
+                    .iter()
+                    .copied()
+                    .chain(["subagent"])
+                    .collect();
+                b2["claude"]["models"] = fields(models, &keys);
             }
         }
         if let Some(env) = b.get("env") {

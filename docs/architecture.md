@@ -554,8 +554,8 @@ Claude Code 模型选择（仅 Claude Code，可选）
 
 ```text
 browser draft
-  -> POST /api/v1/config/commit with baseRevision
-  -> revision check + validation + effective diff
+  -> POST /api/v1/config/commit with baseRevision + operation
+  -> revision check + Rust domain operation + validation + effective diff
   -> atomic store write
   -> runtime snapshot swap
 ```
@@ -572,6 +572,7 @@ GET  /api/v1/catalog
 GET  /api/v1/config
 GET  /api/v1/runtime
 GET  /api/v1/events
+GET  /api/v1/claude/models
 
 POST /api/v1/config/validate
 POST /api/v1/config/commit
@@ -583,6 +584,29 @@ POST /api/v1/tests/upstream
 POST /api/v1/tests/model-resolve
 GET  /api/v1/integrations
 ```
+
+管理台的配置表单提交领域操作，Rust 在现有配置上执行编辑、同步引用并生成
+Codex 持久化策略。`commit` 的请求为 `{ baseRevision, operation }`；操作类型如下：
+
+| type | 操作输入 |
+| --- | --- |
+| `cable.create` | `data`：名称、target、upstreamBaseUrl、upstreamSecret、Claude 选项；`models`：客户端 / 上游模型 ID 行 |
+| `cable.delete` | `cableId`；仅回收此线路释放的、没有其他引用的 provider / route / upstream |
+| `cable.upstream` | `cableId`、`data`：id、name、protocol、baseUrl、authHeader、可选 secret |
+| `models.replace` | `cableId`、`models`：oldId、clientModelId、upstreamModelId、可选 aliases / capabilityOverrides、policy |
+| `model.save` / `model.delete` | 高级模型编辑的 `data` 或待删除的 `modelId`，以及 `cableId` |
+| `claude.save` | `cableId`、`data`：defaultModel、四个家族、subagent、discoverModels |
+
+`policy` 保存表单输入 metadataMode、contextWindow、vision，由 Rust 根据本机
+官方目录生成 capabilities 和 codex.inputModalities。改名用 `oldId` 明确描述，
+允许整组名称交换，并同步线路与 provider 的引用。通用配置 normalize 不猜测
+改名关系。`GET /api/v1/claude/models` 返回启动模型、子代理模型和家族字段的官方
+别名定义；浏览器建议目录继续只作显示。
+
+操作和原有 `{ baseRevision, config, upstreamSecrets }` 整图提交共用修订检查、
+校验、密钥清理和原子保存。操作成功返回 `selection`、`page`，最终配置身份和
+入口 URL 分别来自 `config` 与 `runtime.virtualProviders[].baseUrl`。错误不改变
+当前配置、运行时快照或密钥。表单草稿、三方合并与响应过期保护留在浏览器。
 
 预览与应用统一使用 `preview-target-artifacts` 和 `/api/v1/targets/apply`。未指定 `cableId` 时选择首个启用的线路；要应用特定线路，应显式传入其 `cableId`。Codex 和 Claude Code 均支持持久化应用。成功应用返回 `target`，记录 `target.apply` 事件；应用失败使用 `target_apply_failed`，不支持持久化写入的目标返回 `501 target_apply_not_supported`。`/api/v1/targets/restore` 仅用于撤销当前已应用的 Claude Code 线路，恢复原有受管理字段，保留其他用户设置；失败返回 `422 target_restore_failed`。
 
@@ -701,6 +725,8 @@ Web 文件通过 `include_bytes!` 嵌入原生程序。npm 包只包含薄启动
 - 请求、响应不设单条固定长度上限；网关路由和模型改写使用 32 KiB 页的临时加密文件，密钥仅在内存中。正文处理共享 256 MiB 工作区、512 MiB 加密暂存预算。资源不足导致无法路由请求时返回基础设施 503；审计捕获或存储失败不会基于风险阻断转发。
 - 4 个后台检测工作槽在请求结束或中断后重放保留内容：先学习并识别凭据，再把原文和敏感位置逐段提交到 SQLite；流式工具参数与文本先跨事件重组，原始分片由内容快照引用替换。完整扫描保留的可检测内容，局部结构、未知语义、存储与工作区缺口明确记录。
 - 审计库 schema 3 的 audit / findings 保持一对多；audit_snapshots 保存不可覆盖的完成清单或检测范围，audit_body_chunks 保存连续、不可改写的正文段。详情返回清单，独立 /security/audit/<id>/body 接口每页返回最多 4 段。进度、失败和覆盖原因独立于请求结果与风险等级。
+- 审计内容的证据匹配由 Rust 只读投影完成。内容项包含 `findingIds`、`riskRanges.preview/structure`（对应显示文本的 UTF-16 坐标）、`riskVersions`（当前内容已变化时的检测版本）和 `riskGaps`（证据不完整或超出 8 MiB 定位预算）。缺口保留其他可读内容，不产生虚假命中。工具参数匹配对应 JSON 字段，支持嵌套转义，不以说明字段中的相同文本代替参数。
+- 发现附带 `contentSide` 与 `bodyLocation`；内容接口的 `finding` 参数定位关联页，请求内容可利用已保存的 `contentIndex` 直达历史页。正文接口的 `finding` 返回 `findingSelection` 和命中上下文；旧凭据检测窗口使用已保存的敏感标记定位。正文 `riskRanges` 和旧快照 `locations` 使用 UTF-8 字节坐标。旧 JSON 正文按 `fieldOrder` 重建为统一 chunks，原 `legacySnapshot` 仍保留；以上均不改写历史证据或存储 schema。
 - 上游 URL 可以在管理台展示，但不得写入 Codex 生成的 local provider block。
 - Codex 生成配置只包含 CableTidy local endpoint 和 client model。
 - 每份配置只连接一个 upstream，不支持主备或多上游切换。多 backend 以及模型设置中残留的独立 `upstreams` 绑定都必须校验失败。
