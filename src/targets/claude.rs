@@ -4,6 +4,24 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, path::Path};
 const STATE: &str = ".cabletidy-settings.json";
+
+#[derive(Debug)]
+pub struct SettingsConflict {
+    pub fields: Vec<String>,
+    pub settings_path: std::path::PathBuf,
+    pub confirmation_token: String,
+}
+impl std::fmt::Display for SettingsConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Claude settings differ from the last CableTidy apply: {}. Confirm before overwriting.",
+            self.fields.join(", ")
+        )
+    }
+}
+impl std::error::Error for SettingsConflict {}
+
 async fn read_regular(path: &Path) -> Result<Option<String>> {
     match tokio::fs::symlink_metadata(path).await {
         Ok(m) if !m.is_file() || m.is_symlink() => {
@@ -175,9 +193,35 @@ async fn acquire(o: &Options) -> Result<crate::lifecycle::InstanceLock> {
     }
     unreachable!()
 }
-async fn commit(current: &Current, plan: &Value, o: &Options, restoring: bool) -> Result<Value> {
+async fn commit(
+    current: &Current,
+    plan: &Value,
+    o: &Options,
+    restoring: bool,
+    confirmation: Option<&str>,
+) -> Result<Value> {
     if !crate::config::array(&plan["conflicts"]).is_empty() {
-        bail!("Claude settings were edited after applying CableTidy: {}. Preserve your edits before retrying.",crate::config::array(&plan["conflicts"]).iter().map(text).collect::<Vec<_>>().join(", "));
+        let token = digest(
+            serde_json::to_vec(&json!([
+                current.text,
+                current.state_text,
+                plan["next"],
+                plan["state"],
+                restoring
+            ]))?
+            .as_slice(),
+        );
+        if confirmation != Some(token.as_str()) {
+            return Err(SettingsConflict {
+                fields: crate::config::array(&plan["conflicts"])
+                    .iter()
+                    .map(|v| text(v).to_owned())
+                    .collect(),
+                settings_path: o.claude_home.join("settings.json"),
+                confirmation_token: token,
+            }
+            .into());
+        }
     }
     let file = o.claude_home.join("settings.json");
     let state_file = o.claude_home.join(STATE);
@@ -217,12 +261,12 @@ async fn commit(current: &Current, plan: &Value, o: &Options, restoring: bool) -
         json!({"applied":[file],"backup":backup,"changes":plan["changed"],"mode":if restoring{"restored"}else{"managed_proxy"}}),
     )
 }
-pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
+pub async fn apply(a: &Value, o: &Options, confirmation: Option<&str>) -> Result<Value> {
     let lock = acquire(o).await?;
     let result = async {
         let current = read(&o.claude_home).await?;
         let plan = plan(&current, &a["environment"]["vars"], text(&a["cableId"]));
-        let mut out = commit(&current, &plan, o, false).await?;
+        let mut out = commit(&current, &plan, o, false, confirmation).await?;
         out["environment"] = a["environment"].clone();
         out["warnings"] = json!(warnings(&current.settings, &a["environment"]["vars"]));
         Ok(out)
@@ -231,7 +275,7 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     lock.release().await?;
     result
 }
-pub async fn restore(id: &str, o: &Options) -> Result<Value> {
+pub async fn restore(id: &str, o: &Options, confirmation: Option<&str>) -> Result<Value> {
     let lock = acquire(o).await?;
     let result = async {
         let current = read(&o.claude_home).await?;
@@ -245,7 +289,7 @@ pub async fn restore(id: &str, o: &Options) -> Result<Value> {
             );
         }
         let plan = plan(&current, &json!({}), id);
-        commit(&current, &plan, o, true).await
+        commit(&current, &plan, o, true, confirmation).await
     }
     .await;
     lock.release().await?;

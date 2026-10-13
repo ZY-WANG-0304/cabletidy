@@ -2437,7 +2437,7 @@ function artifactPanel(artifacts) {
       ${settingsPath ? `<p>应用位置：<code>${esc(settingsPath)}</code>，仅合并管理字段。</p>` : ""}
       ${instructions.map((message) => `<p class="field-hint">${esc(message)}</p>`).join("")}
       ${artifacts.changes?.length ? `<p class="field-hint">修改字段：${esc(artifacts.changes.join(", "))}</p>` : ""}
-      ${artifacts.conflicts?.length ? `<div class="notice warning">应用已阻止：这些字段在上次应用后被手工修改：${esc(artifacts.conflicts.join(", "))}</div>` : ""}
+      ${artifacts.conflicts?.length ? `<div class="notice warning">需要确认：这些字段与 CableTidy 上次应用的记录不一致：${esc(artifacts.conflicts.join(", "))}。点击“应用到 Claude Code”或“撤销接入”时，可选择是否覆盖。</div>` : ""}
       ${files.map((file) => file.kind === "json"
         ? `<details class="subsection"><summary>${esc(file.path)}</summary><pre class="code-preview">${esc(file.contents)}</pre></details>`
         : `<div class="subsection"><div class="table-meta">${esc(file.path)}</div><pre class="code-preview">${esc(file.contents)}</pre></div>`).join("")}
@@ -2554,7 +2554,7 @@ async function handleAction(action, element) {
       if (hasUnsavedChanges()) throw new Error("请先保存当前编辑，再撤销接入。");
       const cable = selectedCable();
       if (cable?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
-      await api("/targets/restore", { method: "POST", body: JSON.stringify({ cableId: cable.id }) });
+      if (!await changeTargetSettings("restore", cable.id)) return;
       state.artifactPreview = null;
       toast("Claude Code 原接入配置已恢复，请重启客户端。");
       render();
@@ -3051,10 +3051,8 @@ async function applyTarget() {
     await previewArtifacts();
     return;
   }
-  const result = await api("/targets/apply", {
-    method: "POST",
-    body: JSON.stringify({ cableId: cable.id }),
-  });
+  const result = await changeTargetSettings("apply", cable.id);
+  if (!result) return;
   state.artifactPreview = result.report ? {
     ...result.report,
     target: result.target,
@@ -3063,6 +3061,29 @@ async function applyTarget() {
   } : null;
   toast(`${targetLabel(record.target)} 配置已应用，请重启客户端。`);
   render();
+}
+
+async function changeTargetSettings(action, cableId) {
+  let confirmationToken;
+  while (true) {
+    try {
+      return await api(`/targets/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ cableId, confirmationToken }),
+      });
+    } catch (error) {
+      const conflict = error.body?.error;
+      if (conflict?.code !== "claude_settings_conflict" || !conflict.details?.confirmationToken) throw error;
+      const details = conflict.details;
+      const effect = action === "restore"
+        ? "继续撤销将把接管字段恢复为首次接入 CableTidy 前的值，覆盖现有修改。写入前会自动备份。"
+        : "继续应用将使用当前选择的配置覆盖现有修改，写入前会自动备份。";
+      const changedAgain = confirmationToken ? "确认期间配置再次发生变化，请重新确认。\n\n" : "";
+      const message = `${changedAgain}检测到以下字段与 CableTidy 上次应用的记录不一致，可能被手工或其他工具修改：\n\n${details.settingsPath}\n${details.fields.join("\n")}\n\n${effect}\n\n选择“确定”继续${action === "restore" ? "撤销" : "应用"}，选择“取消”保留当前文件。`;
+      if (!window.confirm(message)) return null;
+      confirmationToken = details.confirmationToken;
+    }
+  }
 }
 
 async function saveChanges(update, form, successMessage = "配置已保存并生效。", successAlert = "") {

@@ -278,6 +278,133 @@ test("management applies and restores Claude settings without returning existing
   assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), original);
 });
 
+test("management conflicts allow confirmed apply and restore without exposing client secrets", async (t) => {
+  const f = await fixture(t, () => assert.fail("Settings management contacted upstream"));
+  const file = path.join(f.home, "client", "settings.json");
+  await fs.mkdir(path.dirname(file));
+  const original = { env: { ANTHROPIC_AUTH_TOKEN: "original-client-secret" }, permissions: {} };
+  await fs.writeFile(file, JSON.stringify(original));
+  assert.equal((await f.call("api/v1/targets/apply", { cableId: "claude-main" })).status, 200);
+  for (const action of ["apply", "restore"]) {
+    const edited = JSON.parse(await fs.readFile(file, "utf8"));
+    edited.env.ANTHROPIC_AUTH_TOKEN = "manual-client-secret";
+    edited.env.UNRELATED = "keep";
+    await fs.writeFile(file, JSON.stringify(edited));
+    const request = { cableId: "claude-main" };
+    const conflict = await f.call(`api/v1/targets/${action}`, request);
+    assert.equal(conflict.status, 409);
+    const conflictText = await conflict.text();
+    assert.doesNotMatch(conflictText, /manual-client-secret|original-client-secret|real-upstream-secret/);
+    const error = JSON.parse(conflictText).error;
+    assert.equal(error.code, "claude_settings_conflict");
+    assert.deepEqual(error.details.fields, ["env.ANTHROPIC_AUTH_TOKEN"]);
+    assert.equal(error.details.settingsPath, file);
+    assert.equal(typeof error.details.confirmationToken, "string");
+    assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), edited);
+    const confirmed = await f.call(`api/v1/targets/${action}`, { ...request, confirmationToken: error.details.confirmationToken });
+    assert.equal(confirmed.status, 200);
+    const confirmedText = await confirmed.text();
+    assert.doesNotMatch(confirmedText, /manual-client-secret|original-client-secret|real-upstream-secret/);
+    const report = JSON.parse(confirmedText).report;
+    assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), edited);
+    const applied = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.equal(applied.env.ANTHROPIC_AUTH_TOKEN, action === "apply" ? "cabletidy-local" : "original-client-secret");
+    assert.equal(applied.env.UNRELATED, "keep");
+  }
+  assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { ...original, env: { ...original.env, UNRELATED: "keep" } });
+});
+
+for (const [change, configure] of [
+  ["target client", config => {
+    config.cables["claude-main"].target = "codex";
+    config.cables["claude-main"].targetFormat = "codex.config.toml.v1";
+    delete config.cables["claude-main"].claude;
+    config.virtualProviders["cabletidy_claude-main"].ingressProtocol = "openai.responses";
+    config.virtualProviders["cabletidy_claude-main"].models = {};
+    config.upstreams.relay.protocol = "openai.responses";
+  }],
+  ["startup model", config => { config.cables["claude-main"].defaultModel = "sonnet"; }],
+  ["family model", config => { config.cables["claude-main"].claude.models = { haiku: "claude-sonnet-4-6" }; }],
+  ["model discovery", config => { config.cables["claude-main"].claude.discoverModels = true; }],
+  ["upstream model mapping", config => { config.virtualProviders["cabletidy_claude-main"].models["claude-sonnet-4-6"].upstreamModelId = "another-vendor-model"; }],
+  ["upstream URL", config => { config.upstreams.relay.baseUrl = "https://changed.invalid/v1"; }],
+  ["removed cable", config => { delete config.cables["claude-main"]; delete config.virtualProviders["cabletidy_claude-main"]; }],
+]) {
+  test(`old Claude confirmation stops without client writes after changing ${change}`, async (t) => {
+    const f = await fixture(t, () => assert.fail("Settings management contacted upstream"));
+    const file = path.join(f.home, "client", "settings.json");
+    assert.equal((await f.call("api/v1/targets/apply", { cableId: "claude-main" })).status, 200);
+    const edited = JSON.parse(await fs.readFile(file, "utf8"));
+    edited.env.ANTHROPIC_AUTH_TOKEN = "manual-client-secret";
+    await fs.writeFile(file, JSON.stringify(edited));
+    const conflict = await f.call("api/v1/targets/apply", { cableId: "claude-main" });
+    assert.equal(conflict.status, 409);
+    const { confirmationToken } = (await conflict.json()).error.details;
+    const stateFile = path.join(f.home, "client", ".cabletidy-settings.json");
+    const before = await fs.readFile(file, "utf8"), ownership = await fs.readFile(stateFile, "utf8");
+    const backups = await fs.readdir(path.join(f.home, "backups"));
+    const config = (await (await f.call("api/v1/config")).json()).config;
+    configure(config);
+    const commit = await f.call("api/v1/config/commit", { baseRevision: config.revision, config });
+    assert.equal(commit.status, 200, await commit.text());
+    const retry = await f.call("api/v1/targets/apply", { cableId: "claude-main", confirmationToken });
+    assert.equal(retry.status, 409);
+    assert.deepEqual((await retry.json()).error, {
+      code: "target_configuration_changed", message: "线路已被其他窗口修改，请刷新后重新应用",
+    });
+    assert.equal(await fs.readFile(file, "utf8"), before);
+    assert.equal(await fs.readFile(stateFile, "utf8"), ownership);
+    assert.deepEqual((await fs.readdir(path.join(f.home, "backups"))).filter(name => name.includes("claude-settings")), backups.filter(name => name.includes("claude-settings")));
+    await assert.rejects(fs.stat(path.join(f.home, "codex-client", "config.toml")), { code: "ENOENT" });
+  });
+}
+
+test("Claude file-only changes ask again while unrelated CableTidy settings retain confirmation", async (t) => {
+  const f = await fixture(t, () => assert.fail("Settings management contacted upstream"));
+  const file = path.join(f.home, "client", "settings.json");
+  assert.equal((await f.call("api/v1/targets/apply", { cableId: "claude-main" })).status, 200);
+  const edited = JSON.parse(await fs.readFile(file, "utf8"));
+  edited.env.ANTHROPIC_AUTH_TOKEN = "first-manual-secret";
+  await fs.writeFile(file, JSON.stringify(edited));
+  const conflict = await f.call("api/v1/targets/apply", { cableId: "claude-main" });
+  const firstToken = (await conflict.json()).error.details.confirmationToken;
+  edited.env.ANTHROPIC_AUTH_TOKEN = "second-manual-secret";
+  await fs.writeFile(file, JSON.stringify(edited));
+  const retry = await f.call("api/v1/targets/apply", { cableId: "claude-main", confirmationToken: firstToken });
+  assert.equal(retry.status, 409);
+  const error = (await retry.json()).error;
+  assert.equal(error.code, "claude_settings_conflict");
+  assert.notEqual(error.details.confirmationToken, firstToken);
+  assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), edited);
+  const config = (await (await f.call("api/v1/config")).json()).config;
+  config.audit.retentionDays = 7;
+  const commit = await f.call("api/v1/config/commit", { baseRevision: config.revision, config });
+  assert.equal(commit.status, 200, await commit.text());
+  const confirmed = await f.call("api/v1/targets/apply", { cableId: "claude-main", confirmationToken: error.details.confirmationToken });
+  assert.equal(confirmed.status, 200);
+  assert.equal(JSON.parse(await fs.readFile(file, "utf8")).env.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
+});
+
+test("confirmation is bound to cable identity and operation even when client settings match", async (t) => {
+  const f = await fixture(t, () => assert.fail("Settings management contacted upstream"), config => {
+    config.cables.another = { ...structuredClone(config.cables["claude-main"]), id: "another", name: "another", virtualProvider: "cabletidy_another" };
+    config.virtualProviders.cabletidy_another = { ...structuredClone(config.virtualProviders["cabletidy_claude-main"]), id: "cabletidy_another" };
+  });
+  const file = path.join(f.home, "client", "settings.json");
+  assert.equal((await f.call("api/v1/targets/apply", { cableId: "claude-main" })).status, 200);
+  const edited = JSON.parse(await fs.readFile(file, "utf8"));
+  edited.env.ANTHROPIC_AUTH_TOKEN = "manual-client-secret";
+  await fs.writeFile(file, JSON.stringify(edited));
+  const conflict = await f.call("api/v1/targets/apply", { cableId: "claude-main" });
+  const confirmationToken = (await conflict.json()).error.details.confirmationToken;
+  for (const [action, cableId] of [["apply", "another"], ["restore", "claude-main"]]) {
+    const retry = await f.call(`api/v1/targets/${action}`, { cableId, confirmationToken });
+    assert.equal(retry.status, 409);
+    assert.equal((await retry.json()).error.code, "target_configuration_changed");
+    assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), edited);
+  }
+});
+
 test("Claude connectivity checks the saved base URL without running inference or requiring a model", async (t) => {
   let status = 200;
   const f = await fixture(t, (req, res, body) => {
