@@ -117,6 +117,10 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
           runtime: { virtualProviders: [], health: {} },
         }) };
       }
+      if (url === "/api/v1/targets/apply" || url === "/api/v1/targets/restore") {
+        const override = await options.onTarget?.(url, body);
+        if (override) return { ok: (override.status || 200) < 400, status: override.status || 200, json: async () => override.body };
+      }
       const responses = {
         "/api/v1/config": { config: clone(persisted) },
         "/api/v1/runtime": { virtualProviders: [], health: {} },
@@ -1101,6 +1105,62 @@ test("preview and apply follow the selected cable after creation, switching and 
   await app.action("open-cable", { dataset: { id: "development" } });
   await app.action("apply-target", {});
   assert.equal(app.requests.at(-1).body.cableId, "development");
+});
+
+for (const action of ["apply", "restore"]) {
+  for (const accept of [false, true]) {
+    test(`Claude ${action} conflict ${accept ? "continues after confirmation" : "keeps settings when cancelled"}`, async () => {
+      const app = await controller(normalizeConfig(claudeConfigFixture()), {
+        confirmLeave: accept,
+        onTarget(url, body) {
+          if (body.confirmationToken) return { body: { target: "claude-code", report: { mode: action === "restore" ? "restored" : "managed_proxy" } } };
+          return { status: 409, body: { error: { code: "claude_settings_conflict", details: {
+            settingsPath: "/client/settings.json", fields: ["env.ANTHROPIC_API_KEY", "env.ANTHROPIC_BASE_URL"], confirmationToken: "current-files",
+          } } } };
+        },
+      });
+      await app.action("open-cable", { dataset: { id: "claude-main" } });
+      await app.action(`${action}-target`, {});
+      const requests = app.requests.filter(({ url }) => url === `/api/v1/targets/${action}`);
+      assert.equal(requests.length, accept ? 2 : 1);
+      assert.deepEqual(requests[0].body, { cableId: "claude-main" });
+      if (accept) assert.deepEqual(requests[1].body, { cableId: "claude-main", confirmationToken: "current-files" });
+      assert.equal(app.confirmations.length, 1);
+      assert.equal(app.confirmations[0], action === "restore"
+        ? "检测到以下字段与 CableTidy 上次应用的记录不一致，可能被手工或其他工具修改：\n\n/client/settings.json\nenv.ANTHROPIC_API_KEY\nenv.ANTHROPIC_BASE_URL\n\n继续撤销将把接管字段恢复为首次接入 CableTidy 前的值，覆盖现有修改。写入前会自动备份。\n\n选择“确定”继续撤销，选择“取消”保留当前文件。"
+        : "检测到以下字段与 CableTidy 上次应用的记录不一致，可能被手工或其他工具修改：\n\n/client/settings.json\nenv.ANTHROPIC_API_KEY\nenv.ANTHROPIC_BASE_URL\n\n继续应用将使用当前选择的配置覆盖现有修改，写入前会自动备份。\n\n选择“确定”继续应用，选择“取消”保留当前文件。");
+      if (!accept) assert.equal(app.messages.some(message => /配置已应用|原接入配置已恢复/.test(message)), false);
+      assert.equal(app.read("state.busy"), false);
+    });
+  }
+}
+
+test("Claude apply asks again when settings change during confirmation", async () => {
+  let attempt = 0;
+  const app = await controller(normalizeConfig(claudeConfigFixture()), {
+    onTarget(url, body) {
+      if (++attempt > 2) return { body: { target: "claude-code", report: { mode: "managed_proxy" } } };
+      return { status: 409, body: { error: { code: "claude_settings_conflict", details: {
+        settingsPath: "/client/settings.json", fields: ["env.ANTHROPIC_API_KEY"], confirmationToken: `files-${attempt}`,
+      } } } };
+    },
+  });
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  await app.action("apply-target", {});
+  const requests = app.requests.filter(({ url }) => url.endsWith("/targets/apply"));
+  assert.deepEqual(requests.map(({ body }) => body.confirmationToken), [undefined, "files-1", "files-2"]);
+  assert.equal(app.confirmations.length, 2);
+  assert.match(app.confirmations[1], /^确认期间配置再次发生变化，请重新确认。\n\n检测到以下字段/);
+});
+
+test("Claude apply failures other than conflicts do not offer to overwrite", async () => {
+  const app = await controller(normalizeConfig(claudeConfigFixture()), {
+    onTarget: () => ({ status: 422, body: { error: { code: "target_apply_failed", message: "Invalid Claude settings object" } } }),
+  });
+  await app.action("open-cable", { dataset: { id: "claude-main" } });
+  await app.action("apply-target", { closest: () => null });
+  assert.equal(app.confirmations.length, 0);
+  assert.ok(app.messages.includes("Invalid Claude settings object"));
 });
 
 for (const [target, fixture, id] of [

@@ -348,6 +348,23 @@ fn json_response(status: u16, body: Value) -> Response {
 fn error(status: u16, code: &str, message: &str) -> Response {
     json_response(status, json!({"error":{"code":code,"message":message}}))
 }
+fn target_error(code: &str, err: &anyhow::Error) -> Response {
+    if let Some(conflict) = err.downcast_ref::<targets::claude::SettingsConflict>() {
+        return json_response(
+            409,
+            json!({"error":{
+                "code":"claude_settings_conflict",
+                "message":"Claude Code 配置中的接管字段与 CableTidy 上次应用的记录不一致，请确认是否覆盖。",
+                "details":{
+                    "fields":conflict.fields,
+                    "settingsPath":conflict.settings_path,
+                    "confirmationToken":conflict.confirmation_token
+                }
+            }}),
+        );
+    }
+    error(422, code, &err.to_string())
+}
 fn protocol_error(protocol: &str, status: u16, code: &str, message: &str) -> Response {
     if protocol == "anthropic.messages" {
         let kind = match code {
@@ -930,16 +947,18 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 json!({"error":{"code":"target_apply_not_supported","message":"此 target 没有可持久化写入的客户端配置；请使用管理台预览环境变量"},"target":a["target"],"cableId":a["cableId"],"artifacts":targets::public(&a)}),
             ));
         }
-        return Ok(match targets::apply(&a, &state.targets).await {
-            Ok(report) => {
-                state.event(
-                    "target.apply",
-                    json!({"cableId":a["cableId"],"target":a["target"],"files":report["applied"]}),
-                );
-                json_response(200, json!({"ok":true,"target":a["target"],"report":report}))
-            }
-            Err(e) => error(422, "target_apply_failed", &e.to_string()),
-        });
+        return Ok(
+            match targets::apply(&a, &state.targets, body["confirmationToken"].as_str()).await {
+                Ok(report) => {
+                    state.event(
+                        "target.apply",
+                        json!({"cableId":a["cableId"],"target":a["target"],"files":report["applied"]}),
+                    );
+                    json_response(200, json!({"ok":true,"target":a["target"],"report":report}))
+                }
+                Err(e) => target_error("target_apply_failed", &e),
+            },
+        );
     }
     if path == "/api/v1/targets/restore" {
         let _guard = state.target_operation.lock().await;
@@ -951,19 +970,21 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 "请选择 Claude Code 配置",
             ));
         }
-        return Ok(match targets::restore(id, &state.targets).await {
-            Ok(report) => {
-                state.event(
-                    "target.restore",
-                    json!({"cableId":id,"target":"claude-code"}),
-                );
-                json_response(
-                    200,
-                    json!({"ok":true,"target":"claude-code","report":report}),
-                )
-            }
-            Err(e) => error(422, "target_restore_failed", &e.to_string()),
-        });
+        return Ok(
+            match targets::restore(id, &state.targets, body["confirmationToken"].as_str()).await {
+                Ok(report) => {
+                    state.event(
+                        "target.restore",
+                        json!({"cableId":id,"target":"claude-code"}),
+                    );
+                    json_response(
+                        200,
+                        json!({"ok":true,"target":"claude-code","report":report}),
+                    )
+                }
+                Err(e) => target_error("target_restore_failed", &e),
+            },
+        );
     }
     Ok(error(404, "not_found", "API endpoint 不存在"))
 }

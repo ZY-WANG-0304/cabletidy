@@ -193,10 +193,10 @@ pub async fn prepare(
         _ => Ok(a),
     }
 }
-pub async fn apply(a: &Value, options: &Options) -> Result<Value> {
+pub async fn apply(a: &Value, options: &Options, confirmation: Option<&str>) -> Result<Value> {
     match text(&a["target"]) {
         "codex" => codex::apply(a, options).await,
-        "claude-code" => claude::apply(a, options).await,
+        "claude-code" => claude::apply(a, options, confirmation).await,
         _ => bail!("此 target 没有可持久化写入的客户端配置"),
     }
 }

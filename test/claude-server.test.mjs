@@ -278,6 +278,42 @@ test("management applies and restores Claude settings without returning existing
   assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), original);
 });
 
+test("management conflicts allow confirmed apply and restore without exposing client secrets", async (t) => {
+  const f = await fixture(t, () => assert.fail("Settings management contacted upstream"));
+  const file = path.join(f.home, "client", "settings.json");
+  await fs.mkdir(path.dirname(file));
+  const original = { env: { ANTHROPIC_AUTH_TOKEN: "original-client-secret" }, permissions: {} };
+  await fs.writeFile(file, JSON.stringify(original));
+  assert.equal((await f.call("api/v1/targets/apply", { cableId: "claude-main" })).status, 200);
+  for (const action of ["apply", "restore"]) {
+    const edited = JSON.parse(await fs.readFile(file, "utf8"));
+    edited.env.ANTHROPIC_AUTH_TOKEN = "manual-client-secret";
+    edited.env.UNRELATED = "keep";
+    await fs.writeFile(file, JSON.stringify(edited));
+    const request = { cableId: "claude-main" };
+    const conflict = await f.call(`api/v1/targets/${action}`, request);
+    assert.equal(conflict.status, 409);
+    const conflictText = await conflict.text();
+    assert.doesNotMatch(conflictText, /manual-client-secret|original-client-secret|real-upstream-secret/);
+    const error = JSON.parse(conflictText).error;
+    assert.equal(error.code, "claude_settings_conflict");
+    assert.deepEqual(error.details.fields, ["env.ANTHROPIC_AUTH_TOKEN"]);
+    assert.equal(error.details.settingsPath, file);
+    assert.equal(typeof error.details.confirmationToken, "string");
+    assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), edited);
+    const confirmed = await f.call(`api/v1/targets/${action}`, { ...request, confirmationToken: error.details.confirmationToken });
+    assert.equal(confirmed.status, 200);
+    const confirmedText = await confirmed.text();
+    assert.doesNotMatch(confirmedText, /manual-client-secret|original-client-secret|real-upstream-secret/);
+    const report = JSON.parse(confirmedText).report;
+    assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), edited);
+    const applied = JSON.parse(await fs.readFile(file, "utf8"));
+    assert.equal(applied.env.ANTHROPIC_AUTH_TOKEN, action === "apply" ? "cabletidy-local" : "original-client-secret");
+    assert.equal(applied.env.UNRELATED, "keep");
+  }
+  assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { ...original, env: { ...original.env, UNRELATED: "keep" } });
+});
+
 test("Claude connectivity checks the saved base URL without running inference or requiring a model", async (t) => {
   let status = 200;
   const f = await fixture(t, (req, res, body) => {

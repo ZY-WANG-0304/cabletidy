@@ -84,9 +84,13 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
             .await?
         }
         "artifacts.public" => targets::public(x),
-        "artifacts.apply" => targets::apply(x, &options(y)?).await?,
+        "artifacts.apply" => {
+            targets::apply(x, &options(y)?, y["confirmationToken"].as_str()).await?
+        }
         "codex.apply" => targets::codex::apply(x, &options(y)?).await?,
-        "claude.restore" => targets::restore(text(x), &options(y)?).await?,
+        "claude.restore" => {
+            targets::restore(text(x), &options(y)?, y["confirmationToken"].as_str()).await?
+        }
         "claude.home" => json!(options(x)?.claude_home),
         "toml.read" => toml_edit::de::from_str::<Value>(text(x))?,
         "process.startTime" => json!(lifecycle::start_time(x.as_u64().unwrap_or(0) as u32).await),
@@ -99,7 +103,9 @@ fn reply(result: Result<Value>) -> Value {
     match result {
         Ok(value) => json!({"value":value}),
         Err(error) => {
-            if let Some(e) = error.downcast_ref::<model::ResolveError>() {
+            if let Some(e) = error.downcast_ref::<targets::claude::SettingsConflict>() {
+                json!({"error":{"message":e.to_string(),"code":"claude_settings_conflict","details":{"fields":e.fields,"settingsPath":e.settings_path,"confirmationToken":e.confirmation_token}}})
+            } else if let Some(e) = error.downcast_ref::<model::ResolveError>() {
                 json!({"error":{"message":e.message,"code":e.code,"details":e.details,"name":"ModelResolveError"}})
             } else {
                 json!({"error":{"message":error.to_string(),"cause":{"message":format!("{error:#}")}}})

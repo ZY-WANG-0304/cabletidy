@@ -77,7 +77,7 @@ test("apply, switch and restore preserve existing secrets, unrelated edits and o
   await assert.rejects(fs.stat(path.join(f.options.claudeHome, ".cabletidy-settings.json")), { code: "ENOENT" });
 });
 
-test("restore and reapply reject hand-edited managed fields without exposing their values", async (t) => {
+test("restore and reapply require confirmation for edited managed fields without exposing their values", async (t) => {
   const f = await fixture(t, { permissions: {} });
   await applyClaudeSettings(f.artifacts(), f.options);
   const changed = await f.read();
@@ -91,6 +91,88 @@ test("restore and reapply reject hand-edited managed fields without exposing the
     await assert.rejects(operation(), (error) => /env.ANTHROPIC_AUTH_TOKEN/.test(error.message) && !error.message.includes("manual-secret"));
     assert.deepEqual(await f.read(), changed);
   }
+});
+
+test("confirmed reapply backs up edits and retains the first original settings for restore", async (t) => {
+  const original = { env: { ANTHROPIC_AUTH_TOKEN: "original-secret" }, permissions: { allow: ["Read"] } };
+  const f = await fixture(t, original);
+  await applyClaudeSettings(f.artifacts(), f.options);
+  const changed = await f.read();
+  changed.env.ANTHROPIC_AUTH_TOKEN = "manual-secret";
+  delete changed.env.ANTHROPIC_BASE_URL;
+  changed.env.UNRELATED = "keep";
+  changed.newPreference = true;
+  await fs.writeFile(f.file, JSON.stringify(changed));
+  let confirmationToken;
+  await assert.rejects(applyClaudeSettings(f.artifacts(), f.options), error => {
+    assert.equal(error.code, "claude_settings_conflict");
+    assert.deepEqual(error.details.fields, ["env.ANTHROPIC_AUTH_TOKEN", "env.ANTHROPIC_BASE_URL"]);
+    assert.doesNotMatch(JSON.stringify(error), /manual-secret|original-secret/);
+    confirmationToken = error.details.confirmationToken;
+    return true;
+  });
+  const report = await applyClaudeSettings(f.artifacts(), { ...f.options, confirmationToken });
+  assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), changed);
+  const applied = await f.read();
+  assert.equal(applied.env.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
+  assert.equal(applied.env.ANTHROPIC_BASE_URL, f.artifacts().environment.vars.ANTHROPIC_BASE_URL);
+  assert.equal(applied.env.UNRELATED, "keep");
+  assert.equal(applied.newPreference, true);
+  await restoreClaudeSettings("claude-main", f.options);
+  assert.deepEqual(await f.read(), { ...original, env: { ...original.env, UNRELATED: "keep" }, newPreference: true });
+});
+
+test("confirmed restore backs up edits and stale or mismatched confirmations do not write", async (t) => {
+  const original = { env: { ANTHROPIC_AUTH_TOKEN: "original-secret" }, hooks: {} };
+  const f = await fixture(t, original);
+  await applyClaudeSettings(f.artifacts(), f.options);
+  const changed = await f.read();
+  changed.env.ANTHROPIC_AUTH_TOKEN = "first-manual-secret";
+  await fs.writeFile(f.file, JSON.stringify(changed));
+  const tokenFor = async operation => {
+    let token;
+    await assert.rejects(operation(), error => {
+      assert.equal(error.code, "claude_settings_conflict");
+      assert.doesNotMatch(JSON.stringify(error), /manual-secret|original-secret/);
+      token = error.details.confirmationToken;
+      return true;
+    });
+    return token;
+  };
+  const applyToken = await tokenFor(() => applyClaudeSettings(f.artifacts(), f.options));
+  const restoreToken = await tokenFor(() => restoreClaudeSettings("claude-main", f.options));
+  assert.notEqual(applyToken, restoreToken);
+  await tokenFor(() => restoreClaudeSettings("claude-main", { ...f.options, confirmationToken: applyToken }));
+  assert.deepEqual(await f.read(), changed);
+  changed.env.ANTHROPIC_AUTH_TOKEN = "second-manual-secret";
+  await fs.writeFile(f.file, JSON.stringify(changed));
+  const currentToken = await tokenFor(() => restoreClaudeSettings("claude-main", { ...f.options, confirmationToken: restoreToken }));
+  assert.notEqual(currentToken, restoreToken);
+  assert.deepEqual(await f.read(), changed);
+  const report = await restoreClaudeSettings("claude-main", { ...f.options, confirmationToken: currentToken });
+  assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), changed);
+  assert.deepEqual(await f.read(), original);
+  await assert.rejects(fs.stat(path.join(f.options.claudeHome, ".cabletidy-settings.json")), { code: "ENOENT" });
+});
+
+test("apply confirmation cannot approve a different configuration", async (t) => {
+  const f = await fixture(t, {});
+  await applyClaudeSettings(f.artifacts(), f.options);
+  const changed = await f.read();
+  changed.env.ANTHROPIC_AUTH_TOKEN = "manual-secret";
+  await fs.writeFile(f.file, JSON.stringify(changed));
+  let confirmationToken;
+  await assert.rejects(applyClaudeSettings(f.artifacts(), f.options), error => {
+    confirmationToken = error.details.confirmationToken;
+    return error.code === "claude_settings_conflict";
+  });
+  const different = f.artifacts();
+  different.cableId = "another";
+  await assert.rejects(applyClaudeSettings(different, { ...f.options, confirmationToken }), error => {
+    assert.notEqual(error.details.confirmationToken, confirmationToken);
+    return error.code === "claude_settings_conflict";
+  });
+  assert.deepEqual(await f.read(), changed);
 });
 
 test("concurrent applies retain the first original settings and can be fully restored", async (t) => {
@@ -142,6 +224,43 @@ test("ownership records written before cables were renamed can still be restored
   await restoreClaudeSettings("claude-main", f.options);
   assert.deepEqual(await f.read(), before);
 });
+
+for (const action of ["apply", "restore"]) {
+  test(`legacy ownership records allow confirmed ${action} after an external edit`, async (t) => {
+    const f = await fixture(t, { env: { ANTHROPIC_AUTH_TOKEN: "original-secret" } });
+    const original = await f.read();
+    await applyClaudeSettings(f.artifacts(), f.options);
+    const stateFile = path.join(f.options.claudeHome, ".cabletidy-settings.json");
+    const { cableId, ...state } = JSON.parse(await fs.readFile(stateFile, "utf8"));
+    const legacy = JSON.stringify({ ...state, version: 1, bindingId: cableId });
+    await fs.writeFile(stateFile, legacy);
+    const edited = await f.read();
+    edited.env.ANTHROPIC_AUTH_TOKEN = "manual-secret";
+    await fs.writeFile(f.file, JSON.stringify(edited));
+    const operation = options => action === "apply"
+      ? applyClaudeSettings(f.artifacts(), options)
+      : restoreClaudeSettings("claude-main", options);
+    let confirmationToken;
+    await assert.rejects(operation(f.options), error => {
+      assert.equal(error.code, "claude_settings_conflict");
+      assert.deepEqual(error.details.fields, ["env.ANTHROPIC_AUTH_TOKEN"]);
+      confirmationToken = error.details.confirmationToken;
+      return true;
+    });
+    assert.deepEqual(await f.read(), edited);
+    assert.equal(await fs.readFile(stateFile, "utf8"), legacy);
+    const report = await operation({ ...f.options, confirmationToken });
+    assert.deepEqual(JSON.parse(await fs.readFile(report.backup, "utf8")), edited);
+    if (action === "apply") {
+      const migrated = JSON.parse(await fs.readFile(stateFile, "utf8"));
+      assert.equal(migrated.version, 2);
+      assert.equal(migrated.cableId, "claude-main");
+      assert.equal(Object.hasOwn(migrated, "bindingId"), false);
+      await restoreClaudeSettings("claude-main", f.options);
+    }
+    assert.deepEqual(await f.read(), original);
+  });
+}
 
 test("Claude config directory honors the official environment variable and explicit test isolation", () => {
   const previous = process.env.CLAUDE_CONFIG_DIR;
