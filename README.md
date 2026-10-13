@@ -30,7 +30,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 检查使用本地规则和有界缓冲。未知工具、动态脚本、未覆盖的推理内容、图片和加密内容显示“已检查（覆盖有限）”；正文缺失、解析失败和资源不足等检查缺口单独提示。流式结果按 Responses / Messages 各自的完整协议结束事件判定，客户端在结束事件后关闭连接不再误标为中断；连接接收状态与检查状态分别保留。数据库不可用或队列满时代理继续运行，页面显示审计退化状态；正常退出会排空已接收的写入，强制退出可能丢失未提交记录。它是本地可追溯日志，不提供零丢失或防篡改保证。
 
-分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0-rc.1`，发布与验收状态见 [候选版发布说明](docs/releases/0.4.0-rc.5.md)。
+分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0-rc.1`，发布与验收状态见 [候选版发布说明](docs/releases/0.4.0-rc.6.md)。
 
 ## 服务设置
 
@@ -40,13 +40,13 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 设置保存到 `config.json` 的 `audit` 字段：`retentionDays` 为天数，`budgetBytes` 为字节数，`null` 表示该项不设上限；旧配置缺少字段时使用默认值。设置复用 `POST /api/v1/config/commit` 的校验、修订冲突检查和备份流程，不随线路导出或导入。
 
-5 GiB 默认值为 rc.5 之后尚未发布的源码调整。已有配置中保存的上限（包括 128 MiB）或“不限”继续沿用；要提高已有上限，在“设置”中将存储上限改为 5120 MiB 并保存。容量按需使用，不会预占 5 GiB。
+5 GiB 默认值自 `0.4.0-rc.6` 提供。已有配置中保存的上限（包括 128 MiB）或“不限”继续沿用；要提高已有上限，在“设置”中将存储上限改为 5120 MiB 并保存。容量按需使用，不会预占 5 GiB。
 
 界面预览：[桌面](docs/screenshots/service-settings-desktop.png) · [手机](docs/screenshots/service-settings-mobile.png)。
 
 ## 线路导出与导入
 
-“配置套装”在 rc.5 之后尚未发布的源码调整中更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到一个或多个上游。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。仍发送旧字段 `bindingId` 或 `bindingIds` 的请求会返回 `422 renamed_request_field`，不会退回默认选择，避免旧脚本看似成功却接到错误上游。
+“配置套装”自 `0.4.0-rc.6` 更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到上游，当前版本每条线路只支持一个上游。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。仍发送旧字段 `bindingId` 或 `bindingIds` 的请求会返回 `422 renamed_request_field`，不会退回默认选择，避免旧脚本看似成功却接到错误上游。
 
 在管理台的“线路”列表点击“导出线路”，勾选需要的线路后下载 JSON 文件。文件包含所选线路的客户端接入、模型映射与可选参数、路由、上游地址和认证方式；共用的路由与上游只保存一次。
 
@@ -79,7 +79,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用原生进程 API 查询进程身份；Codex 目录查询仍需要系统 Windows PowerShell，并允许 `Add-Type` 调用 Windows Job Object API。
 
-当前源码版本为 `0.4.0-rc.5`，在上一候选版基础上新增服务设置，可即时调整审计保存周期与存储上限，两项均支持不限；同时修正旧审计记录的风险展示，以及 Claude Code 在状态输出与运行时接口中的本地 URL。候选版使用 npm `next`；默认 npm 安装命令仍选择 `latest` 指向的稳定版 `0.3.0`。候选版的发布状态、验收范围与升级步骤见 [0.4.0-rc.5 发布说明](docs/releases/0.4.0-rc.5.md)；GitHub Release 与 npm 分别发布。稳定版见 [0.3.0 发布说明](docs/releases/0.3.0.md)。
+当前源码版本为 `0.4.0-rc.6`，在上一候选版基础上将配置套装更名为线路、提供独立导入导出页面，将默认审计存储上限提高到 5 GiB，并支持确认后继续应用或撤销有冲突的 Claude Code 配置；同时修复审计维护被文件锁阻塞时的读取失败，以及 Codex 配置分隔注释前的空行。候选版使用 npm `next`；默认 npm 安装命令仍选择 `latest` 指向的稳定版 `0.3.0`。候选版的发布状态、验收范围与升级步骤见 [0.4.0-rc.6 发布说明](docs/releases/0.4.0-rc.6.md)；GitHub Release 与 npm 分别发布。稳定版见 [0.3.0 发布说明](docs/releases/0.3.0.md)。
 
 ### 从 npm 官方源安装
 
@@ -95,10 +95,10 @@ cabletidy start
 npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cabletidy start
 ```
 
-试用 `0.4.0` 候选版时，先按[候选版升级说明](docs/releases/0.4.0-rc.5.md)停止服务并备份数据，再安装指定版本：
+试用 `0.4.0` 候选版时，先按[候选版升级说明](docs/releases/0.4.0-rc.6.md)停止服务并备份数据，再安装指定版本：
 
 ```bash
-npm install -g cabletidy@0.4.0-rc.5 --registry=https://registry.npmjs.org/
+npm install -g cabletidy@0.4.0-rc.6 --registry=https://registry.npmjs.org/
 ```
 
 ### 从本地安装包使用
