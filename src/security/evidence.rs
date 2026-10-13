@@ -475,12 +475,18 @@ pub(super) fn annotate_page(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<()> {
     let workspace = Workspace::new(cancelled);
-    let mut retained = Vec::new();
     let mut output = workspace.allocation();
     let findings = findings(db, audit)?;
-    let mut evidence = BTreeMap::new();
-    let mut bytes = 0;
-    for item in array(&page["items"]) {
+    let Some(items) = page["items"].as_array_mut() else {
+        return Ok(());
+    };
+    for item in items {
+        workspace.check()?;
+        // Keep only the current item's evidence alive. Final ranges and version
+        // text remain covered by the page's output reservation.
+        let mut retained = Vec::new();
+        let mut evidence = BTreeMap::new();
+        let mut bytes = 0;
         for finding in findings.iter().filter(|f| associated(f, item, response)) {
             let id = text(&finding["id"]);
             if evidence.contains_key(id) {
@@ -508,21 +514,14 @@ pub(super) fn annotate_page(
             };
             evidence.insert(id.into(), value);
         }
-    }
-    if let Some(items) = page["items"].as_array_mut() {
-        for item in items {
-            if cancelled() {
-                bail!("overview_cancelled");
-            }
-            annotate_item(
-                item,
-                &findings,
-                &evidence,
-                response,
-                &workspace,
-                &mut output,
-            )?;
-        }
+        annotate_item(
+            item,
+            &findings,
+            &evidence,
+            response,
+            &workspace,
+            &mut output,
+        )?;
     }
     Ok(())
 }

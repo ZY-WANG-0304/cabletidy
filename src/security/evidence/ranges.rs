@@ -316,6 +316,25 @@ impl Index {
     fn key<'a>(&self, input: &'a str, id: usize) -> &'a str {
         &input[self.nodes[id].key_start..self.nodes[id].key_end]
     }
+    fn member_token(
+        &self,
+        input: &str,
+        id: usize,
+        key: &str,
+        workspace: &Workspace<'_>,
+    ) -> Result<Option<usize>> {
+        let mut found = None;
+        for child in self.children(id) {
+            if chars_equal(
+                string_chars(self.key(input, child)),
+                string_chars(key),
+                workspace,
+            )? {
+                found = Some(child);
+            }
+        }
+        Ok(found)
+    }
     fn token<'a>(&self, input: &'a str, id: usize) -> &'a str {
         &input[self.nodes[id].start..self.nodes[id].end]
     }
@@ -457,24 +476,27 @@ fn matches(
     let target = &b.nodes[other];
     let equal = match target.kind {
         b'{' => {
-            if node.kind != b'{'
-                || !projection && a.children(id).count() != b.children(other).count()
-            {
+            if node.kind != b'{' {
                 return Ok(false);
+            }
+            // serde_json keeps the last value for each decoded key. Scanning
+            // both objects avoids retaining a second key map, while the reverse
+            // membership check preserves strict equality below the projection root.
+            if !projection {
+                for child in a.children(id) {
+                    if b.member_token(expected, other, a.key(input, child), workspace)?
+                        .is_none()
+                    {
+                        return Ok(false);
+                    }
+                }
             }
             for child in b.children(other) {
                 let key = b.key(expected, child);
-                let mut found = None;
-                for candidate in a.children(id) {
-                    if chars_equal(
-                        string_chars(a.key(input, candidate)),
-                        string_chars(key),
-                        workspace,
-                    )? {
-                        found = Some(candidate);
-                    }
+                if b.member_token(expected, other, key, workspace)? != Some(child) {
+                    continue;
                 }
-                let Some(found) = found else {
+                let Some(found) = a.member_token(input, id, key, workspace)? else {
                     return Ok(false);
                 };
                 if !matches((a, input, found), (b, expected, child), false, workspace)? {
@@ -640,6 +662,9 @@ impl<'a> Prepared<'a> {
         if target.nodes[0].kind == b'{' {
             for field in target.children(0) {
                 let key = target.key(expected.input, field);
+                if target.member_token(expected.input, 0, key, workspace)? != Some(field) {
+                    continue;
+                }
                 if locator["version"] == 1 {
                     if let Some(fields) = locator["fields"].as_array() {
                         let mut present = false;
@@ -661,17 +686,7 @@ impl<'a> Prepared<'a> {
                         }
                     }
                 }
-                let mut id = None;
-                for child in index.children(node) {
-                    if chars_equal(
-                        string_chars(index.key(input, child)),
-                        string_chars(key),
-                        workspace,
-                    )? {
-                        id = Some(child);
-                    }
-                }
-                let id = id.unwrap();
+                let id = index.member_token(input, node, key, workspace)?.unwrap();
                 push_hit(out, index.hit(id, finding, nested), memory)?;
             }
         } else {
@@ -1265,6 +1280,69 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_object_keys_match_decoded_last_values_with_strict_nested_fields() {
+        for (input, raw) in [
+            (
+                r#"{"cmd":"danger","input":{"x":0,"x":1}}"#,
+                r#"{"cmd":"danger","input":{"x":1}}"#,
+            ),
+            (r#"{"input":{"x":1}}"#, r#"{"input":{"x":0,"x":1}}"#),
+            (r#"{"input":{"x":0,"\u0078":1}}"#, r#"{"input":{"x":1}}"#),
+            (r#"{"input":{"x":1,"\u0078":0}}"#, r#"{"input":{"x":1}}"#),
+            (
+                r#"{"input":{"x":0,"x":1,"extra":0}}"#,
+                r#"{"input":{"x":1}}"#,
+            ),
+            (
+                r#"{"input":{"x":1}}"#,
+                r#"{"input":{"x":0,"x":1,"extra":0}}"#,
+            ),
+            (r#"{"input":{"x":0,"x":1}}"#, r#"{"input":{"x":0}}"#),
+            (
+                r#"{"input":{"x":{"ignored":0},"x":1}}"#,
+                r#"{"input":{"x":1}}"#,
+            ),
+            (
+                r#"{"input":{"🙂":0,"\ud83d\ude42":1}}"#,
+                r#"{"input":{"🙂":1}}"#,
+            ),
+            (
+                r#"{"input":{"a":[{"x":"old","x":"🙂"}]}}"#,
+                r#"{"input":{"a":[{"x":"🙂"}]}}"#,
+            ),
+            (
+                r#"{"input":{"a":[{"x":0,"x":1}]}}"#,
+                r#"{"input":{"a":[{"x":1,"extra":0}]}}"#,
+            ),
+            (
+                r#"{"cmd":"old","cmd":"danger"}"#,
+                r#"{"cmd":"old","cmd":"danger"}"#,
+            ),
+        ] {
+            let a: Value = serde_json::from_str(input).unwrap();
+            let b: Value = serde_json::from_str(raw).unwrap();
+            let expected = if a == b {
+                b.as_object().unwrap().len()
+            } else {
+                0
+            };
+            for display in [
+                input.to_owned(),
+                json!({"type":"function_call","arguments":input}).to_string(),
+            ] {
+                assert_eq!(
+                    content_ranges(&display, &json!(raw), "risk", true)
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    expected,
+                    "input={input}, evidence={raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cancellation_interrupts_token_scans_comparisons_and_unmatched_text() {
         let input = format!("\"{}\"", "x".repeat(1024 * 1024));
         let calls = Cell::new(0);
@@ -1301,6 +1379,28 @@ mod tests {
         .unwrap()
         .to_string()
         .contains("overview_cancelled"));
+    }
+
+    #[test]
+    fn repeated_key_scans_are_cancellable_without_a_retained_key_map() {
+        let input = format!(
+            "{{{}}}",
+            (0..200)
+                .map(|i| format!("\"field{i}\":{i}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let calls = Cell::new(0);
+        let cancelled = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 20
+        };
+        let workspace = Workspace::new(&cancelled);
+        let index = Index::parse(&input, &Workspace::new(&|| false)).unwrap();
+        let error =
+            matches((&index, &input, 0), (&index, &input, 0), false, &workspace).unwrap_err();
+        assert!(error.to_string().contains("overview_cancelled"));
+        assert_eq!(workspace.state.used.get(), 0);
     }
 
     #[test]

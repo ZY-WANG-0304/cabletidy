@@ -1954,6 +1954,59 @@ test("evidence workspace exhaustion keeps content readable and recovers on a lat
   assert.deepEqual((await read()).responseContent, original.responseContent);
 });
 
+test("unchanged tool arguments with nested duplicate keys retain current highlights", async t => {
+  const cmd = "rm -rf /important";
+  const argumentsText = String.raw`{"cmd":"${cmd}","input":{"x":0,"\u0078":1,"nested":[{"value":"old","value":"🙂"}]}}`;
+  const tool = { type: "function_call", call_id: "duplicates", name: "exec_command", arguments: argumentsText };
+  const f = await fixture(t, (_req, res, body) => respond(res, body, [tool]));
+  await (await f.request({ input: "hello" })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const original = (await review(f, audit.id)).record;
+  const finding = original.findings.find(f => f.ruleId === "SEC-DELETE-001");
+  assert.ok(finding);
+  assert.deepEqual(original.bodySnapshots.find(s => s.id === finding.evidence.bodyRef.snapshotId).body,
+    { cmd, input: { x: 1, nested: [{ value: "🙂" }] } });
+  const content = original.responseContent;
+  const item = content.items[0];
+  assert.equal(item.preview, argumentsText);
+  assert.deepEqual(item.riskVersions, []);
+  assert.deepEqual(item.riskGaps, []);
+  for (const field of ["preview", "structure"]) {
+    const ranges = item.riskRanges[field].filter(r => r.findingId === finding.id);
+    assert.equal(ranges.length, 2);
+    assert.equal(item[field].slice(ranges[0].start, ranges[0].end), cmd);
+    assert.ok(item[field].slice(ranges[1].start, ranges[1].end).includes("🙂"));
+  }
+  await f.restart();
+  const again = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.deepEqual(again.responseContent, content);
+  assert.deepEqual(again.findings.find(f => f.id === finding.id).evidence, finding.evidence);
+});
+
+test("evidence loads per item so multiple large tool calls fit the same workspace", async t => {
+  const commands = ["rm -rf /important", "rm -rf /different"].map(cmd => cmd + " ".repeat(600_000));
+  const tools = commands.map((cmd, i) => ({ type: "function_call", call_id: `large-${i}`, name: "exec_command", arguments: JSON.stringify({ cmd }) }));
+  const f = await fixture(t, (_req, res, body) => respond(res, body, tools));
+  await (await f.request({ input: "hello" })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const original = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.equal(original.findings.filter(f => f.ruleId === "SEC-DELETE-001").length, 2);
+  await f.restart({ CABLETIDY_TEST_EVIDENCE_WORKSPACE_BYTES: "1400000" });
+  const limited = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record;
+  assert.equal(limited.responseContent.items.length, 2);
+  for (const [i, item] of limited.responseContent.items.entries()) {
+    assert.deepEqual(item.riskGaps, []);
+    assert.deepEqual(item.riskVersions, []);
+    for (const field of ["preview", "structure"]) {
+      assert.equal(item.riskRanges[field].length, 1);
+      const range = item.riskRanges[field][0];
+      assert.equal(item[field].slice(range.start, range.end), commands[i]);
+    }
+  }
+  assert.deepEqual(limited.responseContent, original.responseContent);
+  assert.deepEqual(limited.findings.map(f => f.evidence), original.findings.map(f => f.evidence));
+});
+
 test("Codex interrupted stream keeps accumulated text without inventing completed output", async t => {
   const f = await fixture(t, (_req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream" });
