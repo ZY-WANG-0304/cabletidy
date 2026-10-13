@@ -303,11 +303,16 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
                     .and_then(|claude| claude.get_mut("models"))
                     .and_then(Value::as_object_mut)
                 {
-                    for field in ["opus", "sonnet", "fable", "haiku", "subagent"] {
+                    for field in crate::targets::claude::MODEL_FAMILIES
+                        .iter()
+                        .copied()
+                        .chain(["subagent"])
+                    {
                         if let Some(value) = models.get_mut(field) {
                             // Family values are model names; subagents also accept native aliases.
                             if field == "subagent"
-                                && ["opus", "sonnet", "fable", "haiku"].contains(&text(value))
+                                && crate::targets::claude::SUBAGENT_MODEL_ALIASES
+                                    .contains(&text(value))
                             {
                                 continue;
                             }
@@ -332,7 +337,7 @@ pub fn migrate_models(c: &mut Value) -> Result<()> {
     Ok(())
 }
 fn claude_alias(name: &str) -> bool {
-    ["best", "opus", "sonnet", "fable", "haiku", "opusplan"].contains(&name)
+    crate::targets::claude::DEFAULT_MODEL_ALIASES.contains(&name)
 }
 pub fn configuration_id(name: &str, fallback: &str) -> String {
     fn slug(s: &str) -> String {

@@ -1,5 +1,4 @@
-import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "./config-identity.js";
-import { CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES } from "./claude-models.js";
+import { CLAUDE_MODEL_CATALOG } from "./claude-models.js";
 
 const pageContent = document.querySelector("#page-content");
 const pageTitle = document.querySelector("#page-title");
@@ -13,10 +12,12 @@ let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
 let renderedTraceTab = null;
+let renderedTraceScale = null;
+let traceOverviewObserver = null;
+let pendingTraceSelection = false;
 let navigationIndex = window.history.state?.navigationIndex || 0;
 let navigationUrl = window.location.href;
 let restoringNavigation = false;
-const securityEvidenceCache = new WeakMap();
 
 // Explicit product guidance; catalog visibility does not indicate authorization.
 const SECURITY_MODELS = new Map([
@@ -53,12 +54,10 @@ const state = {
   runtime: null,
   events: [],
   codexCatalog: null,
+  claudeAliases: { defaultModel: [], subagent: [], families: [] },
   createTarget: "codex",
   transfer: { bundle: null, preview: null },
   busy: false,
-  pendingSecrets: {
-    upstreamSecrets: {},
-  },
   selected: {
     model: null,
     virtualProvider: null,
@@ -91,13 +90,6 @@ function entries(record) {
   return Object.entries(record || {});
 }
 
-function commaList(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function optionList(items, selected) {
   return items
     .map((item) => `<option value="${esc(item)}" ${item === selected ? "selected" : ""}>${esc(item)}</option>`)
@@ -125,16 +117,18 @@ async function api(path, options = {}) {
 
 async function bootstrap() {
   try {
-    const [configResult, runtime, events, codexCatalog] = await Promise.all([
+    const [configResult, runtime, events, codexCatalog, claudeModels] = await Promise.all([
       api("/config"),
       api("/runtime"),
       api("/events"),
       api("/codex/models"),
+      api("/claude/models"),
     ]);
     state.config = configResult.config;
     state.candidate = clone(state.config);
     state.runtime = runtime;
     state.codexCatalog = codexCatalog;
+    state.claudeAliases = claudeModels.aliases;
     state.events = events.events || [];
     state.selected.virtualProvider = firstKey(state.candidate.virtualProviders);
     state.selected.cable = firstKey(state.candidate.cables);
@@ -188,22 +182,30 @@ function render(preservedForms = []) {
     "security-detail": renderSecurityDetailPage,
     "security-session": renderSecuritySession,
   };
-  const traceListFocused = document.activeElement?.classList?.contains("trace-event-list");
+  const traceFocus = ["trace-event-list", "trace-map-viewport", "trace-scroll-control"]
+    .find(name => document.activeElement?.classList?.contains(name));
+  if (state.page !== "security-session") pendingTraceSelection = false;
+  else if (renderedTraceId !== state.trace.id || renderedTraceDetailId !== state.security.detailId || renderedTraceScale !== state.trace.scale) pendingTraceSelection = true;
   const paneScroll = state.page === "security-session" && renderedTraceId === state.trace.id
-    ? [...pageContent.querySelectorAll(".trace-event-list, .trace-inspector-body")].map(node => ({
-      selector: node.classList.contains("trace-event-list") ? ".trace-event-list" : ".trace-inspector-body",
+    ? [...pageContent.querySelectorAll(".trace-event-list, .trace-inspector-body, .trace-map-viewport")].map(node => ({
+      selector: node.classList.contains("trace-event-list") ? ".trace-event-list" : node.classList.contains("trace-map-viewport") ? ".trace-map-viewport" : ".trace-inspector-body",
       top: node.scrollTop,
+      left: node.scrollLeft,
     })) : [];
+  traceOverviewObserver?.disconnect();
+  traceOverviewObserver = null;
   pageContent.innerHTML = renderers[state.page]();
   for (const pane of paneScroll) {
     if (pane.selector === ".trace-inspector-body" && (renderedTraceDetailId !== state.security.detailId || renderedTraceTab !== state.trace.tab)) continue;
     const node = pageContent.querySelector(pane.selector);
-    if (node) node.scrollTop = pane.top;
+    if (node) { node.scrollTop = pane.top; node.scrollLeft = pane.left; }
   }
-  if (traceListFocused) pageContent.querySelector(".trace-event-list")?.focus({ preventScroll: true });
+  if (state.page === "security-session") setupTraceOverview();
+  if (traceFocus) pageContent.querySelector(`.${traceFocus}`)?.focus({ preventScroll: true });
   renderedTraceId = state.page === "security-session" ? state.trace.id : null;
   renderedTraceDetailId = state.security.detailId;
   renderedTraceTab = state.trace.tab;
+  renderedTraceScale = state.trace.scale;
   if (state.page === "security-session") {
     pageContent.querySelector(".trace-event-list")?.addEventListener("scroll", event => {
       const list = event.currentTarget;
@@ -501,7 +503,8 @@ function cableProviderStatus(cable) {
 }
 
 function cableEndpoint(cable) {
-  return `${configurationBaseUrl(state.candidate, cable.id)}${cable.target === "claude-code" ? "" : "/v1"}`;
+  return state.runtime?.virtualProviders?.find(provider => provider.id === cable.record.virtualProvider)?.baseUrl
+    || "";
 }
 
 function cableRow(cable) {
@@ -816,24 +819,13 @@ pageContent.addEventListener("invalid", (event) => {
   if (settings) settings.open = true;
 }, true);
 
-function codexModelFields(clientModelId, existing = {}, row) {
-  const definition = officialModel(clientModelId);
-  if (!definition) throw new Error("请选择本机 Codex 目录中的官方 GPT 模型；旧模型需要先确认对应关系。");
-  const mode = row?.querySelector("[data-codex-metadata-mode]")?.value || "official";
-  const codex = { metadataMode: mode };
-  const capabilities = [...definition.capabilities];
-  let contextWindow = existing.contextWindow;
-  if (mode === "override") {
-    const value = row.querySelector("[data-cable-model-context]").value.trim();
-    contextWindow = value ? Number(value) : undefined;
-    if (value && (!Number.isSafeInteger(contextWindow) || contextWindow < 1 || contextWindow > definition.maxContextWindow)) {
-      throw new Error(`${clientModelId} 的上下文窗口必须在 1 到 ${definition.maxContextWindow} 之间`);
-    }
-    const vision = row.querySelector("[data-codex-vision]").checked && definition.inputModalities.includes("image");
-    codex.inputModalities = vision ? ["text", "image"] : ["text"];
-    if (!vision && capabilities.includes("vision")) capabilities.splice(capabilities.indexOf("vision"), 1);
-  }
-  return { codex, capabilities, contextWindow };
+function modelPolicy(row) {
+  const value = String(row?.querySelector("[data-cable-model-context]")?.value || "").trim();
+  return {
+    metadataMode: row?.querySelector("[data-codex-metadata-mode]")?.value || "official",
+    contextWindow: value ? Number(value) : null,
+    vision: row?.querySelector("[data-codex-vision]")?.checked === true,
+  };
 }
 
 function renderCableDetail() {
@@ -962,12 +954,12 @@ function claudeAliasOptions(ids, selected = "") {
 
 function claudeModelChoice(name, ids, value) {
   const selected = String(value || "").trim();
-  return CLAUDE_MODEL_ALIASES[name].includes(selected) || ids.includes(selected) ? selected : "";
+  return state.claudeAliases[name].includes(selected) || ids.includes(selected) ? selected : "";
 }
 
 function claudeDefaultModelOptions(name, ids, value = "") {
   const selected = claudeModelChoice(name, ids, value);
-  const aliases = CLAUDE_MODEL_ALIASES[name];
+  const aliases = state.claudeAliases[name];
   const clientIds = [...new Set(ids)].filter((id) => !aliases.includes(id));
   return `<optgroup label="默认行为"><option value="" ${selected ? "" : "selected"}>${name === "defaultModel" ? "由 Claude 默认决定" : "沿用 Claude 默认行为"}</option></optgroup>
     <optgroup label="模型别名">${optionList(aliases, selected)}</optgroup>
@@ -996,7 +988,7 @@ function claudeModelGroups(cable = null) {
         <div class="subsection-header"><h3 id="claude-aliases-title">模型别名</h3></div>
         <p class="field-hint">${cable ? "从当前线路已保存的" : "可选。从本次填写的"}客户端模型 ID 中选择，或由 Claude 默认决定。</p>
         <div class="form-grid">
-          ${["opus", "sonnet", "fable", "haiku"].map((family) => claudeAliasSelect(cable, family)).join("")}
+          ${state.claudeAliases.families.map((family) => claudeAliasSelect(cable, family)).join("")}
         </div>
       </section>
       <section class="subsection" aria-labelledby="claude-defaults-title">
@@ -1078,29 +1070,6 @@ function createModelRow(values = {}, target = state.createTarget) {
       <button class="mini-button" type="button" data-action="remove-create-model" aria-label="移除模型映射">移除</button>
     </div>
   `;
-}
-
-function cableDefaults(target = "codex") {
-  const upstreamId = nextConfigId(state.candidate?.upstreams, "relay-main");
-  const cableId = nextConfigId(state.candidate?.cables, target === "claude-code" ? "claude-main" : "codex-main");
-  const routeId = nextConfigId(state.candidate?.routes, `${upstreamId}-route`);
-  return { upstreamId, cableId, routeId };
-}
-
-function nextConfigId(record, base) {
-  const source = record || {};
-  if (!source[base]) return base;
-  let suffix = 2;
-  while (source[`${base}-${suffix}`]) suffix += 1;
-  return `${base}-${suffix}`;
-}
-
-function upstreamDisplayName(baseUrl, fallback) {
-  try {
-    return new URL(baseUrl).hostname || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function renderModels() {
@@ -1260,7 +1229,6 @@ async function loadSecurityDetail(id, reset = true, embedded = false, prefetched
   s.detailLoading = false;
   render();
   if (s.detail && (!embedded || state.trace.tab === "body")) await loadSecurityBody(offset);
-  else if (s.detail && ["request", "response"].includes(state.trace.tab)) await loadContentRiskMarks(state.trace.tab === "response");
 }
 
 function renderSecurityDetailPage() {
@@ -1422,20 +1390,43 @@ async function loadMoreSecurityTrace() {
   t.loadingMore = false; render();
 }
 
-// Keep the overview usable even after scrolling through thousands of requests.
+// Each request keeps its own ordinal and target in the horizontally scrollable overview.
 function traceSegments(items) {
-  const size = Math.max(1, Math.ceil(items.length / 60));
-  const segments = [];
-  for (let i = 0; i < items.length; i += size) {
-    const group = items.slice(i, i + size);
-    segments.push({ id: group[0].id, first: i + 1, last: i + group.length,
-      duration: group.reduce((n, item) => n + (item.durationMs || 0), 0),
-      legacyFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).legacy, 0),
-      newFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).new, 0),
-      historicalFindingCount: group.reduce((n, item) => n + securityRiskCounts(item).historical, 0),
-      selected: group.some(item => item.id === state.security.detailId) });
+  return items.map((item, i) => {
+    const risk = securityRiskCounts(item);
+    return { id: item.id, order: i + 1, duration: item.durationMs || 0,
+      legacyFindingCount: risk.legacy, newFindingCount: risk.new, historicalFindingCount: risk.historical,
+      selected: item.id === state.security.detailId };
+  });
+}
+
+function setupTraceOverview() {
+  const viewport = pageContent.querySelector(".trace-map-viewport");
+  if (!viewport) return;
+  const rail = pageContent.querySelector(".trace-scroll-rail");
+  const control = rail.querySelector(".trace-scroll-control");
+  const syncScrollbar = () => {
+    const maximum = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+    rail.hidden = maximum === 0;
+    control.max = maximum;
+    control.value = viewport.scrollLeft;
+    control.style.setProperty("--thumb-width", `${Math.max(24, rail.clientWidth * viewport.clientWidth / viewport.scrollWidth)}px`);
+  };
+  if (pendingTraceSelection) {
+    const selected = viewport.querySelector(".trace-segment.is-selected");
+    if (selected) {
+      const bounds = viewport.getBoundingClientRect(), item = selected.getBoundingClientRect();
+      if (item.left < bounds.left + 6) viewport.scrollLeft -= bounds.left + 6 - item.left;
+      else if (item.right > bounds.right - 6) viewport.scrollLeft += item.right - bounds.right + 6;
+      // Loading renders have no selected segment; consume the request only once it exists.
+      pendingTraceSelection = false;
+    }
   }
-  return segments;
+  control.addEventListener("input", () => { viewport.scrollLeft = Number(control.value); });
+  viewport.addEventListener("scroll", syncScrollbar, { passive: true });
+  traceOverviewObserver = new ResizeObserver(syncScrollbar);
+  traceOverviewObserver.observe(viewport);
+  syncScrollbar();
 }
 
 function traceItems() {
@@ -1466,18 +1457,6 @@ function retainedContentItems(record, response, visible = false) {
   const loaded = [...items, ...Object.values(record.historyRanges || {}).flatMap(range => range.page?.items || [])];
   return [...new Map(loaded.map(item => [item.index,item])).values()];
 }
-function contentFindings(record, item, response) {
-  return (record.findings || []).filter(finding => {
-    const ref = finding.evidence?.bodyRef;
-    if (!ref) return false;
-    const source = ref.sourceSnapshotId || ref.snapshotId;
-    if (response && item.contentSnapshotIds?.includes(source)) return true;
-    if (source !== (response ? "response" : "request")) return false;
-    const start = ref.sourceStart ?? ref.start, end = ref.sourceEnd ?? ref.end;
-    return start < item.end && end > item.start;
-  });
-}
-
 function retainedRiskText(item, field) {
   const text = item[field] || "", ranges = item.riskRanges?.[field] || [];
   const selected = state.security.contentNavigation;
@@ -1503,212 +1482,22 @@ function retainedRiskText(item, field) {
   return html;
 }
 
-async function findingText(record, finding) {
-  let cache = securityEvidenceCache.get(record);
-  if (!cache) { cache = new Map(); securityEvidenceCache.set(record, cache); }
-  if (!cache.has(finding.id)) cache.set(finding.id, (async () => {
-    const ref = finding.evidence.bodyRef;
-    let offset = Math.max(0, (ref.start || 0) - 512), raw = "", next = ref.start;
-    const encoder = new TextEncoder(), decoder = new TextDecoder();
-    while (true) {
-      const page = await api(`/security/audit/${encodeURIComponent(record.id)}/body?${new URLSearchParams({ snapshot: ref.snapshotId, offset })}`);
-      if (state.security.detail !== record || !securityDetailVisible()) { cache.delete(finding.id); return ""; }
-      if (page.legacySnapshot) {
-        const { text, range } = securityBodyText(page.legacySnapshot.body, page.legacySnapshot.root, ref.location || finding.evidence.location, page.legacySnapshot.fieldOrder);
-        return range ? text.slice(range.start, range.end) : "";
-      }
-      if (finding.ruleId === "SEC-SECRET-001" && ref.matchKind !== "sensitive") {
-        const marks = securityPageMarks(page).filter(mark => mark.start < ref.end && mark.end > ref.start
-          && !["redaction_buffer_budget", "url_authority_uncertain", "credential_prefix_uncertain", "incomplete_body_fragment", "unsupported_stream_fragment"].includes(mark.reason));
-        if (marks.length) return marks.map(mark => (page.chunks || []).map(chunk => decoder.decode(encoder.encode(chunk.content).slice(Math.max(0, mark.start - chunk.start), Math.max(0, Math.min(chunk.end, mark.end) - chunk.start)))).join(""));
-      } else {
-        for (const chunk of page.chunks || []) {
-          const start = Math.max(next, chunk.start), end = Math.min(ref.end, chunk.end);
-          if (end > start) { raw += decoder.decode(encoder.encode(chunk.content).slice(start - chunk.start, end - chunk.start)); next = end; }
-        }
-        if (next >= ref.end) return raw;
-      }
-      if (page.nextOffset == null || page.nextOffset <= offset || page.nextOffset >= ref.end) return "";
-      offset = page.nextOffset;
-    }
-  })().catch(error => { cache.delete(finding.id); throw error; }));
-  return cache.get(finding.id);
-}
-
-// Keep JSON value spans in the displayed text, including its original escaping.
-function contentJsonNode(text) {
-  JSON.parse(text); // Reject incomplete input before collecting any ranges.
-  const tokens = text.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g);
-  let token = tokens.next().value;
-  const take = () => { const current = token; token = tokens.next().value; return current; };
-  const read = () => {
-    const first = take(), start = first.index;
-    if (first[0] === "{" || first[0] === "[") {
-      const object = first[0] === "{", children = object ? new Map() : [];
-      while (token[0] !== (object ? "}" : "]")) {
-        if (object) {
-          const key = JSON.parse(take()[0]);
-          take(); // colon
-          children.set(key, read());
-        } else children.push(read());
-        if (token[0] === ",") take(); else break;
-      }
-      const last = take();
-      return { start, end: last.index + 1, children, object };
-    }
-    const value = JSON.parse(first[0]), string = typeof value === "string";
-    return { start: start + (string ? 1 : 0), end: start + first[0].length - (string ? 1 : 0), value };
-  };
-  return read();
-}
-
-function toolContentRiskRanges(text, evidence, findingId) {
-  const ranges = [];
-  for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
-    if (!raw) continue;
-    let expected;
-    try { expected = JSON.parse(raw); } catch { expected = raw; }
-    // A custom tool's free-text input may itself look like JSON.
-    if (typeof expected === "string" && text === expected) {
-      ranges.push({ start: 0, end: text.length, findingId });
-      continue;
-    }
-    try {
-      let node = contentJsonNode(text), position = offset => offset;
-      const type = node.object && node.children.get("type")?.value;
-      if (["function_call", "custom_tool_call", "tool_use", "server_tool_use"].includes(type)) {
-        node = node.children.get(type === "function_call" ? "arguments" : "input");
-        if (!node) continue;
-      }
-      if (typeof node.value === "string" && (typeof expected !== "string" || type === "function_call")) {
-        // Codex arguments are JSON inside a JSON string. Map decoded UTF-16
-        // offsets back to the escaped string so only the matching value is marked.
-        const offsets = [node.start];
-        for (let at = node.start; at < node.end;) {
-          at += text[at] === "\\" ? (text[at + 1] === "u" ? 6 : 2) : 1;
-          offsets.push(at);
-        }
-        position = offset => offsets[offset];
-        node = contentJsonNode(node.value);
-      }
-      const matches = (current, value, projection = false) => {
-        if (value === null || typeof value !== "object") return !current.children && current.value === value;
-        if (Array.isArray(value)) return Array.isArray(current.children) && current.children.length === value.length
-          && value.every((child, index) => matches(current.children[index], child));
-        const keys = Object.keys(value);
-        return current.object && (projection || current.children.size === keys.length)
-          && keys.every(key => current.children.has(key) && matches(current.children.get(key), value[key]));
-      };
-      // The backend retains only inspected fields. Require all of those fields
-      // at their corresponding keys, while allowing unrelated argument fields.
-      if (!matches(node, expected, true)) continue;
-      const hits = expected && typeof expected === "object" && !Array.isArray(expected)
-        ? Object.keys(expected).map(key => node.children.get(key)) : [node];
-      for (const hit of hits) if (hit.end > hit.start) ranges.push({ start: position(hit.start), end: position(hit.end), findingId });
-    } catch {}
-  }
-  return ranges;
-}
-
-function contentRiskRanges(text, evidence, findingId, structuredTool = false) {
-  if (structuredTool) return toolContentRiskRanges(text, evidence, findingId);
-  const candidates = new Set();
-  const collect = value => {
-    if (typeof value === "string" && value) candidates.add(value);
-    else if (value && typeof value === "object") {
-      candidates.add(JSON.stringify(value));
-      candidates.add(JSON.stringify(value, null, 2));
-      for (const child of Object.values(value)) collect(child);
-    }
-  };
-  for (const raw of Array.isArray(evidence) ? evidence : [evidence]) {
-    if (!raw) continue;
-    candidates.add(raw);
-    try { collect(JSON.parse(raw)); } catch {}
-    try { collect(JSON.parse(`"${raw}"`)); } catch {}
-  }
-  const ranges = [];
-  for (const candidate of [...candidates].sort((a, b) => b.length - a.length)) {
-    let at = 0;
-    while ((at = text.indexOf(candidate, at)) >= 0) {
-      const end = at + candidate.length;
-      if (!ranges.some(range => range.start <= at && range.end >= end)) ranges.push({ start: at, end, findingId });
-      at = end;
-    }
-  }
-  return ranges;
-}
-
-async function loadContentRiskMarks(response, operation) {
-  const s = state.security, record = s.detail, sequence = s.detailSequence;
-  const content = record?.[response ? "responseContent" : "requestContent"];
-  if (!content) return;
-  const current = () => record === s.detail && sequence === s.detailSequence && record[response ? "responseContent" : "requestContent"] === content
-    && (!operation || s[operation.key] === operation.token) && securityDetailVisible();
-  try {
-    const items = retainedContentItems(record, response, true).filter(item => !item.riskRanges);
-    const findings = [...new Map(items.flatMap(item => contentFindings(record, item, response)).map(finding => [finding.id, finding])).values()];
-    const evidence = new Map();
-    // Body reads share the audit queue. Keep automatic highlighting bounded
-    // even when a page contains many findings, and reuse immutable evidence.
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(4, findings.length) }, async () => {
-      while (next < findings.length && current()) {
-        const finding = findings[next++];
-        evidence.set(finding.id, await findingText(record, finding));
-      }
-    }));
-    for (const item of items) {
-      const findings = contentFindings(record, item, response);
-      if (!current()) return;
-      item.riskRanges = Object.fromEntries(["preview", "structure"].map(field => [field, findings.flatMap(finding => contentRiskRanges(item[field] || "", evidence.get(finding.id) || "", finding.id, item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001"))]));
-      item.riskVersions = findings.filter(finding => !Object.values(item.riskRanges).some(ranges => ranges.some(range => range.findingId === finding.id))).flatMap(finding => {
-        const raw = evidence.get(finding.id);
-        if (!raw || Array.isArray(raw) && !raw.length) return [];
-        let text = Array.isArray(raw) ? raw.join("\n") : raw;
-        try { const value = JSON.parse(text); text = typeof value === "string" ? value : JSON.stringify(value, null, 2); } catch {
-          try { text = JSON.parse(`"${text}"`); } catch {}
-        }
-        return [{ findingId: finding.id, text, toolArguments: item.kind === "tool_call" && finding.ruleId !== "SEC-SECRET-001" }];
-      });
-    }
-  } catch (error) {
-    if (current()) s[response ? "responseContentError" : "contentError"] = `风险位置加载失败：${error.message}`;
-  }
-  if (current()) render();
-}
-
 async function locateContentFinding(finding) {
   const s = state.security, record = s.detail, sequence = s.detailSequence;
-  const source = finding.evidence?.bodyRef?.sourceSnapshotId || finding.evidence?.bodyRef?.snapshotId;
-  const response = canonicalBodySnapshotId(source)?.startsWith("response") || finding.evidenceStage?.startsWith("response") || finding.evidenceStage === "tool_call_proposed";
+  const response = finding.contentSide === "response";
   const tab = response ? "response" : "request", key = response ? "responseContent" : "requestContent";
   const operation = beginContentOperation(response);
   const navigation = s.contentNavigation = { findingId: finding.id };
   state.trace.tab = tab;
   const current = () => s.detail === record && s.detailSequence === sequence && s[operation.key] === operation.token && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
   render();
-  let content = record[key], item = retainedContentItems(record, response, true).find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
+  let item = retainedContentItems(record, response, true).find(item => item.findingIds?.includes(finding.id));
   try {
-    if (!item && !response && finding.contentIndex != null) {
-      const range = content.nodes?.find(node => node.kind === "history_range" && node.startIndex <= finding.contentIndex && node.endIndex >= finding.contentIndex);
-      if (range) {
-        await loadHistoryRange(range.startIndex, range.endIndex, range.startIndex + Math.floor((finding.contentIndex - range.startIndex) / 40) * 40);
-        item = record[key].items.find(item => item.index === finding.contentIndex);
-      } else {
-        content = await api(`/security/audit/${encodeURIComponent(record.id)}/content?${new URLSearchParams({ offset: Math.floor(finding.contentIndex / 40) * 40, view: "all" })}`);
-        if (!current()) return;
-        record[key] = content;
-        item = content.items.find(item => item.index === finding.contentIndex);
-      }
-    }
-    for (let offset = 0; !item && current(); offset = content.nextOffset) {
-      if (offset == null) break;
-      content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset })}`);
+    if (!item) {
+      const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset: 0, finding: finding.id, ...(!response ? { view: "all" } : {}) })}`);
       if (!current()) return;
       record[key] = content;
-      item = content?.items?.find(item => contentFindings(record, item, response).some(f => f.id === finding.id));
-      if (content.nextOffset != null && content.nextOffset <= offset) break;
+      item = content.items?.find(item => item.findingIds?.includes(finding.id));
     }
   } catch (error) {
     if (current()) { s[response ? "responseContentError" : "contentError"] = error.message; render(); }
@@ -1718,8 +1507,6 @@ async function locateContentFinding(finding) {
   if (!item) { s[response ? "responseContentError" : "contentError"] = "此风险没有可定位的内容项，证据可在风险详情中复核。"; render(); return; }
   navigation.index = item.index;
   (record.contentOpen ||= {})[`${response}:${item.index}`] = true;
-  await loadContentRiskMarks(response, operation);
-  if (!current()) return;
   navigation.field = item.riskRanges?.preview?.some(range => range.findingId === finding.id) ? "preview" : "structure";
   render();
   const row = pageContent.querySelector(`[data-content-index="${item.index}"]`);
@@ -1730,6 +1517,7 @@ async function locateContentFinding(finding) {
   target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
   target?.focus?.({ preventScroll: true });
 }
+
 function renderRetainedContent(record, response) {
   const content = response ? record.responseContent : record.requestContent;
   const title = response ? "响应内容" : "请求内容";
@@ -1749,6 +1537,7 @@ function renderRetainedContent(record, response) {
       <div class="trace-content-detail">${item.preview ? `<pre>${retainedRiskText(item, "preview")}</pre>` : `<p class="muted">${item.opaque ? "仅保留加密或不透明内容，没有可读文本。" : "此项未包含可读文本。"}</p>`}
       ${item.structure && item.structure !== item.preview ? `<details class="trace-content-structure"><summary>完整内容结构</summary><pre>${retainedRiskText(item, "structure")}</pre></details>` : ""}
       ${item.riskVersions?.length ? `<details class="trace-content-risk-versions" open><summary>风险检测时的内容</summary><p class="trace-content-note">此风险来自较早的流式内容或检测参数，当前内容已变化；以下保留检测时的命中内容。</p>${item.riskVersions.map(version => `${version.toolArguments ? `<p class="trace-content-note">检测时的工具参数与当前参数不同，此记录不表示最终参数仍有风险。实际执行状态未知。</p>` : ""}<pre><mark class="security-risk-hit${state.security.contentNavigation?.findingId === version.findingId ? " security-body-hit" : ""}"${state.security.contentNavigation?.findingId === version.findingId ? ' data-security-content-anchor tabindex="-1"' : ""}>${esc(version.text)}</mark></pre>`).join("")}</details>` : ""}
+      ${item.riskGaps?.length ? `<p class="notice warning">此项的部分风险证据未完整保留或超出定位预算，无法定位命中点；请在风险详情中复核。</p>` : ""}
       ${item.parts?.length ? `<p class="trace-content-note">${item.parts.map(part => esc(REQUEST_PART_LABELS[part] || part)).join(" · ")} · 非文本内容见完整结构或原文</p>` : ""}
       ${item.opaque && item.preview ? `<p class="trace-content-note">同时包含加密或不透明内容。</p>` : ""}
       ${!response && item.kind === "reference" ? `<p class="trace-content-note">${item.type === "tool_reference" ? "工具引用指向可用工具，不表示已经调用。" : "引用的历史上下文未包含在本次请求正文中。"}</p>` : ""}
@@ -1814,7 +1603,6 @@ async function loadRetainedContent(offset, response, view) {
     s[errorKey] = error.message;
   }
   if (current()) { s[loadingKey] = false; render(); }
-  if (current()) await loadContentRiskMarks(response, operation);
 }
 
 
@@ -1839,7 +1627,7 @@ async function loadHistoryRange(start, end, offset = start) {
     content.items = [...byIndex.values()];
   } catch (error) { if (current()) range.error = error.message; }
   finally { if (range.operation === operation.token) range.loading = false; }
-  if (current()) { render(); await loadContentRiskMarks(false, operation); }
+  if (current()) render();
 }
 
 function renderTraceInspector() {
@@ -1868,10 +1656,13 @@ function renderSecuritySession() {
   const all = t.result?.items || [], items = traceItems();
   const hasLegacy = all.some(item => !securityHasRiskHistory(item)), hasModern = all.some(securityHasRiskHistory);
   const segments = traceSegments(all);
-  const maxDuration = Math.max(1, ...segments.map(item => item.duration));
-  const segmentDescription = all.length > 60
-    ? "相邻请求合并显示，点击定位该组首条请求"
-    : "每格对应一条请求";
+  const maxDuration = segments.reduce((max, item) => Math.max(max, item.duration), 1);
+  const weights = segments.map(item => t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : 1);
+  const minimumWidth = weights.reduce((width, weight) => width + Math.max(12, weight * 12) + 2, 20);
+  const minimap = segments.map((item, i) => {
+    const label = `请求 ${item.order}`;
+    return `<div class="trace-step" style="flex-grow:${weights[i]}">${item.order % 5 === 0 ? `<span class="trace-axis-tick" aria-hidden="true"><span>${item.order}</span></span>` : ""}<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button></div>`;
+  }).join("");
   const positions = new Map(all.map((item, i) => [item.id, i]));
   return `<nav class="security-detail-nav"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 会话轨迹</span><span class="status-badge">仅记录</span></nav>
     <header class="trace-heading"><div><h2>${esc(summary ? securitySessionTitle(summary) : "会话轨迹")}</h2><p class="muted">${esc(summary?.providerId || "未记录配置")} · ${summary?.identified ? "按客户端会话标识归组" : "独立记录 · 未获取会话标识"}${summary ? ` · ${esc(securityTime(summary.firstAtMs))}` : ""}</p></div>
@@ -1879,7 +1670,10 @@ function renderSecuritySession() {
     ${t.error ? `<p class="notice warning" role="alert">${esc(t.error)}<button class="button" data-action="security-session-refresh">重试</button></p>` : ""}
     <section class="trace-workspace" aria-label="会话轨迹">
       <div class="trace-toolbar"><strong>轨迹</strong><span class="muted">按请求顺序 · 已加载 ${all.length} 条 / 共 ${esc(t.result?.total ?? "—")} 条</span><button class="mini-button" data-action="security-session-refresh" ${t.loading ? "disabled" : ""}>${t.loading ? "读取中…" : "刷新会话"}</button></div>
-      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div><div class="trace-minimap" aria-label="请求导航">${segments.map(item => { const label = item.first === item.last ? `请求 ${item.first}` : `请求 ${item.first}–${item.last}`; return `<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" style="flex-grow:${t.scale === "duration" ? Math.max(.2, item.duration / maxDuration * 10) : item.last - item.first + 1}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button>`; }).join("")}</div><p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>${segmentDescription}</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击）</span>" : ""}</p></div>
+      <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div>
+        <div class="trace-map-viewport" tabindex="0" aria-label="可横向滚动的请求导航，刻度为请求序号"><div class="trace-map-track" style="min-width:${minimumWidth}px"><div class="trace-minimap">${minimap}</div></div></div>
+        <div class="trace-scroll-rail" hidden><input class="trace-scroll-control" type="range" min="0" max="0" step="1" value="0" aria-label="左右滚动请求轨迹"></div>
+        <p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>每格对应一条请求</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击），刻度为请求序号</span>" : ""}</p></div>
       <div class="trace-columns"><section class="trace-events" aria-label="请求列表"><form id="security-trace-search" class="trace-search"><input name="search" aria-label="搜索已加载轨迹" placeholder="搜索已加载输入、输出、工具或模型" value="${esc(t.search)}"><button class="mini-button" type="submit">搜索</button><button class="mini-button" type="button" data-action="security-trace-risk" aria-pressed="${t.riskOnly}">仅看风险</button></form>
         <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id), risk = securityRiskCounts(item); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span><span class="${risk.new || risk.legacy ? "trace-risk-count" : "muted"}">${esc(securityRiskSummary(item))}</span></span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span><span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
       </section><aside class="trace-inspector" aria-label="选中步骤详情">${renderTraceInspector()}</aside></div>
@@ -1887,37 +1681,6 @@ function renderSecuritySession() {
 }
 
 // Ordinal paths remain stable when credential-bearing property names are redacted.
-function securityBodyText(value, root, location, fieldOrder = {}) {
-  const chunks = [];
-  let length = 0;
-  let range = null;
-  const append = text => { chunks.push(text); length += text.length; };
-  const select = (path, start, end) => {
-    if (location && (location === path || location.startsWith(`${path}/`)) && (!range || path.length > range.path.length)) range = { start, end, path };
-  };
-  const walk = (item, path, depth) => {
-    const start = length;
-    if (item === null || typeof item !== "object") append(JSON.stringify(item) ?? "null");
-    else {
-      const list = Array.isArray(item);
-      const pairs = (fieldOrder[path] || Object.keys(item)).map(key => [key, item[key]]);
-      append(list ? "[" : "{");
-      pairs.forEach(([key, child], i) => {
-        append(`${i ? "," : ""}\n${"  ".repeat(depth + 1)}`);
-        const childPath = list ? `${path}/${i}` : `${path}/field/${i}`;
-        if (!list) { const keyStart = length; append(JSON.stringify(key)); select(`${childPath}/key`, keyStart, length); append(": "); }
-        walk(child, childPath, depth + 1);
-      });
-      if (pairs.length) append(`\n${"  ".repeat(depth)}`);
-      append(list ? "]" : "}");
-    }
-    select(path, start, length);
-  };
-  walk(value, root, 0);
-  const text = chunks.join("");
-  return { text, range };
-}
-
 // An original-content link marks a scroll position, not a selected risk range.
 function securitySourceAnchor(text) {
   return `<span data-security-body-anchor tabindex="-1">${esc(text)}</span>`;
@@ -1937,39 +1700,11 @@ function securityPageMarks(page) {
   return [...new Map(marks.map(mark => [JSON.stringify([mark.start, mark.end, mark.reason, mark.location]), mark])).values()];
 }
 
-function securityRiskSelections(record, snapshotId) {
-  return (record?.findings || []).flatMap(finding => {
-    const ref = finding.evidence?.bodyRef;
-    if (!ref) return [];
-    let range;
-    if (ref.snapshotId === snapshotId || ref.sourceSnapshotId === snapshotId && ref.sourceStart == null) range = ref;
-    else if (ref.sourceSnapshotId === snapshotId && ref.sourceStart != null) range = { start: ref.sourceStart, end: ref.sourceEnd };
-    else return [];
-    // Historical credential findings cover detection windows; their stored
-    // sensitive annotations, rather than the window, identify the real hit.
-    if (finding.ruleId === "SEC-SECRET-001" && ref.matchKind !== "sensitive") return [];
-    return [{ ...range, location: ref.location || finding.evidence.location }];
-  });
-}
-
-function securityPageText(page, selection, riskRanges = []) {
-  if (page.legacySnapshot) {
-    const snapshot = page.legacySnapshot;
-    const root = snapshot.root || "request";
-    const { text } = securityBodyText(snapshot.body, root, null, snapshot.fieldOrder);
-    const encoder = new TextEncoder();
-    const position = location => {
-      const { range } = securityBodyText(snapshot.body, root, location, snapshot.fieldOrder);
-      return range && { start: encoder.encode(text.slice(0, range.start)).length, end: encoder.encode(text.slice(0, range.end)).length };
-    };
-    const sensitiveRanges = (snapshot.sensitiveRanges || snapshot.redactions || []).map(mark => position(mark.location)).filter(Boolean);
-    const risks = riskRanges.map(range => position(range.location)).filter(Boolean);
-    const selected = position(selection.location);
-    const navigation = position(selection.navigation?.location);
-    return securityPageText({ chunks: [{ start: 0, content: text, sensitiveRanges }] }, {
-      hitUnavailable: selection.hitUnavailable, ...(selected || {}),
-      ...(navigation ? { navigation: { start: navigation.start } } : {}),
-    }, risks);
+function securityPageText(page, selection, riskRanges = page.riskRanges || []) {
+  const location = path => page.locations?.filter(range => path === range.path || path?.startsWith(`${range.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (page.locations) {
+    selection = { ...selection, ...(location(selection.location) || {}),
+      ...(selection.navigation ? { navigation: { ...selection.navigation, ...(location(selection.navigation.location) || {}) } } : {}) };
   }
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -2017,14 +1752,6 @@ function securityPageText(page, selection, riskRanges = []) {
   }).join("");
 }
 
-function canonicalBodySnapshotId(id) {
-  if (["request", "request/headers", "response", "response/headers"].includes(id)) return id;
-  if (id?.startsWith("request")) return "request";
-  if (id?.startsWith("response")) return "response";
-  if (id?.startsWith("stream/")) return "response";
-  return id;
-}
-
 function renderSecurityBody(record) {
   const s = state.security;
   const allSnapshots = record.bodySnapshots || [];
@@ -2047,13 +1774,13 @@ function renderSecurityBody(record) {
       ${page.gap ? `<div class="notice warning">此范围存在未保存的正文，不能视为完整证据。</div>` : ""}
       ${selection.hitUnavailable ? detection ? `<p class="muted">命中原文保存在下方检测快照中，响应正文保留关联引用。</p>` : `<div class="notice warning">此检测范围未保留可定位的凭据命中点，仅展示正文上下文。</div>` : ""}
       <div class="security-pagination"><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.previousOffset ?? "")}" ${page.previousOffset == null ? "disabled" : ""}>上一段上下文</button><span>${page.rangeStart > 0 ? "源正文" : ""}字节 ${esc(page.offset ?? 0)}–${esc(page.chunks?.at(-1)?.end ?? page.offset ?? 0)} · 本快照 ${esc(snapshot?.byteLength ?? 0)} 字节</span><button class="mini-button" data-action="security-body-page" data-offset="${esc(page.nextOffset ?? "")}" ${page.nextOffset == null ? "disabled" : ""}>下一段上下文</button></div>
-      <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection, securityRiskSelections(record, selection.snapshotId))}</pre>
+      <pre class="code-preview security-body-content" aria-label="保留正文">${securityPageText(page, selection, page.riskRanges || [])}</pre>
       ${references.length ? `<div class="security-body-tabs" aria-label="关联流式内容">${references.map((id, i) => `<button class="mini-button" data-action="security-body" data-id="${esc(id)}">关联流式内容 ${i + 1} · ${esc(id.split("/").at(-1).slice(0, 8))}</button>`).join("")}</div>` : ""}
       ${selection.sourceSnapshotId && selection.sourceSnapshotId !== selection.snapshotId && selection.sourceStart != null ? `<button class="mini-button" data-action="security-source" data-id="${esc(selection.sourceSnapshotId)}" data-offset="${esc(selection.sourceStart)}">查看完整正文上下文</button>` : ""}
       <details class="security-redactions"><summary>本页${original ? "敏感" : "脱敏"}位置 · ${marks.length}</summary><ul>${marks.map(mark => `<li><button class="security-location" data-action="security-location" data-start="${esc(mark.start)}" data-end="${esc(mark.end)}" data-location="${esc(mark.location || "")}">${mark.start == null ? esc(mark.location) : `字节 ${esc(mark.start)}–${esc(mark.end)}`}</button> · ${esc(SECURITY_BODY_LABELS.redaction[mark.reason] || mark.reason)}</li>`).join("")}</ul></details>` : ""}` : `<p class="muted">展开后加载该内容。</p>`;
   const panels = snapshots.map((item, i) => `<details class="security-body-review" data-security-snapshot="${esc(item.id)}" ${item.id === selection.snapshotId ? "open" : ""}><summary>${esc(labelFor(item, i))}${item.byteLength != null ? ` · ${esc(item.byteLength)} 字节` : ""}</summary>${item.id === selection.snapshotId && allSnapshots.some(snapshot => snapshot.id === item.id) ? content : `<p class="muted">${allSnapshots.some(snapshot => snapshot.id === item.id) ? "展开后加载该内容。" : "此内容未被网关观察或保留。"}</p>`}</details>`).join("");
   const streamPage = s.streamPageSnapshotId === selection.detectionSnapshotId ? s.streamPage : null;
-  const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }, securityRiskSelections(record, selection.detectionSnapshotId)) : "";
+  const streamContent = streamPage ? securityPageText(streamPage, { ...selection, hitUnavailable: false, start: selection.detectionStart, end: selection.detectionEnd }, streamPage.riskRanges || []) : "";
   const timeline = streamSnapshots.length ? `<section class="security-event-timeline" aria-label="流式事件时间线"><h4>流式事件时间线</h4><p class="muted">流式检测证据按事件顺序保留；点击风险可查看检测快照中的命中原文，响应正文保留关联引用。</p>${streamSnapshots.map((item, i) => {
     const active = selection.detectionSnapshotId === item.id || detection?.sourceSnapshotId === item.id;
     const previous = streamSnapshots[i - 1]?.id;
@@ -2075,18 +1802,12 @@ async function loadSecurityBody(offset = 0, locateCredential = false) {
   if (securityDetailVisible()) render();
   if (!recordId || !snapshotId || !s.detail.bodySnapshots?.some(item => item.id === snapshotId)) { s.bodyLoading = false; if (securityDetailVisible()) render(); return false; }
   try {
-    while (true) {
-      const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset })}`);
-      if (!current()) return false;
-      s.bodyPage = page;
-      if (!locateCredential || page.legacySnapshot) break;
-      const mark = securityPageMarks(page).find(mark =>
-        !["redaction_buffer_budget", "url_authority_uncertain", "credential_prefix_uncertain", "incomplete_body_fragment", "unsupported_stream_fragment", "internal_host", "public_host", "internal_identity"].includes(mark.reason)
-        && mark.end > selection.start && mark.start < selection.end);
-      if (mark) { selection.start = mark.start; selection.end = mark.end; selection.hitUnavailable = false; break; }
-      // Older findings referenced a whole detection window. Search its annotations one page at a time.
-      if (page.nextOffset == null || page.nextOffset <= offset || page.nextOffset >= selection.end) { selection.hitUnavailable = true; break; }
-      offset = page.nextOffset;
+    const page = await api(`/security/audit/${encodeURIComponent(recordId)}/body?${new URLSearchParams({ snapshot: snapshotId, offset, ...(locateCredential && selection.findingId ? { finding: selection.findingId } : {}) })}`);
+    if (!current()) return false;
+    s.bodyPage = page;
+    if (page.findingSelection) {
+      const { detectionSnapshotId, detectionStart, detectionEnd, ...bodyLocation } = page.findingSelection;
+      Object.assign(selection, bodyLocation);
     }
   } catch (error) { if (current()) s.bodyError = error.message; }
   if (!current()) return false;
@@ -2179,6 +1900,7 @@ async function securityAction(action, element) {
   }
   if (action === "security-session-refresh") { await loadSecuritySession(t.id, false); return; }
   if (action === "security-trace-select") {
+    pendingTraceSelection = true;
     await loadSecurityDetail(element.dataset.id, true, true);
     pageContent.querySelector(`.trace-event-row.is-selected`)?.scrollIntoView({ block: "nearest", behavior: "instant" });
     return;
@@ -2187,7 +1909,6 @@ async function securityAction(action, element) {
     s.contentNavigation = null;
     t.tab = element.dataset.tab; render();
     if (t.tab === "body" && !s.bodyPage) await loadSecurityBody();
-    else if (["request", "response"].includes(t.tab)) await loadContentRiskMarks(t.tab === "response");
     return;
   }
   if (action === "security-history-page") {
@@ -2247,20 +1968,14 @@ async function securityAction(action, element) {
       const finding = s.detail.findings?.find(item => item.id === element.dataset.id);
       if (!finding) return;
       if (state.page === "security-session") { await locateContentFinding(finding); return; }
-      const ref = finding?.evidence?.bodyRef || { snapshotId: "unavailable" };
-      const source = ref.sourceSnapshotId || ref.snapshotId;
-      const snapshotId = canonicalBodySnapshotId(source);
-      const mapped = snapshotId !== ref.snapshotId;
-      const unrelatedOffsets = snapshotId !== source;
-      s.bodySelection = { ...ref, snapshotId, ...(mapped ? { detectionSnapshotId: ref.snapshotId, detectionStart: ref.start, detectionEnd: ref.end } : {}), ...(mapped && ref.sourceStart != null ? { start: ref.sourceStart, end: ref.sourceEnd } : {}), ...(mapped && unrelatedOffsets && ref.sourceStart == null ? { hitUnavailable: true } : {}), findingId: finding?.id };
-      if (mapped && unrelatedOffsets && ref.sourceStart == null) { delete s.bodySelection.start; delete s.bodySelection.end; }
+      s.bodySelection = { ...finding.bodyLocation, findingId: finding.id };
     } else if (action === "security-source") {
       const previous = s.bodySelection;
       const id = element.dataset.id;
-      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
+      s.bodySelection = { snapshotId: s.detail.bodySnapshots?.find(snapshot => snapshot.id === id)?.originalSnapshotId || id, start: previous.sourceStart ?? previous.start, end: previous.sourceEnd ?? previous.end, findingId: previous.findingId };
     } else if (action === "security-body") {
       const id = element.dataset.id;
-      s.bodySelection = { snapshotId: canonicalBodySnapshotId(id), ...(id.startsWith("stream/") ? { detectionSnapshotId: id } : { start: Number(element.dataset.offset || 0) }) };
+      s.bodySelection = { snapshotId: s.detail.bodySnapshots?.find(snapshot => snapshot.id === id)?.originalSnapshotId || id, ...(id.startsWith("stream/") ? { detectionSnapshotId: id } : { start: Number(element.dataset.offset || 0) }) };
     }
     else if (action === "security-location") {
       const { navigation, ...selection } = s.bodySelection;
@@ -2679,308 +2394,59 @@ async function handleFormSubmit(event, form) {
   }
 }
 
-function syncModelSelections(cable, renames, nextModels) {
-  const sync = (value, nativeAliases = []) => {
-    if (nativeAliases.includes(value)) return value;
-    if (renames.has(value)) return renames.get(value);
-    if (Object.hasOwn(nextModels, value)) return value;
-    if (cable.target === "claude-code" || Object.hasOwn(cable.virtualProvider.models || {}, value)) return undefined;
-    return value;
-  };
-  const defaults = cable.target === "claude-code" ? CLAUDE_MODEL_ALIASES.defaultModel : [];
-  const defaultModel = cable.target === "claude-code" ? sync(claudeDefaultModel(cable), defaults) : undefined;
-  cable.virtualProvider.defaultModel = cable.target === "claude-code" ? defaultModel : sync(cable.virtualProvider.defaultModel);
-  cable.record.defaultModel = cable.target === "claude-code" ? defaultModel : sync(cable.record.defaultModel);
-  if (cable.target === "claude-code" && cable.record.claude) {
-    for (const [family, value] of entries(cable.record.claude.models)) {
-      cable.record.claude.models[family] = sync(value, family === "subagent" ? CLAUDE_MODEL_ALIASES.subagent : []);
-    }
-    cable.record.claude.setModel = Boolean(cable.record.defaultModel || cable.virtualProvider.defaultModel);
-  }
-}
-
 function removeCable(id) {
-  const config = state.candidate;
-  if (!Object.hasOwn(config.cables, id)) throw new Error("线路不存在，请刷新列表。");
-  const providerId = config.cables[id].virtualProvider;
-  const routeId = config.virtualProviders[providerId]?.route;
-  delete config.cables[id];
-
-  // Only remove this configuration's dependencies when no remaining record uses them.
-  if (!values(config.cables).some((record) => record.virtualProvider === providerId)) {
-    delete config.virtualProviders[providerId];
-    if (routeId && !values(config.virtualProviders).some((provider) => provider.route === routeId)) {
-      const upstreamIds = (config.routes[routeId]?.backends || []).map((backend) => backend.upstream);
-      delete config.routes[routeId];
-      for (const upstreamId of upstreamIds) {
-        if (!values(config.routes).some((route) => route.backends?.some((backend) => backend.upstream === upstreamId))) {
-          delete config.upstreams[upstreamId];
-        }
-      }
-    }
-  }
-
-  if (!state.selected.cable || !Object.hasOwn(config.cables, state.selected.cable)) {
-    state.selected = { cable: null, virtualProvider: null, model: null };
-    selectCable(firstKey(config.cables));
-  }
-  state.page = "overview";
+  return { type: "cable.delete", cableId: id };
 }
 
 function removeModel(id) {
-  const cable = selectedCable();
-  const models = { ...cable.virtualProvider.models };
-  delete models[id];
-  syncModelSelections(cable, new Map(), models);
-  cable.virtualProvider.models = models;
-  state.selected.model = firstKey(models);
+  return { type: "model.delete", cableId: selectedCable()?.id, modelId: id };
 }
 
 function saveCableModels(form) {
   const cable = selectedCable();
   if (!cable) throw new Error("找不到当前线路");
-  const modelRows = [...form.querySelectorAll("[data-cable-model]")];
-
-  const upstreamId = cable.upstreamId;
-  if (!upstreamId || !state.candidate.upstreams[upstreamId]) {
-    throw new Error("当前线路没有可用的上游");
-  }
-
-  const clientModelIds = modelRows.map(
-    (row) => row.querySelector("[data-cable-model-client]")?.value.trim() || "",
-  );
-  if (clientModelIds.some((id) => !id)) throw new Error("每个模型都必须填写客户端模型 ID");
-  if (new Set(clientModelIds).size !== clientModelIds.length) {
-    throw new Error("客户端模型 ID 不能重复");
-  }
-
-  const renames = new Map();
-  const nextModels = Object.create(null);
-  for (const row of modelRows) {
-    const oldId = row.dataset.modelId || "";
-    const existing = cable.virtualProvider.models?.[oldId] || {};
-    const clientModelId = row.querySelector("[data-cable-model-client]").value.trim();
-    if (oldId) renames.set(oldId, clientModelId);
-
-    const upstreamInput = row.querySelector(
-      `[data-cable-model-upstream="${CSS.escape(upstreamId)}"]`,
-    );
-    const capabilityInput = row.querySelector(
-      `[data-cable-model-capabilities="${CSS.escape(upstreamId)}"]`,
-    );
-    const upstreamModelId = upstreamInput?.value.trim() || "";
-    const capabilityOverrides = capabilityInput ? commaList(capabilityInput.value) : existing.capabilityOverrides || [];
-    const capabilities = commaList(
-      row.querySelector("[data-cable-model-capabilities-common]")?.value,
-    );
-    const aliasInput = row.querySelector("[data-cable-model-aliases]");
-    nextModels[clientModelId] = {
-      ...existing,
-      ...(aliasInput ? { aliases: commaList(aliasInput.value) } : {}),
-      family: existing.family || (cable.target === "claude-code" ? "claude" : "codex"),
-      ...(cable.target === "claude-code" ? {
-        description: undefined,
-      } : { capabilities: capabilities.length ? capabilities : ["streaming", "tools", "reasoning"] }),
-      ...(cable.target === "codex" ? codexModelFields(clientModelId, existing, row) : {}),
-      upstreamModelId: upstreamModelId || undefined,
-      capabilityOverrides: capabilityOverrides.length ? capabilityOverrides : undefined,
+  const models = [...form.querySelectorAll("[data-cable-model]")].map(row => {
+    const read = selector => row.querySelector(selector)?.value.trim() || "";
+    const overrides = row.querySelector(`[data-cable-model-capabilities="${CSS.escape(cable.upstreamId)}"]`);
+    const aliases = row.querySelector("[data-cable-model-aliases]");
+    return {
+      oldId: row.dataset.modelId || "",
+      clientModelId: read("[data-cable-model-client]"),
+      upstreamModelId: read(`[data-cable-model-upstream="${CSS.escape(cable.upstreamId)}"]`),
+      capabilities: read("[data-cable-model-capabilities-common]"),
+      ...(overrides ? { capabilityOverrides: overrides.value } : {}),
+      ...(aliases ? { aliases: aliases.value } : {}),
+      policy: modelPolicy(row),
     };
-  }
+  });
+  return { type: "models.replace", cableId: cable.id, models };
+}
 
-  syncModelSelections(cable, renames, nextModels);
-  cable.virtualProvider.models = nextModels;
-  selectCable(cable.id);
-
+function claudeInputs(data) {
+  return { ...Object.fromEntries(data), discoverModels: data.get("discoverModels") === "on" };
 }
 
 function saveClaudeClient(data) {
-  const cable = selectedCable();
-  if (cable?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
-  const clientIds = cable.models.map(({ id }) => id);
-  const defaultModel = claudeModelChoice("defaultModel", clientIds, data.get("defaultModel"));
-  const models = Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"].map((family) =>
-    [family, String(data.get(family) || "").trim()]).filter(([, value]) => value));
-  const subagent = claudeModelChoice("subagent", clientIds, models.subagent);
-  if (subagent) models.subagent = subagent;
-  else delete models.subagent;
-  const ids = new Set(clientIds);
-  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-    const previous = cable.record.claude?.models?.[family];
-    if (data.get(family) == null && previous && !ids.has(previous)) throw new Error(`${family} 别名指向未配置的模型，请重新选择`);
-    if (models[family] && !ids.has(models[family])) throw new Error(`${family} 别名请选择当前线路中已保存的客户端模型 ID`);
-  }
-  cable.record.defaultModel = defaultModel || undefined;
-  cable.virtualProvider.defaultModel = defaultModel || undefined;
-  cable.record.claude = { ...cable.record.claude, setModel: Boolean(defaultModel), models, discoverModels: data.get("discoverModels") === "on" };
+  return { type: "claude.save", cableId: selectedCable()?.id, data: claudeInputs(data) };
 }
 
 function saveCableCreate(data, form) {
-  const upstreamBaseUrl = String(data.get("upstreamBaseUrl") || "").trim();
-  const upstreamSecret = String(data.get("upstreamSecret") || "").trim();
-  const target = String(data.get("target") || "codex").trim();
-  if (!["codex", "claude-code"].includes(target)) throw new Error("请选择 Codex 或 Claude Code");
-  const defaults = cableDefaults(target);
-  const isClaude = target === "claude-code";
-  const protocol = isClaude ? "anthropic.messages" : "openai.responses";
-  const cableName = String(data.get("cableName") || "").trim();
-  const modelEntries = [...form.querySelectorAll("[data-create-model]")].map((row) => {
-    const read = (key) =>
-      row.querySelector(`[data-create-field="${CSS.escape(key)}"]`)?.value.trim() || "";
-    return {
-      clientModelId: read("clientModelId"),
-      upstreamModelId: read("upstreamModelId"),
-    };
-  });
-  if (!upstreamBaseUrl || !upstreamSecret) {
-    throw new Error("请填写上游地址和上游 API Key");
-  }
-  const missingModelField = modelEntries.find(
-    (model) => !model.clientModelId,
-  );
-  if (missingModelField) {
-    throw new Error("添加模型设置时请选择客户端模型");
-  }
-  const clientModelIds = modelEntries.map((model) => model.clientModelId);
-  if (new Set(clientModelIds).size !== clientModelIds.length) {
-    throw new Error("Client model ID 不能重复");
-  }
-  const defaultModel = isClaude ? claudeModelChoice("defaultModel", clientModelIds, data.get("defaultModel")) : "";
-  const claudeModels = isClaude ? Object.fromEntries(["opus", "sonnet", "fable", "haiku", "subagent"]
-    .map((family) => [family, String(data.get(family) || "").trim()]).filter(([, value]) => value)) : {};
-  const subagent = claudeModelChoice("subagent", clientModelIds, claudeModels.subagent);
-  if (subagent) claudeModels.subagent = subagent;
-  else delete claudeModels.subagent;
-  for (const family of ["opus", "sonnet", "fable", "haiku"]) {
-    if (claudeModels[family] && !clientModelIds.includes(claudeModels[family])) {
-      throw new Error(`${family} 别名请选择本次填写的客户端模型 ID`);
-    }
-  }
-
-  const upstreamId = defaults.upstreamId;
-  const upstreamName = upstreamDisplayName(upstreamBaseUrl, upstreamId);
-  const routeId = defaults.routeId;
-  const name = cableName || `${targetLabel(target)} / ${upstreamName}`;
-  const cableId = configurationId(name, defaults.cableId);
-  const virtualProviderId = providerIdForConfiguration(cableId);
-  if (Object.hasOwn(state.candidate.cables, cableId) || Object.hasOwn(state.candidate.virtualProviders, virtualProviderId)) {
-    throw new Error(`线路名称对应的 ID 已存在: ${cableId}，请使用不同的线路名称`);
-  }
-  const models = Object.fromEntries(modelEntries.map((model) => [model.clientModelId, {
-    family: isClaude ? "claude" : "codex",
-    ...(isClaude ? {} : codexModelFields(model.clientModelId)),
-    ...(model.upstreamModelId ? { upstreamModelId: model.upstreamModelId } : {}),
-  }]));
-  const modelIds = Object.keys(models);
-
-  state.candidate.upstreams[upstreamId] = {
-    id: upstreamId,
-    name: upstreamName,
-    ...(isClaude ? { auth: { header: data.get("upstreamAuth") || "x-api-key" } } : { integration: "codex-native-provider" }),
-    protocol,
-    baseUrl: upstreamBaseUrl,
-    secretRef: `secret://upstreams/${upstreamId}`,
-    enabled: true,
-  };
-  state.candidate.routes[routeId] = {
-    id: routeId,
-    name: `${upstreamName} route`,
-    backends: [
-      {
-        upstream: upstreamId,
-        enabled: true,
-      },
-    ],
-  };
-  state.candidate.virtualProviders[virtualProviderId] = {
-    id: virtualProviderId,
-    name: `${targetLabel(target)} via ${upstreamName}`,
-    ingressProtocol: protocol,
-    route: routeId,
-    models,
-    ...(defaultModel ? { defaultModel } : {}),
-    enabled: true,
-  };
-  state.candidate.cables[cableId] = {
-    id: cableId,
-    name,
-    target,
-    ...(isClaude ? {} : { integration: "codex-native-provider" }),
-    targetFormat: isClaude ? "claude.settings.json.v1" : "codex.config.toml.v1",
-    mode: "config",
-    virtualProvider: virtualProviderId,
-    ...(isClaude ? {
-      ...(defaultModel ? { defaultModel } : {}),
-      claude: {
-        ...(defaultModel ? { setModel: true } : {}),
-        ...(Object.keys(claudeModels).length ? { models: claudeModels } : {}),
-      },
-    } : { codex: {} }),
-  };
-
-  state.pendingSecrets.upstreamSecrets[upstreamId] = upstreamSecret;
-
-  state.selected.model = modelIds[0] || null;
-  state.selected.virtualProvider = virtualProviderId;
-  state.selected.cable = cableId;
-  state.page = "cable-detail";
-
+  if (!String(data.get("upstreamSecret") || "").trim()) throw new Error("请填写上游 API Key");
+  const models = [...form.querySelectorAll("[data-create-model]")].map(row => ({
+    clientModelId: row.querySelector('[data-create-field="clientModelId"]')?.value.trim() || "",
+    upstreamModelId: row.querySelector('[data-create-field="upstreamModelId"]')?.value.trim() || "",
+  }));
+  return { type: "cable.create", data: claudeInputs(data), models };
 }
 
 function saveCableUpstream(data) {
-  const id = String(data.get("id") || "").trim();
-  if (!id) throw new Error("upstream ID 不能为空");
-  const existing = state.candidate.upstreams[id] || {};
-  state.candidate.upstreams[id] = {
-    ...existing,
-    id,
-    name: String(data.get("name") || id).trim(),
-    ...(data.get("protocol") === "openai.responses"
-      ? { integration: "codex-native-provider" }
-      : {}),
-    protocol: data.get("protocol"),
-    baseUrl: String(data.get("baseUrl") || "").trim(),
-    secretRef: existing.secretRef || `secret://upstreams/${id}`,
-    enabled: existing.enabled !== false,
-  };
-  if (data.get("protocol") !== "openai.responses") {
-    delete state.candidate.upstreams[id].integration;
-  }
-  if (data.get("protocol") === "anthropic.messages" && data.get("authHeader")) {
-    const header = String(data.get("authHeader"));
-    const previous = existing.auth?.header || existing.authHeader || "x-api-key";
-    if (header !== previous) {
-      state.candidate.upstreams[id].auth = { header, ...(header === "authorization" ? { scheme: "Bearer" } : {}) };
-      delete state.candidate.upstreams[id].authHeader;
-    }
-  }
-  const secret = String(data.get("secret") || "").trim();
-  if (secret) {
-    state.pendingSecrets.upstreamSecrets[id] = secret;
-  }
-  state.page = "cable-detail";
+  return { type: "cable.upstream", cableId: selectedCable()?.id, data: Object.fromEntries(data) };
 }
 
-function saveModel(data, form) {
-  const cable = selectedCable();
-  if (!cable) throw new Error("找不到当前线路");
-  const oldName = state.selected.model;
-  const name = String(data.get("clientModelId") || "").trim();
-  if (!name) throw new Error("客户端模型 ID 不能为空");
-  const models = { ...cable.virtualProvider.models };
-  if (name !== oldName && Object.hasOwn(models, name)) throw new Error("客户端模型 ID 不能重复");
-  const existing = oldName && Object.hasOwn(models, oldName) ? models[oldName] : {};
-  if (oldName) delete models[oldName];
-  Object.defineProperty(models, name, { enumerable: true, configurable: true, writable: true, value: {
-    ...existing,
-    aliases: commaList(data.get("aliases")),
-    family: String(data.get("family") || "codex").trim(),
-    capabilities: commaList(data.get("capabilities")),
-    upstreamModelId: String(data.get("upstreamModelId") || "").trim() || undefined,
-    capabilityOverrides: commaList(data.get("capabilityOverrides")),
-  } });
-  syncModelSelections(cable, new Map(oldName ? [[oldName, name]] : []), models);
-  cable.virtualProvider.models = models;
-  state.selected.model = name;
+function saveModel(data) {
+  return { type: "model.save", cableId: selectedCable()?.id, data: {
+    ...Object.fromEntries(data), oldId: state.selected.model || "",
+  } };
 }
 
 async function testUpstream(id) {
@@ -3094,23 +2560,27 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
   };
   const preservedForms = captureEditedForms(form);
   state.candidate = clone(state.config);
-  state.pendingSecrets = { upstreamSecrets: {} };
   try {
-    update();
-    const identities = normalizeConfigurationIdentities(state.candidate);
-    state.selected.cable = identities.cableIds.get(state.selected.cable) ?? state.selected.cable;
-    state.selected.virtualProvider = identities.providerIds.get(state.selected.virtualProvider) ?? state.selected.virtualProvider;
+    const operation = update();
     // The commit endpoint validates and applies the change atomically.
     const result = await api("/config/commit", {
       method: "POST",
       body: JSON.stringify({
         baseRevision: state.config.revision,
-        config: state.candidate,
-        upstreamSecrets: state.pendingSecrets.upstreamSecrets,
+        ...(operation ? { operation } : { config: state.candidate }),
       }),
     });
     state.config = result.config;
     state.runtime = result.runtime;
+    state.candidate = clone(state.config);
+    if (operation) {
+      if (result.selection) {
+        selectCable(result.selection.cableId);
+        const name = operation.type === "model.save" ? operation.data.clientModelId : null;
+        if (name) state.selected.model = name;
+      } else state.selected = { cable: null, virtualProvider: null, model: null };
+      if (operation.type !== "model.save") state.page = result.page || state.page;
+    }
     state.artifactPreview = null;
     state.resolveResult = null;
     state.events.unshift({
@@ -3124,7 +2594,6 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
     throw error;
   } finally {
     state.candidate = clone(state.config);
-    state.pendingSecrets = { upstreamSecrets: {} };
   }
   render(state.page === previous.page ? preservedForms : []);
   if (successAlert) window.alert?.(successAlert);
@@ -3143,7 +2612,6 @@ async function refresh(showToast = true) {
   ]);
   state.config = configResult.config;
   state.candidate = clone(state.config);
-  state.pendingSecrets = { upstreamSecrets: {} };
   state.runtime = runtime;
   state.events = events.events || [];
   if (showToast) toast("状态已刷新。");

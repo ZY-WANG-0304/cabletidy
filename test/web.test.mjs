@@ -9,11 +9,11 @@ import { validateConfig } from "./helpers/native.mjs";
 import { buildTargetArtifacts } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
-import { CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES } from "../web/claude-models.js";
-import { configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl } from "../web/config-identity.js";
+import { CLAUDE_MODEL_CATALOG } from "../web/claude-models.js";
+import { publicConfig, applyConfigOperation, claudeModelChoices, configurationEndpoints, contentRiskRanges, evidenceNative } from "./helpers/native.mjs";
 
 const source = (await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8"))
-  .replace(/^import .* from "\.\/(?:config-identity|claude-models)\.js";\r?\n/gm, "");
+  .replace(/^import .* from "\.\/claude-models\.js";\r?\n/gm, "");
 
 function formNode(id, fields = {}, rows = []) {
   const form = {
@@ -80,7 +80,7 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
   });
   const context = vm.createContext({
     TextEncoder, TextDecoder,
-    configurationId, providerIdForConfiguration, normalizeConfigurationIdentities, configurationBaseUrl, CLAUDE_MODEL_CATALOG, CLAUDE_MODEL_ALIASES,
+    CLAUDE_MODEL_CATALOG, contentRiskRanges,
     window: {
       ...node(),
       location, history: browserHistory, scrollX: 0, scrollY: 0,
@@ -99,10 +99,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
       const body = request.body ? JSON.parse(request.body) : null;
       requests.push({ url, body });
       if (url.startsWith("/api/v1/security/")) {
-        const result = await options.onSecurity?.(url) || { body: url.endsWith("/status")
-          ? { mode: "record_only", storage: { state: "ready", retentionDays: 30 } }
-          : { items: [], total: 0, riskRecordCount: 0, findingCount: 0, counts: {}, nextCursor: null, providers: [] } };
-        return { ok: (result.status || 200) < 400, status: result.status || 200, json: async () => result.body };
+        const response = await securityFixture(url);
+        return { ok: (response.status || 200) < 400, status: response.status || 200, json: async () => response.body };
       }
       if (url === "/api/v1/config/commit") {
         if (body.baseRevision !== persisted.revision) return {
@@ -110,11 +108,14 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
         };
         const override = await options.onCommit?.(body);
         if (override) return { ok: false, status: override.status, json: async () => override.body };
-        persisted = normalizeConfig(body.config);
+        let edit;
+        try { edit = body.operation ? await applyConfigOperation(persisted, body.operation, options.catalog || catalogFixture()) : { config: body.config }; }
+        catch (error) { return { ok: false, status: 422, json: async () => ({ error: { message: error.message } }) }; }
+        persisted = normalizeConfig(edit.config);
         persisted.revision += 1;
         return { ok: true, json: async () => ({
-          config: clone(persisted), revision: persisted.revision,
-          runtime: { virtualProviders: [], health: {} },
+          config: clone(persisted), revision: persisted.revision, selection: edit.selection, page: edit.page,
+          runtime: { virtualProviders: configurationEndpoints(persisted), health: {} },
         }) };
       }
       if (url === "/api/v1/targets/apply" || url === "/api/v1/targets/restore") {
@@ -123,7 +124,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
       }
       const responses = {
         "/api/v1/config": { config: clone(persisted) },
-        "/api/v1/runtime": { virtualProviders: [], health: {} },
+        "/api/v1/claude/models": claudeModelChoices(),
+        "/api/v1/runtime": { virtualProviders: configurationEndpoints(persisted), health: {} },
         "/api/v1/events": { events: [] },
         "/api/v1/tests/upstream": { ok: true, message: "上游可连接", latencyMs: 1, secretConfigured: true },
         "/api/v1/codex/models": publicCodexCatalog(options.catalog || catalogFixture()),
@@ -143,6 +145,95 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     structuredClone,
     setTimeout() {},
   });
+  const fixtureBodies = new Map();
+  const rawSecurity = async url => await options.onSecurity?.(url) || { body: url.endsWith("/status")
+    ? { mode: "record_only", storage: { state: "ready", retentionDays: 30 } }
+    : { items: [], total: 0, riskRecordCount: 0, findingCount: 0, counts: {}, nextCursor: null, providers: [] } };
+  async function retainedBodies(record, findings) {
+    const bodies = {};
+    for (const finding of findings) {
+      const ref = finding.evidence?.bodyRef;
+      if (!ref || bodies[ref.snapshotId]) continue;
+      const pages = [];
+      let offset = Math.max(0, (ref.start || 0) - 512);
+      while (true) {
+        const url = `/api/v1/security/audit/${encodeURIComponent(record.id)}/body?${new URLSearchParams({ snapshot: ref.snapshotId, offset })}`;
+        const result = await rawSecurity(url);
+        if ((result.status || 200) >= 400) throw new Error(result.body.error?.message || "evidence read failed");
+        pages.push(result.body);
+        if (result.body.nextOffset == null || result.body.nextOffset <= offset || result.body.nextOffset >= ref.end) break;
+        offset = result.body.nextOffset;
+      }
+      bodies[ref.snapshotId] = pages;
+    }
+    return bodies;
+  }
+  async function projectContent(page, record, response) {
+    if (!page?.items) return page;
+    const findings = (record.findings || []).filter(finding => page.items.some(item => evidenceNative("evidence.associated", finding, item, response)));
+    if (!findings.length) return evidenceNative("evidence.fixture", page, [], {}, response);
+    const cacheKey = record.id;
+    let bodies = fixtureBodies.get(cacheKey);
+    const missing = findings.filter(f => !bodies?.[f.evidence.bodyRef.snapshotId]);
+    if (missing.length) { bodies = { ...bodies, ...await retainedBodies(record, missing) }; fixtureBodies.set(cacheKey, bodies); }
+    return evidenceNative("evidence.fixture", page, findings, bodies, response);
+  }
+  async function securityFixture(url) {
+    const parsed = new URL(url, "http://test"), params = parsed.searchParams;
+    const content = parsed.pathname.endsWith("/content") || parsed.pathname.endsWith("/response-content");
+    const record = vm.runInContext("state.security.detail", context);
+    if (content) {
+      let offset = Number(params.get("offset") || 0);
+      let result;
+      while (true) {
+        const query = new URL(url, "http://test"); query.searchParams.set("offset", offset); query.searchParams.delete("finding");
+        result = await rawSecurity(query.pathname + query.search);
+        if ((result.status || 200) >= 400) return result;
+        result = { ...result, body: await projectContent(result.body, record || {}, parsed.pathname.endsWith("/response-content")) };
+        if (!params.has("finding") || result.body.items?.some(item => item.findingIds?.includes(params.get("finding"))) || result.body.nextOffset == null || result.body.nextOffset <= offset) break;
+        offset = result.body.nextOffset;
+      }
+      return result;
+    }
+    if (parsed.pathname.endsWith("/body")) {
+      const query = new URL(url, "http://test"); query.searchParams.delete("finding");
+      let result = await rawSecurity(query.pathname + query.search);
+      if ((result.status || 200) >= 400) return result;
+      const findings = record?.findings || [];
+      let page = evidenceNative("evidence.body", result.body, findings, params.get("snapshot"));
+      if (params.has("finding")) {
+        const finding = findings.find(f => f.id === params.get("finding"));
+        if (finding) {
+          const bodies = await retainedBodies(record, [finding]);
+          page = evidenceNative("evidence.fixture", page, findings, bodies, false, finding.id);
+          const offset = Math.max(0, (page.findingSelection?.start || 0) - 512);
+          query.searchParams.set("offset", offset);
+          result = await rawSecurity(query.pathname + query.search);
+          const selection = page.findingSelection;
+          page = evidenceNative("evidence.body", result.body, findings, params.get("snapshot"));
+          page.findingSelection = selection;
+        }
+      }
+      return { ...result, body: page };
+    }
+    const result = await rawSecurity(url);
+    if (result.body?.record) {
+      result.body.record = evidenceNative("evidence.record", result.body.record);
+      for (const [key, response] of [["requestContent", false], ["responseContent", true]]) {
+        if (result.body.record[key]) result.body.record[key] = await projectContent(result.body.record[key], result.body.record, response);
+      }
+    }
+    return result;
+  }
+  async function projectInjected() {
+    const record = vm.runInContext("state.security.detail", context);
+    if (!record) return;
+    const normalized = evidenceNative("evidence.record", record);
+    Object.assign(record, { findings: normalized.findings, bodySnapshots: normalized.bodySnapshots });
+    for (const [key, response] of [["requestContent", false], ["responseContent", true]]) {
+      if (record[key]) record[key] = await projectContent(record[key], record, response);
+    }
+  }
   vm.runInContext(source, context);
   await setImmediate();
   return {
@@ -153,7 +244,10 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     node: (selector) => nodes.get(selector),
     persisted: () => clone(persisted),
     externalUpdate(update) { update(persisted); persisted.revision += 1; },
-    read: (expression) => vm.runInContext(expression, context),
+    read: (expression) => {
+      if (expression.includes("state.security.detail =")) fixtureBodies.clear();
+      return vm.runInContext(expression, context);
+    },
     track(form) {
       context.trackedForm = form;
       vm.runInContext("formBaselines.set(trackedForm, formSnapshot(trackedForm))", context);
@@ -170,7 +264,17 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     },
     action(action, element) {
       context.actionElement = element;
-      return vm.runInContext(`handleAction(${JSON.stringify(action)}, actionElement)`, context);
+      return (async () => {
+        if (action === "security-trace-tab") await projectInjected();
+        else if (action === "security-finding") {
+          const record = vm.runInContext("state.security.detail", context);
+          if (record) {
+            const normalized = evidenceNative("evidence.record", record);
+            Object.assign(record, { findings: normalized.findings, bodySnapshots: normalized.bodySnapshots });
+          }
+        }
+        return vm.runInContext(`handleAction(${JSON.stringify(action)}, actionElement)`, context);
+      })();
     },
     async submit(form) {
       context.submittedForm = form;
@@ -480,7 +584,7 @@ test("old credential windows locate the annotated hit across pages without highl
   app.read('state.page = "security"');
   await app.action("security-detail", { dataset: { id: "one" } });
   await app.action("security-finding", { dataset: { id: "secret" } });
-  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 3);
+  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 2);
   assert.equal(app.read("state.security.bodySelection.start"), start);
   assert.equal(app.read("state.security.bodySelection.end"), start + 10);
   assert.equal(app.read("state.security.detail.findings[0].evidence.bodyRef.start"), 80000, "historical evidence is immutable");
@@ -745,9 +849,9 @@ test("late body pages cannot replace a new snapshot or closed detail", async () 
 
 test("body locations retain numeric key order and select enclosing command arguments", async () => {
   const app = await controller();
-  const range = JSON.parse(app.read('JSON.stringify(securityBodyText({ "12": "second", "z": "first" }, "request", "request/field/0/command/0", { request: ["z", "12"] }))'));
-  assert.equal(range.text.slice(range.range.start, range.range.end), '"first"');
-  assert.equal(range.range.path, "request/field/0");
+  const projection = evidenceNative("evidence.legacy", { "12": "second", "z": "first" }, "request", { request: ["z", "12"] });
+  const range = projection.locations.find(range => range.path === "request/field/0");
+  assert.equal(Buffer.from(projection.text).subarray(range.start, range.end).toString(), '"first"');
 });
 
 test("returning to the list invalidates pending detail reads", async () => {
@@ -850,9 +954,9 @@ test("Claude creation rejects family aliases outside the draft client IDs before
     const form = creationForm();
     Object.assign(form.fields, { target: "claude-code", [family]: "vendor-gpt" });
     await app.submit(form);
-    assert.match(form.feedback.innerHTML, /本次填写的客户端模型 ID/);
+    assert.match(form.feedback.innerHTML, /当前线路中已保存的客户端模型 ID/);
     assert.deepEqual(app.persisted(), before);
-    assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+    assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
   }
 });
 
@@ -906,7 +1010,7 @@ test("Claude upstream authentication can switch without replacing its saved cred
   assert.deepEqual(app.persisted().upstreams.relay.auth, { header: "authorization", scheme: "Bearer" });
   assert.equal(app.persisted().upstreams.relay.secretRef, "secret://upstreams/relay");
   const commit = app.requests.find(({ url }) => url.endsWith("config/commit"));
-  assert.deepEqual(commit.body.upstreamSecrets, {});
+  assert.equal(commit.body.operation.data.secret || "", "");
 });
 
 test("Claude mapping edits do not invent capability or compaction policies", async () => {
@@ -958,7 +1062,7 @@ test("Claude alias choices are scoped to saved client IDs and keep references th
   const invalid = formNode("claude-client-form", { opus: "not-configured" });
   await app.submit(invalid);
   assert.match(invalid.feedback.innerHTML, /已保存的客户端模型 ID/);
-  assert.equal(app.requests.some(({ url }) => url.endsWith("/config/commit")), false);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
   await app.submit(formNode("claude-client-form", { opus: "claude-sonnet-4-6", sonnet: "claude-sonnet-4-6", fable: "claude-sonnet-4-6", haiku: "claude-sonnet-4-6" }));
   const controls = { "[data-cable-model-client]": "my-claude", '[data-cable-model-upstream="relay"]': "" };
   await app.submit(formNode("cable-models-form", {}, [{ dataset: { modelId: "claude-sonnet-4-6" }, querySelector: (selector) => selector in controls ? { value: controls[selector] } : null }]));
@@ -1085,7 +1189,7 @@ test("cable upstream edits preserve authentication and disabled state when an in
   assert.equal(app.persisted().upstreams.relay.enabled, false);
   const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
   assert.equal(commits.length, 1);
-  assert.deepEqual(commits[0].body.upstreamSecrets, {});
+  assert.equal(commits[0].body.operation.data.secret || "", "");
   assert.equal(app.read("state.busy"), false);
 });
 
@@ -1346,8 +1450,8 @@ test("creation commits immediately and clears transient secrets", async () => {
   assert.equal(config.virtualProviders.cabletidy_development.models["gpt-5.5"].upstreamModelId, "vendor-gpt");
   const commits = app.requests.filter(({ url }) => url.endsWith("/config/commit"));
   assert.equal(commits.length, 1);
-  assert.deepEqual(Object.values(commits[0].body.upstreamSecrets), ["test-key"]);
-  assert.equal(app.read("Object.keys(state.pendingSecrets.upstreamSecrets).length"), 0);
+  assert.equal(commits[0].body.operation.data.upstreamSecret, "test-key");
+  assert.doesNotMatch(JSON.stringify(app.read("state.candidate")), /test-key/);
   assert.equal(app.requests.some(({ url }) => url.endsWith("/config/validate")), false);
   assert.doesNotMatch(app.read("renderDiagnostics()"), /配置校验|校验草稿/);
 });
@@ -1372,7 +1476,7 @@ test("creating a duplicate normalized name preserves the existing configuration"
   await app.submit(form);
   assert.match(form.feedback.innerHTML, /ID 已存在/);
   assert.deepEqual(app.persisted(), first);
-  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 2);
 });
 
 test("creation needs only upstream credentials and keeps other configurations' model settings isolated", async () => {
@@ -1390,7 +1494,7 @@ test("creation needs only upstream credentials and keeps other configurations' m
   assert.match(app.read("renderCableDetail()"), /模型名直接透传/);
   assert.doesNotMatch(app.read("renderCableDetail()"), /data-model-id="model"/);
   const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
-  assert.deepEqual(Object.values(commit.body.upstreamSecrets), ["test-key"]);
+  assert.equal(commit.body.operation.data.upstreamSecret, "test-key");
 });
 
 test("model settings can override context without a rename and can all be removed", async () => {
@@ -1509,7 +1613,7 @@ test("a rejected creation stays on the form and can be retried without duplicate
   assert.equal(app.read("Object.keys(state.candidate.cables).length"), 0);
   assert.equal(Object.keys(app.persisted().cables).length, 0);
   assert.equal(app.read("state.selected.cable"), null);
-  assert.equal(app.read("Object.keys(state.pendingSecrets.upstreamSecrets).length"), 0);
+  assert.deepEqual(clone(app.read("state.candidate")), app.persisted());
   assert.match(form.feedback.innerHTML, /地址不合法/);
   assert.equal(form.fields.upstreamSecret, "test-key");
   assert.equal(app.messages.length, 0);
@@ -1758,7 +1862,7 @@ for (const target of ["claude-code", "codex"]) {
     assert.equal(config.upstreams.relay.name, "Other window update");
     assert.equal(validateConfig(config).ok, true);
     const commit = app.requests.find(({ url }) => url.endsWith("/config/commit"));
-    assert.deepEqual(Object.values(commit.body.upstreamSecrets), ["test-key"]);
+    assert.equal(commit.body.operation.data.upstreamSecret, "test-key");
   });
 }
 
@@ -2388,7 +2492,7 @@ test("legacy session summaries and legends never describe old findings as new", 
   assert.doesNotMatch(app.read("renderSecurity()"), /新增风险|项新增|历史关联/);
 });
 
-test("mixed session summaries and grouped navigation keep legacy risks separate from modern findings", async () => {
+test("mixed session summaries and individual navigation keep legacy risks separate from modern findings", async () => {
   const app = await controller();
   const summary = { id: "mixed-session", findingCount: 6, legacyFindingCount: 3, newFindingCount: 1, historicalFindingCount: 2 };
   const list = app.read(`securitySessionRow(${JSON.stringify(summary)})`);
@@ -2402,13 +2506,18 @@ test("mixed session summaries and grouped navigation keep legacy risks separate 
   app.read(`state.trace.summary = ${JSON.stringify(summary)}; state.trace.result = ${JSON.stringify({ items: records })}`);
   const html = app.read("renderSecuritySession()");
   assert.match(html, /<strong>4<\/strong> 项风险（含旧记录 3 项） · 2 次历史关联/);
-  assert.match(html, /title="请求 1–3[^\"]*风险 3 项（旧记录） · 新增风险 1 项 · 历史风险 2 项/);
-  assert.match(html, /class="trace-segment has-new-risk [^\"]*"[^>]*data-id="legacy"/);
+  assert.match(html, /title="请求 1[^\"]*风险 3 项"/);
+  assert.match(html, /title="请求 2[^\"]*新增风险 1 项"/);
+  assert.match(html, /title="请求 3[^\"]*仅历史风险 2 项"/);
+  assert.match(html, /class="trace-segment has-risk [^\"]*"[^>]*data-id="legacy"/);
+  assert.match(html, /class="trace-segment has-new-risk [^\"]*"[^>]*data-id="new"/);
+  assert.match(html, /class="trace-segment has-history-risk [^\"]*"[^>]*data-id="history"/);
   app.read(`state.trace.result.items[1] = ${JSON.stringify({ id: "legacy-clean", schemaVersion: 4, findingCount: 0 })}`);
   const withHistory = app.read("renderSecuritySession()");
   assert.match(withHistory, /class="trace-segment has-risk [^\"]*"[^>]*data-id="legacy"/);
-  assert.match(withHistory, /风险 3 项（旧记录） · 历史风险 2 项/);
-  assert.doesNotMatch(withHistory, /title="请求 1–3[^\"]*仅历史风险/);
+  assert.match(withHistory, /title="请求 1[^\"]*风险 3 项"/);
+  assert.match(withHistory, /title="请求 3[^\"]*仅历史风险 2 项"/);
+  assert.doesNotMatch(withHistory, /相邻请求合并显示/);
 });
 
 test("Codex request overview shows every role, links tool results, paginates and locates retained source safely", async () => {
@@ -2514,7 +2623,7 @@ test("request risks stay highlighted and navigate across content pages without o
   html = app.read("renderTraceInspector()");
   assert.match(html, /data-security-content-anchor/);
   assert.doesNotMatch(html, /<script>/);
-  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 1, "evidence is reused across pages and navigation");
+  assert.equal(app.requests.filter(r => r.url.includes("/body?")).length, 0, "content projection includes evidence without browser body reads");
   assert.equal(app.requests.some(r => r.url.includes("snapshot=request")), false);
   await app.action("security-trace-tab", { dataset: { tab: "request" } });
   assert.match(app.read("renderTraceInspector()"), /security-risk-hit/);
@@ -2528,7 +2637,8 @@ test("stream response risks map to retained output and stale navigation cannot r
   const finding = { id: "secret", ruleId: "SEC-SECRET-001", evidenceStage: "response_content", evidence: { bodyRef: { snapshotId: "evidence/stream", sourceSnapshotId: "stream/one", start: 500, end: 500 + Buffer.byteLength(escaped), matchKind: "sensitive" } } };
   const record = { id: "response-risk", findings: [finding], responseContent: { state: "complete", offset: 0, total: 1, counts: {}, items: [{ index: 0, kind: "assistant", start: 0, end: 100, contentSnapshotIds: ["stream/one"], preview: `before ${secret} after` }] } };
   const app = await controller(undefined, { onSecurity(url) {
-    if (url.includes("/body?")) return new Promise(resolve => { release = () => resolve({ body: { chunks: [{ start: 500, end: finding.evidence.bodyRef.end, content: escaped }] } }); });
+    if (url.includes("/response-content?")) return new Promise(resolve => { release = () => resolve({ body: record.responseContent }); });
+    if (url.includes("/body?")) return { body: { chunks: [{ start: 500, end: finding.evidence.bodyRef.end, content: escaped }] } };
   } });
   app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}`);
   let pending = app.action("security-finding", { dataset: { id: "secret" } });
@@ -2555,7 +2665,7 @@ test("all original risk ranges remain highlighted during ordinary and source nav
     { ruleId: "SEC-DELETE-001", evidence: { bodyRef: { snapshotId: "evidence/one", sourceSnapshotId: "request", sourceStart: second, sourceEnd: second + 6 } } },
   ] };
   for (const selection of [{}, { navigation: { start: 0 } }]) {
-    const html = app.read(`securityPageText(${JSON.stringify({ chunks: [{ start: 0, content }] })}, ${JSON.stringify(selection)}, securityRiskSelections(${JSON.stringify(record)}, "request"))`);
+    const html = app.read(`securityPageText(${JSON.stringify({ chunks: [{ start: 0, content }] })}, ${JSON.stringify(selection)}, ${JSON.stringify(evidenceNative("evidence.selections", record.findings, "request"))})`);
     assert.equal((html.match(/security-risk-hit/g) || []).length, 2);
     assert.match(html, /security-risk-hit">first<\/mark>/);
     assert.match(html, /security-risk-hit">second<\/mark>/);
@@ -2748,12 +2858,12 @@ for (const destination of ["all", "folded", "risk"]) for (const lateFailure of [
 test("legacy source navigation uses structural positions without adding risk highlighting", async () => {
   const app = await controller();
   const body = { input: [{ role: "user", content: "long preceding content ".repeat(1000) }, { role: "user", content: "TARGET <script>literal</script>" }] };
-  const page = { legacySnapshot: { body, root: "request" } };
+  const page = evidenceNative("evidence.body", { legacySnapshot: { body, root: "request" } }, [], "request");
   const html = app.read(`securityPageText(${JSON.stringify(page)}, { navigation: { start: 1, location: "request/field/0/1" } })`);
   assert.match(html, /<span data-security-body-anchor tabindex="-1">\{<\/span>\n\s+&quot;role&quot;:/);
   assert.match(html, /TARGET &lt;script&gt;literal/);
   assert.doesNotMatch(html, /security-body-hit|<script>/);
-  assert.equal(html.replace(/<[^>]*>/g, ""), app.read(`esc(securityBodyText(${JSON.stringify(body)}, "request").text)`));
+  assert.equal(html.replace(/<[^>]*>/g, ""), app.read(`esc(${JSON.stringify(evidenceNative("evidence.legacy", body, "request", {}).text)})`));
 });
 
 test("source navigation scrolls after loading and cannot scroll a newer request", async () => {
@@ -2910,7 +3020,11 @@ test("scroll loading appends requests without replacing selection and refresh re
   assert.equal(app.read("state.trace.result.items.length"), 120);
   assert.equal(app.read("state.security.detail.id"), "r80");
   assert.match(app.read("renderSecuritySession()"), /已显示全部请求/);
-  assert.ok(app.read("traceSegments(state.trace.result.items).length") <= 60);
+  assert.equal(app.read("traceSegments(state.trace.result.items).length"), 120);
+  assert.equal(app.read("traceSegments(state.trace.result.items).find(item => item.selected).order"), 81);
+  assert.match(app.read("renderSecuritySession()"), /aria-label="选择请求 81" aria-pressed="true"/);
+  assert.match(app.read("renderSecuritySession()"), /trace-axis-tick[^>]*><span>120<\/span>/);
+  assert.doesNotMatch(app.read("renderSecuritySession()"), /相邻请求合并显示/);
   await app.action("security-session-refresh", {});
   assert.equal(app.read("state.trace.result.items.length"), 120);
   assert.equal(app.read("state.security.detail.id"), "r80");

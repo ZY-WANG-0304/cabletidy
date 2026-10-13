@@ -8,7 +8,6 @@ import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig, saveConfig } from "./helpers/native.mjs";
 import { readCodexConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
-import { normalizeConfigurationIdentities } from "../web/config-identity.js";
 
 async function freePort() {
   const server = http.createServer();
@@ -46,7 +45,7 @@ test("config API allows renaming saved legacy models and still validates actual 
   candidate = (await call("")).body.config;
   assert.deepEqual(candidate.virtualProviders.cabletidy_renamed.models, initial.virtualProviders.cabletidy_relay.models);
   candidate.cables.renamed.name = "Web renamed";
-  normalizeConfigurationIdentities(candidate);
+  candidate = normalizeConfig(candidate);
   const renamed = await call("/commit", candidate);
   assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
   const saved = renamed.body.config;

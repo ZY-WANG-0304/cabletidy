@@ -697,10 +697,6 @@ fn static_file(path: &str) -> Response {
             include_bytes!("../web/app.js"),
             "text/javascript; charset=utf-8",
         ),
-        "/config-identity.js" => (
-            include_bytes!("../web/config-identity.js"),
-            "text/javascript; charset=utf-8",
-        ),
         "/claude-models.js" => (
             include_bytes!("../web/claude-models.js"),
             "text/javascript; charset=utf-8",
@@ -750,6 +746,9 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
                     match (k.as_ref(), v.parse::<usize>()) {
                         ("offset", Ok(n)) if n <= i64::MAX as usize => offset = n,
+                        ("finding", _) if !v.is_empty() && v.len() <= 200 => {
+                            query.finding = Some(v.into_owned())
+                        }
                         ("view", _) if !response_content && v == "folded" => {
                             query.folded_content = true
                         }
@@ -767,6 +766,9 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 let mut offset = 0;
                 for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
                     match k.as_ref() {
+                        "finding" if !v.is_empty() && v.len() <= 200 => {
+                            query.finding = Some(v.into_owned())
+                        }
                         "snapshot" if !v.is_empty() && v.len() <= 200 => {
                             snapshot = Some(v.into_owned())
                         }
@@ -811,6 +813,14 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             "/api/v1/events" => json_response(
                 200,
                 json!({"events":state.events.lock().unwrap().iter().rev().take(100).collect::<Vec<_>>()}),
+            ),
+            "/api/v1/claude/models" => json_response(
+                200,
+                json!({"aliases":{
+                    "defaultModel":targets::claude::DEFAULT_MODEL_ALIASES,
+                    "subagent":targets::claude::SUBAGENT_MODEL_ALIASES,
+                    "families":targets::claude::MODEL_FAMILIES
+                }}),
             ),
             "/api/v1/codex/models" => match state
                 .catalog
@@ -1109,9 +1119,18 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
             json!({"error":{"code":"revision_conflict","message":format!("配置已经变更，当前 revision 是 {}",c["revision"]),"currentRevision":c["revision"]},"diff":config::diff(c,&config::strip_presentation(body.get("config").unwrap_or(c))),"config":config::public(c,&previous.secrets)}),
         ));
     }
-    let mut candidate = config::normalize(&config::strip_presentation(&body["config"]));
+    let edit = if let Some(operation) = body.get("operation") {
+        match crate::config_operations::apply(c, operation, &state.catalog).await {
+            Ok(edit) => Some(edit),
+            Err(e) => return Ok(error(422, "config_operation_invalid", &e.to_string())),
+        }
+    } else {
+        None
+    };
+    let payload = edit.as_ref().unwrap_or(body);
+    let mut candidate = config::normalize(&config::strip_presentation(&payload["config"]));
     candidate["revision"] = json!(c["revision"].as_u64().unwrap_or(0) + 1);
-    let mut secrets = config::apply_secrets(&mut candidate, &previous.secrets, body);
+    let mut secrets = config::apply_secrets(&mut candidate, &previous.secrets, payload);
     let mut check = validation::validate(&candidate);
     let diff = config::diff(c, &candidate);
     if check["ok"] == true {
@@ -1155,7 +1174,7 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
     state.event("config.commit",json!({"revision":next.config["revision"],"virtualProviders":entries(&next.config["virtualProviders"]).map(|(k,_)|k).collect::<Vec<_>>(),"upstreams":entries(&next.config["upstreams"]).map(|(k,_)|k).collect::<Vec<_>>()}));
     Ok(json_response(
         200,
-        json!({"ok":true,"revision":next.config["revision"],"diff":diff,"config":config::public(&next.config,&next.secrets),"runtime":state.runtime()}),
+        json!({"ok":true,"revision":next.config["revision"],"diff":diff,"config":config::public(&next.config,&next.secrets),"runtime":state.runtime(),"selection":edit.as_ref().map(|e|&e["selection"]),"page":edit.as_ref().map(|e|&e["page"])}),
     ))
 }
 async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Response> {
