@@ -72,7 +72,9 @@ impl Directories {
     pub fn prepare(home: &Path, config: &Value) -> Result<Self> {
         let root = directory(home, config)?;
         private_directory(&root)?;
-        let root = std::fs::canonicalize(root)?;
+        // PowerShell and other Windows tools reject verbatim paths even for
+        // ordinary directories. Keep that form only when Windows requires it.
+        let root = dunce::canonicalize(root)?;
         let dirs = Self {
             spool: root.join("spool"),
             sqlite: root.join("sqlite"),
@@ -139,7 +141,7 @@ pub(crate) fn status(home: &Path, config: &Value) -> Value {
     let desired = directory(home, config).ok();
     let configured = desired
         .as_ref()
-        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()));
+        .map(|path| dunce::canonicalize(path).unwrap_or_else(|_| path.clone()));
     let active = DIRECTORIES.get().map(|dirs| dirs.root.clone());
     json!({"defaultDirectory":default,"activeDirectory":active,
         "configuredDirectory":desired,"restartRequired":active != configured,
@@ -155,7 +157,10 @@ mod tests {
     fn private_directories_are_writable_and_probes_leave_no_files() {
         let home = tempfile::tempdir().unwrap();
         let dirs = Directories::prepare(home.path(), &json!({})).unwrap();
-        assert_eq!(dirs.root, home.path().canonicalize().unwrap().join("tmp"));
+        assert_eq!(
+            dirs.root.canonicalize().unwrap(),
+            home.path().canonicalize().unwrap().join("tmp")
+        );
         for path in [&dirs.spool, &dirs.sqlite, &dirs.helpers] {
             assert_eq!(std::fs::read_dir(path).unwrap().count(), 0);
         }
@@ -163,7 +168,9 @@ mod tests {
         assert_eq!(
             Directories::prepare(home.path(), &json!({"temporaryDirectory":custom}))
                 .unwrap()
-                .root,
+                .root
+                .canonicalize()
+                .unwrap(),
             custom.canonicalize().unwrap()
         );
         let blocked = home.path().join("blocked");

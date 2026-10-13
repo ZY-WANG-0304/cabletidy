@@ -5,11 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths } from "./helpers/native.mjs";
+import { catalogFixture } from "./helpers/codex-fixture.mjs";
 
-async function fixture(t) {
+async function fixture(t, options = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-settings-"));
   const paths = getPaths(home);
-  let app = await createApplication({ paths });
+  let app = await createApplication({ ...options, paths });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
   return {
     paths,
@@ -20,7 +21,7 @@ async function fixture(t) {
         body: JSON.stringify({ config, baseRevision }),
       });
     },
-    async restart() { await app.close(); app = await createApplication({ paths }); },
+    async restart() { await app.close(); app = await createApplication({ ...options, paths }); },
   };
 }
 
@@ -53,7 +54,12 @@ test("audit settings apply immediately, persist and survive restart in every lim
 });
 
 test("temporary directory changes persist, take effect only after restart and reject unusable paths", async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, { loadCodexCatalog: async () => catalogFixture() });
+  const checkCatalog = async directory => {
+    const result = await f.get("codex/models");
+    assert.equal(result.models?.length, 2, JSON.stringify(result));
+    assert.deepEqual(await fs.readdir(path.join(directory, "helpers")), [], "catalog helpers are removed after use");
+  };
   let { config } = await f.get("config");
   const defaultDirectory = path.join(f.paths.home, "tmp");
   let active = (await f.get("runtime")).temporaryStorage;
@@ -62,6 +68,7 @@ test("temporary directory changes persist, take effect only after restart and re
   for (const name of ["spool", "sqlite", "helpers"]) {
     assert.ok((await fs.stat(path.join(defaultDirectory, name))).isDirectory());
   }
+  await checkCatalog(defaultDirectory);
   const custom = path.join(f.paths.home, "custom temporary files");
   config.temporaryDirectory = custom;
   let response = await f.commit(config);
@@ -78,13 +85,25 @@ test("temporary directory changes persist, take effect only after restart and re
   assert.equal(active.activeDirectory, await fs.realpath(custom));
   assert.equal(active.restartRequired, false);
   assert.equal(await fs.readFile(sentinel, "utf8"), "keep");
+  await checkCatalog(custom);
+  if (process.platform === "win32") {
+    // Equivalent Windows spellings must not create a spurious restart warning.
+    response = await f.commit({ ...config, temporaryDirectory: path.toNamespacedPath(custom) });
+    result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    assert.equal(result.runtime.temporaryStorage.restartRequired, false);
+    config = result.config;
+    await f.restart();
+    assert.equal((await f.get("runtime")).temporaryStorage.activeDirectory, await fs.realpath(custom));
+    await checkCatalog(custom);
+  }
   const blocked = path.join(f.paths.home, "blocked");
   await fs.writeFile(blocked, "keep");
   for (const directory of ["relative/path", blocked]) {
     response = await f.commit({ ...config, temporaryDirectory: directory });
     assert.equal(response.status, 422);
     assert.ok((await response.json()).errors.some(({ path }) => path === "temporaryDirectory"));
-    assert.equal((await f.get("config")).config.temporaryDirectory, custom);
+    assert.equal((await f.get("config")).config.temporaryDirectory, config.temporaryDirectory);
     assert.equal((await f.get("runtime")).temporaryStorage.restartRequired, false);
   }
   config.temporaryDirectory = null;
