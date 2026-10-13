@@ -1345,15 +1345,30 @@ button.list-row:hover,
 .trace-workspace { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); min-width: 0; }
 .trace-toolbar { display: flex; gap: 16px; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--line); }
 .trace-toolbar > button { margin-left: auto; }
-.trace-overview { padding: 12px 18px 10px; background: var(--paper); border-bottom: 1px solid var(--line); }
-.trace-scale-row { display: flex; justify-content: flex-start; margin-bottom: 4px; }
-.trace-minimap { display: flex; gap: 2px; align-items: stretch; height: 26px; }
-.trace-segment { min-width: 1px; flex-basis: 0; padding: 0; background: #90b6a5; border: 0; border-radius: 2px; }
+.trace-overview { min-width: 0; padding: 12px 12px 10px; background: var(--paper); border-bottom: 1px solid var(--line); }
+.trace-scale-row { display: flex; justify-content: flex-start; margin: 0 6px 4px; }
+.trace-map-viewport { overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; }
+.trace-map-viewport::-webkit-scrollbar { display: none; }
+.trace-map-viewport:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.trace-map-track { width: 100%; padding: 6px 16px 6px 6px; }
+.trace-minimap { position: relative; display: flex; gap: 2px; align-items: stretch; height: 56px; padding-top: 30px; }
+.trace-step { position: relative; min-width: 12px; flex-basis: 0; }
+.trace-axis-tick { position: absolute; bottom: calc(100% + 7px); left: 50%; width: 0; height: 5px; border-left: 1px solid #b9c1c8; }
+.trace-axis-tick > span { position: absolute; bottom: 7px; left: 0; transform: translateX(-50%); color: var(--muted); font-size: 10px; line-height: 12px; white-space: nowrap; }
+.trace-segment { display: block; width: 100%; height: 26px; padding: 0; background: #90b6a5; border: 0; border-radius: 2px; }
 .trace-segment.has-risk, .trace-segment.has-new-risk { background: #d4a452; }
 .trace-segment.has-history-risk { background: #b7ada0; }
 .trace-segment.is-selected { outline: 2px solid var(--ink); outline-offset: 2px; }
 .trace-segment:hover { filter: brightness(.9); }
-.trace-overview-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.trace-scroll-rail { height: 8px; margin: 1px 6px 0; }
+.trace-scroll-control { display: block; width: 100%; height: 8px; margin: 0; padding: 0; appearance: none; background: transparent; cursor: ew-resize; }
+.trace-scroll-control:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+.trace-scroll-control::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: #edf0f2; }
+.trace-scroll-control::-webkit-slider-thumb { appearance: none; width: var(--thumb-width, 24px); height: 4px; border: 0; border-radius: 2px; background: #bdc5cb; }
+.trace-scroll-control:hover::-webkit-slider-thumb { background: #9ba6af; }
+.trace-scroll-control::-moz-range-track { height: 4px; border-radius: 2px; background: #edf0f2; }
+.trace-scroll-control::-moz-range-thumb { width: var(--thumb-width, 24px); height: 4px; border: 0; border-radius: 2px; background: #bdc5cb; }
+.trace-overview-caption { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; min-width: 0; margin: 8px 6px 0; color: var(--muted); font-size: 11px; }
 .trace-overview-caption > strong { color: var(--ink); font-weight: 600; }
 .trace-legend { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .trace-legend-swatch { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 2px; }
