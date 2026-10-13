@@ -30,7 +30,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 检查使用本地规则和有界缓冲。未知工具、动态脚本、未覆盖的推理内容、图片和加密内容显示“已检查（覆盖有限）”；正文缺失、解析失败和资源不足等检查缺口单独提示。流式结果按 Responses / Messages 各自的完整协议结束事件判定，客户端在结束事件后关闭连接不再误标为中断；连接接收状态与检查状态分别保留。数据库不可用或队列满时代理继续运行，页面显示审计退化状态；正常退出会排空已接收的写入，强制退出可能丢失未提交记录。它是本地可追溯日志，不提供零丢失或防篡改保证。
 
-分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0-rc.1`，发布与验收状态见 [候选版发布说明](docs/releases/0.4.0-rc.6.md)。
+分类调研、规则清单、固定预算和 HTTP 查询接口见 [代理安全 V1 设计与实现](docs/agent-security-v1.md)。基础安全审计自 `0.3.0` 提供；会话轨迹、敏感原文保留与高亮纳入 `0.4.0`，发布与验收状态见 [0.4.0 发布说明](docs/releases/0.4.0.md)。
 
 ## 服务设置
 
@@ -79,7 +79,7 @@ Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应
 
 npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x 版本；完整版本约束见 `package.json`。原生程序可独立运行。发行包支持 Linux x64 / arm64、macOS x64 / arm64、Windows x64；源码构建需要稳定版 Rust 和系统 C 编译器 / 链接器。CI 执行源码测试与安装冒烟测试，跨平台结果以对应提交的 CI 为准。Windows 使用原生进程 API 查询进程身份；Codex 目录查询仍需要系统 Windows PowerShell，并允许 `Add-Type` 调用 Windows Job Object API。
 
-当前源码版本为 `0.4.0-rc.6`，在上一候选版基础上将配置套装更名为线路、提供独立导入导出页面，将默认审计存储上限提高到 5 GiB，并支持确认后继续应用或撤销有冲突的 Claude Code 配置；同时修复审计维护被文件锁阻塞时的读取失败，以及 Codex 配置分隔注释前的空行。候选版使用 npm `next`；默认 npm 安装命令仍选择 `latest` 指向的稳定版 `0.3.0`。候选版的发布状态、验收范围与升级步骤见 [0.4.0-rc.6 发布说明](docs/releases/0.4.0-rc.6.md)；GitHub Release 与 npm 分别发布。稳定版见 [0.3.0 发布说明](docs/releases/0.3.0.md)。
+当前源码版本为正式版 `0.4.0`，沿用 `0.4.0-rc.6` 的功能代码，更新版本号和发布文档后重新构建完整安装包。相对 `0.3.0`，新增会话审计轨迹、完整请求与响应概览、敏感原文保留与风险定位、历史折叠及检测复用、线路导入导出、客户端配置冲突确认、自动更新和服务设置，默认审计存储上限提高到 5 GiB。正式包发布到 npm `latest`；发布状态、验收范围与升级步骤见 [0.4.0 发布说明](docs/releases/0.4.0.md)。GitHub Release 与 npm 分别发布。
 
 ### 从 npm 官方源安装
 
@@ -95,10 +95,10 @@ cabletidy start
 npm exec --yes --registry=https://registry.npmjs.org/ --package=cabletidy -- cabletidy start
 ```
 
-试用 `0.4.0` 候选版时，先按[候选版升级说明](docs/releases/0.4.0-rc.6.md)停止服务并备份数据，再安装指定版本：
+升级到 `0.4.0` 时，先按[正式版升级说明](docs/releases/0.4.0.md)停止服务并备份数据，再安装指定版本：
 
 ```bash
-npm install -g cabletidy@0.4.0-rc.6 --registry=https://registry.npmjs.org/
+npm install -g cabletidy@0.4.0 --registry=https://registry.npmjs.org/
 ```
 
 ### 从本地安装包使用
@@ -141,7 +141,7 @@ cabletidy stop
 `status` 同时显示 daemon 是否在线、管理台 URL、配置版本和当前线路列表（`cables`）；每条线路包含 ID、名称、目标 CLI、本地接入 URL 和启用状态，不再需要单独的 URL 或 Web 状态命令。
 `status` 和不带参数的命令只读取状态，不创建数据目录、配置、密钥或备份。尚未初始化时，只提示未启动以及运行 `cabletidy start`，不返回预设的管理台地址。
 
-升级时先停止服务，再安装目标版本并重新启动。从 `0.2.0` 升级时，先在原运行终端按 Ctrl+C，或通过原进程管理器停止；该版本没有 `stop` 命令。以下命令适用于已经支持 `stop` 的版本，且 `latest` 只选择稳定版；完整升级步骤见 [发布说明](docs/releases/0.3.0.md)：
+升级时先停止服务，再安装目标版本并重新启动。从 `0.2.0` 升级时，先在原运行终端按 Ctrl+C，或通过原进程管理器停止；该版本没有 `stop` 命令。以下命令适用于已经支持 `stop` 的版本，且 `latest` 只选择稳定版；完整升级步骤见 [发布说明](docs/releases/0.4.0.md)：
 
 ```bash
 cabletidy stop
