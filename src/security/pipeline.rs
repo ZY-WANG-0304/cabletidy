@@ -762,7 +762,7 @@ impl Visitor for BodyVisitor<'_> {
                     &mut memory,
                 );
                 match parsed {
-                    Ok((parsed, version)) => {
+                    Ok((parsed, version, locator)) => {
                         let before = self.pipeline.rules.findings.len();
                         self.pipeline.rules.tool(
                             text(&frame.meta["name"]),
@@ -798,6 +798,7 @@ impl Visitor for BodyVisitor<'_> {
                             for finding in &mut self.pipeline.rules.findings[before..] {
                                 finding["requestId"] = self.pipeline.record["id"].clone();
                                 finding["evidence"]["bodyRef"] = json!({"snapshotId":id,"start":0,"end":length,"unit":"utf8_bytes","sourceSnapshotId":self.root,"sourceStart":frame.input_start,"sourceEnd":frame.input_end});
+                                finding["evidence"]["argumentLocator"] = locator.clone();
                             }
                         }
                     }
@@ -867,7 +868,7 @@ fn tool_input(
     node: &Node,
     encoded: bool,
     memory: &mut Reservation,
-) -> Result<(Value, [u8; 32])> {
+) -> Result<(Value, [u8; 32], Value)> {
     let decoded = if encoded {
         Some(crate::streaming::decoded(source, node)?)
     } else {
@@ -909,20 +910,37 @@ fn tool_input(
     }
     let mut version = [0; 32];
     version.copy_from_slice(digest.finish().as_ref());
+    // These offsets describe the observed argument token, before persistence
+    // formatting. Encoded function arguments have been decoded once. The hash
+    // identifies that exact byte sequence; display offsets remain read-time work.
+    memory.grow(1024)?;
+    let mut locator = json!({
+        "version":1,"coordinateSpace":"observed_arguments","unit":"utf8_bytes",
+        "sha256":version.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        "fields":[]
+    });
     if root.kind != b'{' {
-        return Ok((root.read(source, memory)?, version));
+        locator["fields"] = json!([{"path":[],"start":0,"end":root.end-root.start}]);
+        return Ok((root.read(source, memory)?, version, locator));
     }
     let index = crate::streaming::index(source, if encoded { None } else { Some(&root) })?;
     let mut result = json!({});
+    let mut fields = std::collections::BTreeMap::new();
     for (_, field, node) in &index.nodes {
         if matches!(
             field.as_str(),
             "cmd" | "command" | "file_path" | "path" | "filePath" | "patch" | "input"
         ) {
             result[field] = node.read(source, memory)?;
+            memory.grow(768)?;
+            fields.insert(
+                field,
+                json!({"path":[field],"start":node.start-root.start,"end":node.end-root.start}),
+            );
         }
     }
-    Ok((result, version))
+    locator["fields"] = json!(fields.into_values().collect::<Vec<_>>());
+    Ok((result, version, locator))
 }
 
 struct Credentials<'a> {
@@ -1150,4 +1168,55 @@ pub(super) fn run(
         }
     }
     p.publish("complete");
+}
+
+#[cfg(test)]
+mod locator_tests {
+    use super::*;
+
+    #[test]
+    fn tool_locators_identify_observed_argument_bytes_before_display_formatting() {
+        let arguments = r#"{ "cmd" : "echo 🙂; rm -rf /important", "ignored": "metadata", "path":"/workspace" }"#;
+        for encoded in [false, true] {
+            let raw = if encoded {
+                serde_json::to_string(arguments).unwrap()
+            } else {
+                arguments.into()
+            };
+            let mut spool = Spool::new().unwrap();
+            spool.write_all(b"  ").unwrap();
+            spool.write_all(raw.as_bytes()).unwrap();
+            let source = spool.seal().unwrap();
+            let node = Node {
+                start: 2,
+                end: source.len,
+                kind: if encoded { b'"' } else { b'{' },
+            };
+            let (parsed, version, locator) =
+                tool_input(&source, &node, encoded, &mut Reservation::memory()).unwrap();
+            assert_eq!(
+                parsed,
+                json!({"cmd":"echo 🙂; rm -rf /important","path":"/workspace"})
+            );
+            assert_eq!(locator["unit"], "utf8_bytes");
+            assert_eq!(locator["coordinateSpace"], "observed_arguments");
+            assert_eq!(
+                locator["sha256"],
+                version
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            assert_eq!(
+                ring::digest::digest(&ring::digest::SHA256, arguments.as_bytes()).as_ref(),
+                version
+            );
+            for field in locator["fields"].as_array().unwrap() {
+                let name = field["path"][0].as_str().unwrap();
+                let token = &arguments[field["start"].as_u64().unwrap() as usize
+                    ..field["end"].as_u64().unwrap() as usize];
+                assert_eq!(serde_json::from_str::<Value>(token).unwrap(), parsed[name]);
+            }
+        }
+    }
 }

@@ -404,6 +404,10 @@ IPv6 由 `Ipv6Addr` 解析校验而非正则硬凑，因此 Rust 的 `std::colle
 
 `finding.evidence.bodyRef` 包含 `snapshotId`、`start`、`end`、`unit`，可附 `sourceSnapshotId`。工具风险独立保留检测时的语义参数，另以 `sourceStart` / `sourceEnd` 指向完整工具参数，避免长描述让风险跳转停在无关段落。文本风险指向不可改写的正文或固定检测范围；凭据风险的 `start` / `end` 精确指向敏感原文，并附 `matchKind: sensitive`，检测快照仍保留其周围上下文。地址风险同样精确指向命中的地址或 URL 用户名，附 `matchKind: endpoint`，与凭据区分；公网与内网规则各自指向触发它的那一类地址，同一请求里两种地址并存时不会互相指错。其他风险的高亮可表示检测窗口或语义参数。旧记录仍按 `matchKind: redaction` 定位已保存的脱敏标记。页面正确转换 UTF-8 字节位置，并统一 HTML 转义。
 
+新工具风险另保存 `evidence.argumentLocator`：`version: 1`、`coordinateSpace: observed_arguments`、`unit: utf8_bytes`、完整参数原文的 `sha256`，以及语义字段的 `fields: [{path, start, end}]`。路径只含检测已选择的固定参数名；范围包含字段值的整个 JSON token，相对于观察到的参数起点。`function_call.arguments` 先解除外层 JSON 字符串转义，再记录这些字节范围。该坐标空间由指纹标识，与持久化正文、格式化文本及 UTF-16 展示坐标区分，不能直接用于正文高亮。历史记录缺少该字段时沿用语义证据匹配。
+
+内容读取阶段为每个条目的 `preview` / `structure` 各构建一次仅含节点类型、源范围和关联关系的位置索引，供关联风险共同使用，不在每个容器中复制子树值。转义位置仅映射命中端点，随后批量转换为 UTF-16；格式化、HTML 转义和展示坐标计算仍由读取与展示阶段负责。定位工作区在分配前申请共享内存预算，并设每页 32 MiB 上限；长扫描检查取消信号。工作区或节点预算不足时保留条目正文与风险关联，将受影响的风险列入 `riskGaps`，不把资源缺口解释为内容版本变化。
+
 流式事件的 `data` 中，原始参数、初始文本和后续文本 delta 替换为 `{contentSnapshotId, observedFragmentStart, observedFragmentEnd, fragmentUnit: decoded_utf8_bytes}`。`response.content_part.added`、`response.reasoning_summary_part.added`、初始输出项及响应对象中的文本，按同一输出 / 内容索引加入后续 delta 的重组通道；非空初始文本不能逐事件提前落盘。done / 最终对象保留为独立快照，初始文本后中断仍保留已观察的末尾并标记不完整；若新初始值替换了尚未结束的旧通道，旧通道按不完整内容封口。这是网关观察片段到重组快照的关联；观察片段偏移不是持久化 JSON 正文偏移，不能用于正文高亮。重组快照保存参数 / 文本原文和敏感位置，不受后来最终输出覆盖；事件顺序、非 data 行和未替换字段仍保留。无法解析的事件按原始文本保留并标为 `invalid_sse_event`；不完整 JSON 只保留流式解析器已输出的前缀，正文标为 `gap`，检测注明 `invalid_json_or_structure_budget`；解析器尚未输出的尾部可能缺失。
 
 `response.reasoning_summary_text.delta/done` 和 `response.reasoning_text.delta/done` 同样先重组再检测敏感位置，分别按输出索引与摘要 / 内容索引隔离，交错分片不会混入其他条目。推理文本仍执行凭据检查与精确定位，但推理语义标记 `reasoning_content_not_inspected`。未知事件或未知 Messages delta 的 payload 保留原文，记录带 `unsupported_response_event`；仍执行可用的凭据文本检测，不因协议未知而生成凭据风险，也不改变转发给客户端的内容。

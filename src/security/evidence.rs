@@ -7,284 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
 
-struct Span {
-    start: usize,
-    end: usize,
-    value: Value,
-    children: BTreeMap<String, Span>,
-}
-fn parse_span(input: &str) -> Result<Span> {
-    let _: Value = serde_json::from_str(input)?;
-    fn skip(bytes: &[u8], at: &mut usize) {
-        while bytes.get(*at).is_some_and(u8::is_ascii_whitespace) {
-            *at += 1;
-        }
-    }
-    fn string_end(bytes: &[u8], at: &mut usize) {
-        *at += 1;
-        while *at < bytes.len() {
-            match bytes[*at] {
-                b'\\' => *at += 2,
-                b'"' => {
-                    *at += 1;
-                    break;
-                }
-                _ => *at += 1,
-            }
-        }
-    }
-    fn read(input: &str, at: &mut usize, depth: usize) -> Result<Span> {
-        if depth > 128 {
-            bail!("evidence_depth_limit");
-        }
-        let bytes = input.as_bytes();
-        skip(bytes, at);
-        let start = *at;
-        let mut children = BTreeMap::new();
-        match bytes[*at] {
-            b'{' | b'[' => {
-                let object = bytes[*at] == b'{';
-                let close = if object { b'}' } else { b']' };
-                *at += 1;
-                skip(bytes, at);
-                let mut index = 0;
-                while bytes[*at] != close {
-                    let key = if object {
-                        let begin = *at;
-                        string_end(bytes, at);
-                        let key: String = serde_json::from_str(&input[begin..*at])?;
-                        skip(bytes, at);
-                        *at += 1;
-                        key
-                    } else {
-                        index.to_string()
-                    };
-                    let child = read(input, at, depth + 1)?;
-                    children.insert(key, child);
-                    index += 1;
-                    skip(bytes, at);
-                    if bytes[*at] == b',' {
-                        *at += 1;
-                        skip(bytes, at);
-                    } else {
-                        break;
-                    }
-                }
-                *at += 1;
-            }
-            b'"' => string_end(bytes, at),
-            _ => {
-                while bytes
-                    .get(*at)
-                    .is_some_and(|b| !b.is_ascii_whitespace() && !b",]}".contains(b))
-                {
-                    *at += 1;
-                }
-            }
-        }
-        let value = serde_json::from_str(&input[start..*at])?;
-        let string = matches!(value, Value::String(_));
-        Ok(Span {
-            start: start + usize::from(string),
-            end: *at - usize::from(string),
-            value,
-            children,
-        })
-    }
-    read(input, &mut 0, 0)
-}
-fn matches(node: &Span, value: &Value, projection: bool) -> bool {
-    match value {
-        Value::Object(fields) => {
-            node.value.is_object()
-                && (projection || node.children.len() == fields.len())
-                && fields
-                    .iter()
-                    .all(|(k, v)| node.children.get(k).is_some_and(|n| matches(n, v, false)))
-        }
-        Value::Array(values) => {
-            node.value.is_array()
-                && node.children.len() == values.len()
-                && values.iter().enumerate().all(|(i, v)| {
-                    node.children
-                        .get(&i.to_string())
-                        .is_some_and(|n| matches(n, v, false))
-                })
-        }
-        _ => node.value == *value,
-    }
-}
-fn escaped_offsets(input: &str, start: usize, end: usize) -> Vec<usize> {
-    let mut offsets = vec![start];
-    let mut at = start;
-    while at < end {
-        if input.as_bytes()[at] == b'\\' {
-            let len = if input.as_bytes().get(at + 1) == Some(&b'u') {
-                6
-            } else {
-                2
-            };
-            let decoded: String =
-                serde_json::from_str(&format!("\"{}\"", &input[at..(at + len).min(end)]))
-                    .unwrap_or_default();
-            if decoded.is_empty() && len == 6 {
-                // A surrogate pair is one scalar and four UTF-8 bytes.
-                if at + 12 <= end {
-                    at += 12;
-                    for _ in 0..4 {
-                        offsets.push(at);
-                    }
-                    continue;
-                }
-            }
-            at += len;
-            for _ in 0..decoded.len() {
-                offsets.push(at);
-            }
-        } else {
-            let len = input[at..].chars().next().unwrap().len_utf8();
-            at += len;
-            for _ in 0..len {
-                offsets.push(at);
-            }
-        }
-    }
-    offsets
-}
-fn utf16(input: &str, byte: usize) -> usize {
-    let mut byte = byte.min(input.len());
-    while !input.is_char_boundary(byte) {
-        byte -= 1;
-    }
-    input[..byte].encode_utf16().count()
-}
-fn range(input: &str, start: usize, end: usize, id: &str) -> Value {
-    json!({"start":utf16(input,start),"end":utf16(input,end),"findingId":id})
-}
-
-pub fn content_ranges(input: &str, evidence: &Value, id: &str, structured: bool) -> Value {
-    let raws: Vec<_> = if evidence.is_array() {
-        array(evidence).iter().filter_map(Value::as_str).collect()
-    } else {
-        evidence.as_str().into_iter().collect()
-    };
-    let mut ranges = Vec::new();
-    if structured {
-        for raw in raws {
-            let expected = serde_json::from_str(raw).unwrap_or_else(|_| json!(raw));
-            if expected.as_str() == Some(input) {
-                ranges.push(range(input, 0, input.len(), id));
-                continue;
-            }
-            let Ok(root) = parse_span(input) else {
-                continue;
-            };
-            let kind = text(&root.value["type"]);
-            let node = if [
-                "function_call",
-                "custom_tool_call",
-                "tool_use",
-                "server_tool_use",
-            ]
-            .contains(&kind)
-            {
-                root.children.get(if kind == "function_call" {
-                    "arguments"
-                } else {
-                    "input"
-                })
-            } else {
-                Some(&root)
-            };
-            let Some(node) = node else {
-                continue;
-            };
-            let inner = node
-                .value
-                .as_str()
-                .filter(|_| !expected.is_string() || kind == "function_call")
-                .and_then(|v| parse_span(v).ok());
-            let offsets = inner
-                .as_ref()
-                .map(|_| escaped_offsets(input, node.start, node.end));
-            let current = inner.as_ref().unwrap_or(node);
-            if !matches(current, &expected, true) {
-                continue;
-            }
-            let hits: Vec<_> = if let Value::Object(fields) = &expected {
-                fields
-                    .keys()
-                    .filter_map(|k| current.children.get(k))
-                    .collect()
-            } else {
-                vec![current]
-            };
-            for hit in hits {
-                let position = |at| {
-                    offsets
-                        .as_ref()
-                        .and_then(|o| o.get(at))
-                        .copied()
-                        .unwrap_or(at)
-                };
-                let start = position(hit.start);
-                let end = position(hit.end);
-                if end > start {
-                    ranges.push(range(input, start, end, id));
-                }
-            }
-        }
-    } else {
-        fn collect(value: &Value, out: &mut BTreeSet<String>) {
-            match value {
-                Value::String(s) if !s.is_empty() => {
-                    out.insert(s.clone());
-                }
-                Value::Array(_) | Value::Object(_) => {
-                    out.insert(value.to_string());
-                    out.insert(serde_json::to_string_pretty(value).unwrap());
-                    for v in value.as_array().map(Vec::as_slice).unwrap_or(&[]) {
-                        collect(v, out);
-                    }
-                    if let Some(m) = value.as_object() {
-                        for v in m.values() {
-                            collect(v, out);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut candidates = BTreeSet::new();
-        for raw in raws {
-            if raw.is_empty() {
-                continue;
-            }
-            candidates.insert(raw.into());
-            if let Ok(v) = serde_json::from_str(raw) {
-                collect(&v, &mut candidates);
-            }
-            if let Ok(v) = serde_json::from_str(&format!("\"{raw}\"")) {
-                collect(&v, &mut candidates);
-            }
-        }
-        let mut candidates: Vec<_> = candidates.into_iter().collect();
-        candidates.sort_by_key(|s| std::cmp::Reverse(s.len()));
-        for candidate in candidates {
-            for (start, _) in input.match_indices(&candidate) {
-                let end = start + candidate.len();
-                let r = range(input, start, end, id);
-                if !ranges.iter().any(|p: &Value| {
-                    p["start"].as_u64() <= r["start"].as_u64()
-                        && p["end"].as_u64() >= r["end"].as_u64()
-                }) {
-                    ranges.push(r);
-                }
-            }
-        }
-    }
-    json!(ranges)
-}
+mod ranges;
+pub use ranges::content_ranges;
+use ranges::{Allocation, Limit, Request, Workspace};
 
 pub fn associated(finding: &Value, item: &Value, response: bool) -> bool {
     let r = &finding["evidence"]["bodyRef"];
@@ -303,7 +28,19 @@ pub fn associated(finding: &Value, item: &Value, response: bool) -> bool {
             .zip(item["start"].as_u64().zip(item["end"].as_u64()))
             .is_some_and(|((start, end), (left, right))| start < end && start < right && end > left)
 }
-fn readable(raw: &Value) -> String {
+fn bounded_readable(
+    raw: &Value,
+    workspace: &Workspace<'_>,
+    output: &mut Allocation,
+) -> Result<String> {
+    workspace.check()?;
+    let size = if raw.is_array() {
+        array(raw).iter().map(|v| text(v).len() + 1).sum()
+    } else {
+        text(raw).len()
+    };
+    let mut memory = workspace.allocation();
+    memory.grow(size.saturating_mul(16).saturating_add(256))?;
     let joined = if raw.is_array() {
         array(raw)
             .iter()
@@ -314,73 +51,105 @@ fn readable(raw: &Value) -> String {
         text(raw).into()
     };
     if let Ok(v) = serde_json::from_str::<Value>(&joined) {
-        v.as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| serde_json::to_string_pretty(&v).unwrap())
-    } else {
-        serde_json::from_str::<String>(&format!("\"{joined}\"")).unwrap_or(joined)
+        if let Some(s) = v.as_str() {
+            output.grow(s.len())?;
+            return Ok(s.into());
+        }
+        return ranges::render(&v, true, workspace, output);
     }
+    output.grow(joined.len().saturating_mul(2).saturating_add(2))?;
+    Ok(serde_json::from_str::<String>(&format!("\"{joined}\"")).unwrap_or(joined))
 }
-pub fn annotate_item(
+fn missing_evidence(raw: &Value) -> bool {
+    raw.is_null() || raw == "" || raw.as_array().is_some_and(Vec::is_empty)
+}
+fn annotate_item(
     item: &mut Value,
     findings: &[Value],
     evidence: &BTreeMap<String, Value>,
     response: bool,
-) {
+    workspace: &Workspace<'_>,
+    output: &mut Allocation,
+) -> Result<()> {
+    let count = findings
+        .iter()
+        .filter(|f| associated(f, item, response))
+        .count();
+    let mut memory = workspace.allocation();
+    // The baseline IDs remain available even when the optional projection
+    // cannot acquire its metadata workspace.
+    if memory
+        .grow(count.saturating_mul(std::mem::size_of::<Request<'_>>() + 256))
+        .is_err()
+    {
+        item["findingIds"] = json!(findings
+            .iter()
+            .filter(|f| associated(f, item, response))
+            .map(|f| &f["id"])
+            .collect::<Vec<_>>());
+        item["riskGaps"] = item["findingIds"].clone();
+        item["riskRanges"] = json!({"preview":[],"structure":[]});
+        item["riskVersions"] = json!([]);
+        return Ok(());
+    }
     let matched: Vec<_> = findings
         .iter()
         .filter(|f| associated(f, item, response))
         .collect();
     item["findingIds"] = json!(matched.iter().map(|f| &f["id"]).collect::<Vec<_>>());
-    let mut versions = Vec::new();
+    let requests: Vec<_> = matched
+        .iter()
+        .map(|f| Request {
+            raw: evidence.get(text(&f["id"])).unwrap_or(&Value::Null),
+            id: text(&f["id"]),
+            structured: item["kind"] == "tool_call" && f["ruleId"] != "SEC-SECRET-001",
+            locator: &f["evidence"]["argumentLocator"],
+        })
+        .collect();
+    let mut gaps: BTreeSet<usize> = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| missing_evidence(r.raw))
+        .map(|(i, _)| i)
+        .collect();
     let mut fields = Map::new();
     for field in ["preview", "structure"] {
-        fields.insert(
-            field.into(),
-            json!(matched
-                .iter()
-                .flat_map(|f| {
-                    let raw = evidence.get(text(&f["id"])).unwrap_or(&Value::Null);
-                    array(&content_ranges(
-                        text(&item[field]),
-                        raw,
-                        text(&f["id"]),
-                        item["kind"] == "tool_call" && f["ruleId"] != "SEC-SECRET-001",
-                    ))
-                    .to_vec()
-                })
-                .collect::<Vec<_>>()),
-        );
+        match ranges::locate(text(&item[field]), &requests, workspace, output) {
+            Ok(located) => {
+                gaps.extend(located.gaps);
+                fields.insert(field.into(), Value::Array(located.ranges));
+            }
+            Err(e) if e.is::<Limit>() => {
+                gaps.extend(0..matched.len());
+                fields.insert(field.into(), json!([]));
+            }
+            Err(e) => return Err(e),
+        }
     }
-    for finding in matched {
-        let id = text(&finding["id"]);
+    let mut versions = Vec::new();
+    for (index, request) in requests.iter().enumerate() {
         let hit = fields
             .values()
-            .any(|rs| array(rs).iter().any(|r| r["findingId"] == id));
-        if !hit {
-            if let Some(raw) = evidence
-                .get(id)
-                .filter(|v| !v.is_null() && *v != "" && !v.as_array().is_some_and(Vec::is_empty))
-            {
-                versions.push(json!({"findingId":id,"text":readable(raw),"toolArguments":item["kind"]=="tool_call"&&finding["ruleId"]!="SEC-SECRET-001"}));
+            .any(|rs| array(rs).iter().any(|r| r["findingId"] == request.id));
+        if !hit && !gaps.contains(&index) {
+            match bounded_readable(request.raw, workspace, output) {
+                Ok(text) => versions.push(
+                    json!({"findingId":request.id,"text":text,"toolArguments":request.structured}),
+                ),
+                Err(e) if e.is::<Limit>() => {
+                    gaps.insert(index);
+                }
+                Err(e) => return Err(e),
             }
         }
     }
     item["riskRanges"] = Value::Object(fields);
-    item["riskVersions"] = json!(versions);
-    item["riskGaps"] = json!(matched_missing_ids(item, evidence));
-}
-
-fn matched_missing_ids(item: &Value, evidence: &BTreeMap<String, Value>) -> Vec<Value> {
-    array(&item["findingIds"])
-        .iter()
-        .filter(|id| {
-            evidence
-                .get(text(id))
-                .is_none_or(|v| v.is_null() || v == "" || v.as_array().is_some_and(Vec::is_empty))
-        })
-        .cloned()
-        .collect()
+    item["riskVersions"] = Value::Array(versions);
+    item["riskGaps"] = json!(gaps
+        .into_iter()
+        .map(|i| &matched[i]["id"])
+        .collect::<Vec<_>>());
+    Ok(())
 }
 
 pub fn canonical_snapshot(id: &str) -> &str {
@@ -576,6 +345,7 @@ fn evidence_text(
     audit: &str,
     finding: &Value,
     cancelled: &dyn Fn() -> bool,
+    retained: &mut Allocation,
 ) -> Result<Value> {
     let r = &finding["evidence"]["bodyRef"];
     let start = r["start"].as_u64().unwrap_or(0);
@@ -586,6 +356,11 @@ fn evidence_text(
     }
     let mut offset = start.saturating_sub(512);
     let mut raw = String::new();
+    if finding["ruleId"] != "SEC-SECRET-001" || r["matchKind"] == "sensitive" {
+        let size = end.saturating_sub(start) as usize;
+        retained.grow(size)?;
+        raw.try_reserve_exact(size).map_err(|_| Limit)?;
+    }
     let mut next = start;
     loop {
         if cancelled() {
@@ -601,6 +376,15 @@ fn evidence_text(
                 .get("location")
                 .unwrap_or(&finding["evidence"]["location"]);
             let range = structural_range(&page["locations"], text(location));
+            if let Some(r) = &range {
+                retained.grow(
+                    r["end"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        .saturating_sub(r["start"].as_u64().unwrap_or(0))
+                        as usize,
+                )?;
+            }
             return Ok(range
                 .map(|r| {
                     json!(
@@ -629,15 +413,16 @@ fn evidence_text(
                         exact["evidence"]["bodyRef"]["start"] = mark["start"].clone();
                         exact["evidence"]["bodyRef"]["end"] = mark["end"].clone();
                         exact["evidence"]["bodyRef"]["matchKind"] = json!("sensitive");
-                        let hit = evidence_text(db, audit, &exact, cancelled)?;
+                        let hit = evidence_text(db, audit, &exact, cancelled, retained)?;
                         if !hit.is_null() {
+                            retained.grow(128)?;
                             hits.push(hit);
                         }
                     }
                 }
             }
             if !hits.is_empty() {
-                return Ok(json!(hits));
+                return Ok(Value::Array(hits));
             }
         } else {
             for chunk in array(&page["chunks"]) {
@@ -657,7 +442,7 @@ fn evidence_text(
                 }
             }
             if next >= end {
-                return Ok(json!(raw));
+                return Ok(Value::String(raw));
             }
         }
         let Some(next_offset) = page["nextOffset"]
@@ -689,6 +474,9 @@ pub(super) fn annotate_page(
     response: bool,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<()> {
+    let workspace = Workspace::new(cancelled);
+    let mut retained = Vec::new();
+    let mut output = workspace.allocation();
     let findings = findings(db, audit)?;
     let mut evidence = BTreeMap::new();
     let mut bytes = 0;
@@ -698,12 +486,24 @@ pub(super) fn annotate_page(
             if evidence.contains_key(id) {
                 continue;
             }
-            let value = evidence_text(db, audit, finding, cancelled)?;
-            let size = value.to_string().len();
+            let mut memory = workspace.allocation();
+            let value = match evidence_text(db, audit, finding, cancelled, &mut memory) {
+                Ok(value) => value,
+                Err(e) if e.is::<Limit>() => Value::Null,
+                Err(e) => return Err(e),
+            };
+            let size = if value.is_array() {
+                array(&value).iter().map(|v| text(v).len()).sum()
+            } else {
+                text(&value).len()
+            };
             let value = if bytes + size > MAX_EVIDENCE_BYTES {
                 Value::Null
             } else {
                 bytes += size;
+                if !value.is_null() {
+                    retained.push(memory);
+                }
                 value
             };
             evidence.insert(id.into(), value);
@@ -714,7 +514,14 @@ pub(super) fn annotate_page(
             if cancelled() {
                 bail!("overview_cancelled");
             }
-            annotate_item(item, &findings, &evidence, response);
+            annotate_item(
+                item,
+                &findings,
+                &evidence,
+                response,
+                &workspace,
+                &mut output,
+            )?;
         }
     }
     Ok(())
@@ -901,7 +708,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected, r#"echo \\ud83d\\ude42; rm -rf /important"#);
-        assert_eq!(utf16("🙂", 1), 0);
     }
 
     #[test]
@@ -937,7 +743,8 @@ mod tests {
         ]}]});
         let page =
             json!({"items":[{"kind":"user","start":0,"end":content.len(),"preview":content}]});
-        let projected = fixture_projection(&page, &[f.clone()], &bodies, false, None).unwrap();
+        let projected =
+            fixture_projection(&page, std::slice::from_ref(&f), &bodies, false, None).unwrap();
         assert_eq!(
             array(&projected["items"][0]["riskRanges"]["preview"]).len(),
             1
@@ -979,15 +786,45 @@ mod tests {
     fn cancellation_and_missing_coordinates_cannot_create_hits() {
         let db = Connection::open_in_memory().unwrap();
         let f = finding(0, 10);
-        assert!(evidence_text(&db, "audit", &f, &|| true)
-            .unwrap_err()
-            .to_string()
-            .contains("overview_cancelled"));
+        let workspace = Workspace::new(&|| true);
+        assert!(
+            evidence_text(&db, "audit", &f, &|| true, &mut workspace.allocation())
+                .unwrap_err()
+                .to_string()
+                .contains("overview_cancelled")
+        );
         let mut malformed = f;
         malformed["evidence"]["bodyRef"]
             .as_object_mut()
             .unwrap()
             .remove("start");
         assert!(!associated(&malformed, &json!({"start":0,"end":10}), false));
+    }
+
+    #[test]
+    fn exhausted_projection_budget_preserves_content_and_reports_a_gap() {
+        let preview = format!(
+            "{{\"cmd\":\"danger\",\"extra\":[{}]}}",
+            "0,".repeat(1000).trim_end_matches(',')
+        );
+        let mut item = json!({"kind":"tool_call","start":0,"end":preview.len(),"preview":preview,"structure":preview});
+        let original = item.clone();
+        let f = json!({"id":"risk","ruleId":"SEC-DELETE-001","evidence":{"bodyRef":{"snapshotId":"request","start":0,"end":preview.len()}}});
+        let evidence = BTreeMap::from([("risk".into(), json!(r#"{"cmd":"danger"}"#))]);
+        let workspace = Workspace::with_limit(&|| false, 4096);
+        annotate_item(
+            &mut item,
+            &[f],
+            &evidence,
+            false,
+            &workspace,
+            &mut workspace.allocation(),
+        )
+        .unwrap();
+        assert_eq!(item["preview"], original["preview"]);
+        assert_eq!(item["structure"], original["structure"]);
+        assert_eq!(item["riskGaps"], json!(["risk"]));
+        assert_eq!(item["riskVersions"], json!([]));
+        assert_eq!(item["riskRanges"], json!({"preview":[],"structure":[]}));
     }
 }

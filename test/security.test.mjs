@@ -4,6 +4,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig } from "./helpers/native.mjs";
@@ -1885,6 +1886,13 @@ test("unchanged streamed tool arguments preserve full content and filtered detec
   const record = (await review(f, audit.id)).record;
   const findings = record.findings.filter(f => f.ruleId === "SEC-DELETE-001");
   assert.equal(findings.length, 1, "identical completed arguments share one detection version");
+  const locator = findings[0].evidence.argumentLocator;
+  assert.equal(locator.version, 1);
+  assert.equal(locator.coordinateSpace, "observed_arguments");
+  assert.equal(locator.unit, "utf8_bytes");
+  assert.equal(locator.sha256, createHash("sha256").update(tool.arguments).digest("hex"));
+  assert.deepEqual(locator.fields.map(field => field.path), [["cmd"]]);
+  assert.equal(JSON.parse(Buffer.from(tool.arguments).subarray(locator.fields[0].start, locator.fields[0].end).toString()), args.cmd);
   assert.deepEqual(record.bodySnapshots.find(s => s.id === findings[0].evidence.bodyRef.snapshotId).body, { cmd: args.cmd });
   const content = record.responseContent;
   assert.equal(content.state, "complete");
@@ -1908,6 +1916,42 @@ test("unchanged streamed tool arguments preserve full content and filtered detec
   assert.deepEqual(located.items, content.items);
   await f.restart();
   assert.deepEqual((await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.responseContent, content);
+});
+
+test("evidence workspace exhaustion keeps content readable and recovers on a later read", async t => {
+  const args = { cmd: "rm -rf /important", extra: Array(2000).fill(0) };
+  const f = await fixture(t, (_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ content: [{ type: "tool_use", id: "tool", name: "exec_command", input: args }] }));
+  }, { claude: true });
+  await (await f.request({ messages: [{ role: "user", content: "hello" }] })).text();
+  const audit = (await f.waitFor(r => r.items[0]?.outcome === "completed")).items[0];
+  const read = async () => {
+    const response = await f.call(`api/v1/security/audit/${audit.id}`);
+    assert.equal(response.status, 200);
+    return (await response.json()).record;
+  };
+  const original = await read();
+  const finding = original.findings.find(f => f.ruleId === "SEC-DELETE-001");
+  assert.ok(finding);
+  assert.deepEqual(original.responseContent.items[0].riskGaps, []);
+  for (const env of [
+    { CABLETIDY_TEST_EVIDENCE_WORKSPACE_BYTES: "4096" },
+    { CABLETIDY_TEST_MEMORY_BYTES: "4096" },
+  ]) {
+    await f.restart(env);
+    const limited = await read();
+    const item = limited.responseContent.items[0];
+    assert.equal(item.preview, original.responseContent.items[0].preview);
+    assert.equal(item.structure, original.responseContent.items[0].structure);
+    assert.deepEqual(item.findingIds, [finding.id]);
+    assert.deepEqual(item.riskGaps, [finding.id]);
+    assert.deepEqual(item.riskRanges, { preview: [], structure: [] });
+    assert.deepEqual(item.riskVersions, []);
+    assert.deepEqual(limited.findings.find(f => f.id === finding.id).evidence, finding.evidence);
+  }
+  await f.restart();
+  assert.deepEqual((await read()).responseContent, original.responseContent);
 });
 
 test("Codex interrupted stream keeps accumulated text without inventing completed output", async t => {
