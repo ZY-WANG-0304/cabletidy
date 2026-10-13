@@ -95,9 +95,7 @@ pub fn build(input: &Value, cable_id: &str, secrets: &Value) -> Result<Value> {
     let target = text(&b["target"]);
     let requested = b.get("defaultModel").or_else(|| p.get("defaultModel"));
     let default = if let Some(name) = requested {
-        if target == "claude-code"
-            && ["best", "opus", "sonnet", "fable", "haiku", "opusplan"].contains(&text(name))
-        {
+        if target == "claude-code" && claude::DEFAULT_MODEL_ALIASES.contains(&text(name)) {
             Some(text(name).to_owned())
         } else {
             let r = model::resolve(p, Some(name))?;
@@ -138,7 +136,7 @@ pub fn build(input: &Value, cable_id: &str, secrets: &Value) -> Result<Value> {
                 vars["ANTHROPIC_MODEL"] = json!(name);
             }
         }
-        for family in ["opus", "sonnet", "fable", "haiku"] {
+        for &family in claude::MODEL_FAMILIES {
             if nonempty(&b["claude"]["models"][family]) {
                 vars[format!("ANTHROPIC_DEFAULT_{}_MODEL", family.to_uppercase())] =
                     b["claude"]["models"][family].clone();

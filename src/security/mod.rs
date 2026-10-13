@@ -1,5 +1,6 @@
 pub(crate) mod capture;
 mod content;
+pub mod evidence;
 mod history;
 mod pipeline;
 mod response;

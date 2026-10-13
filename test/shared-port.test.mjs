@@ -78,7 +78,8 @@ async function fixture(t, configure = () => {}) {
 test("shared paths isolate models, credentials and pause state while keeping control APIs available", async (t) => {
   const { app, call, calls } = await fixture(t, config => { config.web.enabled = false; });
   assert.equal((await fetch(app.url)).status, 200);
-  assert.equal((await fetch(`${app.url}config-identity.js`)).status, 200);
+  assert.equal((await fetch(`${app.url}claude-models.js`)).status, 200);
+  assert.equal((await fetch(`${app.url}config-identity.js`)).status, 404);
   const runtime = (await call("api/v1/runtime")).body;
   assert.deepEqual(runtime.virtualProviders.map(item => item.baseUrl), [
     `${app.url}relay/v1`, `${app.url}other/v1`,

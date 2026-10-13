@@ -28,6 +28,7 @@ struct ContentJob {
     response: bool,
     detail: bool,
     folded: bool,
+    finding: Option<String>,
     deadline: Instant,
     done: oneshot::Sender<Result<Value>>,
 }
@@ -47,6 +48,7 @@ pub struct Query {
     pub content_offset: Option<usize>,
     pub response_content: bool,
     pub folded_content: bool,
+    pub finding: Option<String>,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -272,6 +274,7 @@ impl Store {
                     query.content_offset,
                     query.response_content,
                     query.folded_content,
+                    query.finding.clone(),
                 )
             });
         let (tx, rx) = oneshot::channel();
@@ -279,7 +282,9 @@ impl Store {
             .try_send(Job::Query(query, tx))
             .map_err(|_| anyhow::anyhow!("audit_busy"))?;
         let mut value = tokio::time::timeout(Duration::from_secs(5), rx).await???;
-        if let Some((audit, offset, response, folded)) = content.filter(|_| !value.is_null()) {
+        if let Some((audit, offset, response, folded, finding)) =
+            content.filter(|_| !value.is_null())
+        {
             let protocol = value["record"]["protocol"].as_str().unwrap_or("");
             if offset.is_some() || matches!(protocol, "openai.responses" | "anthropic.messages") {
                 let (done, result) = oneshot::channel();
@@ -290,6 +295,7 @@ impl Store {
                         response,
                         detail: offset.is_none(),
                         folded: folded || offset.is_none(),
+                        finding,
                         deadline: Instant::now() + Duration::from_secs(30),
                         done,
                     })
@@ -814,7 +820,12 @@ fn persist_body(
     Ok(())
 }
 
-fn read_body_page(db: &Connection, audit: &str, snapshot: &str, offset: u64) -> Result<Value> {
+pub(super) fn read_body_page(
+    db: &Connection,
+    audit: &str,
+    snapshot: &str,
+    offset: u64,
+) -> Result<Value> {
     use rusqlite::OptionalExtension;
     let data: Option<String> = db
         .query_row(
@@ -908,8 +919,35 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
         if !visible {
             return Ok(Value::Null);
         }
-        if let Some((snapshot, offset)) = query.body {
-            return read_body_page(db, &id, &snapshot, offset);
+        if let Some((snapshot, mut offset)) = query.body {
+            let findings = super::evidence::findings(db, &id)?;
+            let selection = query
+                .finding
+                .as_ref()
+                .and_then(|key| findings.iter().find(|f| f["id"] == *key))
+                .map(|f| super::evidence::credential_location(db, &id, f))
+                .transpose()?;
+            if let Some(selection) = &selection {
+                offset = selection["start"]
+                    .as_u64()
+                    .unwrap_or(offset)
+                    .saturating_sub(512);
+            }
+            let mut page = read_body_page(db, &id, &snapshot, offset)?;
+            if page.is_object() {
+                super::evidence::normalize_body(&mut page, &findings, &snapshot);
+                if let Some(mut selection) = selection {
+                    if let Some(range) = super::evidence::structural_range(
+                        &page["locations"],
+                        config::text(&selection["location"]),
+                    ) {
+                        selection["start"] = range["start"].clone();
+                        selection["end"] = range["end"].clone();
+                    }
+                    page["findingSelection"] = selection;
+                }
+            }
+            return Ok(page);
         }
         if query.content_offset.is_some() {
             // Only check visibility here; projection belongs to the readonly worker.
@@ -947,6 +985,7 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
             }))
             .collect::<serde_json::Result<Vec<_>>>()?);
         data["findingCount"] = json!(config::array(&data["findings"]).len());
+        super::evidence::normalize_record(&mut data);
         return Ok(json!({"record":data}));
     }
     let mut conditions = vec!["a.at >= ?".to_owned()];
@@ -1196,6 +1235,7 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
         response,
         detail,
         folded,
+        finding,
         deadline,
         done,
     }) = receiver.recv()
@@ -1216,17 +1256,72 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
                 [&audit],
                 |r| r.get(0),
             )?;
-            let value = if visible {
+            let finding_offset = if let Some(id) = finding.as_ref().filter(|_| !response) {
+                super::evidence::findings(&tx, &audit)?
+                    .iter()
+                    .find(|f| f["id"] == *id)
+                    .and_then(|f| f["contentIndex"].as_u64())
+                    .map(|i| i as usize / 40 * 40)
+            } else {
+                None
+            };
+            let mut value = if visible {
                 if detail {
                     json!({"requestContent":cache.view(&tx, &audit, 0, true, &cancelled)?,"responseContent":responses.read(&tx, &audit, 0, &cancelled)?})
                 } else if response {
                     responses.read(&tx, &audit, offset, &cancelled)?
                 } else {
-                    cache.view(&tx, &audit, offset, folded, &cancelled)?
+                    cache.view(
+                        &tx,
+                        &audit,
+                        finding_offset.unwrap_or(offset),
+                        folded && finding.is_none(),
+                        &cancelled,
+                    )?
                 }
             } else {
                 Value::Null
             };
+            if visible {
+                if detail {
+                    super::evidence::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["requestContent"],
+                        false,
+                        &cancelled,
+                    )?;
+                    super::evidence::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["responseContent"],
+                        true,
+                        &cancelled,
+                    )?;
+                } else {
+                    super::evidence::annotate_page(&tx, &audit, &mut value, response, &cancelled)?;
+                    if let Some(finding_id) = finding {
+                        while !config::array(&value["items"]).iter().any(|item| {
+                            config::array(&item["findingIds"]).contains(&json!(finding_id))
+                        }) {
+                            let next = value["nextOffset"].as_u64();
+                            let Some(next) =
+                                next.filter(|n| *n > value["offset"].as_u64().unwrap_or(0))
+                            else {
+                                break;
+                            };
+                            value = if response {
+                                responses.read(&tx, &audit, next as usize, &cancelled)?
+                            } else {
+                                cache.view(&tx, &audit, next as usize, false, &cancelled)?
+                            };
+                            super::evidence::annotate_page(
+                                &tx, &audit, &mut value, response, &cancelled,
+                            )?;
+                        }
+                    }
+                }
+            }
             tx.commit()?;
             Ok(value)
         })();
@@ -2907,6 +3002,7 @@ mod tests {
                     response: false,
                     detail: false,
                     folded: false,
+                    finding: None,
                     deadline: Instant::now() + Duration::from_secs(30),
                     done,
                 })

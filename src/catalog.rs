@@ -287,6 +287,45 @@ pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> 
     }
     Ok((original.clone(), out))
 }
+/// Translate editable policy inputs to stored metadata using the official catalog.
+pub async fn configure_model(
+    profile: &mut Value,
+    name: &str,
+    policy: &Value,
+    catalog: &Catalog,
+) -> Result<()> {
+    let snapshot = catalog.load(false).await?;
+    let public = public(&snapshot);
+    let definition = array(&public["models"])
+        .iter()
+        .find(|m| m["id"] == name)
+        .context("请选择本机 Codex 目录中的官方 GPT 模型；旧模型需要先确认对应关系。")?;
+    let override_mode = policy["metadataMode"] == "override";
+    profile["codex"] = json!({"metadataMode":if override_mode {"override"} else {"official"}});
+    profile["capabilities"] = definition["capabilities"].clone();
+    if override_mode {
+        if policy["contextWindow"].is_null() {
+            profile.as_object_mut().unwrap().remove("contextWindow");
+        } else {
+            profile["contextWindow"] = policy["contextWindow"].clone();
+        }
+        let vision = policy["vision"] == true
+            && array(&definition["inputModalities"]).contains(&json!("image"));
+        profile["codex"]["inputModalities"] = if vision {
+            json!(["text", "image"])
+        } else {
+            json!(["text"])
+        };
+        if !vision {
+            profile["capabilities"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|v| v != "vision");
+        }
+    }
+    entry(&snapshot, name, profile)?;
+    Ok(())
+}
 pub fn model_ids(c: &Value) -> BTreeSet<(String, String)> {
     entries(&c["cables"])
         .filter(|(_, b)| b["target"] == "codex")

@@ -34,6 +34,11 @@ export function nativeAsync(command, ...args) {
   });
 }
 
+export const contentRiskRanges = (text, evidence, id, tool) => native("evidence.ranges", text, evidence, id, tool);
+export const evidenceNative = native;
+export const applyConfigOperation = (config, operation, catalog) => nativeAsync("config.operation", config, operation, catalog);
+export const configurationEndpoints = config => native("config.endpoints", config);
+export const claudeModelChoices = () => native("claude.models");
 export const defaultConfig = () => native("config.defaults");
 export const normalizeConfig = config => native("config.normalize", config);
 export const validateConfig = config => native("config.validate", config);
