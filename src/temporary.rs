@@ -81,6 +81,22 @@ impl Directories {
             helpers: root.join("helpers"),
             root,
         };
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            // Bundled SQLite's Unix VFS has MAX_PATHNAME=512. unixGetTempname
+            // needs '/' + 'etilqs_' + up to 16 hex digits + two NUL bytes.
+            // Do not initialize SQLite to inspect its VFS here: os_init caches
+            // SQLITE_TMPDIR, which initialize() has not set yet.
+            const MAX_DIRECTORY_BYTES: usize = 512 - (1 + 7 + 16 + 2);
+            let bytes = dirs.sqlite.as_os_str().as_bytes().len();
+            if bytes > MAX_DIRECTORY_BYTES {
+                bail!(
+                    "SQLite 临时目录路径过长（{bytes} 字节，最多 {MAX_DIRECTORY_BYTES} 字节，已预留临时文件名空间）: {}",
+                    dirs.sqlite.display()
+                );
+            }
+        }
         for path in [&dirs.spool, &dirs.sqlite, &dirs.helpers] {
             private_directory(path)?;
             // Test actual file creation without leaving a named probe behind.
