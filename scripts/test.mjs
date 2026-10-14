@@ -6,9 +6,9 @@ await run("cargo", ["test", "--locked", "--all-targets", "--features", "test-sup
 const files = (await fs.readdir(new URL("../test/", import.meta.url)))
   .filter(file => file.endsWith(".test.mjs")).sort().map(file => `test/${file}`);
 const serialFiles = ["test/startup.test.mjs", "test/dev.test.mjs"];
-// Windows catalog queries start PowerShell and compile a supervisor. Bound the
-// competing suites, and run subprocess exit/deadline assertions independently.
-const concurrency = process.platform === "win32" ? ["--test-concurrency=2"] : [];
+// PowerShell compilation and audit fixtures compete for Windows runner CPU and
+// disk, causing unrelated lock/read deadlines to expire. Run those suites serially.
+const concurrency = process.platform === "win32" ? ["--test-concurrency=1"] : [];
 if (process.platform === "win32") serialFiles.push("test/cable-transfer.test.mjs", "test/codex-catalog-process.test.mjs");
 await run(process.execPath, ["--test", ...concurrency, ...files.filter(file => !serialFiles.includes(file))]);
 // Default ports, Windows imports and process deadlines run independently.
