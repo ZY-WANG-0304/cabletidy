@@ -175,12 +175,19 @@ export async function update(args) {
     console.error(`npm install failed${state.running && windows ? "; CableTidy is stopped, run cabletidy start to resume" : ""}`);
     return installed;
   }
+  console.log(`CableTidy ${target} has been installed.`);
   // stop + start is supported by every version that has stop; restart is newer.
   const switchCommand = windows ? "cabletidy start" : "cabletidy stop && cabletidy start";
   if (state.error) console.log(`If CableTidy is running, run ${switchCommand} to use ${target}`);
   if (!state.running) return 0;
-  if (!await confirm(windows ? "Start CableTidy again?" : `Restart CableTidy now? The daemon is still running ${current}.`, options.yes)) {
-    console.log(`Run ${switchCommand} when ready`);
+  if (!windows) {
+    console.log("The running service needs a restart to use this version. Active requests will finish before it stops.");
+  }
+  const question = windows
+    ? `Start CableTidy ${target} now? (N: leave the service stopped)`
+    : "Restart now?";
+  if (!await confirm(question, options.yes)) {
+    console.log(`To use CableTidy ${target} later, run: ${switchCommand}`);
     return 0;
   }
   // Fresh processes load the newly installed launcher and executable.
