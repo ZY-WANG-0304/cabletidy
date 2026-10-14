@@ -1697,6 +1697,10 @@ test("Codex sessions group before pagination, preserve context under risk filter
   for (let i = 0; i < 53; i++) {
     const response = await f.request({ input: [{ role: "user", content: i === 25 ? `修复请求 ${secret}` : `检查配置 ${i}` }] }, { headers: { "content-type": "application/json", "session-id": "conversation-a", "thread-id": "conversation-a", "x-client-request-id": `request-${i}`, "x-codex-window-id": `conversation-a:${Math.floor(i / 10)}` } });
     assert.equal(response.status, 200);
+    await response.text();
+    // Drain each record before testing grouping/pagination, so slow CI disks
+    // cannot turn the sequence into a backlog that times out audit reads.
+    await f.waitFor(result => result.total === i + 1);
   }
   for (let i = 0; i < 2; i++) await (await f.request({ input: "相同内容不能推断为同一会话" })).text();
   await f.waitFor(result => result.total === 55);
