@@ -17,7 +17,7 @@ export function controlAddress(home, controlId) {
 
 // Completes a status exchange and keeps the connection open, which delays daemon exit after stop.
 export async function holdControlConnection(home, runtime) {
-  const socket = net.connect(controlAddress(home, runtime.controlId));
+  const socket = net.connect(runtime.controlAddress || controlAddress(home, runtime.controlId));
   let buffer = Buffer.alloc(0);
   const frames = [];
   let waiter;

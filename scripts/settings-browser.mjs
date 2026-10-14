@@ -45,6 +45,24 @@ try {
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "30");
   assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).inputValue(), "5120");
   assert.equal(await page.locator("#audit-settings-cleanup").isVisible(), false);
+  const temporary = page.getByLabel("服务器目录", { exact: true });
+  assert.equal(await temporary.inputValue(), "");
+  const customTemporary = path.join(home, "custom temporary files");
+  await temporary.fill(customTemporary);
+  await page.getByRole("button", { name: "保存临时目录", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('#temporary-settings-form button[type="submit"]').disabled);
+  assert.equal((await persisted()).temporaryDirectory, customTemporary);
+  assert.match(await page.locator("#temporary-settings-form").textContent(), /重启 CableTidy 后生效/);
+  assert.equal((await persisted()).audit.retentionDays, 30);
+  await temporary.fill("relative/path");
+  await page.getByRole("button", { name: "保存临时目录", exact: true }).click();
+  await page.locator("#temporary-settings-form [data-form-feedback]").waitFor();
+  assert.equal(await temporary.inputValue(), "relative/path");
+  assert.equal((await persisted()).temporaryDirectory, customTemporary);
+  await temporary.fill("");
+  await page.getByRole("button", { name: "保存临时目录", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('#temporary-settings-form button[type="submit"]').disabled);
+  assert.equal((await persisted()).temporaryDirectory, null);
   await page.mouse.move(1250, 700);
   await page.screenshot({ path: path.join(output, "settings-desktop.png"), fullPage: true, animations: "disabled" });
 

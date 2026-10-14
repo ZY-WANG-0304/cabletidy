@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 
 import {
   applySecretPayload,
@@ -41,6 +42,17 @@ test("audit settings reject malformed objects and unsafe or invalid limits", () 
   assert.equal(validateConfig({ audit: { retentionDays: Number.MAX_SAFE_INTEGER, budgetBytes: Number.MAX_SAFE_INTEGER } }).ok, true);
   assert.equal(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 } }).ok, true);
   assert.ok(validateConfig({ audit: { budgetBytes: 16 * 1024 * 1024 - 1 } }).errors.some(({ path }) => path === "audit.budgetBytes"));
+});
+
+test("temporary directory defaults to the data directory and accepts only absolute server paths", () => {
+  assert.equal(defaultConfig().temporaryDirectory, null);
+  const directory = path.resolve("temporary files");
+  assert.equal(normalizeConfig({ temporaryDirectory: directory }).temporaryDirectory, directory);
+  assert.equal(validateConfig({ temporaryDirectory: directory }).ok, true);
+  assert.equal(validateConfig({ temporaryDirectory: null }).ok, true);
+  for (const value of [false, 7, {}, [], "", " ", "tmp", "../tmp", "~/tmp", `${directory}\n`, `${directory}\u0000`]) {
+    assert.ok(validateConfig({ temporaryDirectory: value }).errors.some(({ path }) => path === "temporaryDirectory"), JSON.stringify(value));
+  }
 });
 
 test("Claude family options support Fable and preserve existing custom values without an official whitelist", () => {

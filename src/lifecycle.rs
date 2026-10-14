@@ -294,7 +294,7 @@ pub async fn persist_runtime(
 ) -> Result<()> {
     let host = text(&config["web"]["listenHost"]);
     let port = &config["web"]["port"];
-    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"hostname":identity["hostname"],"controlId":identity["controlId"],"controlVersion":1,"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
+    crate::config::write_json(&paths.runtime,&json!({"pid":std::process::id(),"pidStartTime":identity["startTime"],"hostname":identity["hostname"],"controlId":identity["controlId"],"controlAddress":identity["controlAddress"],"controlVersion":1,"startedAt":started,"web":{"host":host,"port":port,"url":format!("http://{}:{port}/",crate::config::url_host(host))},"revision":config["revision"]})).await
 }
 async fn prepare_stop(paths: &Paths) -> Result<Option<(Value, crate::control::Stream)>> {
     if !locked(paths)? {

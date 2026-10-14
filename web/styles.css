@@ -728,6 +728,42 @@ button.list-row:hover,
 
 .settings-page {
   max-width: 48rem;
+  display: grid;
+  gap: 20px;
+}
+
+.settings-directory {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+
+.settings-directory input {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--panel);
+  font-size: 13px;
+}
+
+.settings-directory input:focus {
+  outline: 2px solid rgba(39, 122, 88, 0.12);
+  border-color: var(--accent);
+}
+
+.settings-directory p {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.settings-active-directory span {
+  color: var(--muted);
 }
 
 .settings-row {

@@ -2,7 +2,10 @@ use crate::config::{text, Paths};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{mpsc, watch},
@@ -35,10 +38,18 @@ pub async fn write(stream: &mut Stream, value: &Value) -> Result<()> {
     Ok(())
 }
 
+fn home_hash(paths: &Paths) -> Result<String> {
+    let home = std::fs::canonicalize(&paths.home)?;
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(home.as_os_str().as_encoded_bytes())
+    ))
+}
+
+// Legacy location also remains the fallback when XDG_RUNTIME_DIR is unavailable.
 fn address(paths: &Paths, id: &str) -> Result<PathBuf> {
     let id = uuid::Uuid::parse_str(id).context("Invalid daemon controlId")?;
-    let home = std::fs::canonicalize(&paths.home)?;
-    let hash = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
+    let hash = home_hash(paths)?;
     #[cfg(unix)]
     {
         // Keep socket paths below macOS's sockaddr_un limit, even for long data paths.
@@ -57,6 +68,82 @@ fn address(paths: &Paths, id: &str) -> Result<PathBuf> {
     }
 }
 
+#[cfg(unix)]
+fn private_directory(path: &Path, create: bool) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if create {
+        match std::fs::DirBuilder::new().mode(0o700).create(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        bail!(
+            "Control directory must belong to the current user with mode 0700: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn valid_socket_path(path: &Path) -> bool {
+    // Include room for the terminating NUL under macOS's 104-byte sun_path limit.
+    path.is_absolute()
+        && path.as_os_str().as_encoded_bytes().len() < 104
+        && path
+            .to_str()
+            .is_some_and(|s| !s.chars().any(char::is_control))
+}
+
+#[cfg(unix)]
+fn runtime_address(paths: &Paths, id: &str, root: &Path) -> Result<PathBuf> {
+    if !root.is_absolute() {
+        bail!("XDG_RUNTIME_DIR must be an absolute path");
+    }
+    // XDG_RUNTIME_DIR must already exist and be private; never create or chmod it.
+    private_directory(root, false)?;
+    let root = std::fs::canonicalize(root)?;
+    let hash = home_hash(paths)?;
+    let id = uuid::Uuid::parse_str(id).context("Invalid daemon controlId")?;
+    let address = root
+        .join("cabletidy")
+        .join(&hash[..24])
+        .join(format!("{id}.sock"));
+    if !valid_socket_path(&address) {
+        bail!("XDG_RUNTIME_DIR produces an invalid or excessively long Unix socket path");
+    }
+    private_directory(&root.join("cabletidy"), true)?;
+    Ok(address)
+}
+
+#[cfg(unix)]
+fn bind_unix(address: &Path) -> Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::FileTypeExt;
+    let parent = address.parent().unwrap();
+    private_directory(parent, true)?;
+    // The caller holds the store lock; only previous generations can be here.
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        if entry.file_type()?.is_socket()
+            && entry.path().extension().is_some_and(|v| v == "sock")
+            && entry
+                .path()
+                .file_stem()
+                .and_then(|v| v.to_str())
+                .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
+        {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(tokio::net::UnixListener::bind(address)?)
+}
+
 pub struct Listener {
     address: PathBuf,
     #[cfg(unix)]
@@ -69,42 +156,33 @@ impl Listener {
     pub fn bind(paths: &Paths, id: &str) -> Result<Self> {
         let address = address(paths, id)?;
         #[cfg(unix)]
-        let inner = {
-            use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
-            let parent = address.parent().unwrap();
-            match std::fs::DirBuilder::new().mode(0o700).create(parent) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e.into()),
-            }
-            let metadata = std::fs::symlink_metadata(parent)?;
-            if !metadata.is_dir()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.permissions().mode() & 0o777 != 0o700
-            {
-                bail!(
-                    "Control directory must belong to the current user with mode 0700: {}",
-                    parent.display()
-                );
-            }
-            // The caller holds the store lock; only previous generations can be here.
-            for entry in std::fs::read_dir(parent)? {
-                let entry = entry?;
-                if entry.file_type()?.is_socket()
-                    && entry
-                        .path()
-                        .file_stem()
-                        .and_then(|v| v.to_str())
-                        .is_some_and(|v| uuid::Uuid::parse_str(v).is_ok())
-                {
-                    std::fs::remove_file(entry.path())?;
+        let (address, inner) = {
+            if let Some(root) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+                match runtime_address(paths, id, Path::new(&root)).and_then(|candidate| {
+                    let inner = bind_unix(&candidate)?;
+                    Ok((candidate, inner))
+                }) {
+                    Ok(listener) => {
+                        return Ok(Self {
+                            address: listener.0,
+                            inner: listener.1,
+                        })
+                    }
+                    Err(error) => crate::daemon_log::message(format_args!(
+                        "XDG_RUNTIME_DIR 无法用于控制 socket，使用 /tmp 回退: {error:#}"
+                    )),
                 }
             }
-            tokio::net::UnixListener::bind(&address)?
+            let inner = bind_unix(&address)?;
+            (address, inner)
         };
         #[cfg(windows)]
         let inner = windows_pipe(&address, true)?;
         Ok(Self { address, inner })
+    }
+
+    pub fn address(&self) -> &Path {
+        &self.address
     }
 
     async fn accept(&mut self) -> Result<Stream> {
@@ -225,7 +303,22 @@ pub async fn connect(paths: &Paths, runtime: &Value) -> Result<Stream> {
         bail!("Unsupported daemon control protocol; stop the old daemon manually before upgrading");
     }
     let id = text(&runtime["controlId"]);
-    let address = address(paths, id)?;
+    uuid::Uuid::parse_str(id).context("Invalid daemon controlId")?;
+    let address = if let Some(saved) = runtime.get("controlAddress") {
+        let path = PathBuf::from(saved.as_str().context("Invalid daemon controlAddress")?);
+        #[cfg(unix)]
+        if !valid_socket_path(&path) {
+            bail!("Invalid daemon controlAddress");
+        }
+        #[cfg(windows)]
+        if path != address(paths, id)? {
+            bail!("Invalid daemon controlAddress");
+        }
+        path
+    } else {
+        // Old daemons always used /tmp, regardless of the client's XDG environment.
+        address(paths, id)?
+    };
     let mut stream: Stream;
     #[cfg(unix)]
     {
@@ -360,8 +453,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = Paths::new(directory.path().to_owned());
         let id = uuid::Uuid::new_v4().to_string();
-        let runtime = json!({"controlVersion":1,"controlId":id});
         let listener = Listener::bind(&paths, &id).unwrap();
+        let runtime =
+            json!({"controlVersion":1,"controlId":id,"controlAddress":listener.address()});
         let (tx, rx) = mpsc::unbounded_channel();
         let server = listener.serve(id, tx);
         (directory, paths, runtime, server, rx)
@@ -465,7 +559,102 @@ mod tests {
         assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
         drop(listener);
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(Listener::bind(&paths, &id).is_err());
+        assert!(bind_unix(&parent.join(format!("{id}.sock"))).is_err());
         std::fs::remove_dir(&parent).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn xdg_sockets_isolate_stores_and_clean_only_stale_socket_files() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+        let directory = tempfile::Builder::new()
+            .prefix("ct-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root = directory.path();
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let paths = Paths::new(root.join("store"));
+        let other = Paths::new(root.join("other"));
+        std::fs::create_dir(&paths.home).unwrap();
+        std::fs::create_dir(&other.home).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let address = runtime_address(&paths, &id, root).unwrap();
+        let peer = runtime_address(&other, &id, root).unwrap();
+        assert_ne!(address.parent(), peer.parent());
+        assert!(address.starts_with(root.canonicalize().unwrap().join("cabletidy")));
+        assert!(valid_socket_path(&address));
+        let parent = address.parent().unwrap();
+        private_directory(parent, true).unwrap();
+        let stale = parent.join(format!("{}.sock", uuid::Uuid::new_v4()));
+        let stale_listener = UnixListener::bind(&stale).unwrap();
+        drop(stale_listener);
+        let sentinel = parent.join(format!("{}.sock", uuid::Uuid::new_v4()));
+        std::fs::write(&sentinel, "keep").unwrap();
+        let unrelated = parent.join("unrelated.sock");
+        let unrelated_listener = UnixListener::bind(&unrelated).unwrap();
+        drop(unrelated_listener);
+        let inner = bind_unix(&address).unwrap();
+        let listener = Listener {
+            address: address.clone(),
+            inner,
+        };
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        drop(listener);
+        assert!(!address.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xdg_runtime_directory_must_be_existing_private_absolute_and_short() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = tempfile::Builder::new()
+            .prefix("ct-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = Paths::new(directory.path().to_owned());
+        let id = uuid::Uuid::new_v4().to_string();
+        assert!(runtime_address(&paths, &id, Path::new("relative")).is_err());
+        let missing = directory.path().join("missing");
+        assert!(runtime_address(&paths, &id, &missing).is_err());
+        assert!(!missing.exists());
+        let shared = directory.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(runtime_address(&paths, &id, &shared).is_err());
+        assert_eq!(
+            std::fs::metadata(&shared).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let link = directory.path().join("link");
+        symlink(directory.path(), &link).unwrap();
+        assert!(runtime_address(&paths, &id, &link).is_err());
+        let long = directory.path().join("long-runtime-".repeat(10));
+        std::fs::create_dir(&long).unwrap();
+        std::fs::set_permissions(&long, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(runtime_address(&paths, &id, &long).is_err());
+        assert!(!long.join("cabletidy").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn legacy_runtime_connects_at_the_original_address() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = Paths::new(directory.path().to_owned());
+        let id = uuid::Uuid::new_v4().to_string();
+        let address = address(&paths, &id).unwrap();
+        let inner = bind_unix(&address).unwrap();
+        let listener = Listener { address, inner };
+        let runtime = json!({"controlVersion":1,"controlId":id});
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut server = listener.serve(id, tx);
+        let mut client = connect(&paths, &runtime).await.unwrap();
+        write(&mut client, &request(&runtime, "status"))
+            .await
+            .unwrap();
+        assert_eq!(read(&mut client).await.unwrap()["state"], "running");
+        drop(client);
+        server.finish().await;
     }
 }

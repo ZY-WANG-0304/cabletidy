@@ -110,7 +110,8 @@ impl AppState {
             "virtualProviders": providers,
             "health": *self.health.lock().unwrap(),
             "counts": counts,
-            "security": self.security.status()
+            "security": self.security.status(),
+            "temporaryStorage":crate::temporary::status(&self.paths.home, config)
         })
     }
 }
@@ -138,9 +139,10 @@ pub async fn create(
     target_options: targets::Options,
     preferred: u16,
 ) -> Result<Application> {
-    let lock = lifecycle::InstanceLock::acquire(&paths).await?;
+    let mut lock = lifecycle::InstanceLock::acquire(&paths).await?;
     let result = async {
         let control = crate::control::Listener::bind(&paths, text(&lock.identity["controlId"]))?;
+        lock.identity["controlAddress"] = json!(control.address());
         crate::daemon_log::init(&paths.home)?;
         config::ensure_dir(&paths.backups).await?;
         let existing = config::read_json(&paths.config).await?;
@@ -1152,6 +1154,15 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
             422,
             json!({"error":{"code":"web_listener_restart_required","message":"Web 管理台监听地址或端口需要重启 daemon 后才能修改"},"diff":diff}),
         ));
+    }
+    if candidate["temporaryDirectory"] != c["temporaryDirectory"] {
+        if let Err(e) = crate::temporary::Directories::prepare(&state.paths.home, &candidate) {
+            return Ok(json_response(
+                422,
+                json!({"error":{"code":"temporary_directory_invalid","message":"临时目录不可用"},
+                "errors":[{"path":"temporaryDirectory","message":format!("{e:#}")}]}),
+            ));
+        }
     }
     // Removed upstreams must not leave credentials that a recreated ID could inherit.
     // Keep credentials referenced by any remaining upstream, including shared secrets.

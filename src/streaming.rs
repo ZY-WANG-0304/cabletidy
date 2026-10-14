@@ -92,7 +92,7 @@ impl Spool {
         let key = aead::UnboundKey::new(&aead::CHACHA20_POLY1305, &key)
             .map_err(|_| io::Error::other("spool_key"))?;
         Ok(Self {
-            file: tempfile::tempfile()?,
+            file: crate::temporary::spool_file()?,
             key: aead::LessSafeKey::new(key),
             pending: Vec::with_capacity(PAGE),
             blocks: 0,

@@ -79,7 +79,9 @@ async fn execute(args: &[&str]) -> Result<String> {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
-    let script = std::env::temp_dir().join(format!("cabletidy-codex-{}.ps1", uuid::Uuid::new_v4()));
+    let helpers = crate::temporary::helpers_directory();
+    #[cfg(windows)]
+    let script = helpers.join(format!("cabletidy-codex-{}.ps1", uuid::Uuid::new_v4()));
     #[cfg(windows)]
     crate::config::atomic_write(&script, include_bytes!("windows-codex.ps1")).await?;
     #[cfg(windows)]
@@ -87,7 +89,11 @@ async fn execute(args: &[&str]) -> Result<String> {
     #[cfg(windows)]
     let mut command = Command::new(crate::lifecycle::powershell());
     #[cfg(windows)]
-    command.creation_flags(0x08000000);
+    command
+        .creation_flags(0x08000000)
+        // PowerShell's Add-Type compiler also creates temporary files.
+        .env("TMP", &helpers)
+        .env("TEMP", &helpers);
     #[cfg(windows)]
     command
         .args([
