@@ -16,6 +16,14 @@ use std::{
 };
 
 pub(crate) const PREFIX: &str = "CTSEC_v1_";
+pub(crate) fn is_placeholder(value: &str) -> bool {
+    value.strip_prefix(PREFIX).is_some_and(|id| {
+        id.len() == 32
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
 type ProtectionSpan = (usize, usize, String);
 type DisplayHit = (String, Vec<ProtectionSpan>);
 fn now() -> u64 {
@@ -398,9 +406,6 @@ impl Registry {
         let mut mappings = Vec::new();
         let mut rows = Vec::new();
         for original in scan.found {
-            if original.starts_with(PREFIX) {
-                continue;
-            }
             let existing = entries.iter().find(|m| m.original == original).cloned();
             let reused = existing.is_some();
             let m = if let Some(m) = existing {
@@ -792,7 +797,7 @@ impl Request {
     }
     pub fn safe_parameter(&self, value: &str) -> bool {
         let mut decoded = value.to_owned();
-        for _ in 0..4 {
+        for depth in 0..=4 {
             if !self.redactor.protection_ranges(&decoded, false).is_empty()
                 || self.mappings.iter().any(|m| decoded.contains(&m.original))
                 || decoded.contains(PREFIX)
@@ -816,11 +821,20 @@ impl Request {
             }
             let next = String::from_utf8_lossy(&out).into_owned();
             if next == decoded {
-                break;
+                return true;
+            }
+            if depth == 4 {
+                // Further encoding cannot bypass the final credential check.
+                return false;
             }
             decoded = next;
         }
-        true
+        false
+    }
+    pub fn safe_query(&self, value: &str) -> bool {
+        self.safe_parameter(value)
+            && url::form_urlencoded::parse(value.as_bytes())
+                .all(|(key, value)| self.safe_parameter(&key) && self.safe_parameter(&value))
     }
 }
 
@@ -1049,6 +1063,15 @@ impl Sse {
         if data.payload.len == 0 {
             return Ok(vec![event.clone()]);
         }
+        if data.payload.len == 6 {
+            let mut marker = [0; 6];
+            data.payload.reader().read_exact(&mut marker)?;
+            if &marker == b"[DONE]" {
+                let mut events = self.finish(request, client, mapped, claude)?;
+                events.push(event.clone());
+                return Ok(events);
+            }
+        }
         let top = streaming::index(&data.payload, None)?;
         let kind = config::text(&top.values["type"]);
         let mut delta_edits = Edits::new();
@@ -1177,15 +1200,7 @@ impl Sse {
                 | "response.incomplete"
                 | "error"
         ) {
-            let keys = self.restorer.channels.keys().cloned().collect::<Vec<_>>();
-            for key in keys {
-                if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
-                    events.push(flush_event(
-                        &template, &field, &text, client, mapped, claude,
-                    )?);
-                }
-            }
-            self.restorer.opaque.clear();
+            events.extend(self.finish(request, client, mapped, claude)?);
         }
         delta_edits.ranges.sort_by_key(|r| r.0);
         let mut payload = Spool::new()?;
@@ -1212,6 +1227,7 @@ impl Sse {
                 )?);
             }
         }
+        self.restorer.opaque.clear();
         Ok(events)
     }
 }
@@ -1543,6 +1559,47 @@ mod tests {
                 at,
             )
             .unwrap()
+    }
+    #[test]
+    fn only_complete_placeholders_are_exempt_and_saved_credentials_take_priority() {
+        let b = format!("{PREFIX}0123456789abcdef0123456789abcdef");
+        assert!(is_placeholder(&b));
+        for value in [
+            PREFIX.to_owned(),
+            format!("{b}!"),
+            b[..b.len() - 1].to_owned(),
+            format!("{PREFIX}0123456789ABCDEF0123456789ABCDEF"),
+            format!("{PREFIX}MyActualPassword_2026!"),
+        ] {
+            assert!(!is_placeholder(&value));
+            assert_eq!(
+                Redactor::new(&json!({})).protection_ranges(&value, true),
+                vec![(0, value.len())]
+            );
+        }
+        assert!(Redactor::new(&json!({}))
+            .protection_ranges(&b, true)
+            .is_empty());
+        for forced in [false, true] {
+            assert_eq!(
+                Redactor::new(&json!({"upstream":b})).protection_ranges(&b, forced),
+                vec![(0, b.len())]
+            );
+        }
+    }
+    #[test]
+    fn parameter_decoding_checks_the_final_layer_and_rejects_excessive_encoding() {
+        let registry = Registry::default();
+        let request = prepare(&registry, json!({"api_key":"actual secret"}), "s", 1000);
+        let mut encoded = "actual secret".to_owned();
+        for _ in 0..6 {
+            assert!(!request.safe_parameter(&encoded));
+            encoded = encoded.bytes().map(|b| format!("%{b:02X}")).collect();
+        }
+        assert!(!request.safe_query("extra=actual+secret"));
+        assert!(!request.safe_query("actual+secret=safe"));
+        assert!(request.safe_query("extra=actual%2Bsecret"));
+        assert!(request.safe_parameter("actual+secret"));
     }
     #[test]
     fn idle_countdown_resets_and_old_active_requests_keep_their_mapping() {

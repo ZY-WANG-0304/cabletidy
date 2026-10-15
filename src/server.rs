@@ -1491,7 +1491,7 @@ async fn proxy(
         .as_bool()
         .unwrap_or(c["credentialProtection"]["enabled"] == true);
     if protect {
-        let mut record = json!({"providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}});
+        let mut record = json!({"kind":"request","providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}});
         security::session::identify_headers(&mut record, &security::headers_value(headers));
         state.protection.touch(
             &record,
@@ -1660,7 +1660,7 @@ async fn proxy(
         if copy {
             if protection
                 .as_ref()
-                .is_some_and(|r| !r.safe_parameter(value.to_str().unwrap_or("")))
+                .is_some_and(|r| !value.to_str().is_ok_and(|value| r.safe_parameter(value)))
             {
                 if let Some(a) = &audit {
                     a.protection_failed("unsafe_request_header");
@@ -1669,22 +1669,20 @@ async fn proxy(
                     protocol,
                     422,
                     "credential_protection_failed",
-                    "附加请求头包含受保护凭据，请求未发送到上游",
+                    "附加请求头无法安全检查或包含受保护凭据，请求未发送到上游",
                 ));
             }
             outbound.insert(key.clone(), value.clone());
         }
     }
     if protection.as_ref().is_some_and(|r| {
-        !r.safe_parameter(query.unwrap_or(""))
-            || !r.safe_parameter(text(&u["baseUrl"]))
+        !r.safe_query(query.unwrap_or(""))
+            || !r.safe_parameter(url.as_str())
+            || !r.safe_query(url.query().unwrap_or(""))
             || !r.safe_parameter(&selected.model)
-            || !r.safe_parameter(
-                outbound
-                    .get("accept")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or(""),
-            )
+            || !outbound
+                .get("accept")
+                .is_some_and(|value| value.to_str().is_ok_and(|value| r.safe_parameter(value)))
     }) {
         if let Some(a) = &audit {
             a.protection_failed("unsafe_request_parameter");
@@ -1693,7 +1691,7 @@ async fn proxy(
             protocol,
             422,
             "credential_protection_failed",
-            "转发参数包含受保护凭据，请求未发送到上游",
+            "转发参数无法安全检查或包含受保护凭据，请求未发送到上游",
         ));
     }
     if let Some(request) = &mut protection {

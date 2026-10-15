@@ -380,7 +380,7 @@ impl Redactor {
                 }
             }
         }
-        if forced && !placeholder_value(value) && !value.starts_with("CTSEC_v1_") {
+        if forced && !placeholder_value(value) && !crate::protection::is_placeholder(value) {
             // Keep the authentication scheme readable; protect the token itself.
             if let Some(c) = AUTH
                 .captures(value)

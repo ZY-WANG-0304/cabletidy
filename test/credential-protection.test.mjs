@@ -13,11 +13,11 @@ import { claudeConfigFixture } from './helpers/claude-fixture.mjs';
 const key = 'sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD';
 const authentication = 'upstream-auth-only-4fR8';
 const event = v => `data: ${JSON.stringify(v)}\n\n`;
-async function fixture(t, handler, { claude = false, enabled = true } = {}) {
+async function fixture(t, handler, { claude = false, enabled = true, upstreamSecret = authentication, ttl = 3600 } = {}) {
   const calls = [];
   const upstream = http.createServer(async (req, res) => {
     let text = ''; for await (const chunk of req) text += chunk;
-    const body = JSON.parse(text); calls.push({body, headers:req.headers});
+    const body = JSON.parse(text); calls.push({body, headers:req.headers, url:req.url});
     try { await handler(body, res); } catch (e) { res.destroy(e); }
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
@@ -27,9 +27,9 @@ async function fixture(t, handler, { claude = false, enabled = true } = {}) {
   const config = normalizeConfig(claude ? claudeConfigFixture() : codexConfigFixture());
   config.web.port = Number(new URL(app.url).port);
   config.upstreams.relay.baseUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
-  config.credentialProtection = { enabled, mappingTtlSeconds:3600 };
+  config.credentialProtection = { enabled, mappingTtlSeconds:ttl };
   const call = (route,body,headers={}) => fetch(`${app.url}${route}`,{method:body===undefined?'GET':'POST',headers:{'content-type':'application/json',...headers},body:body===undefined?undefined:JSON.stringify(body)});
-  const commit = await call('api/v1/config/commit',{config,baseRevision:0,upstreamSecrets:{relay:authentication}});
+  const commit = await call('api/v1/config/commit',{config,baseRevision:0,upstreamSecrets:{relay:upstreamSecret}});
   assert.equal(commit.status,200,await commit.text());
   const model = claude ? 'claude-sonnet-4-6':'gpt-5.5';
   const endpoint = claude ? 'claude-main/v1/messages':'relay/v1/responses';
@@ -476,4 +476,150 @@ test('ordinary prose remains incremental while a text channel is still open', as
     const wire=new TextDecoder().decode(first.value);
     assert.equal(parseSse(wire)[0].value.delta,`Ready ${special} now`);
   } finally {clearTimeout(deadline);finish();await reader.cancel();}
+});
+
+test('query credentials use form decoding for keys and values while literal plus signs stay literal', async t => {
+  const plain = 'actual secret with spaces';
+  const f = await fixture(t, (body, res) => respond(res, body, body.metadata.api_key));
+  const body = {model:f.model,input:plain,metadata:{api_key:plain}};
+  for (const query of [
+    `extra=${encodeURIComponent(plain)}`,
+    'extra=actual+secret+with+spaces',
+    'actual+secret+with+spaces=safe',
+    'extra=actual%20secret+with%20spaces',
+  ]) {
+    const response = await f.call(`relay/v1/responses?${query}`, body);
+    assert.equal(response.status, 422, query); await response.text();
+    assert.equal(f.calls.length, 0);
+  }
+  for (const query of ['extra=actual%2Bsecret%2Bwith%2Bspaces', 'extra=ordinary+text']) {
+    const response = await f.call(`relay/v1/responses?${query}`, body);
+    assert.equal(response.status, 200); assert.equal((await response.json()).output[0].content[0].text, plain);
+    const expected = new URLSearchParams(query).get('extra');
+    assert.equal(new URL(f.calls.at(-1).url, 'http://fixture').searchParams.get('extra'), expected);
+  }
+  const response = await f.call('relay/v1/responses', body, {'openai-project':'actual+secret+with+spaces'});
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(f.calls.at(-1).headers['openai-project'], 'actual+secret+with+spaces');
+  const plus = 'real+literal+secret';
+  const blocked = await f.call(`relay/v1/responses?extra=${encodeURIComponent(plus)}`, {...body,metadata:{api_key:plus}});
+  assert.equal(blocked.status, 422);
+});
+
+for (const claude of [false, true]) for (const exactFormat of [false, true]) test(`saved and declared credentials with placeholder prefixes remain protected (${claude ? 'Claude' : 'Responses'}, exactFormat=${exactFormat})`, async t => {
+  // A local credential is authoritative even when its spelling matches a complete B.
+  const saved = exactFormat ? 'CTSEC_v1_0123456789abcdef0123456789abcdef' : 'CTSEC_v1_MyUniqueSavedCredential_2026!';
+  const password = 'CTSEC_v1_MyActualPassword_2026!';
+  const f = await fixture(t, (body, res) => respond(res, body, body.metadata.password), {claude,upstreamSecret:saved});
+  const response = await f.request({input:`Use ${saved} and ${password}`,messages:[{role:'user',content:`Use ${saved} and ${password}`}],metadata:{password}});
+  assert.equal(response.status, 200); assert.equal((await response.json()).output[0].content[0].text, password);
+  const upstream = f.calls[0]; const wire = JSON.stringify(upstream.body);
+  assert.ok(!wire.includes(saved)); assert.ok(!wire.includes(password));
+  assert.equal(claude ? upstream.headers['x-api-key'] : upstream.headers.authorization, claude ? saved : `Bearer ${saved}`);
+  assert.match(upstream.body.metadata.password, /^CTSEC_v1_[a-f0-9]{32}$/);
+  const records = await f.records(); const detail = await (await f.call(`api/v1/security/audit/${records[0].id}`)).json();
+  assert.equal(detail.record.protection.status, 'completed');
+  assert.deepEqual(new Set(detail.record.protection.mappings.map(m => m.original)), new Set([saved,password]));
+});
+
+for (const claude of [false, true]) test(`non-ASCII forwarded headers fail closed and disabled protection preserves them (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const f = await fixture(t, (body, res) => respond(res, body, body.input), {claude});
+  const body = {model:f.model,input:'start',metadata:{api_key:key}};
+  const route = claude ? 'claude-main/v1/messages' : 'relay/v1/responses';
+  const extra = claude ? 'anthropic-beta' : 'openai-project';
+  for (const name of [extra, 'accept']) {
+    for (const value of [`prefix ${key}`, `\u00e9 ${key}`, '\u00e9 safe']) {
+      const response = await f.call(route, body, {[name]:value});
+      assert.equal(response.status, 422, `${name}: ${value}`); await response.text();
+      assert.equal(f.calls.length, 0);
+    }
+  }
+  const result = await (await f.call('api/v1/config')).json(); result.config.credentialProtection.enabled = false;
+  const committed = await f.call('api/v1/config/commit', {config:result.config,baseRevision:result.config.revision});
+  assert.equal(committed.status, 200); await committed.text();
+  const response = await f.call(route, body, {[extra]:`\u00e9 ${key}`,accept:`\u00e9 ${key}`});
+  assert.equal(response.status, 200); await response.text();
+  assert.ok(f.calls[0].headers[extra].endsWith(key)); assert.ok(f.calls[0].headers.accept.endsWith(key));
+});
+
+for (const completed of [false, true]) test(`SSE DONE flushes pending channels and preserves the marker (completed=${completed})`, async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    const text = JSON.stringify({api_key:body.metadata.api_key});
+    for (const ch of text) res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:ch}));
+    res.write(event({type:'response.output_text.delta',output_index:1,content_index:0,delta:'Implemented in C'}));
+    const args = JSON.stringify({payload:JSON.stringify({api_key:body.metadata.api_key})});
+    for (const ch of args) res.write(event({type:'response.function_call_arguments.delta',output_index:2,delta:ch}));
+    if (completed) res.write(event({type:'response.completed',response:{output:[]}}));
+    res.end('id: terminal\r\ndata: [DONE]\r\n\r\n');
+  });
+  const special = 'actual-"quoted"-\\-中文';
+  const wire = await (await f.request({input:'start',metadata:{api_key:special},stream:true})).text();
+  assert.ok(wire.endsWith('id: terminal\r\ndata: [DONE]\r\n\r\n'));
+  const values = parseSse(wire.slice(0,wire.indexOf('id: terminal'))).map(item => item.value);
+  const text = values.filter(v => v.type==='response.output_text.delta' && v.output_index===0).map(v=>v.delta).join('');
+  assert.equal(JSON.parse(text).api_key, special);
+  assert.equal(values.filter(v => v.type==='response.output_text.delta' && v.output_index===1).map(v=>v.delta).join(''), 'Implemented in C');
+  const args = values.filter(v => v.type==='response.function_call_arguments.delta').map(v=>v.delta).join('');
+  assert.equal(JSON.parse(JSON.parse(args).payload).api_key, special);
+  const records = await f.records(); assert.equal(records[0].protection.status, 'completed');
+});
+
+for (const enabled of [false, true]) test(`SSE DONE preserves responses with no credential mappings (enabled=${enabled})`, async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.write(event({type:'response.completed',response:{model:body.model,output:[]}}));
+    res.end('data: [DONE]\n\n');
+  }, {enabled});
+  const response = await f.request({input:'safe',stream:true});
+  assert.equal(response.status, 200); assert.ok((await response.text()).endsWith('data: [DONE]\n\n'));
+  const records = await f.records(); assert.equal(records[0].outcome, 'completed');
+  if (enabled) assert.equal(records[0].protection.status, 'completed');
+});
+
+test('SSE DONE keeps fail-closed checks for incomplete placeholders', async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:body.input.slice(0,15)}));
+    res.end('data: [DONE]\n\n');
+  });
+  await assert.rejects(async () => {const response=await f.request({input:key,stream:true});await response.text();});
+  const records = await f.records(); assert.equal(records[0].protection.status, 'failed');
+});
+
+test('slow request headers renew the session before the old idle deadline', {timeout:100_000}, async t => {
+  let prior;
+  const f = await fixture(t, (body, res) => {prior ||= body.metadata?.api_key; respond(res, body, prior);}, {ttl:60});
+  const plain = 'slowRequestPlainCredential';
+  const first = await f.request({input:'start',metadata:{api_key:plain}}, 'slow-session');
+  assert.equal((await first.json()).output[0].content[0].text, plain);
+  const records = await f.records();
+  const detail = await (await f.call(`api/v1/security/audit/${records[0].id}`)).json();
+  const deadline = detail.record.protection.expiresAtMs;
+  await delay(Math.max(0,deadline-Date.now()-10_000));
+  const body = JSON.stringify({model:f.model,input:'continue',max_tokens:100});
+  const slow = http.request(new URL('relay/v1/responses', f.app.url), {
+    method:'POST',headers:{'content-type':'application/json','content-length':Buffer.byteLength(body),'session-id':'slow-session'},
+  });
+  t.after(() => slow.destroy());
+  const finished = new Promise((resolve,reject) => {
+    slow.on('error',reject);
+    slow.on('response',res=>{let text='';res.setEncoding('utf8');res.on('data',chunk=>text+=chunk);res.on('error',reject);res.on('end',()=>resolve({status:res.statusCode,body:JSON.parse(text)}));});
+  });
+  slow.flushHeaders(); slow.write(body.slice(0,1));
+  let accepted;
+  for (let i=0;i<200;i++) {
+    const list = await (await f.call('api/v1/security/audit?kind=request')).json();
+    accepted = list.items?.find(r=>r.id!==records[0].id);
+    if (accepted) break;
+    await delay(20);
+  }
+  assert.ok(accepted, 'gateway received the request headers'); assert.ok(accepted.atMs < deadline);
+  await delay(Math.max(0,deadline-Date.now()+3_000)); slow.end(body.slice(1));
+  const response = await finished;
+  assert.equal(response.status, 200); assert.equal(response.body.output[0].content[0].text, plain);
+  assert.equal(f.calls.length, 2); assert.match(prior, /^CTSEC_v1_[a-f0-9]{32}$/);
+  const after = await f.records(); const renewed = await (await f.call(`api/v1/security/audit/${accepted.id}`)).json();
+  assert.equal(after.length, 2); assert.equal(renewed.record.protection.mappings[0].reused, true);
+  assert.ok(renewed.record.protection.expiresAtMs > deadline);
 });
