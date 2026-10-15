@@ -374,7 +374,12 @@ impl Redactor {
         for regex in [&*ASSIGNMENT, &*AUTH, &*URL_AUTH, &*URL_SECRET, &*COOKIE] {
             for captures in regex.captures_iter(value) {
                 if let Some(m) = captures.iter().skip(1).flatten().find(|m| !m.is_empty()) {
-                    if !placeholder_value(m.as_str()) {
+                    // Generated B values stay placeholders in assignment/auth
+                    // text too. Saved or learned real credentials matched above
+                    // still take priority, even when they have B's exact format.
+                    if !placeholder_value(m.as_str())
+                        && !crate::protection::is_placeholder(m.as_str())
+                    {
                         ranges.push((m.start(), m.end()));
                     }
                 }
@@ -387,8 +392,13 @@ impl Redactor {
                 .filter(|c| c.get(0).is_some_and(|m| m.start() == 0))
             {
                 let m = c.get(1).unwrap();
+                let known = ranges
+                    .iter()
+                    .any(|&(start, end)| start <= m.start() && end >= m.end());
                 ranges.retain(|&(a, b)| a != 0 || b != value.len());
-                ranges.push((m.start(), m.end()));
+                if known || !crate::protection::is_placeholder(m.as_str()) {
+                    ranges.push((m.start(), m.end()));
+                }
             } else {
                 ranges.push((0, value.len()));
             }

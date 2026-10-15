@@ -623,3 +623,114 @@ test('slow request headers renew the session before the old idle deadline', {tim
   assert.equal(after.length, 2); assert.equal(renewed.record.protection.mappings[0].reused, true);
   assert.ok(renewed.record.protection.expiresAtMs > deadline);
 });
+
+for (const claude of [false, true]) test(`known placeholders in assignments and nested commands reuse the original mapping (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const original = 'actual-"quoted"-\\-中文CredentialValue';
+  const f = await fixture(t, (body, res) => respond(res, body, body.input ?? body.metadata.api_key), {claude});
+  const first = await f.request({metadata:{api_key:original}});
+  assert.equal(first.status, 200); assert.equal((await first.json()).output[0].content[0].text, original);
+  const b = f.calls[0].body.metadata.api_key;
+  const values = [
+    value => `plain ${value}`,
+    value => `api_key=${value}`,
+    value => `api_key="${value}"`,
+    value => `export API_KEY=${value}`,
+    value => JSON.stringify({api_key:value}),
+    value => JSON.stringify({command:`export API_KEY=${value}`}),
+    value => JSON.stringify({arguments:JSON.stringify({command:`export API_KEY=${value}`})}),
+    value => `Bearer ${value}`,
+    value => `https://example.invalid/?api_key=${value}`,
+  ];
+  for (const make of values) {
+    const input = make(b);
+    const response = await f.request({input});
+    assert.equal(response.status, 200, input);
+    const text = (await response.json()).output[0].content[0].text;
+    assert.equal(f.calls.at(-1).body.input, input, 'upstream keeps the existing B');
+    assert.equal(text, make(original), 'client receives the original A');
+  }
+  const authorization = `Bearer ${b}`;
+  const authorized = await f.request({input:authorization,metadata:{authorization}});
+  assert.equal(authorized.status, 200);
+  assert.equal((await authorized.json()).output[0].content[0].text, `Bearer ${original}`);
+  assert.equal(f.calls.at(-1).body.metadata.authorization, authorization);
+  const records = await f.records(); assert.equal(records.length, values.length + 2);
+  for (const record of records) {
+    const detail = await (await f.call(`api/v1/security/audit/${record.id}`)).json();
+    const protection = detail.record.protection;
+    assert.equal(protection.status, 'completed'); assert.equal(protection.mappings.length, 1);
+    assert.equal(protection.mappings[0].original, original); assert.equal(protection.mappings[0].replacement, b);
+    if (record.protection.requestCount === 0) {
+      assert.equal(protection.responseCount, 1); assert.equal(protection.mappings[0].reused, true);
+      const page = await (await f.call(`api/v1/security/audit/${record.id}/body?snapshot=response`)).json();
+      assert.ok(page.protectionRanges.length, 'restored A retains protection evidence');
+    }
+  }
+});
+
+test('unknown and other-session placeholders in assignments stay literal without new credential mappings', async t => {
+  const f = await fixture(t, (body,res)=>respond(res,body,body.input ?? body.metadata.api_key));
+  const first = await f.request({metadata:{api_key:'actualCredentialValue'}}, 'source-session'); await first.text();
+  const other = f.calls[0].body.metadata.api_key;
+  for (const b of [other,'CTSEC_v1_00000000000000000000000000000000']) {
+    const input = JSON.stringify({command:`export API_KEY=${b}`});
+    const response = await f.request({input}, 'unrelated-session');
+    assert.equal(response.status, 200); assert.equal((await response.json()).output[0].content[0].text, input);
+    assert.equal(f.calls.at(-1).body.input, input);
+  }
+  const records = await f.records();
+  for (const record of records.filter(r => r.protection.requestCount === 0)) {
+    const detail = await (await f.call(`api/v1/security/audit/${record.id}`)).json();
+    assert.deepEqual(detail.record.protection.mappings, []); assert.equal(detail.record.protection.responseCount, 0);
+  }
+});
+
+test('a saved real credential equal to an existing B still takes priority over placeholder exemption', async t => {
+  const f = await fixture(t, (body,res)=>respond(res,body,body.input ?? body.metadata.api_key));
+  const first = await f.request({metadata:{api_key:'actualCredentialValue'}}); await first.text();
+  const saved = f.calls[0].body.metadata.api_key;
+  const firstRecords = await f.records();
+  const config = await (await f.call('api/v1/config')).json();
+  const commit = await f.call('api/v1/config/commit', {config:config.config,baseRevision:config.config.revision,upstreamSecrets:{relay:saved}});
+  assert.equal(commit.status, 200); await commit.text();
+  const input = `api_key=${saved}`;
+  const response = await f.request({input}); assert.equal(response.status, 200);
+  assert.equal((await response.json()).output[0].content[0].text, input);
+  assert.ok(!f.calls.at(-1).body.input.includes(saved));
+  assert.equal(f.calls.at(-1).headers.authorization, `Bearer ${saved}`);
+  const records = await f.records();
+  const record = records.find(r => r.id !== firstRecords[0].id);
+  assert.ok(record);
+  const detail = await (await f.call(`api/v1/security/audit/${record.id}`)).json();
+  assert.ok(detail.record.protection.mappings.some(m=>m.original===saved && m.requestCount===1 && m.responseCount===1));
+});
+
+for (const claude of [false, true]) test(`known placeholder commands restore original credentials in streamed tool arguments (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const original = 'actual-"quoted"-\\-中文CredentialValue';
+  const f = await fixture(t, (body,res) => {
+    if (!body.stream) return respond(res,body,body.metadata.api_key);
+    const args = body.input;
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    if (claude) res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'tool_use',id:'c1',name:'run',input:{}}}));
+    for (const ch of args) res.write(claude
+      ? namedEvent({type:'content_block_delta',index:0,delta:{type:'input_json_delta',partial_json:ch}})
+      : event({type:'response.function_call_arguments.delta',output_index:0,delta:ch}));
+    if (claude) {res.write(namedEvent({type:'content_block_stop',index:0}));res.end(namedEvent({type:'message_stop'}));}
+    else {res.write(event({type:'response.function_call_arguments.done',output_index:0,arguments:args}));res.end(event({type:'response.completed',response:{output:[]}}));}
+  }, {claude});
+  const first = await f.request({metadata:{api_key:original}}); await first.text();
+  const b = f.calls[0].body.metadata.api_key;
+  const input = JSON.stringify({command:`export API_KEY=${b}`});
+  const wire = await (await f.request({input,stream:true})).text();
+  assert.equal(f.calls[1].body.input, input);
+  const values = parseSse(wire).map(item=>item.value);
+  const args = values.filter(v=>claude ? v.delta?.type==='input_json_delta' : v.type==='response.function_call_arguments.delta')
+    .map(v=>claude ? v.delta.partial_json : v.delta).join('');
+  assert.equal(JSON.parse(args).command, `export API_KEY=${original}`);
+  assert.ok(!wire.includes(b));
+  const records = await f.records(); const streamed = records.find(r=>r.protection.requestCount===0);
+  assert.ok(streamed); const detail = await (await f.call(`api/v1/security/audit/${streamed.id}`)).json();
+  assert.equal(detail.record.protection.status,'completed'); assert.equal(detail.record.protection.mappings.length,1);
+  assert.equal(detail.record.protection.mappings[0].original,original);
+  assert.ok(detail.record.protection.responseCount>0);
+});

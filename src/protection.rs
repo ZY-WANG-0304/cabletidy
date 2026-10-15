@@ -1586,6 +1586,33 @@ mod tests {
                 vec![(0, b.len())]
             );
         }
+        for value in [
+            format!("api_key={b}"),
+            format!("api_key=\"{b}\""),
+            format!("Bearer {b}"),
+            format!("https://example.invalid/?api_key={b}"),
+        ] {
+            assert!(Redactor::new(&json!({}))
+                .protection_ranges(&value, false)
+                .is_empty());
+            let start = value.find(&b).unwrap();
+            assert_eq!(
+                Redactor::new(&json!({"upstream":b})).protection_ranges(&value, false),
+                vec![(start, start + b.len())]
+            );
+        }
+        let value = format!("Bearer {b}");
+        assert!(Redactor::new(&json!({}))
+            .protection_ranges(&value, true)
+            .is_empty());
+        assert_eq!(
+            Redactor::new(&json!({"upstream":b})).protection_ranges(&value, true),
+            vec![(7, value.len())]
+        );
+        assert_eq!(
+            Redactor::new(&json!({"upstream":value})).protection_ranges(&value, true),
+            vec![(7, value.len())]
+        );
     }
     #[test]
     fn parameter_decoding_checks_the_final_layer_and_rejects_excessive_encoding() {
