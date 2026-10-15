@@ -329,3 +329,13 @@ for (const mode of ['start-and-delta', 'responses-reasoning']) test(`opaque plac
   await assert.rejects(async () => {const response=await f.request({input:key,messages:[{role:'user',content:key}],stream:true});await response.text();});
   const records = await f.records(); assert.equal(records[0].protection.status,'failed');
 });
+
+for (const suffix of ['C', 'CTSE', 'ordinary text']) test(`framed SSE EOF releases normal text suffix (${suffix})`, async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.end(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:`Tail ${suffix}`}));
+  });
+  const wire = await (await f.request({input:key,stream:true})).text();
+  const events = parseSse(wire).map(item => item.value);
+  assert.equal(events.map(value => value.delta).join(''), `Tail ${suffix}`);
+});

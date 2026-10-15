@@ -881,9 +881,6 @@ impl Restorer {
         tail.drain(..start);
         Ok(())
     }
-    fn is_pending(&self) -> bool {
-        !self.channels.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -1121,11 +1118,23 @@ impl Sse {
         Ok(events)
     }
 
-    pub fn finish(&self) -> Result<()> {
-        if self.restorer.is_pending() {
-            bail!("protection_incomplete_placeholder");
+    pub fn finish(
+        &mut self,
+        request: &mut Request,
+        client: &str,
+        mapped: &str,
+        claude: bool,
+    ) -> Result<Vec<Arc<Spool>>> {
+        let mut events = Vec::new();
+        let keys = self.restorer.channels.keys().cloned().collect::<Vec<_>>();
+        for key in keys {
+            if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
+                events.push(flush_event(
+                    &template, &field, &text, client, mapped, claude,
+                )?);
+            }
         }
-        Ok(())
+        Ok(events)
     }
 }
 

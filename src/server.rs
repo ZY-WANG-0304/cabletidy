@@ -1806,7 +1806,16 @@ async fn relay_protected(
                     }
                 }
                 if framer.finish()?.is_some() { Err(anyhow::anyhow!("protection_incomplete_sse_event"))?; }
-                restore.finish()?;
+                for event in restore.finish(&mut protection, &client, &mapped, claude)? {
+                    if let Some(a)=&audit { a.protection(&protection.report); }
+                    let mut r=event.reader(); let mut buf=vec![0;PAGE];
+                    loop {
+                        let n = r.read(&mut buf)?;
+                        if n == 0 { break; }
+                        if let Some(a) = &audit { a.feed(&buf[..n]); }
+                        yield Bytes::copy_from_slice(&buf[..n]);
+                    }
+                }
             } else {
                 let mut spool=Spool::new()?;
                 while let Some(chunk)=source.next().await { spool.write_all(&chunk?)?; }
