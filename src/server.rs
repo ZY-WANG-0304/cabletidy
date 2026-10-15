@@ -743,11 +743,13 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             return Ok(json_response(200, state.security.status()));
         }
         let query = if let Some(rest) = path.strip_prefix("/api/v1/security/audit/") {
+            let protection_locations = rest.ends_with("/protection-locations");
             let response_content = rest.ends_with("/response-content");
             let content_page = response_content || rest.ends_with("/content");
             let rest = rest
                 .strip_suffix("/response-content")
                 .or_else(|| rest.strip_suffix("/content"))
+                .or_else(|| rest.strip_suffix("/protection-locations"))
                 .unwrap_or(rest);
             let (id, body_page) = rest
                 .strip_suffix("/body")
@@ -757,6 +759,36 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             }
             let mut query = security::store::Query::default();
             query.detail = Some(id.into());
+            if protection_locations {
+                let mut mapping = None;
+                let mut side = None;
+                let mut offset = 0;
+                for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
+                    match k.as_ref() {
+                        "mapping" if !v.is_empty() && v.len() <= 200 => {
+                            mapping = Some(v.into_owned())
+                        }
+                        "side" if matches!(v.as_ref(), "request" | "response") => {
+                            side = Some(v.into_owned())
+                        }
+                        "offset" => match v.parse::<usize>() {
+                            Ok(n) if n <= i64::MAX as usize => offset = n,
+                            _ => {
+                                return Ok(error(
+                                    400,
+                                    "invalid_protection_query",
+                                    "保护位置偏移无效",
+                                ))
+                            }
+                        },
+                        _ => return Ok(error(400, "invalid_protection_query", "保护位置参数无效")),
+                    }
+                }
+                let (Some(mapping), Some(side)) = (mapping, side) else {
+                    return Ok(error(400, "invalid_protection_query", "缺少凭据或内容方向"));
+                };
+                query.protection_locations = Some((mapping, side, offset));
+            }
             if content_page {
                 let mut offset = 0;
                 for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {

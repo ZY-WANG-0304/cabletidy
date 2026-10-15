@@ -192,6 +192,7 @@ function render(preservedForms = []) {
       top: node.scrollTop,
       left: node.scrollLeft,
     })) : [];
+  if (state.security.protectionSource && !protectionSourceCurrent(state.security.protectionSource)) closeProtectionSource();
   traceOverviewObserver?.disconnect();
   traceOverviewObserver = null;
   pageContent.innerHTML = renderers[state.page]();
@@ -422,6 +423,13 @@ pageContent.addEventListener("click", (event) => {
   if (element.dataset.action) handleAction(element.dataset.action, element);
   else navigatePage(element.dataset.page);
 });
+
+const protectionDialog = document.querySelector("#protection-source-dialog");
+protectionDialog.addEventListener("click", event => {
+  const button = event.target.closest("[data-action]");
+  if (button) securityAction(button.dataset.action, button);
+});
+protectionDialog.addEventListener("close", () => { if (!protectionDialog.open) closeProtectionSource(); });
 
 pageContent.addEventListener("submit", (event) => handleFormSubmit(event, event.target));
 window.addEventListener("beforeunload", (event) => {
@@ -789,6 +797,8 @@ pageContent.addEventListener("toggle", (event) => {
   if (record && panel.matches("[data-content-index]")) {
     (record.contentOpen ||= {})[`${panel.dataset.contentResponse}:${panel.dataset.contentIndex}`] = panel.open;
   }
+  if (record && panel.matches("[data-protection-history]")) record.protectionHistoryOpen = panel.open;
+  if (record && panel.matches("[data-protection-mapping]")) (record.protectionOpen ||= {})[panel.dataset.protectionMapping] = panel.open;
   if (record && panel.matches("[data-history-risks]")) record.historyRisksOpen = panel.open;
   if (record && panel.matches("[data-history-start]")) {
     const range = (record.historyRanges ||= {})[panel.dataset.historyStart] ||= {};
@@ -1639,49 +1649,133 @@ async function loadHistoryRange(start, end, offset = start) {
 
 function protectionOccurred(record) { return (record.protection?.requestCount || 0) + (record.protection?.responseCount || 0) > 0; }
 function protectionKeyIcon() { return '<svg class="protection-key" viewBox="0 0 14 24" aria-hidden="true"><circle cx="7" cy="5" r="3.5"/><path d="M7 8.5V22M7 15h4M7 19h4"/></svg>'; }
-async function locateProtection(id, response) {
-  const s = state.security, record = s.detail, sequence = s.detailSequence;
-  if (!record) return;
-  const tab = response ? "response" : "request", key = response ? "responseContent" : "requestContent";
-  const operation = beginContentOperation(response);
-  const navigation = s.contentNavigation = { findingId: `protection:${id}` };
-  state.trace.tab = tab;
-  const current = () => s.detail === record && s.detailSequence === sequence && s[operation.key] === operation.token && s.contentNavigation === navigation && state.trace.tab === tab && state.page === "security-session";
-  render();
-  let offset = 0;
-  try {
-    while (current()) {
-      const content = await api(`/security/audit/${encodeURIComponent(record.id)}/${response ? "response-content" : "content"}?${new URLSearchParams({ offset, ...(!response ? { view: "all" } : {}) })}`);
-      if (!current()) return;
-      record[key] = content;
-      const item = content.items?.find(item => Object.values(item.protectionRanges || {}).flat().some(range => range.mappingId === id));
-      if (item) {
-        navigation.index = item.index;
-        navigation.field = item.protectionRanges.preview?.some(range => range.mappingId === id) ? "preview" : "structure";
-        (record.contentOpen ||= {})[`${response}:${item.index}`] = true;
-        render();
-        const row = pageContent.querySelector(`[data-content-index="${item.index}"]`);
-        for (let parent = row; parent; parent = parent.parentElement) if (parent.tagName === "DETAILS") parent.open = true;
-        const target = row?.querySelector("[data-security-content-anchor]") || row;
-        const structure = target?.closest?.("details.trace-content-structure");
-        if (structure) structure.open = true;
-        target?.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-        target?.focus?.({ preventScroll: true });
-        return;
-      }
-      if (!content.nextOffset || content.nextOffset <= offset) break;
-      offset = content.nextOffset;
-    }
-    if (current()) { s[response ? "responseContentError" : "contentError"] = "原文未保留或保护位置暂不可定位，请在凭据保护页复核映射。"; render(); }
-  } catch (error) {
-    if (current()) { s[response ? "responseContentError" : "contentError"] = error.message; render(); }
+function protectionCredentials(report) {
+  const grouped = new Map();
+  for (const mapping of report?.mappings || []) {
+    const existing = grouped.get(mapping.original);
+    if (existing) {
+      existing.requestCount += mapping.requestCount || 0;
+      existing.responseCount += mapping.responseCount || 0;
+      existing.reused &&= !!mapping.reused;
+      existing.mappings.push(mapping);
+    } else grouped.set(mapping.original, { ...mapping, requestCount: mapping.requestCount || 0, responseCount: mapping.responseCount || 0, mappings: [mapping] });
   }
+  return [...grouped.values()];
 }
+
+function protectionMappingDetails(record, credential) {
+  const open = record.protectionOpen?.[credential.id];
+  return `<details class="protection-mapping-details" data-protection-mapping="${esc(credential.id)}" ${open ? "open" : ""}><summary>映射详情</summary>${credential.mappings.map(m => `<dl><dt>占位符 B</dt><dd><code>${esc(m.replacement)}</code></dd><dt>映射创建时间</dt><dd>${esc(securityTime(m.createdAtMs))}</dd><dt>本次续期到期时间</dt><dd>${esc(securityTime(m.expiresAtMs))}</dd></dl>`).join("")}</details>`;
+}
+
 function renderProtection(record) {
   const p = record.protection;
-  if (!p?.enabled) return '<p class="muted">此请求未启用凭据保护。</p>';
-  const labels = { prepared: "已准备", protected: "请求已保护", completed: "已完成", failed: "保护未完成" };
-  return `<section class="credential-protection"><h3>${protectionKeyIcon()} 凭据保护 · ${labels[p.status] || p.status}</h3><p>请求替换 ${p.requestCount || 0} 次 · 响应还原 ${p.responseCount || 0} 次</p><p class="muted">会话闲置 ${p.mappingTtlSeconds || 3600} 秒后过期，每个新请求重置倒计时。本地内容显示原文。</p>${p.reason ? '<p class="notice warning">保护或还原未完成，请结合请求结果复核。</p>' : ""}${(p.mappings || []).map(m => `<article class="protection-mapping"><header><strong>${m.reused ? "复用会话映射" : "新建会话映射"}</strong><span>替换 ${m.requestCount || 0} 次 · 还原 ${m.responseCount || 0} 次</span></header><dl><dt>原始凭据 A</dt><dd><pre>${esc(m.original)}</pre></dd><dt>上游占位符 B</dt><dd><pre>${esc(m.replacement)}</pre></dd><dt>映射创建</dt><dd>${esc(securityTime(m.createdAtMs))}</dd><dt>本次请求重置后的到期时间</dt><dd>${esc(securityTime(m.expiresAtMs))}</dd></dl><div class="form-actions">${m.requestCount ? `<button class="mini-button" data-action="security-protection-source" data-side="request" data-id="${esc(m.id)}">定位请求原文</button>` : ""}${m.responseCount ? `<button class="mini-button" data-action="security-protection-source" data-side="response" data-id="${esc(m.id)}">定位响应原文</button>` : ""}</div></article>`).join("") || '<p class="muted">没有替换记录，或保护证据尚未写入。</p>'}</section>`;
+  const failed = p?.status === "failed", unavailable = p?.evidenceState === "unavailable" || p?.enabled && !Array.isArray(p.mappings);
+  const credentials = protectionCredentials(p), used = credentials.filter(m => m.requestCount + m.responseCount > 0), history = credentials.filter(m => m.requestCount + m.responseCount === 0);
+  const labels = { prepared: "已准备", protected: "请求已保护", completed: "已完成", failed: "保护失败" };
+  const label = failed ? "保护失败" : unavailable ? "证据不可用" : p?.enabled ? labels[p.status] || "已启用" : "未启用";
+  const empty = (title, note) => `<div class="protection-empty"><h4>${title}</h4><p>${note}</p></div>`;
+  const heading = `<header class="protection-heading"><h3>${protectionKeyIcon()} 凭据保护</h3><span class="protection-state ${failed || unavailable ? "is-warning" : !p?.enabled ? "is-muted" : ""}">${label}</span></header>`;
+  if (!p?.enabled) return `<section class="credential-protection">${heading}${empty("此请求未启用凭据保护", "本次没有执行凭据替换或响应还原。")}</section>`;
+  const summary = unavailable ? '<p class="protection-counts">凭据数量不可确认 · 请求替换 ' + esc(p.requestCount ?? "未知") + ' 次 · 响应还原 ' + esc(p.responseCount ?? "未知") + ' 次</p>'
+    : `<p class="protection-counts">涉及 <b>${used.length}</b> 个凭据 · 请求替换 <b>${esc(p.requestCount || 0)}</b> 次 · 响应还原 <b>${esc(p.responseCount || 0)}</b> 次</p>`;
+  const historyHtml = !unavailable ? `<details class="protection-history" data-protection-history ${record.protectionHistoryOpen ? "open" : ""}><summary>会话已有映射 · ${history.length} 条 <small>本次未使用</small></summary>${history.map(m => `<article class="protection-history-item"><pre>${esc(m.original)}</pre>${protectionMappingDetails(record, m)}</article>`).join("") || '<p class="muted">没有本次未使用的会话映射。</p>'}</details>` : "";
+  const failure = failed ? `<div class="protection-failure" role="alert"><strong>${p.reason === "response_restore_failed" ? "响应还原未完成" : p.reason === "request_protection_failed" ? "请求保护未完成 · 请求未发送到上游" : "保护或还原未完成"}</strong><p>请结合请求结果复核，本次操作次数不代表保护完整完成。</p>${p.reason ? `<details><summary>失败详情</summary><p>${esc(p.reason)}</p></details>` : ""}</div>` : "";
+  const rows = used.map((m, i) => `<article class="security-finding protection-mapping"><header class="protection-entry-heading">${protectionKeyIcon()}<strong>凭据 ${String(i + 1).padStart(2, "0")}</strong><span class="protection-reuse ${m.reused ? "" : "is-new"}">${m.reused ? "复用" : "新建"}</span><button class="protection-copy" data-action="security-protection-copy" data-id="${esc(m.id)}" aria-label="复制凭据 ${i + 1} 的原文 A">复制 A</button></header><div class="protection-value"><span>原文 A</span><code class="security-protection-hit" title="${esc(m.original)}">${esc(m.original)}</code></div><p class="protection-entry-counts">请求替换 ${m.requestCount} 次 · 响应还原 ${m.responseCount} 次</p><div class="protection-entry-actions">${["request", "response"].map(side => m[side + "Count"] ? `<button class="security-location" data-action="security-protection-source" data-side="${side}" data-id="${esc(m.id)}">${side === "request" ? "请求" : "响应"}原文（${m[side + "Count"]} 处）</button>` : "").join("")}</div>${protectionMappingDetails(record, m)}</article>`).join("");
+  return `<section class="credential-protection">${heading}${summary}<p class="protection-note">会话闲置 ${esc((p.mappingTtlSeconds || 3600) / 3600)} 小时后过期，每次新请求重置倒计时。下方显示本次操作。</p>${historyHtml}${failure}${unavailable ? empty("保护证据不可用", "未保留完整映射证据，无法列出或确认全部 A↔B。请结合请求结果复核。") : rows || (!failed ? empty("已启用，本次没有替换或还原", "本次保护操作为 0；会话已有映射可在上方展开查看。") : "")}<p class="protection-read-note">本地审计保留原文 A。映射详情中的到期时间是本次请求续期后的证据时间。完整内容可通过原有请求、响应和原始内容页签查看。</p></section>`;
+}
+
+function closeProtectionSource() {
+  const source = state.security.protectionSource;
+  state.security.protectionSource = null;
+  source?.controller.abort();
+  document.querySelector("#protection-source-dialog")?.close?.();
+}
+
+function protectionSourceCurrent(source) {
+  return state.security.protectionSource === source && state.security.detail === source.record
+    && state.security.detailSequence === source.sequence && state.page === "security-session" && state.trace.tab === "protection";
+}
+
+function protectionContextPage(pages, hit) {
+  const encoder = new TextEncoder(), decoder = new TextDecoder();
+  const chunks = pages.flatMap(page => page.chunks || []);
+  const left = Math.max(0, hit.start - 600), right = hit.end + 600;
+  const clipped = chunks.filter(c => c.start < right && c.end > left).map(chunk => {
+    const bytes = encoder.encode(chunk.content);
+    let from = Math.max(0, left - chunk.start), to = Math.min(bytes.length, right - chunk.start);
+    while (from < to && (bytes[from] & 0xc0) === 0x80) from++;
+    while (to > from && (bytes[to] & 0xc0) === 0x80) to--;
+    return { ...chunk, start: chunk.start + from, end: chunk.start + to, content: decoder.decode(bytes.slice(from, to)) };
+  });
+  const unique = ranges => [...new Map(ranges.map(r => [JSON.stringify(r), r])).values()];
+  return { chunks: clipped, protectionRanges: unique(pages.flatMap(p => p.protectionRanges || [])), riskRanges: unique(pages.flatMap(p => p.riskRanges || [])), gap: pages.some(p => p.gap) };
+}
+
+function renderProtectionSource() {
+  const source = state.security.protectionSource;
+  if (!source) return;
+  const dialog = document.querySelector("#protection-source-dialog");
+  const focus = dialog.contains?.(document.activeElement) ? document.activeElement.dataset : null;
+  const hit = source.hits[source.at];
+  const count = source.total ?? 0;
+  const retained = source.expected !== count ? `<p class="protection-note">操作记录 ${source.expected} 次，已保留 ${count} 处可定位原文；未保留的位置无法在此展示。</p>` : "";
+  const content = source.loading ? '<p role="status">正在读取命中上下文…</p>' : source.error ? `<p class="notice warning" role="alert">${esc(source.error)}</p><button class="mini-button" data-action="security-protection-retry">重试</button>` : hit ? `<p class="protection-source-location">${hit.snapshotId === "request" ? "请求正文" : hit.snapshotId === "response" ? "响应正文" : "响应流式内容"} · 字节 ${hit.start}–${hit.end}</p>${source.page?.gap ? '<p class="notice warning">此范围原文保留存在缺口，以下上下文可能不完整。</p>' : ""}<pre class="protection-source-snippet">${securityPageText(source.page, hit)}</pre>${retained}` : '<p class="notice warning">保护原文未保留或位置证据不可用，无法定位。完整内容仍可在原有页签复核。</p>';
+  dialog.innerHTML = `<header class="protection-source-heading"><strong id="protection-source-title">${source.response ? "响应" : "请求"}原文 · 凭据 ${source.ordinal}</strong><button data-action="security-protection-close" aria-label="关闭定位弹出框">×</button></header><div class="protection-source-body"><div class="protection-source-controls"><button class="mini-button" data-action="security-protection-step" data-step="-1" ${source.loading || source.at <= 0 ? "disabled" : ""}>上一处</button><span role="status">${count ? source.at + 1 : 0} / ${count} 处</span><button class="mini-button" data-action="security-protection-step" data-step="1" ${source.loading || source.at + 1 >= count ? "disabled" : ""}>下一处</button></div>${content}<p class="protection-note">显示原文 A 和命中上下文。完整请求、响应仍通过原有页签查看。</p></div>`;
+  if (focus) {
+    const selector = `[data-action="${focus.action}"]${focus.step ? `[data-step="${focus.step}"]` : ""}`;
+    const button = dialog.querySelector(selector);
+    (button && !button.disabled ? button : dialog.querySelector('[data-action="security-protection-close"]'))?.focus({ preventScroll: true });
+  }
+}
+
+async function loadProtectionSource(source) {
+  source.loading = true; source.error = null; renderProtectionSource();
+  const request = path => api(`/security/audit/${encodeURIComponent(source.record.id)}/${path}`, { signal: source.controller.signal });
+  try {
+    if (source.total == null) {
+      source.hits = [];
+      // Locations are small paged metadata; body content is fetched only for the
+      // current occurrence, including non-message fields and reconstructed SSE.
+      for (const mapping of source.credential.mappings) {
+        let offset = 0;
+        do {
+          const page = await request(`protection-locations?${new URLSearchParams({ mapping: mapping.id, side: source.response ? "response" : "request", offset })}`);
+          if (!protectionSourceCurrent(source)) return;
+          source.hits.push(...(page.items || []));
+          offset = page.nextOffset;
+        } while (offset != null);
+      }
+      source.total = source.hits.length;
+    }
+    const hit = source.hits[source.at];
+    if (hit) {
+      const pages = [];
+      let offset = Math.max(0, hit.start - 768);
+      do {
+        const page = await request(`body?${new URLSearchParams({ snapshot: hit.snapshotId, offset })}`);
+        if (!protectionSourceCurrent(source)) return;
+        pages.push(page);
+        if (page.nextOffset == null || page.nextOffset <= offset || page.nextOffset >= hit.end + 600) break;
+        offset = page.nextOffset;
+      } while (true);
+      source.page = protectionContextPage(pages, hit);
+    }
+  } catch (error) { if (protectionSourceCurrent(source)) source.error = error.message; }
+  if (!protectionSourceCurrent(source)) return;
+  source.loading = false; renderProtectionSource();
+}
+
+async function locateProtection(id, response) {
+  const s = state.security, record = s.detail;
+  const used = protectionCredentials(record?.protection).filter(m => m.requestCount + m.responseCount > 0);
+  const credential = used.find(m => m.id === id);
+  if (!credential) return;
+  closeProtectionSource();
+  const source = s.protectionSource = { record, sequence: s.detailSequence, credential, ordinal: used.indexOf(credential) + 1, response, expected: credential[response ? "responseCount" : "requestCount"], hits: [], at: 0, loading: true, controller: new AbortController() };
+  renderProtectionSource();
+  document.querySelector("#protection-source-dialog").showModal?.();
+  await loadProtectionSource(source);
 }
 
 function renderTraceInspector() {
@@ -1961,6 +2055,20 @@ async function securityAction(action, element) {
     await loadSecurityDetail(element.dataset.id, true, true);
     pageContent.querySelector(`.trace-event-row.is-selected`)?.scrollIntoView({ block: "nearest", behavior: "instant" });
     return;
+  }
+  if (action === "security-protection-copy") {
+    const credential = protectionCredentials(s.detail?.protection).find(m => m.id === element.dataset.id);
+    if (!credential) return;
+    try { await navigator.clipboard.writeText(credential.original); toast("已复制原始凭据 A"); }
+    catch { toast("复制失败，请从原文 A 预览中手动复制。", true); }
+    return;
+  }
+  if (action === "security-protection-close") { closeProtectionSource(); return; }
+  if (action === "security-protection-step" || action === "security-protection-retry") {
+    const source = s.protectionSource;
+    if (!source || source.loading || !protectionSourceCurrent(source)) return;
+    if (action === "security-protection-step") source.at = Math.max(0, Math.min(source.total - 1, source.at + Number(element.dataset.step)));
+    await loadProtectionSource(source); return;
   }
   if (action === "security-protection-source") {
     await locateProtection(element.dataset.id, element.dataset.side === "response");

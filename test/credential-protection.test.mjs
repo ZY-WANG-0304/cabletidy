@@ -92,6 +92,10 @@ const respond=(res,body,text)=>{res.writeHead(200,{'content-type':'application/j
   assert.equal(events.at(-1).response.output[0].content[0].text,key);
   assert.ok(!wire.includes('CTSEC_v1_'));
   const records=await f.records();const d=await(await f.call(`api/v1/security/audit/${records[0].id}`)).json();assert.equal(d.record.outcome,'completed');assert.ok(d.record.responseContent.items.some(i=>i.protectionRanges?.preview?.length));
+  const mapping=d.record.protection.mappings[0];
+  const locations=await(await f.call(`api/v1/security/audit/${records[0].id}/protection-locations?mapping=${mapping.id}&side=response`)).json();
+  assert.ok(locations.total>0);assert.equal(locations.total,mapping.responseCount);
+  assert.ok(locations.items.some(hit=>hit.snapshotId.startsWith('stream/')));
  });
 
  test('Claude SSE restores interleaved text and JSON tool parameters, maintaining valid JSON',async t=>{
@@ -338,4 +342,35 @@ for (const suffix of ['C', 'CTSE', 'ordinary text']) test(`framed SSE EOF releas
   const wire = await (await f.request({input:key,stream:true})).text();
   const events = parseSse(wire).map(item => item.value);
   assert.equal(events.map(value => value.delta).join(''), `Tail ${suffix}`);
+});
+
+test('protection locations include repeated inputs, unused mappings and response-only restorations', async t => {
+  let previous;
+  const f = await fixture(t, (body, res) => {
+    previous = body.metadata?.api_key || previous;
+    respond(res, body, body.input === 'continue' ? previous : body.input);
+  });
+  await (await f.request({input:`first ${key} second ${key}`,metadata:{api_key:'history-plain-token'}})).text();
+  await (await f.request({input:'continue'})).text();
+  const records = await f.records();
+  const details = await Promise.all(records.map(async r => (await (await f.call(`api/v1/security/audit/${r.id}`)).json()).record));
+  const first = details.find(d=>d.protection.requestCount === 3), second = details.find(d=>d.protection.requestCount === 0);
+  assert.ok(first);assert.ok(second);
+  const keyMapping = first.protection.mappings.find(m=>m.original===key);
+  const route = (d,m,side,offset=0) => `api/v1/security/audit/${d.id}/protection-locations?mapping=${m.id}&side=${side}&offset=${offset}`;
+  const page = await (await f.call(route(first,keyMapping,'request'))).json();
+  assert.equal(page.total,2);assert.equal(page.items.length,2);assert.equal(page.nextOffset,null);
+  for(const hit of page.items) {
+    const body = await (await f.call(`api/v1/security/audit/${first.id}/body?snapshot=${hit.snapshotId}&offset=${Math.max(0,hit.start-100)}`)).json();
+    const chunk = body.chunks.find(c=>c.start<=hit.start && c.end>=hit.end);
+    assert.equal(Buffer.from(chunk.content).subarray(hit.start-chunk.start,hit.end-chunk.start).toString(),key);
+  }
+  const pastKey = second.protection.mappings.find(m=>m.original===key);
+  assert.equal(pastKey.requestCount+pastKey.responseCount,0);
+  const restored = second.protection.mappings.find(m=>m.original==='history-plain-token');
+  assert.equal(restored.reused,true);assert.equal(restored.requestCount,0);assert.equal(restored.responseCount,1);
+  assert.equal((await (await f.call(route(second,restored,'response'))).json()).total,1);
+  assert.equal((await f.call(route(first,keyMapping,'invalid'))).status,400);
+  assert.equal((await f.call(`api/v1/security/audit/${first.id}/protection-locations?side=request`)).status,400);
+  assert.equal((await (await f.call(route(first,keyMapping,'request',2))).json()).items.length,0);
 });

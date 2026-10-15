@@ -79,7 +79,8 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
     append(item) { messages.push(item.textContent); },
   });
   const context = vm.createContext({
-    TextEncoder, TextDecoder,
+    TextEncoder, TextDecoder, AbortController,
+    navigator: { clipboard: { writeText: async value => { messages.push(value); } } },
     CLAUDE_MODEL_CATALOG, contentRiskRanges,
     window: {
       ...node(),
@@ -3302,18 +3303,77 @@ test("protection shows escaped A/B, highlights A alongside risks and decorates o
   assert.equal(app.read('protectionOccurred({protection:{enabled:true,requestCount:0,responseCount:0}})'), false);
 });
 
-for (const change of ["selection", "tab"]) test(`late protection navigation cannot overwrite a newer ${change}`, async () => {
+test("protection groups original credentials, folds unused mappings and distinguishes operation counts", async () => {
+  const app = await controller();
+  const mappings = [
+    {id:"new", original:"same A", replacement:"B-new", requestCount:2, responseCount:1, reused:false},
+    {id:"reuse", original:"same A", replacement:"B-old", requestCount:1, responseCount:0, reused:true},
+    {id:"response", original:"response A", replacement:"B-response", requestCount:0, responseCount:2, reused:true},
+    {id:"unused", original:"unused A", replacement:"B-unused", requestCount:0, responseCount:0, reused:true},
+  ];
+  const record = {protection:{enabled:true,status:"completed",requestCount:3,responseCount:3,mappings}};
+  const html = app.read(`renderProtection(${JSON.stringify(record)})`);
+  assert.match(html, /涉及 <b>2<\/b> 个凭据 · 请求替换 <b>3<\/b> 次 · 响应还原 <b>3<\/b> 次/);
+  assert.equal((html.match(/class="security-finding protection-mapping"/g)||[]).length, 2);
+  assert.ok(html.indexOf('会话已有映射 · 1 条') < html.indexOf('class="security-finding protection-mapping"'));
+  assert.doesNotMatch(html, /<details[^>]+ open/);
+  assert.match(html, /请求原文（3 处）/); assert.match(html, /响应原文（2 处）/);
+  assert.doesNotMatch(html, /原文（0 处）/);
+  assert.match(html, /新建/); assert.match(html, /复用/); assert.match(html, /本次续期到期时间/);
+});
+
+test("protection separates disabled, zero operations, failure and unavailable evidence", async () => {
+  const app = await controller();
+  const html = protection => app.read(`renderProtection(${JSON.stringify({protection})})`);
+  assert.match(html(null), /此请求未启用凭据保护/);
+  assert.match(html({enabled:true,status:"completed",mappings:[],requestCount:0,responseCount:0}), /已启用，本次没有替换或还原/);
+  const failed = html({enabled:true,status:"failed",reason:"request_protection_failed"});
+  assert.match(failed, /请求未发送到上游/); assert.doesNotMatch(failed, /已启用，本次没有/);
+  const unavailable = html({enabled:true,status:"completed",requestCount:3,responseCount:1,evidenceState:"unavailable",mappings:[]});
+  assert.match(unavailable, /保护证据不可用/); assert.match(unavailable, /凭据数量不可确认/);
+  assert.doesNotMatch(unavailable, /涉及 <b>0|已启用，本次没有/);
+  assert.match(html({enabled:true,status:"failed",reason:"response_restore_failed",mappings:[]}), /响应还原未完成/);
+});
+
+test("modal locates every occurrence, preserves tab/content and copies A", async () => {
+  const ranges = [{mappingId:"mapping",start:11,end:14},{mappingId:"mapping",start:19,end:22}];
+  const app = await controller(undefined, {onSecurity:url => {
+    if (url.includes('/protection-locations?')) return {body:{items:ranges.map(r=>({...r,snapshotId:"request"})),total:2}};
+    if (url.includes('/body?')) return {body:{chunks:[{start:0,end:25,content:"中文🙂 A<& and A<& tail"}],protectionRanges:ranges,riskRanges:[{start:11,end:14}]}};
+  }});
+  app.read('state.page="security-session"; state.trace.tab="protection"; state.security.detail={id:"protected",findings:[{id:"risk",ruleId:"SEC-SECRET-001",evidence:{bodyRef:{snapshotId:"request",start:11,end:14,matchKind:"sensitive"}}}],requestContent:{keep:true},protection:{enabled:true,mappings:[{id:"mapping",original:"A<&",requestCount:2,responseCount:0}]}}');
+  await app.action("security-protection-source",{dataset:{id:"mapping",side:"request"}});
+  assert.equal(app.read('state.trace.tab'), "protection");
+  assert.equal(app.read('state.security.detail.requestContent.keep'), true);
+  let html = app.node('#protection-source-dialog').innerHTML;
+  assert.match(html, /1 \/ 2 处/); assert.match(html, /字节 11–14/);
+  assert.match(html, /security-protection-hit security-risk-hit security-body-hit/);
+  assert.match(html, /A&lt;&amp;/);
+  await app.action("security-protection-step",{dataset:{step:"1"}});
+  html = app.node('#protection-source-dialog').innerHTML;
+  assert.match(html, /2 \/ 2 处/); assert.match(html, /字节 19–22/);
+  await app.action("security-protection-copy",{dataset:{id:"mapping"}});
+  assert.ok(app.messages.includes('A<&'));
+  await app.action("security-protection-close");
+  assert.equal(app.read('state.security.protectionSource'), null);
+});
+
+for (const change of ["selection", "tab", "close"]) test(`late protection modal cannot overwrite a newer ${change}`, async () => {
   let resolvePage;
   const pending = new Promise(resolve => { resolvePage = resolve; });
-  const app = await controller(undefined, { onSecurity: url => url.includes("/content?") ? pending : undefined });
-  app.read('state.page = "security-session"; state.security.detail = {id:"old",findings:[],bodySnapshots:[]}; state.trace.tab = "protection"');
+  const app = await controller(undefined, { onSecurity: url => url.includes("/protection-locations?") ? pending : undefined });
+  app.read('state.page = "security-session"; state.security.detail = {id:"old",protection:{enabled:true,mappings:[{id:"mapping",original:"old A",requestCount:1} ]},findings:[],bodySnapshots:[]}; state.trace.tab = "protection"');
   const navigation = app.action("security-protection-source", { dataset: { id: "mapping", side: "request" } });
   await setImmediate();
   if (change === "selection") app.read('state.security.detail = {id:"new",findings:[],bodySnapshots:[]}; state.security.detailSequence++');
-  else app.read('state.trace.tab = "response"; state.security.contentNavigation = null');
-  resolvePage({ body: { items: [{ index: 40, preview: "old", protectionRanges: { preview: [{ mappingId: "mapping", start: 0, end: 3 }] } }] } });
+  else if (change === "tab") app.read('state.trace.tab = "response"; state.security.contentNavigation = null');
+  else await app.action("security-protection-close");
+  const previous = app.node('#protection-source-dialog').innerHTML;
+  resolvePage({ body: { items: [{snapshotId:"request",start:0,end:5}],total:1 } });
   await navigation;
+  assert.equal(app.node('#protection-source-dialog').innerHTML,previous);
   assert.equal(app.read('state.security.detail.requestContent'), undefined);
   if (change === "selection") assert.equal(app.read('state.security.detail.id'), "new");
-  else assert.equal(app.read('state.trace.tab'), "response");
+  else if (change === "tab") assert.equal(app.read('state.trace.tab'), "response");
+  assert.equal(app.requests.filter(r=>r.url.includes('/body?')).length,0);
 });

@@ -248,6 +248,15 @@ impl Audit {
         if size > state.protection_memory.bytes {
             let needed = (size - state.protection_memory.bytes) as usize;
             if state.protection_memory.grow(needed).is_err() {
+                state.record["protection"] = Value::Object(
+                    report
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .filter(|(key, _)| key.as_str() != "mappings")
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                );
                 state.record["protection"]["evidenceState"] = json!("unavailable");
                 return;
             }
