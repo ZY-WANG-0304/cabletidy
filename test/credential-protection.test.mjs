@@ -873,3 +873,103 @@ for (const channel of ['refusal','summary']) for (const deltas of [false,true]) 
   assert.equal(text,deltas?key:'literal CTSE');
   assert.equal(events.map(e=>e.value).filter(v=>v.type==='response.output_text.delta').map(v=>v.delta).join(''),'ordinary text');
 });
+
+async function assertRestorationCount(f, expected, original = key) {
+  const [record] = await f.records();
+  assert.equal(record.protection.status, 'completed');
+  assert.equal(record.protection.responseCount, expected);
+  const detail = await (await f.call(`api/v1/security/audit/${record.id}`)).json();
+  const mapping = detail.record.protection.mappings.find(m => m.original === original);
+  assert.ok(mapping);
+  assert.equal(mapping.responseCount, expected);
+  return {record,mapping};
+}
+
+async function assertRestorationEvidence(f, expected, original = key) {
+  const {record,mapping} = await assertRestorationCount(f,expected,original);
+  const locations = await (await f.call(`api/v1/security/audit/${record.id}/protection-locations?mapping=${mapping.id}&side=response`)).json();
+  assert.equal(locations.total, expected);
+  assert.equal(locations.items.length, expected);
+  for (const hit of locations.items) {
+    const body = await (await f.call(`api/v1/security/audit/${record.id}/body?snapshot=${hit.snapshotId}&offset=${Math.max(0,hit.start-100)}`)).json();
+    assert.ok(body.chunks.some(c => c.start <= hit.start && c.end >= hit.end));
+    assert.ok(body.protectionRanges.length, 'restored content remains highlighted');
+    if (original === key) {
+      const chunk = body.chunks.find(c => c.start <= hit.start && c.end >= hit.end);
+      assert.equal(Buffer.from(chunk.content).subarray(hit.start-chunk.start,hit.end-chunk.start).toString(), key);
+    }
+  }
+}
+
+for (const channel of ['Claude','output_text','refusal','summary']) for (const mode of ['full','split','json']) test(`SSE initial ${channel} restores sibling citations and annotations (${mode})`, async t => {
+  const claude = channel === 'Claude', summary = channel === 'summary';
+  const original = mode === 'json' ? 'real-"quoted"-\\-中文' : key;
+  const field = channel === 'refusal' ? 'refusal' : 'text';
+  const partFamily = summary ? 'response.reasoning_summary_part' : 'response.content_part';
+  const textFamily = summary ? 'response.reasoning_summary_text' : channel === 'refusal' ? 'response.refusal' : 'response.output_text';
+  const indexes = {output_index:2,...(summary ? {summary_index:3} : {content_index:3})};
+  const f = await fixture(t, (body,res) => {
+    const b = claude ? body.messages[0].content[0].source.data : body.input;
+    const text = mode === 'json' ? JSON.stringify({password:b}) : `Credential: ${b}`;
+    const split = mode === 'split' ? text.indexOf(b) + 12 : text.length;
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    if (claude) {
+      const citation = {type:'char_location',cited_text:b,document_index:0,document_title:'Credential document',start_char_index:0,end_char_index:b.length};
+      res.write(namedEvent({type:'message_start',message:{id:'m1',type:'message',role:'assistant',model:body.model,content:[],usage:{input_tokens:1,output_tokens:1}}}));
+      // Put citations before text so the indexed leaf is not its first sibling.
+      res.write(namedEvent({type:'content_block_start',index:2,content_block:{type:'text',citations:[citation],text:text.slice(0,split)}}));
+      if (mode === 'split') res.write(namedEvent({type:'content_block_delta',index:2,delta:{type:'text_delta',text:text.slice(split)}}));
+      res.write(namedEvent({type:'content_block_stop',index:2}));
+      res.write(namedEvent({type:'message_delta',delta:{stop_reason:'end_turn',stop_sequence:null},usage:{output_tokens:1}}));
+      res.end(namedEvent({type:'message_stop'}));
+    } else {
+      const annotations = [{type:'url_citation',start_index:0,end_index:text.length,url:'https://example.invalid/source',title:b}];
+      const part = {type:summary ? 'summary_text' : channel,annotations,[field]:text.slice(0,split)};
+      res.write(namedEvent({type:`${partFamily}.added`,item_id:'m1',...indexes,part}));
+      if (mode === 'split') res.write(namedEvent({type:`${textFamily}.delta`,item_id:'m1',...indexes,delta:text.slice(split)}));
+      res.write(namedEvent({type:`${textFamily}.done`,item_id:'m1',...indexes,[field]:text}));
+      res.end(namedEvent({type:'response.completed',response:{output:[]}}));
+    }
+  }, {claude});
+  const response = await f.request({
+    ...(claude ? {messages:[{role:'user',content:[{type:'document',source:{type:'text',media_type:'text/plain',data:original},title:'Credential document',citations:{enabled:true}},{type:'text',text:'Quote the document'}]}]} : {input:original}),
+    ...(mode === 'json' ? {metadata:{password:original}} : {}),stream:true,
+  });
+  assert.equal(response.status,200);
+  const wire = await response.text(), events = parseSse(wire);
+  assert.ok(!wire.includes('CTSEC_v1_'));
+  for (const e of events) assert.equal(e.name,e.value.type);
+  const values = events.map(e => e.value);
+  const initial = values.find(v => v.type === (claude ? 'content_block_start' : `${partFamily}.added`));
+  assert.equal(claude ? initial.content_block.citations[0].cited_text : initial.part.annotations[0].title, original);
+  const text = values.filter(v => claude ? v.index === 2 : [ `${partFamily}.added`, `${textFamily}.delta` ].includes(v.type))
+    .map(v => claude ? v.content_block?.text ?? v.delta?.text ?? '' : v.part?.[field] ?? v.delta ?? '').join('');
+  if (mode === 'json') assert.deepEqual(JSON.parse(text),{password:original});
+  else assert.equal(text,`Credential: ${original}`);
+  const upstreamValue = claude ? f.calls[0].body.messages[0].content[0].source.data : f.calls[0].body.input;
+  assert.match(upstreamValue,/^CTSEC_v1_[a-f0-9]{32}$/);
+  if (channel === 'refusal') await assertRestorationCount(f,3,original);
+  else await assertRestorationEvidence(f,claude ? 2 : 3,original);
+});
+
+for (const field of ['text','partial_json']) for (const buffered of [false,true]) test(`Claude SSE ${field} delta restores sibling extension fields (buffered=${buffered})`, async t => {
+  const f = await fixture(t,(body,res) => {
+    const b = body.messages[0].content;
+    const text = field === 'partial_json' || buffered ? JSON.stringify({api_key:b}) : `Credential: ${b}`;
+    const split = text.indexOf(b) + 12;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.write(namedEvent({type:'content_block_start',index:2,content_block:field === 'text' ? {type:'text',text:''} : {type:'tool_use',id:'c1',name:'connect',input:{}}}));
+    res.write(namedEvent({type:'content_block_delta',index:2,delta:{type:field === 'text' ? 'text_delta' : 'input_json_delta',...(buffered ? {} : {source:{title:b}}),[field]:text.slice(0,split)}}));
+    res.write(namedEvent({type:'content_block_delta',index:2,delta:{type:field === 'text' ? 'text_delta' : 'input_json_delta',...(buffered ? {source:{title:b}} : {}),[field]:text.slice(split)}}));
+    res.write(namedEvent({type:'content_block_stop',index:2}));
+    res.end(namedEvent({type:'message_stop'}));
+  },{claude:true});
+  const wire = await (await f.request({messages:[{role:'user',content:key}],stream:true})).text();
+  const values = parseSse(wire).map(e => e.value);
+  assert.ok(!wire.includes('CTSEC_v1_'));
+  for (const v of values.filter(v => v.delta?.source)) assert.equal(v.delta.source.title,key);
+  const text = values.map(v => v.delta?.[field] ?? '').join('');
+  if (field === 'partial_json' || buffered) assert.deepEqual(JSON.parse(text),{api_key:key});
+  else assert.equal(text,`Credential: ${key}`);
+  await assertRestorationCount(f,buffered ? 3 : 2);
+});

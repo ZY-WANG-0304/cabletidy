@@ -1027,6 +1027,7 @@ fn compose_event(fields: &Arc<Spool>, payload: &Arc<Spool>, edits: Edits) -> Res
     Ok(output.into_inner().map_err(|e| e.into_error())?.seal()?)
 }
 fn flush_event(
+    request: &mut Request,
     template: &Arc<Spool>,
     field: &str,
     text: &str,
@@ -1046,6 +1047,21 @@ fn flush_event(
     let mut payload = Spool::new()?;
     serde_json::to_writer(&mut payload, &value)?;
     let payload = payload.seal()?;
+    // A buffered delta reuses its upstream template. Restore any sibling
+    // fields repeated by that template, while leaving the restored body alone.
+    let top = streaming::index(&payload, None)?;
+    let mut skip = Vec::new();
+    if let Some((path, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "delta") {
+        if claude {
+            let delta = streaming::index(&payload, Some(node))?;
+            if let Some((child_path, _, _)) = delta.nodes.iter().find(|(_, f, _)| f == field) {
+                skip.push(response_child_path(path, child_path));
+            }
+        } else {
+            skip.push(path.replacen("node", "response", 1));
+        }
+    }
+    let payload = request.transform_except(&payload, true, &skip)?;
     let edits = streaming::response_edits(&payload, client, mapped, claude)?;
     compose_event(&data.fields, &payload, edits)
 }
@@ -1083,6 +1099,13 @@ fn initial_delta_template(event: &Arc<Spool>, field: &str, claude: bool) -> Resu
     }
     compose_event(&fields.seal()?, &payload.seal()?, Edits::new())
 }
+
+fn response_child_path(parent: &str, child: &str) -> String {
+    // Subtree indexes start at "node". Rebase the leaf onto its parent so
+    // generic restoration still visits siblings such as citations/annotations.
+    child.replacen("node", &parent.replacen("node", "response", 1), 1)
+}
+
 pub(crate) struct Sse {
     restorer: Restorer,
 }
@@ -1147,7 +1170,7 @@ impl Sse {
         if kind == "content_block_start" {
             if let Some((path, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "content_block") {
                 let block = streaming::index(&data.payload, Some(node))?;
-                for (_, field, node) in &block.nodes {
+                for (child_path, field, node) in &block.nodes {
                     if field == "text" && block.values["type"] == "text" {
                         let value = node.read(&data.payload, &mut memory)?;
                         let template = initial_delta_template(event, "text", true)?;
@@ -1159,7 +1182,7 @@ impl Sse {
                             &template,
                         )?;
                         delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
-                        skip.push(path.replacen("node", "response", 1));
+                        skip.push(response_child_path(path, child_path));
                     } else if matches!(field.as_str(), "thinking" | "signature") {
                         let value = node.read(&data.payload, &mut memory)?;
                         self.restorer.opaque_delta(
@@ -1182,7 +1205,8 @@ impl Sse {
                     "summary_text" => ("text", "summary"),
                     _ => ("", ""),
                 };
-                if let Some((_, _, node)) = part.nodes.iter().find(|(_, f, _)| f == field) {
+                if let Some((child_path, _, node)) = part.nodes.iter().find(|(_, f, _)| f == field)
+                {
                     let output = top.values["output_index"].as_u64().unwrap_or(0);
                     let index = top.values[if channel == "summary" {
                         "summary_index"
@@ -1202,20 +1226,16 @@ impl Sse {
                         &template,
                     )?;
                     delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
-                    skip.push(path.replacen("node", "response", 1));
+                    skip.push(response_child_path(path, child_path));
                 }
             }
         }
         if kind == "content_block_delta" {
-            if let Some((_, _, n)) = top.nodes.iter().find(|(_, f, _)| f == "delta") {
+            if let Some((path, _, n)) = top.nodes.iter().find(|(_, f, _)| f == "delta") {
                 let delta = streaming::index(&data.payload, Some(n))?;
-                for (_, field, node) in &delta.nodes {
+                for (child_path, field, node) in &delta.nodes {
                     if matches!(field.as_str(), "text" | "partial_json") {
-                        if let Some((delta_path, _, _)) =
-                            top.nodes.iter().find(|(_, f, _)| f == "delta")
-                        {
-                            skip.push(delta_path.replacen("node", "response", 1));
-                        }
+                        skip.push(response_child_path(path, child_path));
                         let value = node.read(&data.payload, &mut memory)?;
                         let text = config::text(&value);
                         let output = self.restorer.delta(request, &key, text, field, event)?;
@@ -1273,7 +1293,7 @@ impl Sse {
         ) {
             if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
                 events.push(flush_event(
-                    &template, &field, &text, client, mapped, claude,
+                    request, &template, &field, &text, client, mapped, claude,
                 )?);
             }
             self.restorer
@@ -1311,7 +1331,7 @@ impl Sse {
         for key in keys {
             if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
                 events.push(flush_event(
-                    &template, &field, &text, client, mapped, claude,
+                    request, &template, &field, &text, client, mapped, claude,
                 )?);
             }
         }
