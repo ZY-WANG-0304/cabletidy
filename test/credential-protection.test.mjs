@@ -374,3 +374,106 @@ test('protection locations include repeated inputs, unused mappings and response
   assert.equal((await f.call(`api/v1/security/audit/${first.id}/protection-locations?side=request`)).status,400);
   assert.equal((await (await f.call(route(first,keyMapping,'request',2))).json()).items.length,0);
 });
+
+for (const spelling of ['plain', 'unicode']) test(`nested duplicate members all protect their original values (${spelling})`, async t => {
+  const encoded = spelling === 'unicode' ? [...key].map(ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4,'0')}`).join('') : key;
+  const args = `{"value":"${encoded}","value":"safe"}`;
+  const f = await fixture(t, (body, res) => respond(res, body, body.input[0].arguments));
+  const response = await f.request({input:[{type:'function_call',name:'connect',call_id:'c1',arguments:args}]});
+  assert.equal(response.status,200); await response.text();
+  const outbound = f.calls[0].body.input[0].arguments;
+  assert.ok(!outbound.includes(key)); assert.ok(!outbound.includes(encoded));
+  assert.match(outbound,/"value":"CTSEC_v1_[a-f0-9]{32}","value":"safe"/);
+  const records = await f.records(); assert.equal(records[0].protection.requestCount,1);
+});
+
+test('explicit credential fields retain forced protection inside JSON strings', async t => {
+  const plain = 'realPlainCredential';
+  const f = await fixture(t, (body, res) => respond(res, body, body.metadata.api_key));
+  for (const value of [JSON.stringify([plain]), JSON.stringify({value:plain}), JSON.stringify([JSON.stringify({value:plain})])]) {
+    const response = await f.request({input:'start',metadata:{api_key:value}});
+    assert.equal(response.status,200); await response.text();
+    assert.ok(!JSON.stringify(f.calls.at(-1).body).includes(plain));
+    assert.match(f.calls.at(-1).body.metadata.api_key,/CTSEC_v1_/);
+  }
+  const records = await f.records(); assert.ok(records.every(r=>r.protection.requestCount===1));
+});
+
+test('nested non-string credentials fail with the same policy as ordinary fields', async t => {
+  const f = await fixture(t, (body, res) => respond(res, body, 'ok'));
+  for (const password of [123456789,true,false]) {
+    for (const body of [{metadata:{password}}, {input:[{type:'function_call',name:'connect',call_id:'c1',arguments:JSON.stringify({password})}]}, {metadata:{api_key:JSON.stringify([password])}}]) {
+      const response = await f.request(body);
+      assert.equal(response.status,422); assert.equal((await response.json()).error.code,'credential_protection_failed');
+      assert.equal(f.calls.length,0);
+    }
+  }
+  const response = await f.request({input:[{type:'function_call',name:'connect',call_id:'c1',arguments:'{"password":null,"enabled":true}'}]});
+  assert.equal(response.status,200); await response.text(); assert.equal(f.calls.length,1);
+});
+
+for (const claude of [false,true]) test(`JSON text restores identically for whole, single-character and irregular deltas (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const special = 'actual-"quoted"-\\-中文';
+  const f = await fixture(t, (body, res) => {
+    const token = body.metadata.api_key;
+    const text = ' \n' + JSON.stringify(body.metadata.depth === 'nested' ? {payload:JSON.stringify({api_key:token})} : {api_key:token});
+    const chunks = body.metadata.partition === 'whole' ? [text] : body.metadata.partition === 'characters' ? [...text] : text.match(/[\s\S]{1,7}/gu);
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    if (claude) res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'text',text:''}}));
+    for (const chunk of chunks) res.write(claude ? namedEvent({type:'content_block_delta',index:0,delta:{type:'text_delta',text:chunk}}) : event({type:'response.output_text.delta',output_index:0,content_index:0,delta:chunk}));
+    if (claude) { res.write(namedEvent({type:'content_block_stop',index:0})); res.end(namedEvent({type:'message_stop'})); }
+    else { res.write(event({type:'response.output_text.done',output_index:0,content_index:0,text})); res.end(event({type:'response.completed',response:{output:[]}})); }
+  },{claude});
+  for (const depth of ['direct','nested']) {
+    let reference;
+    for (const partition of ['whole','characters','irregular']) {
+      const response = await f.request({input:'start',messages:[{role:'user',content:'start'}],metadata:{api_key:special,partition,depth},stream:true});
+      assert.equal(response.status,200);
+      const events = parseSse(await response.text()).map(item=>item.value);
+      const output = events.filter(v=>claude ? v.delta?.type==='text_delta' : v.type==='response.output_text.delta').map(v=>claude ? v.delta.text : v.delta).join('');
+      const value=JSON.parse(output);
+      assert.equal((depth === 'nested' ? JSON.parse(value.payload) : value).api_key,special);
+      if (!claude) assert.equal(output,events.find(v=>v.type==='response.output_text.done').text);
+      if (reference) assert.equal(output,reference); else reference=output;
+    }
+  }
+  const records = await f.records(); assert.ok(records.every(r=>r.protection.status==='completed'));
+});
+
+for (const mode of ['valid','incomplete']) test(`JSON text at framed EOF retains restoration and failure semantics (${mode})`, async t => {
+  const special = 'actual-"quoted"-\\-中文';
+  const f = await fixture(t, (body,res) => {
+    const b=body.metadata.api_key;
+    const text=mode==='valid' ? JSON.stringify([b]) : '{"key":"'+b.slice(0,20);
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    for (const ch of text) res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:ch}));
+    res.end();
+  });
+  const response = await f.request({input:'start',metadata:{api_key:special},stream:true});
+  if (mode==='valid') {
+    const output=parseSse(await response.text()).map(item=>item.value.delta).join('');
+    assert.deepEqual(JSON.parse(output),[special]);
+  } else {
+    await assert.rejects(()=>response.text());
+    const records=await f.records(); assert.equal(records[0].protection.reason,'response_restore_failed');
+  }
+});
+
+test('ordinary prose remains incremental while a text channel is still open', async t => {
+  let finish;
+  const pending=new Promise(resolve=>{finish=resolve;});
+  const f=await fixture(t,async(body,res)=>{
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:`Ready ${body.metadata.api_key} now`}));
+    await pending;
+    res.end(event({type:'response.completed',response:{output:[]}}));
+  });
+  const special='actual-"quoted"-\\-中文';
+  const response=await f.request({input:'start',metadata:{api_key:special},stream:true});
+  const reader=response.body.getReader(); let deadline;
+  try {
+    const first=await Promise.race([reader.read(),new Promise((_,reject)=>{deadline=setTimeout(()=>reject(new Error('text did not arrive before channel end')),5000);})]);
+    const wire=new TextDecoder().decode(first.value);
+    assert.equal(parseSse(wire)[0].value.delta,`Ready ${special} now`);
+  } finally {clearTimeout(deadline);finish();await reader.cancel();}
+});

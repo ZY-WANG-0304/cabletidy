@@ -91,7 +91,7 @@ struct Scan<'a> {
     memory: Reservation,
 }
 fn nested_credentials(
-    value: &Value,
+    value: &str,
     redactor: &Redactor,
     found: &mut BTreeSet<String>,
     scope: ScanScope,
@@ -101,49 +101,97 @@ fn nested_credentials(
     if depth > 32 {
         bail!("protection_nested_json_limit");
     }
-    match value {
-        Value::String(s) => {
-            if s.trim_start().starts_with(['{', '[']) {
-                if let Ok(v) = serde_json::from_str::<Value>(s) {
-                    nested_credentials(
-                        &v,
-                        redactor,
-                        found,
-                        ScanScope {
-                            forced: false,
-                            ..scope
-                        },
-                        field,
-                        depth + 1,
-                    )?;
-                    return Ok(());
-                }
+    // Visit the original members instead of constructing a Value: duplicate
+    // keys must never erase an earlier credential still present on the wire.
+    if value.trim_start().starts_with(['{', '['])
+        && JsonStream::new(value.as_bytes())
+            .parse(&mut ValidateJson, "nested")
+            .is_ok()
+    {
+        struct Nested {
+            scope: ScanScope,
+            stack: Vec<Frame>,
+            strings: Vec<Frame>,
+            memory: Reservation,
+        }
+        impl Visitor for Nested {
+            fn start(&mut self, _: &str, field: &str, kind: u8, _: u64) -> Result<()> {
+                self.memory
+                    .grow(field.len().saturating_mul(4).saturating_add(256))?;
+                self.stack.push(Frame {
+                    scope: self.stack.last().map_or(self.scope, |parent| {
+                        parent.scope.child(&parent.field, field, kind)
+                    }),
+                    field: field.into(),
+                    kind,
+                    memory: Some(Reservation::memory()),
+                    ..Frame::default()
+                });
+                Ok(())
             }
-            for (a, b) in redactor.protection_ranges(s, scope.forced) {
-                found.insert(s[a..b].to_owned());
+            fn text(&mut self, text: &str) -> Result<()> {
+                let frame = self.stack.last_mut().unwrap();
+                frame
+                    .memory
+                    .as_mut()
+                    .unwrap()
+                    .grow(text.len().saturating_mul(12))?;
+                frame.value.push_str(text);
+                Ok(())
+            }
+            fn scalar(&mut self, value: &str) -> Result<()> {
+                if value != "null" && self.stack.last().is_some_and(|frame| frame.scope.forced) {
+                    bail!("protection_non_string_credential");
+                }
+                Ok(())
+            }
+            fn end(&mut self, _: &Node) -> Result<()> {
+                let frame = self.stack.pop().unwrap();
+                if matches!(frame.kind, b'"' | b'k') {
+                    self.strings.push(frame);
+                }
+                Ok(())
             }
         }
-        Value::Object(m) => {
-            for (key, v) in m {
-                if !redactor.protection_ranges(key, false).is_empty() {
+        let mut memory = Reservation::memory();
+        memory.grow(value.len().saturating_mul(24))?;
+        let mut nested = Nested {
+            scope,
+            stack: Vec::new(),
+            strings: Vec::new(),
+            memory: Reservation::memory(),
+        };
+        // Root strings retain the outer field's forced/schema semantics.
+        JsonStream::new(value.as_bytes()).one_item(&mut nested, "nested", field)?;
+        for frame in nested.strings {
+            if frame.kind == b'k' {
+                let mut keys = BTreeSet::new();
+                nested_credentials(
+                    &frame.value,
+                    redactor,
+                    &mut keys,
+                    frame.scope,
+                    &frame.field,
+                    depth + 1,
+                )?;
+                if !keys.is_empty() {
                     bail!("protection_credential_in_key");
                 }
+            } else {
                 nested_credentials(
-                    v,
+                    &frame.value,
                     redactor,
                     found,
-                    scope.child(field, key, if v.is_object() { b'{' } else { b'"' }),
-                    key,
+                    frame.scope,
+                    &frame.field,
                     depth + 1,
                 )?;
             }
         }
-        Value::Array(a) => {
-            for v in a {
-                nested_credentials(v, redactor, found, scope, field, depth + 1)?;
-            }
-        }
-        _ => {}
+        return Ok(());
+    }
+    for (start, end) in redactor.protection_ranges(value, scope.forced) {
+        found.insert(value[start..end].to_owned());
     }
     Ok(())
 }
@@ -203,14 +251,7 @@ impl Visitor for Scan<'_> {
             return Ok(());
         }
         let mut found = BTreeSet::new();
-        nested_credentials(
-            &json!(f.value),
-            self.redactor,
-            &mut found,
-            f.scope,
-            &f.field,
-            0,
-        )?;
+        nested_credentials(&f.value, self.redactor, &mut found, f.scope, &f.field, 0)?;
         if f.kind == b'k' && !found.is_empty() {
             bail!("protection_credential_in_key");
         }
@@ -502,6 +543,14 @@ fn candidates(
         }
         return Ok(result);
     }
+    Ok(literal_candidates(text, mappings, restore, depth))
+}
+fn literal_candidates(
+    text: &str,
+    mappings: &[Arc<Mapping>],
+    restore: bool,
+    depth: usize,
+) -> Vec<Candidate> {
     let mut result = Vec::new();
     for (mapping, m) in mappings.iter().enumerate() {
         let needle = if restore { &m.replacement } else { &m.original };
@@ -516,7 +565,7 @@ fn candidates(
             }
         }
     }
-    Ok(result)
+    result
 }
 
 impl Request {
@@ -531,9 +580,23 @@ impl Request {
         path: &str,
         base: u64,
     ) -> Result<String> {
+        self.replace_at_mode(text, restore, path, base, true)
+    }
+    fn replace_at_mode(
+        &mut self,
+        text: &str,
+        restore: bool,
+        path: &str,
+        base: u64,
+        structured: bool,
+    ) -> Result<String> {
         let mut scratch = Reservation::memory();
-        scratch.grow(text.len().saturating_mul(4))?;
-        let mut candidates = candidates(text, &self.mappings, restore, 0)?;
+        scratch.grow(text.len().saturating_mul(24))?;
+        let mut candidates = if structured {
+            candidates(text, &self.mappings, restore, 0)?
+        } else {
+            literal_candidates(text, &self.mappings, restore, 0)
+        };
         scratch.grow(
             candidates
                 .len()
@@ -761,14 +824,15 @@ impl Request {
     }
 }
 
-// Text holds only a possible placeholder suffix. Tool arguments hold a complete
-// JSON document so nested escaping is resolved from parsed string boundaries.
+// Prose keeps a possible placeholder suffix. JSON-looking text and tool
+// arguments retain a complete channel so JSON escaping is independent of deltas.
 struct ValidateJson;
 impl Visitor for ValidateJson {}
 struct Channel {
     pending: String,
     emitted: u64,
     json: bool,
+    structured_text: Option<bool>,
     template: Arc<Spool>,
     field: String,
     memory: Reservation,
@@ -796,6 +860,7 @@ impl Restorer {
                     pending: String::new(),
                     emitted: 0,
                     json: field == "partial_json",
+                    structured_text: None,
                     template: event.clone(),
                     field: field.into(),
                     memory,
@@ -804,31 +869,39 @@ impl Restorer {
         }
         let channel = self.channels.get_mut(key).unwrap();
         channel.template = event.clone();
-        if channel.json {
-            channel.memory.grow(text.len().saturating_mul(24))?;
-            channel.pending.push_str(text);
-            return Ok(String::new());
-        }
         let mut scratch = Reservation::memory();
         scratch.grow(text.len().saturating_mul(8))?;
         channel.pending.push_str(text);
-        let keep = (1..=channel.pending.len().min(PREFIX.len() + 32))
-            .rev()
-            .find(|&n| {
-                channel.pending.is_char_boundary(channel.pending.len() - n)
-                    && request.mappings.iter().any(|m| {
-                        m.replacement
-                            .starts_with(&channel.pending[channel.pending.len() - n..])
-                            && n < m.replacement.len()
-                    })
-            })
-            .unwrap_or(0);
+        if !channel.json && channel.structured_text.is_none() {
+            channel.structured_text = channel
+                .pending
+                .chars()
+                .find(|c| !c.is_whitespace())
+                .map(|c| matches!(c, '{' | '['));
+        }
+        if channel.json || channel.structured_text != Some(false) {
+            channel.memory.grow(text.len().saturating_mul(24))?;
+            return Ok(String::new());
+        }
+        let keep = Self::placeholder_tail(request, &channel.pending);
         let split = channel.pending.len() - keep;
         let ready = channel.pending[..split].to_owned();
         channel.pending = channel.pending[split..].to_owned();
-        let output = request.replace_at(&ready, true, field, key, channel.emitted)?;
+        let output = request.replace_at_mode(&ready, true, key, channel.emitted, false)?;
         channel.emitted += output.len() as u64;
         Ok(output)
+    }
+    fn placeholder_tail(request: &Request, text: &str) -> usize {
+        (1..=text.len().min(PREFIX.len() + 32))
+            .rev()
+            .find(|&n| {
+                text.is_char_boundary(text.len() - n)
+                    && request.mappings.iter().any(|m| {
+                        m.replacement.starts_with(&text[text.len() - n..])
+                            && n < m.replacement.len()
+                    })
+            })
+            .unwrap_or(0)
     }
     fn finish(
         &mut self,
@@ -845,8 +918,13 @@ impl Restorer {
             let restored = request.replace_at(&channel.pending, true, "arguments", key, 0)?;
             JsonStream::new(restored.as_bytes()).parse(&mut ValidateJson, "arguments")?;
             restored
+        } else if channel.structured_text == Some(true) {
+            if Self::placeholder_tail(request, &channel.pending) >= PREFIX.len() {
+                bail!("protection_incomplete_placeholder");
+            }
+            request.replace_at(&channel.pending, true, &channel.field, key, 0)?
         } else {
-            if channel.pending.len() >= PREFIX.len() {
+            if channel.pending.len() >= PREFIX.len() && channel.structured_text == Some(false) {
                 bail!("protection_incomplete_placeholder");
             }
             channel.pending
