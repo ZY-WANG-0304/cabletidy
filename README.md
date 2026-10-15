@@ -34,7 +34,7 @@ CableTidy 的核心不是“提供一个统一 OpenAI API”，而是把复杂�
 
 ## 凭据保护
 
-可在“设置”中开启 Key / Token 保护，并按线路单独覆盖。发往上游前将模型上下文中的真实凭据 A 替换为随机占位符 B，响应返回客户端前还原。默认会话闲置有效期为 1 小时，每个新请求重新倒计时；同一会话有效期内的相同 A 复用 B。保护无法完成时不发送请求。上游身份认证仍使用真实凭据。
+自 `0.5.0-rc.2` 起，可在“设置”中开启 Key / Token 保护，并按线路单独覆盖。发往上游前将模型上下文中的真实凭据 A 替换为随机占位符 B，响应返回客户端前还原。默认会话闲置有效期为 1 小时，每个新请求重新倒计时；同一会话有效期内的相同 A 复用 B。保护无法完成时不发送请求。上游身份认证仍使用真实凭据。
 
 轨迹色块显示小钥匙，“凭据保护”页签展示映射和复用；请求、响应与原始内容继续展示并高亮 A。默认关闭，支持范围、流式处理与审计存储说明见 [凭据保护](docs/credential-protection.md)。
 
@@ -99,7 +99,7 @@ npm 安装方式推荐 Node.js 24，也支持 Node.js 22.13 及以上的 22.x �
 
 最新正式版为 `0.4.0`，沿用 `0.4.0-rc.6` 的功能代码，更新版本号和发布文档后重新构建完整安装包。相对 `0.3.0`，新增会话审计轨迹、完整请求与响应概览、敏感原文保留与风险定位、历史折叠及检测复用、线路导入导出、客户端配置冲突确认、自动更新和服务设置，默认审计存储上限提高到 5 GiB。正式包发布到 npm `latest`；发布状态、验收范围与升级步骤见 [0.4.0 发布说明](docs/releases/0.4.0.md)。GitHub Release 与 npm 分别发布。
 
-最新候选版为 `0.5.0-rc.1`，基于最新 `main`，包含 [PR #61](https://github.com/ZY-WANG-0304/cabletidy/pull/61) 的独立临时目录设置与 XDG 控制 socket、[PR #58](https://github.com/ZY-WANG-0304/cabletidy/pull/58) 的轨迹概览坐标轴与横向滚动，以及 [PR #57](https://github.com/ZY-WANG-0304/cabletidy/pull/57) 的 Web 配置与审计领域逻辑迁移到 Rust。候选包发布到 npm `next`，`latest` 保持稳定版 `0.4.0`；升级步骤和验收范围见 [0.5.0-rc.1 发布说明](docs/releases/0.5.0-rc.1.md)。需要稳定版源码时，请使用 `v0.4.0` tag。
+最新候选版为 `0.5.0-rc.2`，基于最新 `main`，新增 [PR #64](https://github.com/ZY-WANG-0304/cabletidy/pull/64) 的会话凭据保护、流式响应还原和审计原文高亮，以及 [PR #63](https://github.com/ZY-WANG-0304/cabletidy/pull/63) 的更新完成与服务重启提示修复；沿用 `0.5.0-rc.1` 的独立临时目录设置、XDG 控制 socket、轨迹概览坐标轴与横向滚动及 Web 配置与审计领域逻辑迁移到 Rust。候选包发布到 npm `next`，`latest` 保持稳定版 `0.4.0`；升级步骤和验收范围见 [0.5.0-rc.2 发布说明](docs/releases/0.5.0-rc.2.md)。需要稳定版源码时，请使用 `v0.4.0` tag。
 
 ### 从 npm 官方源安装
 
@@ -124,10 +124,10 @@ npm install -g cabletidy@0.4.0 --registry=https://registry.npmjs.org/
 试用候选版时，先停止服务并备份数据，再安装指定候选版本：
 
 ```bash
-npm install -g cabletidy@0.5.0-rc.1 --registry=https://registry.npmjs.org/
+npm install -g cabletidy@0.5.0-rc.2 --registry=https://registry.npmjs.org/
 ```
 
-已支持 `update` 的版本也可执行 `cabletidy update 0.5.0-rc.1`，按提示重启；无参数的 `update` 仍使用稳定版 `latest`。
+已支持 `update` 的版本也可执行 `cabletidy update 0.5.0-rc.2`，按提示重启；无参数的 `update` 仍使用稳定版 `latest`。
 
 ### 从本地安装包使用
 
