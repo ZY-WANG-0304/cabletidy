@@ -1793,12 +1793,14 @@ async fn relay_protected(
                         if let Some(event)=framer.byte(b)? {
                             let transformed=restore.event(&mut protection,&event,&client,&mapped,claude)?;
                             if let Some(a)=&audit { a.protection(&protection.report); }
-                            let mut r=transformed.reader(); let mut buf=vec![0;PAGE];
-                            loop {
-                                let n = r.read(&mut buf)?;
-                                if n == 0 { break; }
-                                if let Some(a) = &audit { a.feed(&buf[..n]); }
-                                yield Bytes::copy_from_slice(&buf[..n]);
+                            for transformed in transformed {
+                                let mut r=transformed.reader(); let mut buf=vec![0;PAGE];
+                                loop {
+                                    let n = r.read(&mut buf)?;
+                                    if n == 0 { break; }
+                                    if let Some(a) = &audit { a.feed(&buf[..n]); }
+                                    yield Bytes::copy_from_slice(&buf[..n]);
+                                }
                             }
                         }
                     }

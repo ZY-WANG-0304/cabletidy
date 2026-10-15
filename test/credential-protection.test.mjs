@@ -179,3 +179,153 @@ test('incomplete SSE restoration aborts the stream and retains explicit failure 
   const records=await f.records();assert.equal(records[0].protection.status,'failed');
   assert.equal(records[0].protection.reason,'response_restore_failed');
 });
+
+function parseSse(wire) {
+  return wire.replace(/\r\n/g, '\n').split('\n\n').filter(Boolean).map(block => {
+    const lines = block.split('\n');
+    return { name: lines.find(line => line.startsWith('event:'))?.slice(6).trim(),
+      value: JSON.parse(lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')) };
+  });
+}
+const namedEvent = value => `event: ${value.type}\r\nid: fixture\r\n: keep comment\r\ndata: ${JSON.stringify(value)}\r\n\r\n`;
+
+test('Unicode escapes inside nested tool JSON cannot send the decoded credential upstream', async t => {
+  const unicode = [...key].map(ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+  const f = await fixture(t, (body, res) => respond(res, body, 'ok'));
+  const argumentsText = `{"value":"${unicode}"}`;
+  const response = await f.request({input:[{type:'function_call',name:'use_key',call_id:'c1',arguments:argumentsText}]});
+  assert.equal(response.status, 200); await response.text();
+  const upstreamKey = JSON.parse(f.calls[0].body.input[0].arguments).value;
+  assert.notEqual(upstreamKey, key); assert.match(upstreamKey, /^CTSEC_v1_[a-f0-9]{32}$/);
+  const records = await f.records(); assert.ok(records[0].protection.requestCount > 0);
+});
+
+test('credential properties preserve tool schemas and do not teach schema metadata as credentials', async t => {
+  const f = await fixture(t, (body, res) => respond(res, body, 'ok'));
+  const parameters = {type:'object',properties:{api_key:{type:'string',description:'API credential',minLength:1,default:key}},required:['api_key']};
+  let response = await f.request({input:'start',tools:[{type:'function',name:'connect',parameters}]});
+  assert.equal(response.status, 200); await response.text();
+  const property = f.calls[0].body.tools[0].parameters.properties.api_key;
+  assert.equal(property.type, 'string'); assert.equal(property.description, 'API credential'); assert.equal(property.minLength, 1);
+  assert.notEqual(property.default, key); assert.deepEqual(f.calls[0].body.tools[0].parameters.required, ['api_key']);
+  response = await f.request({input:'string API credential'}); assert.equal(response.status, 200); await response.text();
+  assert.equal(f.calls[1].body.input, 'string API credential');
+});
+
+test('protected Claude SSE preserves each event name with its data and extension fields', async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.write(namedEvent({type:'message_start',message:{type:'message',model:body.model,role:'assistant',content:[]}}));
+    res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'text',text:''}}));
+    res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'text_delta',text:body.messages[0].content}}));
+    res.write(namedEvent({type:'content_block_stop',index:0})); res.end(namedEvent({type:'message_stop'}));
+  }, {claude:true});
+  const wire = await (await f.request({messages:[{role:'user',content:key}],stream:true})).text();
+  const events = parseSse(wire); assert.equal(events.length, 5);
+  for (const item of events) assert.equal(item.name, item.value.type);
+  assert.equal(events[2].value.delta.text, key); assert.ok(wire.includes('id: fixture')); assert.ok(wire.includes(': keep comment'));
+});
+
+test('ordinary placeholder-prefix suffixes are flushed before SSE done events', async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:'Implemented in C'}));
+    res.write(event({type:'response.output_text.done',output_index:0,content_index:0,text:'Implemented in C'}));
+    res.end(event({type:'response.completed',response:{output:[]}}));
+  });
+  const wire = await (await f.request({input:key,stream:true})).text();
+  const events = parseSse(wire).map(item => item.value);
+  assert.equal(events.filter(value => value.type==='response.output_text.delta').map(value => value.delta).join(''), 'Implemented in C');
+  const records = await f.records(); assert.equal(records[0].protection.status, 'completed');
+});
+
+for (const claude of [false, true]) test(`nested tool JSON restores quoted credentials across byte deltas (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const special = 'real-token-"quoted"-\\-中文';
+  const f = await fixture(t, (body, res) => {
+    const b = body.metadata.api_key;
+    const args = JSON.stringify({payload:JSON.stringify({api_key:b})});
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    if (claude) res.write(namedEvent({type:'content_block_start',index:1,content_block:{type:'tool_use',id:'c1',name:'connect',input:{}}}));
+    for (const ch of args) res.write(claude
+      ? namedEvent({type:'content_block_delta',index:1,delta:{type:'input_json_delta',partial_json:ch}})
+      : event({type:'response.function_call_arguments.delta',output_index:0,delta:ch}));
+    if (claude) { res.write(namedEvent({type:'content_block_stop',index:1})); res.end(namedEvent({type:'message_stop'})); }
+    else { res.write(event({type:'response.function_call_arguments.done',output_index:0,arguments:args})); res.end(event({type:'response.completed',response:{output:[]}})); }
+  }, {claude});
+  const wire = await (await f.request({input:'start',messages:[{role:'user',content:'start'}],metadata:{api_key:special},stream:true})).text();
+  const events = parseSse(wire).map(item => item.value);
+  const args = events.filter(value => claude ? value.delta?.type==='input_json_delta' : value.type==='response.function_call_arguments.delta')
+    .map(value => claude ? value.delta.partial_json : value.delta).join('');
+  assert.equal(JSON.parse(JSON.parse(args).payload).api_key, special);
+  const records = await f.records(); assert.equal(records[0].protection.status, 'completed');
+});
+
+test('known placeholders split across Claude thinking deltas fail without changing signed content', async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:''}}));
+    for (const ch of body.messages[0].content) res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:ch}}));
+    res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'signature_delta',signature:'unchanged-signature'}}));
+    res.write(namedEvent({type:'content_block_stop',index:0})); res.end(namedEvent({type:'message_stop'}));
+  }, {claude:true});
+  await assert.rejects(async () => { const response = await f.request({messages:[{role:'user',content:key}],stream:true}); await response.text(); });
+  const records = await f.records(); assert.equal(records[0].protection.status, 'failed');
+  assert.equal(records[0].protection.reason, 'response_restore_failed');
+});
+
+for (const claude of [false, true]) test(`ordinary text flushes without a done event and safe signatures remain unchanged (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const f = await fixture(t, (body, res) => {
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    if (claude) {
+      res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:'safe thought'}}));
+      res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:' continuation'}}));
+      res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'signature_delta',signature:'unchanged-signature'}}));
+      res.write(namedEvent({type:'content_block_stop',index:0}));
+      res.write(namedEvent({type:'content_block_delta',index:1,delta:{type:'text_delta',text:'literal CTSE'}}));
+      res.end(namedEvent({type:'message_stop'}));
+    } else {
+      res.write(event({type:'response.output_text.delta',output_index:0,content_index:0,delta:'literal CTSE'}));
+      res.end(event({type:'response.completed',response:{output:[]}}));
+    }
+  }, {claude});
+  const wire = await (await f.request({input:key,messages:[{role:'user',content:key}],stream:true})).text();
+  const events = parseSse(wire).map(item => item.value);
+  assert.equal(events.filter(value => claude ? value.delta?.type==='text_delta' : value.type==='response.output_text.delta')
+    .map(value => claude ? value.delta.text : value.delta).join(''), 'literal CTSE');
+  if (claude) assert.equal(events.find(value => value.delta?.type==='signature_delta').delta.signature, 'unchanged-signature');
+});
+
+test('Unicode escaped credentials preserve nested JSON, surrogate pairs and original audit spelling', async t => {
+  const special = 'plain-"quote"-\\-中文🙂';
+  const unicode = special.split('').map(ch => `\\u${ch.charCodeAt(0).toString(16).padStart(4,'0').toUpperCase()}`).join('');
+  const argumentsText = JSON.stringify({payload:`{"api_key":"${unicode}"}`});
+  const f = await fixture(t, (body, res) => respond(res, body, body.input[0].arguments));
+  const response = await f.request({input:[{type:'function_call',name:'connect',call_id:'c1',arguments:argumentsText}]});
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(JSON.parse(JSON.parse(result.output[0].content[0].text).payload).api_key, special);
+  const upstream = JSON.parse(JSON.parse(f.calls[0].body.input[0].arguments).payload).api_key;
+  assert.match(upstream, /^CTSEC_v1_[a-f0-9]{32}$/);
+  const records = await f.records();
+  const page = await (await f.call(`api/v1/security/audit/${records[0].id}/body?snapshot=request`)).json();
+  assert.ok(page.chunks.map(chunk => chunk.content).join('').includes(JSON.stringify(argumentsText).slice(1,-1)));
+  assert.ok(page.protectionRanges.length);
+});
+
+for (const mode of ['start-and-delta', 'responses-reasoning']) test(`opaque placeholder detection spans events (${mode})`, async t => {
+  const claude = mode==='start-and-delta';
+  const f = await fixture(t, (body,res) => {
+    const b = claude ? body.messages[0].content : body.input;
+    res.writeHead(200, {'content-type':'text/event-stream'});
+    if (claude) {
+      res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'thinking',thinking:b.slice(0,10)}}));
+      for (const ch of b.slice(10)) res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:ch}}));
+      res.end(namedEvent({type:'message_stop'}));
+    } else {
+      for (const ch of b) res.write(event({type:'response.reasoning_text.delta',output_index:0,content_index:0,delta:ch}));
+      res.end(event({type:'response.completed',response:{output:[]}}));
+    }
+  }, {claude});
+  await assert.rejects(async () => {const response=await f.request({input:key,messages:[{role:'user',content:key}],stream:true});await response.text();});
+  const records = await f.records(); assert.equal(records[0].protection.status,'failed');
+});

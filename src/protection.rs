@@ -40,10 +40,42 @@ pub(crate) struct Registry {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ScanScope {
+    forced: bool,
+    schema: bool,
+    credential_definition: bool,
+    tool_definition: bool,
+}
+impl ScanScope {
+    fn child(self, parent_field: &str, field: &str, kind: u8) -> Self {
+        let tool_definition = self.tool_definition || field == "tools";
+        let schema_value =
+            self.schema && matches!(field, "default" | "const" | "enum" | "examples");
+        let schema = !schema_value
+            && (self.schema
+                || kind == b'{'
+                    && (matches!(field, "schema" | "json_schema")
+                        || tool_definition && matches!(field, "parameters" | "input_schema")));
+        let credential_definition = self.credential_definition
+            || self.schema && parent_field == "properties" && credential_field(field);
+        let forced = kind != b'k'
+            && (self.forced
+                || !schema && credential_field(field)
+                || credential_definition
+                    && matches!(field, "default" | "const" | "enum" | "examples"));
+        Self {
+            forced,
+            schema,
+            credential_definition,
+            tool_definition,
+        }
+    }
+}
 #[derive(Default)]
 struct Frame {
     value: String,
-    forced: bool,
+    scope: ScanScope,
     kind: u8,
     opaque: bool,
     field: String,
@@ -62,7 +94,8 @@ fn nested_credentials(
     value: &Value,
     redactor: &Redactor,
     found: &mut BTreeSet<String>,
-    forced: bool,
+    scope: ScanScope,
+    field: &str,
     depth: usize,
 ) -> Result<()> {
     if depth > 32 {
@@ -70,13 +103,24 @@ fn nested_credentials(
     }
     match value {
         Value::String(s) => {
-            for (a, b) in redactor.protection_ranges(s, forced) {
-                found.insert(s[a..b].to_owned());
-            }
             if s.trim_start().starts_with(['{', '[']) {
                 if let Ok(v) = serde_json::from_str::<Value>(s) {
-                    nested_credentials(&v, redactor, found, false, depth + 1)?;
+                    nested_credentials(
+                        &v,
+                        redactor,
+                        found,
+                        ScanScope {
+                            forced: false,
+                            ..scope
+                        },
+                        field,
+                        depth + 1,
+                    )?;
+                    return Ok(());
                 }
+            }
+            for (a, b) in redactor.protection_ranges(s, scope.forced) {
+                found.insert(s[a..b].to_owned());
             }
         }
         Value::Object(m) => {
@@ -88,14 +132,15 @@ fn nested_credentials(
                     v,
                     redactor,
                     found,
-                    forced || credential_field(key),
+                    scope.child(field, key, if v.is_object() { b'{' } else { b'"' }),
+                    key,
                     depth + 1,
                 )?;
             }
         }
         Value::Array(a) => {
             for v in a {
-                nested_credentials(v, redactor, found, forced, depth + 1)?;
+                nested_credentials(v, redactor, found, scope, field, depth + 1)?;
             }
         }
         _ => {}
@@ -106,8 +151,10 @@ impl Visitor for Scan<'_> {
     fn start(&mut self, _: &str, field: &str, kind: u8, _: u64) -> Result<()> {
         self.identity.start(field, kind);
         self.stack.push(Frame {
-            forced: kind != b'k'
-                && (credential_field(field) || self.stack.last().is_some_and(|f| f.forced)),
+            scope: self.stack.last().map_or_else(
+                || ScanScope::default().child("", field, kind),
+                |f| f.scope.child(&f.field, field, kind),
+            ),
             opaque: self.stack.last().is_some_and(|f| f.opaque)
                 || matches!(
                     field,
@@ -131,7 +178,7 @@ impl Visitor for Scan<'_> {
         Ok(())
     }
     fn scalar(&mut self, value: &str) -> Result<()> {
-        if value != "null" && self.stack.last().is_some_and(|f| f.forced) {
+        if value != "null" && self.stack.last().is_some_and(|f| f.scope.forced) {
             bail!("protection_non_string_credential");
         }
         Ok(())
@@ -156,7 +203,14 @@ impl Visitor for Scan<'_> {
             return Ok(());
         }
         let mut found = BTreeSet::new();
-        nested_credentials(&json!(f.value), self.redactor, &mut found, f.forced, 0)?;
+        nested_credentials(
+            &json!(f.value),
+            self.redactor,
+            &mut found,
+            f.scope,
+            &f.field,
+            0,
+        )?;
         if f.kind == b'k' && !found.is_empty() {
             bail!("protection_credential_in_key");
         }
@@ -359,63 +413,110 @@ impl Registry {
         Ok(request)
     }
 }
-fn contains(source: &Arc<Spool>, needle: &str) -> Result<bool> {
-    if needle.is_empty() {
-        return Ok(false);
-    }
-    let mut memory = Reservation::memory();
-    memory.grow(streaming::PAGE + needle.len().saturating_mul(2))?;
-    let mut reader = source.reader();
-    let mut buffer = vec![0; streaming::PAGE];
-    let mut tail = Vec::new();
-    loop {
-        let n = reader.read(&mut buffer)?;
-        if n == 0 {
-            return Ok(false);
+// Map decoded UTF-8 boundaries back to the actual JSON spelling, including
+// Unicode escapes and surrogate pairs. Audit positions stay in the original A.
+fn string_offsets(raw: &str) -> Result<Vec<usize>> {
+    let mut offsets = vec![1];
+    let mut at = 1;
+    while at + 1 < raw.len() {
+        let start = at;
+        let end = if raw.as_bytes()[at] == b'\\' {
+            if raw.as_bytes().get(at + 1) == Some(&b'u') {
+                let first = u16::from_str_radix(&raw[at + 2..at + 6], 16)?;
+                at + if (0xd800..=0xdbff).contains(&first) {
+                    12
+                } else {
+                    6
+                }
+            } else {
+                at + 2
+            }
+        } else {
+            at + raw[at..].chars().next().unwrap().len_utf8()
+        };
+        let decoded: String = serde_json::from_str(&format!("\"{}\"", &raw[start..end]))?;
+        for _ in 1..decoded.len() {
+            offsets.push(start);
         }
-        tail.extend_from_slice(&buffer[..n]);
-        if tail.windows(needle.len()).any(|s| s == needle.as_bytes()) {
-            return Ok(true);
-        }
-        let keep = tail.len().saturating_sub(needle.len());
-        tail.drain(..keep);
+        offsets.push(end);
+        at = end;
     }
+    Ok(offsets)
 }
-fn restoration_depth(text: &str, at: usize, depth: usize) -> usize {
-    if depth >= 4 || !text.trim_start().starts_with(['{', '[']) {
-        return 0;
+#[derive(Clone, Copy)]
+struct Candidate {
+    start: usize,
+    end: usize,
+    mapping: usize,
+    depth: usize,
+}
+fn candidates(
+    text: &str,
+    mappings: &[Arc<Mapping>],
+    restore: bool,
+    depth: usize,
+) -> Result<Vec<Candidate>> {
+    let mut memory = Reservation::memory();
+    memory.grow(text.len().saturating_mul(24))?;
+    struct Strings {
+        stack: Vec<String>,
+        values: Vec<(Node, String)>,
     }
-    struct Locate {
-        at: usize,
-        found: Option<Node>,
-    }
-    impl Visitor for Locate {
-        fn end(&mut self, n: &Node) -> Result<()> {
-            if n.kind == b'"' && n.start < self.at as u64 && n.end > self.at as u64 {
-                self.found = Some(n.clone());
+    impl Visitor for Strings {
+        fn start(&mut self, _: &str, _: &str, _: u8, _: u64) -> Result<()> {
+            self.stack.push(String::new());
+            Ok(())
+        }
+        fn text(&mut self, s: &str) -> Result<()> {
+            self.stack.last_mut().unwrap().push_str(s);
+            Ok(())
+        }
+        fn end(&mut self, node: &Node) -> Result<()> {
+            let value = self.stack.pop().unwrap();
+            if matches!(node.kind, b'"' | b'k') {
+                self.values.push((node.clone(), value));
             }
             Ok(())
         }
     }
-    let mut visitor = Locate { at, found: None };
-    if JsonStream::new(text.as_bytes())
-        .parse(&mut visitor, "inner")
-        .is_err()
-    {
-        return 0;
+    let mut strings = Strings {
+        stack: Vec::new(),
+        values: Vec::new(),
+    };
+    let json = text.trim_start().starts_with(['{', '['])
+        && JsonStream::new(text.as_bytes())
+            .parse(&mut strings, "nested")
+            .is_ok();
+    if json {
+        if depth >= 4 {
+            bail!("protection_nested_json_limit");
+        }
+        let mut result = Vec::new();
+        for (node, value) in strings.values {
+            let offsets = string_offsets(&text[node.start as usize..node.end as usize])?;
+            for mut hit in candidates(&value, mappings, restore, depth + 1)? {
+                hit.start = node.start as usize + offsets[hit.start];
+                hit.end = node.start as usize + offsets[hit.end];
+                result.push(hit);
+            }
+        }
+        return Ok(result);
     }
-    let Some(node) = visitor.found else {
-        return 0;
-    };
-    let Ok(decoded) = serde_json::from_str::<String>(&text[node.start as usize..node.end as usize])
-    else {
-        return 0;
-    };
-    let prefix = format!("\"{}\"", &text[node.start as usize + 1..at]);
-    let Ok(prefix) = serde_json::from_str::<String>(&prefix) else {
-        return 1;
-    };
-    1 + restoration_depth(&decoded, prefix.len(), depth + 1)
+    let mut result = Vec::new();
+    for (mapping, m) in mappings.iter().enumerate() {
+        let needle = if restore { &m.replacement } else { &m.original };
+        for needle in variants(needle) {
+            for (start, _) in text.match_indices(&needle) {
+                result.push(Candidate {
+                    start,
+                    end: start + needle.len(),
+                    mapping,
+                    depth,
+                });
+            }
+        }
+    }
+    Ok(result)
 }
 
 impl Request {
@@ -426,44 +527,35 @@ impl Request {
         &mut self,
         text: &str,
         restore: bool,
-        field: &str,
+        _field: &str,
         path: &str,
         base: u64,
     ) -> Result<String> {
         let mut scratch = Reservation::memory();
         scratch.grow(text.len().saturating_mul(4))?;
-        let mut candidates = Vec::new();
-        for (i, m) in self.mappings.iter().enumerate() {
-            let needle = if restore { &m.replacement } else { &m.original };
-            for (start, _) in text.match_indices(needle) {
-                scratch.grow(std::mem::size_of::<(usize, usize, usize)>() * 2)?;
-                candidates.push((start, start + needle.len(), i));
-            }
-            // Inner JSON retains its escaping until decoded by the client/tool.
-            for escaped in variants(needle).into_iter().skip(1) {
-                for (start, _) in text.match_indices(&escaped) {
-                    scratch.grow(std::mem::size_of::<(usize, usize, usize)>() * 2)?;
-                    candidates.push((start, start + escaped.len(), i));
-                }
-            }
-        }
-        candidates.sort_by_key(|&(a, b, _)| (a, std::cmp::Reverse(b - a)));
+        let mut candidates = candidates(text, &self.mappings, restore, 0)?;
+        scratch.grow(
+            candidates
+                .len()
+                .saturating_mul(std::mem::size_of::<Candidate>() * 2),
+        )?;
+        candidates.sort_by_key(|c| (c.start, std::cmp::Reverse(c.end - c.start)));
         let mut out = String::new();
         let mut at = 0;
-        for (a, b, i) in candidates {
+        for candidate in candidates {
+            let Candidate {
+                start: a,
+                end: b,
+                mapping: i,
+                depth,
+            } = candidate;
             if a < at {
                 continue;
             }
             let m = &self.mappings[i];
             out.push_str(&text[at..a]);
             let value = if restore { &m.original } else { &m.replacement };
-            let depth = if restore && field == "partial_json" {
-                1
-            } else if restore {
-                restoration_depth(text, a, 0)
-            } else {
-                0
-            };
+            let depth = if restore { depth } else { 0 };
             let mut encoded = value.to_owned();
             for _ in 0..depth {
                 let quoted = serde_json::to_string(&encoded)?;
@@ -602,13 +694,37 @@ impl Request {
         Ok(output.seal()?)
     }
     pub fn check_outbound(&self, source: &Arc<Spool>) -> Result<()> {
-        for m in &self.mappings {
-            for original in variants(&m.original) {
-                if contains(source, &original)? {
+        struct Verify<'a> {
+            request: &'a Request,
+            stack: Vec<String>,
+            memory: Reservation,
+        }
+        impl Visitor for Verify<'_> {
+            fn start(&mut self, _: &str, _: &str, _: u8, _: u64) -> Result<()> {
+                self.stack.push(String::new());
+                Ok(())
+            }
+            fn text(&mut self, s: &str) -> Result<()> {
+                self.memory.grow(s.len().saturating_mul(12))?;
+                self.stack.last_mut().unwrap().push_str(s);
+                Ok(())
+            }
+            fn end(&mut self, _: &Node) -> Result<()> {
+                let value = self.stack.pop().unwrap();
+                if !candidates(&value, &self.request.mappings, false, 0)?.is_empty() {
                     bail!("protection_verification_failed");
                 }
+                Ok(())
             }
         }
+        JsonStream::new(source.reader()).parse(
+            &mut Verify {
+                request: self,
+                stack: Vec::new(),
+                memory: Reservation::memory(),
+            },
+            "verify",
+        )?;
         Ok(())
     }
     pub fn safe_parameter(&self, value: &str) -> bool {
@@ -645,52 +761,128 @@ impl Request {
     }
 }
 
-/// Buffer only a potential placeholder suffix, independently for each SSE item.
+// Text holds only a possible placeholder suffix. Tool arguments hold a complete
+// JSON document so nested escaping is resolved from parsed string boundaries.
+struct ValidateJson;
+impl Visitor for ValidateJson {}
+struct Channel {
+    pending: String,
+    emitted: u64,
+    json: bool,
+    template: Arc<Spool>,
+    field: String,
+    memory: Reservation,
+}
 #[derive(Default)]
 pub(crate) struct Restorer {
-    pending: BTreeMap<String, String>,
-    memory: Option<Reservation>,
-    emitted: BTreeMap<String, u64>,
+    channels: BTreeMap<String, Channel>,
+    opaque: BTreeMap<String, (String, Reservation)>,
 }
 impl Restorer {
-    pub fn delta(
+    fn delta(
         &mut self,
         request: &mut Request,
         key: &str,
         text: &str,
         field: &str,
+        event: &Arc<Spool>,
     ) -> Result<String> {
-        if !self.pending.contains_key(key) {
-            self.memory
-                .get_or_insert_with(Reservation::memory)
-                .grow(key.len().saturating_mul(2).saturating_add(512))?;
+        if !self.channels.contains_key(key) {
+            let mut memory = Reservation::memory();
+            memory.grow(key.len().saturating_mul(2).saturating_add(512))?;
+            self.channels.insert(
+                key.into(),
+                Channel {
+                    pending: String::new(),
+                    emitted: 0,
+                    json: field == "partial_json",
+                    template: event.clone(),
+                    field: field.into(),
+                    memory,
+                },
+            );
         }
-        let pending = self.pending.entry(key.into()).or_default();
-        pending.push_str(text);
-        let keep = (1..=pending.len().min(PREFIX.len() + 32))
+        let channel = self.channels.get_mut(key).unwrap();
+        channel.template = event.clone();
+        if channel.json {
+            channel.memory.grow(text.len().saturating_mul(24))?;
+            channel.pending.push_str(text);
+            return Ok(String::new());
+        }
+        let mut scratch = Reservation::memory();
+        scratch.grow(text.len().saturating_mul(8))?;
+        channel.pending.push_str(text);
+        let keep = (1..=channel.pending.len().min(PREFIX.len() + 32))
             .rev()
             .find(|&n| {
-                pending.is_char_boundary(pending.len() - n)
+                channel.pending.is_char_boundary(channel.pending.len() - n)
                     && request.mappings.iter().any(|m| {
-                        m.replacement.starts_with(&pending[pending.len() - n..])
+                        m.replacement
+                            .starts_with(&channel.pending[channel.pending.len() - n..])
                             && n < m.replacement.len()
                     })
             })
             .unwrap_or(0);
-        let split = pending.len() - keep;
-        let ready = pending[..split].to_owned();
-        *pending = pending[split..].to_owned();
-        let base = self.emitted.entry(key.into()).or_default();
-        let output = request.replace_at(&ready, true, field, key, *base)?;
-        *base += output.len() as u64;
+        let split = channel.pending.len() - keep;
+        let ready = channel.pending[..split].to_owned();
+        channel.pending = channel.pending[split..].to_owned();
+        let output = request.replace_at(&ready, true, field, key, channel.emitted)?;
+        channel.emitted += output.len() as u64;
         Ok(output)
     }
-    pub fn finish(&mut self, key: &str) -> String {
-        self.emitted.remove(key);
-        self.pending.remove(key).unwrap_or_default()
+    fn finish(
+        &mut self,
+        request: &mut Request,
+        key: &str,
+    ) -> Result<Option<(Arc<Spool>, String, String)>> {
+        let Some(channel) = self.channels.remove(key) else {
+            return Ok(None);
+        };
+        let text = if channel.json {
+            // Reject malformed tool JSON even when substitution itself could run.
+            let mut parser = JsonStream::new(channel.pending.as_bytes());
+            parser.parse(&mut ValidateJson, "arguments")?;
+            let restored = request.replace_at(&channel.pending, true, "arguments", key, 0)?;
+            JsonStream::new(restored.as_bytes()).parse(&mut ValidateJson, "arguments")?;
+            restored
+        } else {
+            if channel.pending.len() >= PREFIX.len() {
+                bail!("protection_incomplete_placeholder");
+            }
+            channel.pending
+        };
+        if text.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some((channel.template, channel.field, text)))
+        }
     }
-    pub fn is_pending(&self) -> bool {
-        self.pending.values().any(|s| !s.is_empty())
+    fn opaque_delta(&mut self, request: &Request, key: &str, text: &str) -> Result<()> {
+        if !self.opaque.contains_key(key) {
+            let mut memory = Reservation::memory();
+            memory.grow(key.len().saturating_mul(2).saturating_add(512))?;
+            self.opaque.insert(key.into(), (String::new(), memory));
+        }
+        let mut scratch = Reservation::memory();
+        scratch.grow(text.len().saturating_mul(4))?;
+        let (tail, _) = self.opaque.get_mut(key).unwrap();
+        tail.push_str(text);
+        if request
+            .mappings
+            .iter()
+            .any(|m| tail.contains(&m.replacement))
+        {
+            bail!("protection_signed_or_opaque_response");
+        }
+        let mut start = tail.len().saturating_sub(PREFIX.len() + 31);
+        while !tail.is_char_boundary(start) {
+            start += 1;
+        }
+        tail.drain(..start);
+        Ok(())
+    }
+    fn is_pending(&self) -> bool {
+        !self.channels.is_empty()
     }
 }
 
@@ -701,6 +893,66 @@ fn spool_json(value: &Value) -> Result<Arc<Spool>> {
     Ok(s.seal()?)
 }
 
+fn compose_event(fields: &Arc<Spool>, payload: &Arc<Spool>, edits: Edits) -> Result<Arc<Spool>> {
+    use std::io::{Seek, SeekFrom};
+    let mut reader = fields.reader();
+    let mut end = fields.len;
+    let mut byte = [0];
+    while end > 0 {
+        reader.seek(SeekFrom::Start(end - 1))?;
+        reader.read_exact(&mut byte)?;
+        if !matches!(byte[0], b'\r' | b'\n') {
+            break;
+        }
+        end -= 1;
+    }
+    reader.seek(SeekFrom::Start(0))?;
+    let mut output = std::io::BufWriter::with_capacity(streaming::PAGE, Spool::new()?);
+    std::io::copy(&mut reader.take(end), &mut output)?;
+    if end > 0 {
+        output.write_all(b"\n")?;
+    }
+    output.write_all(b"data: ")?;
+    let mut reader = edits.reader(payload);
+    let mut buffer = vec![0; streaming::PAGE];
+    loop {
+        let n = reader.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        for part in buffer[..n].split_inclusive(|b| *b == b'\n') {
+            output.write_all(part)?;
+            if part.last() == Some(&b'\n') {
+                output.write_all(b"data: ")?;
+            }
+        }
+    }
+    output.write_all(b"\n\n")?;
+    Ok(output.into_inner().map_err(|e| e.into_error())?.seal()?)
+}
+fn flush_event(
+    template: &Arc<Spool>,
+    field: &str,
+    text: &str,
+    client: &str,
+    mapped: &str,
+    claude: bool,
+) -> Result<Arc<Spool>> {
+    let data = streaming::event_data(template)?;
+    let mut memory = Reservation::memory();
+    memory.grow((data.payload.len as usize).saturating_mul(12))?;
+    let mut value: Value = serde_json::from_reader(data.payload.reader())?;
+    if claude {
+        value["delta"][field] = json!(text);
+    } else {
+        value["delta"] = json!(text);
+    }
+    let mut payload = Spool::new()?;
+    serde_json::to_writer(&mut payload, &value)?;
+    let payload = payload.seal()?;
+    let edits = streaming::response_edits(&payload, client, mapped, claude)?;
+    compose_event(&data.fields, &payload, edits)
+}
 pub(crate) struct Sse {
     restorer: Restorer,
 }
@@ -717,10 +969,10 @@ impl Sse {
         client: &str,
         mapped: &str,
         claude: bool,
-    ) -> Result<Arc<Spool>> {
+    ) -> Result<Vec<Arc<Spool>>> {
         let data = streaming::event_data(event)?;
         if data.payload.len == 0 {
-            return Ok(event.clone());
+            return Ok(vec![event.clone()]);
         }
         let top = streaming::index(&data.payload, None)?;
         let kind = config::text(&top.values["type"]);
@@ -753,6 +1005,21 @@ impl Sse {
                 )
             }
         };
+        if kind == "content_block_start" {
+            if let Some((_, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "content_block") {
+                let block = streaming::index(&data.payload, Some(node))?;
+                for (_, field, node) in &block.nodes {
+                    if matches!(field.as_str(), "thinking" | "signature") {
+                        let value = node.read(&data.payload, &mut memory)?;
+                        self.restorer.opaque_delta(
+                            request,
+                            &format!("{key}/{field}"),
+                            config::text(&value),
+                        )?;
+                    }
+                }
+            }
+        }
         if kind == "content_block_delta" {
             if let Some((_, _, n)) = top.nodes.iter().find(|(_, f, _)| f == "delta") {
                 let delta = streaming::index(&data.payload, Some(n))?;
@@ -765,10 +1032,26 @@ impl Sse {
                         }
                         let value = node.read(&data.payload, &mut memory)?;
                         let text = config::text(&value);
-                        let output = self.restorer.delta(request, &key, text, field)?;
+                        let output = self.restorer.delta(request, &key, text, field, event)?;
                         delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
+                    } else if matches!(field.as_str(), "thinking" | "signature") {
+                        let value = node.read(&data.payload, &mut memory)?;
+                        self.restorer.opaque_delta(
+                            request,
+                            &format!("{key}/{field}"),
+                            config::text(&value),
+                        )?;
                     }
                 }
+            }
+        } else if kind == "response.reasoning_text.delta" {
+            if let Some((_, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "delta") {
+                let value = node.read(&data.payload, &mut memory)?;
+                self.restorer.opaque_delta(
+                    request,
+                    &format!("{key}/thinking"),
+                    config::text(&value),
+                )?;
             }
         } else if matches!(
             kind,
@@ -786,21 +1069,30 @@ impl Sse {
                 } else {
                     "text"
                 };
-                let output = self
-                    .restorer
-                    .delta(request, &key, config::text(&value), field)?;
+                let output =
+                    self.restorer
+                        .delta(request, &key, config::text(&value), field, event)?;
                 delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
             }
         }
+        let mut events = Vec::new();
         if matches!(
             kind,
             "content_block_stop"
                 | "response.output_text.done"
                 | "response.function_call_arguments.done"
                 | "response.custom_tool_call_input.done"
-        ) && !self.restorer.finish(&key).is_empty()
-        {
-            bail!("protection_incomplete_placeholder");
+                | "response.refusal.done"
+                | "response.reasoning_summary_text.done"
+        ) {
+            if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
+                events.push(flush_event(
+                    &template, &field, &text, client, mapped, claude,
+                )?);
+            }
+            self.restorer
+                .opaque
+                .retain(|name, _| !name.starts_with(&format!("{key}/")));
         }
         if matches!(
             kind,
@@ -809,22 +1101,26 @@ impl Sse {
                 | "response.failed"
                 | "response.incomplete"
                 | "error"
-        ) && self.restorer.is_pending()
-        {
-            bail!("protection_incomplete_placeholder");
+        ) {
+            let keys = self.restorer.channels.keys().cloned().collect::<Vec<_>>();
+            for key in keys {
+                if let Some((template, field, text)) = self.restorer.finish(request, &key)? {
+                    events.push(flush_event(
+                        &template, &field, &text, client, mapped, claude,
+                    )?);
+                }
+            }
+            self.restorer.opaque.clear();
         }
         delta_edits.ranges.sort_by_key(|r| r.0);
         let mut payload = Spool::new()?;
         std::io::copy(&mut delta_edits.reader(&data.payload), &mut payload)?;
         let payload = request.transform_except(&payload.seal()?, true, &skip)?;
         let model_edits = streaming::response_edits(&payload, client, mapped, claude)?;
-        let mut output = Spool::new()?;
-        std::io::copy(&mut data.fields.reader(), &mut output)?;
-        output.write_all(b"data: ")?;
-        std::io::copy(&mut model_edits.reader(&payload), &mut output)?;
-        output.write_all(b"\n\n")?;
-        Ok(output.seal()?)
+        events.push(compose_event(&data.fields, &payload, model_edits)?);
+        Ok(events)
     }
+
     pub fn finish(&self) -> Result<()> {
         if self.restorer.is_pending() {
             bail!("protection_incomplete_placeholder");
