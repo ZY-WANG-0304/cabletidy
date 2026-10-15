@@ -3218,7 +3218,7 @@ test("response overview shows full content with independent pagination and respo
   } });
   app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}`);
   const overview = app.read("renderTraceInspector()");
-  assert.deepEqual([...overview.matchAll(/data-action="security-trace-tab" data-tab="([^"]+)" aria-pressed=/g)].map(match => match[1]), ["overview", "risks", "request", "response", "body"]);
+  assert.deepEqual([...overview.matchAll(/data-action="security-trace-tab" data-tab="([^"]+)" aria-pressed=/g)].map(match => match[1]), ["overview", "risks", "protection", "request", "response", "body"]);
   assert.doesNotMatch(overview, /trace-content-timeline|完整模型输出|Keep request page/);
   await app.action("security-trace-tab", { dataset: { tab: "response" } });
   let html = app.read("renderTraceInspector()");
@@ -3276,4 +3276,44 @@ test("late response pages and failures remain isolated from request pagination a
   await stale;
   assert.equal(app.read("state.security.detail.responseContent.offset"), 0);
   assert.equal(app.read("state.security.responseContentError"), null);
+});
+
+test("credential protection settings save the one-hour idle timeout and per-cable overrides", async () => {
+  const app = await controller();
+  await app.submit(formNode("protection-settings-form", { enabled: "on", mappingTtlSeconds: "3600" }));
+  assert.deepEqual(app.persisted().credentialProtection, { enabled: true, mappingTtlSeconds: 3600 });
+  await app.submit(formNode("cable-protection-form", { enabled: "false" }));
+  const provider = app.persisted().cables.relay.virtualProvider;
+  assert.equal(app.persisted().virtualProviders[provider].credentialProtection, false);
+  await app.submit(formNode("cable-protection-form", { enabled: "inherit" }));
+  assert.equal(app.persisted().virtualProviders[provider].credentialProtection, undefined);
+});
+
+test("protection shows escaped A/B, highlights A alongside risks and decorates only replaced trace segments", async () => {
+  const app = await controller();
+  const mapping = { id: "CTSEC_v1_id", original: "<token>🙂", replacement: "CTSEC_v1_id", requestCount: 1, responseCount: 1, createdAtMs: 1000, expiresAtMs: 3601000 };
+  const record = { id: "protected", protection: { enabled: true, status: "completed", requestCount: 1, responseCount: 1, mappingTtlSeconds: 3600, mappings: [mapping] }, requestContent: { state: "complete", total: 1, counts: { user: 1 }, items: [{ index: 0, kind: "user", preview: "prefix <token>🙂", protectionRanges: { preview: [{ start: 7, end: 16, mappingId: mapping.id }] }, riskRanges: { preview: [{ start: 7, end: 16, findingId: "risk" }] } }] } };
+  app.read(`state.page = "security-session"; state.security.detail = ${JSON.stringify(record)}; state.trace.tab = "protection"`);
+  let html = app.read("renderTraceInspector()");
+  assert.ok(html.includes("&lt;token&gt;🙂")); assert.match(html, /CTSEC_v1_id|映射创建|到期时间/); assert.doesNotMatch(html, /<token>/);
+  app.read('state.trace.tab = "request"'); html = app.read("renderTraceInspector()");
+  assert.match(html, /security-risk-hit security-protection-hit/); assert.doesNotMatch(html, /CTSEC_v1_id/);
+  assert.equal(app.read(`protectionOccurred(${JSON.stringify(record)})`), true);
+  assert.equal(app.read('protectionOccurred({protection:{enabled:true,requestCount:0,responseCount:0}})'), false);
+});
+
+for (const change of ["selection", "tab"]) test(`late protection navigation cannot overwrite a newer ${change}`, async () => {
+  let resolvePage;
+  const pending = new Promise(resolve => { resolvePage = resolve; });
+  const app = await controller(undefined, { onSecurity: url => url.includes("/content?") ? pending : undefined });
+  app.read('state.page = "security-session"; state.security.detail = {id:"old",findings:[],bodySnapshots:[]}; state.trace.tab = "protection"');
+  const navigation = app.action("security-protection-source", { dataset: { id: "mapping", side: "request" } });
+  await setImmediate();
+  if (change === "selection") app.read('state.security.detail = {id:"new",findings:[],bodySnapshots:[]}; state.security.detailSequence++');
+  else app.read('state.trace.tab = "response"; state.security.contentNavigation = null');
+  resolvePage({ body: { items: [{ index: 40, preview: "old", protectionRanges: { preview: [{ mappingId: "mapping", start: 0, end: 3 }] } }] } });
+  await navigation;
+  assert.equal(app.read('state.security.detail.requestContent'), undefined);
+  if (change === "selection") assert.equal(app.read('state.security.detail.id'), "new");
+  else assert.equal(app.read('state.trace.tab'), "response");
 });

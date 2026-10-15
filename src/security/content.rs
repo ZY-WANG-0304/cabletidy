@@ -12,14 +12,14 @@ use std::{
 const PAGE_ITEMS: usize = 40;
 
 // Read one stored chunk at a time. Never assemble a potentially large request in RAM.
-pub(super) struct BodyReader<'a> {
-    pub(super) db: &'a Connection,
-    pub(super) audit: &'a str,
-    pub(super) snapshot: &'a str,
-    pub(super) next: u64,
-    pub(super) limit: u64,
-    pub(super) chunk: Vec<u8>,
-    pub(super) position: usize,
+pub(crate) struct BodyReader<'a> {
+    pub(crate) db: &'a Connection,
+    pub(crate) audit: &'a str,
+    pub(crate) snapshot: &'a str,
+    pub(crate) next: u64,
+    pub(crate) limit: u64,
+    pub(crate) chunk: Vec<u8>,
+    pub(crate) position: usize,
 }
 impl Read for BodyReader<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {

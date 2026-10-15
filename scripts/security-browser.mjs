@@ -619,8 +619,8 @@ try {
       const response = page.getByLabel("响应内容",{exact:true});
       await response.waitFor();
       const tabs = page.locator('.trace-tabs');
-      assert.deepEqual(await tabs.locator('button').allTextContents(), ["概览","风险 0","请求内容","响应内容","原始内容"]);
-      assert.equal(await tabs.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, "five tabs fit the inspector width");
+      assert.deepEqual(await tabs.locator('button').allTextContents(), ["概览","风险 0","凭据保护","请求内容","响应内容","原始内容"]);
+      assert.equal(await tabs.evaluate(node => node.scrollWidth <= node.clientWidth + 1), true, "six tabs fit the inspector width");
       if (mobile) {
         await response.getByRole("button",{name:"上一组内容",exact:true}).click();
       }
@@ -797,7 +797,7 @@ try {
     const riskRow = await page.locator(`.trace-event-row[data-id="${newRiskDetail.id}"]`).innerText();
     assert.match(riskRow, /风险 \d+ 项/);
     assert.doesNotMatch(riskRow, /新增风险|历史风险/);
-    assert.deepEqual(await page.locator(".trace-legend").allTextContents(), ["未发现风险", "风险"]);
+    assert.deepEqual((await page.locator(".trace-legend").allTextContents()).map(text => text.trim()), ["发生凭据替换 / 还原", "未发现风险", "风险"]);
     assert.equal(await page.locator(".trace-segment.has-risk").count(), 1);
     assert.equal(await page.locator(".trace-segment.has-new-risk, .trace-segment.has-history-risk").count(), 0);
     assert.doesNotMatch(await page.locator(".trace-totals").innerText(), /新增风险/);

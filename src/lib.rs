@@ -6,6 +6,7 @@ pub mod daemon_log;
 mod fsutil;
 pub mod lifecycle;
 pub mod model;
+mod protection;
 pub mod security;
 pub mod server;
 mod streaming;

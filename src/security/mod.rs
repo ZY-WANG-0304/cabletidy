@@ -1,12 +1,12 @@
 pub(crate) mod capture;
-mod content;
+pub(crate) mod content;
 pub mod evidence;
 mod history;
 mod pipeline;
 mod response;
 mod reuse;
 mod rules;
-mod session;
+pub(crate) mod session;
 mod sse;
 mod status;
 pub mod store;
@@ -97,6 +97,8 @@ impl Security {
                     ..BodyCapture::default()
                 },
                 response: BodyCapture::default(),
+                protection: None,
+                protection_memory: crate::streaming::Reservation::memory(),
             }),
         });
         audit.publish();
@@ -171,7 +173,7 @@ impl BodyCapture {
         }
     }
 }
-fn headers_value(headers: &axum::http::HeaderMap) -> Value {
+pub(crate) fn headers_value(headers: &axum::http::HeaderMap) -> Value {
     let mut value = json!({});
     for key in headers.keys() {
         value[key.as_str()] = json!(headers
@@ -191,6 +193,8 @@ struct AuditState {
     sse: bool,
     request: BodyCapture,
     response: BodyCapture,
+    protection: Option<Value>,
+    protection_memory: crate::streaming::Reservation,
 }
 pub struct Audit {
     store: Arc<store::Store>,
@@ -234,6 +238,36 @@ impl Audit {
         let mut s = self.state.lock().unwrap();
         s.record[key] = value;
         limit_labels(&mut s.record);
+    }
+    pub(crate) fn metadata(&self) -> Value {
+        self.state.lock().unwrap().record.clone()
+    }
+    pub(crate) fn protection(&self, report: &Value) {
+        let mut state = self.state.lock().unwrap();
+        let size = report.to_string().len().saturating_mul(12) as u64;
+        if size > state.protection_memory.bytes {
+            let needed = (size - state.protection_memory.bytes) as usize;
+            if state.protection_memory.grow(needed).is_err() {
+                state.record["protection"]["evidenceState"] = json!("unavailable");
+                return;
+            }
+        }
+        let mut summary = report.clone();
+        if let Some(m) = summary.as_object_mut() {
+            m.remove("mappings");
+        }
+        state.record["protection"] = summary;
+        // Full A↔B data lives in a paged body snapshot outside the audit envelope.
+        state.protection = Some(report.clone());
+    }
+    pub(crate) fn protection_failed(&self, reason: &str) {
+        let mut s = self.state.lock().unwrap();
+        s.record["protection"]["status"] = json!("failed");
+        s.record["protection"]["reason"] = json!(reason);
+        if let Some(report) = &mut s.protection {
+            report["status"] = json!("failed");
+            report["reason"] = json!(reason);
+        }
     }
     pub fn response(&self, status: u16, sse: bool, headers: &axum::http::HeaderMap) {
         let mut s = self.state.lock().unwrap();
@@ -313,6 +347,11 @@ impl Audit {
         self.store.write(s.record.clone());
         let request = std::mem::take(&mut s.request);
         let response = std::mem::take(&mut s.response);
+        let protection = s.protection.take();
+        let protection_memory = std::mem::replace(
+            &mut s.protection_memory,
+            crate::streaming::Reservation::memory(),
+        );
         let record = s.record.clone();
         let sse = s.sse;
         let upstream = s.response_attached;
@@ -327,8 +366,9 @@ impl Audit {
             let failed_store = store.clone();
             let mut failed_record = record.clone();
             if tokio::task::spawn_blocking(move || {
+                let _protection_memory = protection_memory;
                 pipeline::run(
-                    store, record, secrets, redactor, request, response, sse, upstream,
+                    store, record, secrets, redactor, request, response, sse, upstream, protection,
                 )
             })
             .await

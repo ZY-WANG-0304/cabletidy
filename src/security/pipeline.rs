@@ -28,6 +28,7 @@ pub struct Pipeline {
     pub incomplete: bool,
     pub count_progress: bool,
     credential_catalog_complete: bool,
+    protection: Option<Value>,
 }
 impl Pipeline {
     pub fn new(store: Arc<Store>, record: Value, secrets: &Value, redactor: Redactor) -> Self {
@@ -45,6 +46,7 @@ impl Pipeline {
             incomplete: false,
             count_progress: true,
             credential_catalog_complete: true,
+            protection: None,
         }
     }
     pub fn publish(&mut self, state: &str) {
@@ -281,12 +283,20 @@ impl Pipeline {
         let mut masker = StreamText::new(false)?;
         let mut reader = Utf8Reader::new(spool.reader());
         let mut previous = String::new();
+        let mut protected_offset = 0u64;
         while let Some(part) = reader.next()? {
             if self.count_progress {
                 self.inspected += part.len() as u64;
             }
             for piece in masker.feed(&part, &self.redactor, false) {
-                self.text_piece(writer, piece, root, inspect, &mut previous)?;
+                self.text_piece(
+                    writer,
+                    piece,
+                    root,
+                    inspect,
+                    &mut previous,
+                    &mut protected_offset,
+                )?;
             }
             if writer.position() / 1048576 > writer.offset / 1048576 {
                 writer.flush()?;
@@ -298,7 +308,14 @@ impl Pipeline {
             self.rules.reasons.insert("incomplete_body_fragment");
         }
         for piece in masker.feed("", &self.redactor, true) {
-            self.text_piece(writer, piece, root, inspect, &mut previous)?;
+            self.text_piece(
+                writer,
+                piece,
+                root,
+                inspect,
+                &mut previous,
+                &mut protected_offset,
+            )?;
         }
         Ok(())
     }
@@ -309,6 +326,7 @@ impl Pipeline {
         root: &str,
         inspect: bool,
         previous: &mut String,
+        protected_offset: &mut u64,
     ) -> Result<()> {
         let before = self.rules.findings.len();
         let start = writer.position();
@@ -330,6 +348,22 @@ impl Pipeline {
                 start + mark["end"].as_u64().unwrap_or(piece.text.len() as u64),
             );
         }
+        if let Some(report) = &self.protection {
+            for (left, right, id) in crate::protection::spans(
+                report,
+                if root == "request" {
+                    "request"
+                } else {
+                    "response"
+                },
+                root,
+                &piece.text,
+                *protected_offset,
+            ) {
+                writer.protected(&id, start + left as u64, start + right as u64);
+            }
+        }
+        *protected_offset += piece.text.len() as u64;
         writer.push(&piece.text)?;
         let hit = piece
             .marks
@@ -434,6 +468,11 @@ impl BodyWriter {
             );
         }
     }
+    fn protected(&mut self, id: &str, start: u64, end: u64) {
+        if start < end {
+            self.marks.push(json!({"kind":"protected","mappingId":id,"start":start,"end":end,"unit":"utf8_bytes"}));
+        }
+    }
     pub fn flush(&mut self) -> Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
@@ -482,6 +521,7 @@ struct Frame {
     input_end: u64,
     text: Option<StreamText>,
     previous: String,
+    protection_offset: u64,
     instruction_bits: u8,
     _meta_memory: Reservation,
 }
@@ -554,6 +594,33 @@ impl BodyVisitor<'_> {
                     }
                 }
             }
+            if let Some(report) = self.pipeline.protection.as_ref().filter(|_| {
+                self.pipeline.tool_location.is_none()
+                    || matches!(frame.field.as_str(), "text" | "input" | "arguments")
+            }) {
+                let path = self
+                    .pipeline
+                    .tool_location
+                    .as_deref()
+                    .unwrap_or(&frame.path);
+                for (left, right, id) in crate::protection::spans(
+                    report,
+                    if self.root == "request" {
+                        "request"
+                    } else {
+                        "response"
+                    },
+                    path,
+                    &piece.text,
+                    frame.protection_offset,
+                ) {
+                    let byte =
+                        |at| serde_json::to_string(&piece.text[..at]).unwrap().len() as u64 - 2;
+                    self.writer
+                        .protected(&id, start + byte(left), start + byte(right));
+                }
+            }
+            frame.protection_offset += piece.text.len() as u64;
             self.writer.push(&escaped[1..escaped.len() - 1])?;
             let end = self.writer.position();
             if self.inspect {
@@ -651,6 +718,7 @@ impl Visitor for BodyVisitor<'_> {
                 None
             },
             previous: String::new(),
+            protection_offset: 0,
             instruction_bits: 0,
             _meta_memory: meta_memory,
         });
@@ -1091,8 +1159,25 @@ pub(super) fn run(
     mut response: super::BodyCapture,
     sse: bool,
     upstream: bool,
+    protection: Option<Value>,
 ) {
     let mut p = Pipeline::new(store, record, &secrets, redactor);
+    p.protection = protection;
+    if let Some(report) = &p.protection {
+        let stored = (|| -> Result<()> {
+            let mut writer = BodyWriter::new(
+                p.store.clone(),
+                crate::config::text(&p.record["id"]),
+                "protection",
+                "credential_protection",
+            )?;
+            writer.push(&report.to_string())?;
+            writer.finish("complete", writer.position())
+        })();
+        if stored.is_err() {
+            p.record["protection"]["evidenceState"] = json!("unavailable");
+        }
+    }
     p.record["usage"] = json!({});
     p.redactor.observe(&request.headers);
     p.redactor.observe(&response.headers);
@@ -1114,7 +1199,9 @@ pub(super) fn run(
         (
             "response",
             &mut response,
-            if upstream {
+            if upstream && p.record["protection"]["enabled"] == true {
+                "client_response"
+            } else if upstream {
                 "upstream_response"
             } else {
                 "gateway_response"

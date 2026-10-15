@@ -355,6 +355,58 @@ pub struct Redactor {
 }
 
 impl Redactor {
+    /// Transport protection uses credential spans only; endpoint annotations must
+    /// never expand or suppress a credential replacement.
+    pub(crate) fn protection_ranges(&self, value: &str, forced: bool) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        for secret in &self.secrets {
+            if !secret.is_empty() {
+                ranges.extend(
+                    value
+                        .match_indices(secret)
+                        .map(|(at, s)| (at, at + s.len())),
+                );
+            }
+        }
+        for regex in [&*TOKEN, &*PRIVATE_KEY] {
+            ranges.extend(regex.find_iter(value).map(|m| (m.start(), m.end())));
+        }
+        for regex in [&*ASSIGNMENT, &*AUTH, &*URL_AUTH, &*URL_SECRET, &*COOKIE] {
+            for captures in regex.captures_iter(value) {
+                if let Some(m) = captures.iter().skip(1).flatten().find(|m| !m.is_empty()) {
+                    if !placeholder_value(m.as_str()) {
+                        ranges.push((m.start(), m.end()));
+                    }
+                }
+            }
+        }
+        if forced && !placeholder_value(value) && !value.starts_with("CTSEC_v1_") {
+            // Keep the authentication scheme readable; protect the token itself.
+            if let Some(c) = AUTH
+                .captures(value)
+                .filter(|c| c.get(0).is_some_and(|m| m.start() == 0))
+            {
+                let m = c.get(1).unwrap();
+                ranges.retain(|&(a, b)| a != 0 || b != value.len());
+                ranges.push((m.start(), m.end()));
+            } else {
+                ranges.push((0, value.len()));
+            }
+        }
+        ranges.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (start, end) in ranges {
+            if start == end {
+                continue;
+            }
+            if let Some(last) = merged.last_mut().filter(|last| start < last.1) {
+                last.1 = last.1.max(end);
+            } else {
+                merged.push((start, end));
+            }
+        }
+        merged
+    }
     pub(super) fn catalog_digest(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut values: Vec<_> = self.secrets.iter().collect();

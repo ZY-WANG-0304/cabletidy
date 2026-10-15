@@ -887,7 +887,8 @@ pub(super) fn read_body_page(
         let sensitive: Vec<_> = marks.iter().filter(|m| m["kind"] == "sensitive").collect();
         let coverage: Vec<_> = marks.iter().filter(|m| m["kind"] == "coverage").collect();
         let legacy: Vec<_> = marks.iter().filter(|m| m["kind"].is_null()).collect();
-        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"sensitiveRanges":sensitive,"coverageRanges":coverage,"redactions":legacy}));
+        let protected: Vec<_> = marks.iter().filter(|m| m["kind"] == "protected").collect();
+        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"sensitiveRanges":sensitive,"coverageRanges":coverage,"redactions":legacy,"protectionRanges":protected}));
     }
     let first = items
         .first()
@@ -936,6 +937,7 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
             let mut page = read_body_page(db, &id, &snapshot, offset)?;
             if page.is_object() {
                 super::evidence::normalize_body(&mut page, &findings, &snapshot);
+                crate::protection::annotate_body(db, &id, &snapshot, &mut page)?;
                 if let Some(mut selection) = selection {
                     if let Some(range) = super::evidence::structural_range(
                         &page["locations"],
@@ -959,6 +961,9 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
             return Ok(Value::Null);
         };
         let mut data: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        if let Some(report) = crate::protection::report(db, &id)? {
+            data["protection"] = report;
+        }
         let mut stmt = db.prepare("SELECT data FROM findings WHERE audit_id=? ORDER BY seq")?;
         let findings = stmt
             .query_map([&id], |r| r.get::<_, String>(0))?
@@ -984,6 +989,24 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
                 v
             }))
             .collect::<serde_json::Result<Vec<_>>>()?);
+        for finding in data["findings"].as_array_mut().into_iter().flatten() {
+            if finding["ruleId"] != "SEC-SECRET-001" {
+                continue;
+            }
+            let reference = &finding["evidence"]["bodyRef"];
+            let snapshot = reference["sourceSnapshotId"]
+                .as_str()
+                .or_else(|| reference["snapshotId"].as_str())
+                .unwrap_or("");
+            let (Some(start), Some(end)) = (reference["start"].as_u64(), reference["end"].as_u64())
+            else {
+                continue;
+            };
+            let protected: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM audit_body_chunks c,json_each(c.redactions) m WHERE c.audit_id=? AND c.snapshot_id=? AND c.end>? AND c.start<? AND json_extract(m.value,'$.kind')='protected' AND json_extract(m.value,'$.start')<=? AND json_extract(m.value,'$.end')>=?)",params![id,snapshot,start,end,start,end],|r|r.get(0))?;
+            if protected {
+                finding["credentialProtection"] = json!({"side":if snapshot == "request" {"request"} else {"response"},"state":"substituted"});
+            }
+        }
         data["findingCount"] = json!(config::array(&data["findings"]).len());
         super::evidence::normalize_record(&mut data);
         return Ok(json!({"record":data}));
@@ -1320,6 +1343,28 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
                             )?;
                         }
                     }
+                }
+            }
+            if visible {
+                if detail {
+                    crate::protection::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["requestContent"],
+                        false,
+                        &cancelled,
+                    )?;
+                    crate::protection::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["responseContent"],
+                        true,
+                        &cancelled,
+                    )?;
+                } else {
+                    crate::protection::annotate_page(
+                        &tx, &audit, &mut value, response, &cancelled,
+                    )?;
                 }
             }
             tx.commit()?;
@@ -2395,6 +2440,7 @@ mod tests {
             },
             true,
             true,
+            None,
         );
         store.flush().await;
         drop(store);

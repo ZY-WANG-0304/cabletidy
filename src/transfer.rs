@@ -78,6 +78,7 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                 "defaultModel",
                 "enabled",
                 "capabilities",
+                "credentialProtection",
             ],
         );
         let mut models = Map::new();
