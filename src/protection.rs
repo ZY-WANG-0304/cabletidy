@@ -65,8 +65,11 @@ impl ScanScope {
                 || kind == b'{'
                     && (matches!(field, "schema" | "json_schema")
                         || tool_definition && matches!(field, "parameters" | "input_schema")));
-        let credential_definition = self.credential_definition
-            || self.schema && parent_field == "properties" && credential_field(field);
+        let credential_definition = if self.schema && parent_field == "properties" {
+            kind != b'k' && credential_field(field)
+        } else {
+            self.credential_definition
+        };
         let forced = kind != b'k'
             && (self.forced
                 || !schema && credential_field(field)
@@ -796,9 +799,12 @@ impl Request {
         Ok(())
     }
     pub fn safe_parameter(&self, value: &str) -> bool {
+        self.safe_value(value, false)
+    }
+    fn safe_value(&self, value: &str, forced: bool) -> bool {
         let mut decoded = value.to_owned();
         for depth in 0..=4 {
-            if !self.redactor.protection_ranges(&decoded, false).is_empty()
+            if !self.redactor.protection_ranges(&decoded, forced).is_empty()
                 || self.mappings.iter().any(|m| decoded.contains(&m.original))
                 || decoded.contains(PREFIX)
             {
@@ -833,8 +839,9 @@ impl Request {
     }
     pub fn safe_query(&self, value: &str) -> bool {
         self.safe_parameter(value)
-            && url::form_urlencoded::parse(value.as_bytes())
-                .all(|(key, value)| self.safe_parameter(&key) && self.safe_parameter(&value))
+            && url::form_urlencoded::parse(value.as_bytes()).all(|(key, value)| {
+                self.safe_parameter(&key) && self.safe_value(&value, credential_field(&key))
+            })
     }
 }
 
@@ -1042,6 +1049,40 @@ fn flush_event(
     let edits = streaming::response_edits(&payload, client, mapped, claude)?;
     compose_event(&data.fields, &payload, edits)
 }
+fn initial_delta_template(event: &Arc<Spool>, field: &str, claude: bool) -> Result<Arc<Spool>> {
+    let data = streaming::event_data(event)?;
+    let mut memory = Reservation::memory();
+    memory.grow((data.payload.len.saturating_add(data.fields.len) as usize).saturating_mul(12))?;
+    let mut value: Value = serde_json::from_reader(data.payload.reader())?;
+    if claude {
+        value.as_object_mut().unwrap().remove("content_block");
+        value["type"] = json!("content_block_delta");
+        value["delta"] = json!({"type":"text_delta","text":""});
+    } else {
+        value.as_object_mut().unwrap().remove("part");
+        value["type"] = json!(match field {
+            "refusal" => "response.refusal.delta",
+            "summary" => "response.reasoning_summary_text.delta",
+            _ => "response.output_text.delta",
+        });
+        value["delta"] = json!("");
+    }
+    let mut payload = Spool::new()?;
+    serde_json::to_writer(&mut payload, &value)?;
+    // A named initial event must also use the new delta event name when a
+    // buffered tail is emitted at EOF without a subsequent upstream delta.
+    let mut fields = Spool::new()?;
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(data.fields.reader()).lines() {
+        let line = line?;
+        if line.starts_with("event:") {
+            writeln!(fields, "event: {}", config::text(&value["type"]))?;
+        } else {
+            writeln!(fields, "{line}")?;
+        }
+    }
+    compose_event(&fields.seal()?, &payload.seal()?, Edits::new())
+}
 pub(crate) struct Sse {
     restorer: Restorer,
 }
@@ -1104,10 +1145,22 @@ impl Sse {
             }
         };
         if kind == "content_block_start" {
-            if let Some((_, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "content_block") {
+            if let Some((path, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "content_block") {
                 let block = streaming::index(&data.payload, Some(node))?;
                 for (_, field, node) in &block.nodes {
-                    if matches!(field.as_str(), "thinking" | "signature") {
+                    if field == "text" && block.values["type"] == "text" {
+                        let value = node.read(&data.payload, &mut memory)?;
+                        let template = initial_delta_template(event, "text", true)?;
+                        let output = self.restorer.delta(
+                            request,
+                            &key,
+                            config::text(&value),
+                            "text",
+                            &template,
+                        )?;
+                        delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
+                        skip.push(path.replacen("node", "response", 1));
+                    } else if matches!(field.as_str(), "thinking" | "signature") {
                         let value = node.read(&data.payload, &mut memory)?;
                         self.restorer.opaque_delta(
                             request,
@@ -1115,6 +1168,41 @@ impl Sse {
                             config::text(&value),
                         )?;
                     }
+                }
+            }
+        } else if matches!(
+            kind,
+            "response.content_part.added" | "response.reasoning_summary_part.added"
+        ) {
+            if let Some((path, _, node)) = top.nodes.iter().find(|(_, f, _)| f == "part") {
+                let part = streaming::index(&data.payload, Some(node))?;
+                let (field, channel) = match config::text(&part.values["type"]) {
+                    "text" | "output_text" => ("text", "text"),
+                    "refusal" => ("refusal", "refusal"),
+                    "summary_text" => ("text", "summary"),
+                    _ => ("", ""),
+                };
+                if let Some((_, _, node)) = part.nodes.iter().find(|(_, f, _)| f == field) {
+                    let output = top.values["output_index"].as_u64().unwrap_or(0);
+                    let index = top.values[if channel == "summary" {
+                        "summary_index"
+                    } else {
+                        "content_index"
+                    }]
+                    .as_u64()
+                    .unwrap_or(0);
+                    let key = format!("sse/output/{output}/{channel}/{index}");
+                    let value = node.read(&data.payload, &mut memory)?;
+                    let template = initial_delta_template(event, channel, false)?;
+                    let output = self.restorer.delta(
+                        request,
+                        &key,
+                        config::text(&value),
+                        "text",
+                        &template,
+                    )?;
+                    delta_edits.add(node.start, node.end, serde_json::to_vec(&output)?)?;
+                    skip.push(path.replacen("node", "response", 1));
                 }
             }
         }

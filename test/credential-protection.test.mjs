@@ -734,3 +734,142 @@ for (const claude of [false, true]) test(`known placeholder commands restore ori
   assert.equal(detail.record.protection.mappings[0].original,original);
   assert.ok(detail.record.protection.responseCount>0);
 });
+
+for (const claude of [false, true]) test(`new credentials in environment tool output use the same field recognition as JSON (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const f = await fixture(t, (body,res)=>respond(res,body,claude ? body.messages[1].content[0].content : body.input[0].output), {claude});
+  const original = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+  for (const name of ['API_KEY','AWS_SECRET_ACCESS_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY','X_AUTH_TOKEN','ID_TOKEN','secretAccessKey','proxy-authorization']) {
+    for (const make of [a=>`${name}=${a}`, a=>`export ${name}="${a}"`, a=>JSON.stringify({[name]:a})]) {
+      const output = make(original);
+      const body = claude ? {messages:[{role:'assistant',content:[{type:'tool_use',id:'c1',name:'shell',input:{command:'cat .env'}}]},{role:'user',content:[{type:'tool_result',tool_use_id:'c1',content:output}]}]} : {input:[{type:'function_call_output',call_id:'c1',output}]};
+      const response = await f.request(body, `${name.replaceAll('-','_')}-${output.startsWith('{')?'json':'env'}`);
+      assert.equal(response.status,200); assert.equal((await response.json()).output[0].content[0].text,output);
+      const upstream = claude ? f.calls.at(-1).body.messages[1].content[0].content : f.calls.at(-1).body.input[0].output;
+      assert.ok(!upstream.includes(original), name); assert.match(upstream,/CTSEC_v1_[a-f0-9]{32}/);
+    }
+  }
+  const records = await f.records();
+  for (const record of records) {assert.equal(record.protection.status,'completed');assert.ok(record.protection.requestCount>0);}
+});
+
+test('decoded query credential names force checks for newly supplied values', async t => {
+  const f = await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const original = 'new plain credential';
+  for (const name of ['id_token','aws_secret_access_key','openai_api_key','anthropic_api_key','x_auth_token','secretAccessKey','access_token','refresh_token','client_secret']) {
+    for (const value of [encodeURIComponent(original), original.replaceAll(' ','+')]) {
+      const query = `${name.replaceAll('_','%5F')}=${value}`;
+      const response = await f.call(`relay/v1/responses?${query}`,{model:f.model,input:'safe'});
+      assert.equal(response.status,422,query); await response.text(); assert.equal(f.calls.length,0);
+    }
+  }
+  for (const query of ['id_token=','ordinary=plain+value']) {
+    const response = await f.call(`relay/v1/responses?${query}`,{model:f.model,input:'safe'});
+    assert.equal(response.status,200); await response.text();
+  }
+});
+
+for (const claude of [false, true]) test(`SSE initial text participates in every placeholder boundary (${claude ? 'Claude' : 'Responses'})`, async t => {
+  let split=0;
+  const f = await fixture(t,(body,res)=>{
+    const b = body.metadata.api_key;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    if (claude) {
+      res.write(namedEvent({type:'content_block_start',index:2,content_block:{type:'text',text:`prefix ${b.slice(0,split)}`}}));
+      res.write(namedEvent({type:'content_block_delta',index:2,delta:{type:'text_delta',text:`${b.slice(split)} suffix`}}));
+      res.write(namedEvent({type:'content_block_stop',index:2})); res.end(namedEvent({type:'message_stop'}));
+    } else {
+      res.write(namedEvent({type:'response.content_part.added',item_id:'m1',output_index:2,content_index:3,part:{type:'output_text',text:`prefix ${b.slice(0,split)}`}}));
+      res.write(namedEvent({type:'response.output_text.delta',item_id:'m1',output_index:2,content_index:3,delta:`${b.slice(split)} suffix`}));
+      res.write(namedEvent({type:'response.output_text.done',item_id:'m1',output_index:2,content_index:3,text:`prefix ${b} suffix`}));
+      res.end(namedEvent({type:'response.completed',response:{output:[]}}));
+    }
+  },{claude});
+  for (split of [0,1,7,8,12,39,40]) {
+    const response = await f.request({input:'echo',messages:[{role:'user',content:'echo'}],metadata:{api_key:key},stream:true});
+    const events = parseSse(await response.text());
+    for (const e of events) assert.equal(e.name,e.value.type);
+    const text = events.map(e=>e.value).filter(v=>claude ? v.index===2 : ['response.content_part.added','response.output_text.delta'].includes(v.type))
+      .map(v=>claude ? v.content_block?.text ?? v.delta?.text ?? '' : v.part?.text ?? v.delta ?? '').join('');
+    assert.equal(text,`prefix ${key} suffix`,String(split));
+    assert.equal(events.filter(e=>e.value.type===(claude?'content_block_start':'response.content_part.added')).length,1);
+  }
+  const records = await f.records();
+  for (const r of records) {
+    assert.equal(r.protection.status,'completed');assert.ok(r.protection.responseCount>0);
+    const detail=await(await f.call(`api/v1/security/audit/${r.id}`)).json();
+    const mapping=detail.record.protection.mappings[0];
+    assert.equal(mapping.original,key);
+    const locations=await(await f.call(`api/v1/security/audit/${r.id}/protection-locations?mapping=${mapping.id}&side=response`)).json();
+    assert.ok(locations.total>0,'initial/delta restoration keeps navigable original evidence');
+  }
+});
+
+for (const claude of [false, true]) for (const mode of ['stop','eof','incomplete']) test(`SSE initial JSON text determines escaping and terminal checks (${claude ? 'Claude' : 'Responses'}, ${mode})`, async t => {
+  const original = 'real-"quoted"-\\-中文';
+  const f = await fixture(t,(body,res)=>{
+    const b=body.metadata.password;
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    const text=mode==='incomplete' ? b.slice(0,15) : `{"password":"${b}"}`;
+    const initial=mode==='stop' ? '{"password":"' : text;
+    if (claude) {
+      res.write(namedEvent({type:'content_block_start',index:0,content_block:{type:'text',text:initial}}));
+      if(mode==='stop') res.write(namedEvent({type:'content_block_delta',index:0,delta:{type:'text_delta',text:`${b}"}`}}));
+      if(mode!=='eof') {res.write(namedEvent({type:'content_block_stop',index:0}));res.write(namedEvent({type:'message_stop'}));}
+    } else {
+      res.write(namedEvent({type:'response.content_part.added',output_index:0,content_index:0,part:{type:'output_text',text:initial}}));
+      if(mode==='stop') res.write(namedEvent({type:'response.output_text.delta',output_index:0,content_index:0,delta:`${b}"}`}));
+      if(mode!=='eof') res.write(namedEvent({type:'response.completed',response:{output:[]}}));
+    }
+    res.end();
+  },{claude});
+  const request=()=>f.request({input:'echo',messages:[{role:'user',content:'echo'}],metadata:{password:original},stream:true});
+  if(mode==='incomplete') {
+    await assert.rejects(async()=>{await(await request()).text();});
+  } else {
+    const events=parseSse(await(await request()).text());
+    for (const e of events) assert.equal(e.name,e.value.type);
+    const text=events.map(e=>e.value).filter(v=>claude ? v.index===0 : ['response.content_part.added','response.output_text.delta'].includes(v.type))
+      .map(v=>claude ? v.content_block?.text ?? v.delta?.text ?? '' : v.part?.text ?? v.delta ?? '').join('');
+    assert.deepEqual(JSON.parse(text),{password:original});
+    assert.equal(events.filter(e=>e.value.type===(claude?'content_block_start':'response.content_part.added')).length,1);
+  }
+  const records=await f.records();assert.equal(records[0].protection.status,mode==='incomplete'?'failed':'completed');
+});
+
+for (const claude of [false, true]) test(`nested credential schema properties preserve ordinary defaults and protect genuine token defaults (${claude ? 'Claude' : 'Responses'})`, async t => {
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'),{claude});
+  const properties={token:{type:'string',default:key},enabled:{type:'boolean',default:false},timeout:{type:'number',const:30},encoding:{type:'string',default:'utf8',enum:['utf8','ascii'],examples:['utf8']}};
+  for (const name of ['authentication','password','connection']) {
+    const parameters={type:'object',properties:{[name]:{type:'object',properties,required:['token','enabled']}}};
+    const tools=claude?[{name:'connect',input_schema:parameters}]:[{type:'function',name:'connect',parameters}];
+    const response=await f.request({input:'start',messages:[{role:'user',content:'start'}],tools});
+    assert.equal(response.status,200,name);await response.text();
+    const schema=claude?f.calls.at(-1).body.tools[0].input_schema:f.calls.at(-1).body.tools[0].parameters;
+    const actual=schema.properties[name].properties;
+    assert.deepEqual({...actual,token:properties.token},properties);assert.match(actual.token.default,/^CTSEC_v1_[a-f0-9]{32}$/);
+  }
+});
+
+for (const channel of ['refusal','summary']) for (const deltas of [false,true]) test(`SSE initial ${channel} uses its own delta event and isolated channel (deltas=${deltas})`, async t => {
+  const f=await fixture(t,(body,res)=>{
+    const b=body.metadata.api_key;
+    const summary=channel==='summary';
+    const prefix=summary?'response.reasoning_summary_part':'response.content_part';
+    const delta=summary?'response.reasoning_summary_text':'response.refusal';
+    const field=summary?'text':'refusal';
+    const index=summary?{summary_index:3}:{content_index:3};
+    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.write(namedEvent({type:`${prefix}.added`,output_index:2,...index,part:{type:summary?'summary_text':'refusal',[field]:deltas?b.slice(0,12):`literal CTSE`}}));
+    if(deltas) res.write(namedEvent({type:`${delta}.delta`,output_index:2,...index,delta:b.slice(12)}));
+    res.write(namedEvent({type:'response.output_text.delta',output_index:2,content_index:3,delta:'ordinary text'}));
+    res.end(namedEvent({type:'response.completed',response:{output:[]}}));
+  });
+  const events=parseSse(await(await f.request({input:'echo',metadata:{api_key:key},stream:true})).text());
+  for(const e of events) assert.equal(e.name,e.value.type);
+  const family=channel==='summary'?'response.reasoning_summary_part':'response.content_part';
+  const delta=channel==='summary'?'response.reasoning_summary_text.delta':'response.refusal.delta';
+  const text=events.map(e=>e.value).filter(v=>v.type===`${family}.added`||v.type===delta)
+    .map(v=>v.part?.[channel==='summary'?'text':'refusal']??v.delta??'').join('');
+  assert.equal(text,deltas?key:'literal CTSE');
+  assert.equal(events.map(e=>e.value).filter(v=>v.type==='response.output_text.delta').map(v=>v.delta).join(''),'ordinary text');
+});

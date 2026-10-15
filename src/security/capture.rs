@@ -16,9 +16,10 @@ static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
 ).unwrap()
 });
 static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-    r#"(?i)(?:\b(?:authorization|proxy-authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|cookie|set-cookie)\b["']?\s*[:=]\s*)(?:"((?:\\.|[^"\\])*(?:\\)?)(?:"|$)|'([^']*)(?:'|$)|([^\s,;}\]]+))"#
-).unwrap()
+    Regex::new(&format!(
+        r#"(?i)(?:\b(?P<field>{})\b["']?\s*[:=]\s*)(?:"(?P<quoted>(?:\\.|[^"\\])*(?:\\)?)(?:"|$)|'(?P<single>[^']*)(?:'|$)|(?P<bare>[^\s,;}}\]]+))"#,
+        credential_pattern()
+    )).unwrap()
 });
 // The scheme word must be followed by a credential-shaped token. Ordinary prose such as
 // "basic instructions" or "bearer token handling" is not an authorization value.
@@ -62,13 +63,61 @@ static HOST_ADDRESS6: LazyLock<Regex> = LazyLock::new(|| {
 static HOST_ENCODED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?://|@)([0-9A-Fx.%]+)(:\d{1,5})?").unwrap());
 static URL_SECRET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)[?&](?:api[_-]?key|access[_-]?token|token|secret|password|signature|sig)=([^&#\s"']+)"#).unwrap()
+    Regex::new(&format!(
+        r#"(?i)[?&](?P<query_field>{}|signature|sig)=(?P<value>[^&#\s"']+)"#,
+        credential_pattern()
+    ))
+    .unwrap()
 });
 static COOKIE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\b(?:cookie|set-cookie)\s*:\s*([^\r\n"']+)"#).unwrap());
 static ESCAPED_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\\+["'](?:authorization|proxy-authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|client[_-]?secret|password|passwd|secret|cookie|set-cookie|private[_-]?key|upstreamSecrets)\\+["']\s*[:=]"#).unwrap()
+    Regex::new(&format!(
+        r#"(?i)\\+["'](?:{})\\+["']\s*[:=]"#,
+        credential_pattern()
+    ))
+    .unwrap()
 });
+
+const CREDENTIAL_FIELDS: &[&str] = &[
+    "authorization",
+    "proxyauthorization",
+    "apikey",
+    "xapikey",
+    "password",
+    "passwd",
+    "secret",
+    "clientsecret",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "token",
+    "cookie",
+    "setcookie",
+    "cookies",
+    "upstreamsecrets",
+    "privatekey",
+    "secretaccesskey",
+    "awssecretaccesskey",
+    "anthropicapikey",
+    "openaiapikey",
+    "xauthtoken",
+    "authentication",
+];
+
+fn credential_pattern() -> String {
+    CREDENTIAL_FIELDS
+        .iter()
+        .map(|field| {
+            field
+                .chars()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join("[_-]*")
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
 
 pub fn credential_field(key: &str) -> bool {
     let key: String = key
@@ -76,32 +125,33 @@ pub fn credential_field(key: &str) -> bool {
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect();
-    matches!(
-        key.as_str(),
-        "authorization"
-            | "proxyauthorization"
-            | "apikey"
-            | "xapikey"
-            | "password"
-            | "passwd"
-            | "secret"
-            | "clientsecret"
-            | "accesstoken"
-            | "refreshtoken"
-            | "idtoken"
-            | "token"
-            | "cookie"
-            | "setcookie"
-            | "cookies"
-            | "upstreamsecrets"
-            | "privatekey"
-            | "secretaccesskey"
-            | "awssecretaccesskey"
-            | "anthropicapikey"
-            | "openaiapikey"
-            | "xauthtoken"
-            | "authentication"
-    )
+    CREDENTIAL_FIELDS.contains(&key.as_str())
+}
+
+fn credential_capture<'a>(captures: &regex::Captures<'a>) -> Option<regex::Match<'a>> {
+    if let Some(field) = captures.name("field") {
+        if !credential_field(field.as_str()) {
+            return None;
+        }
+        return ["quoted", "single", "bare"]
+            .into_iter()
+            .filter_map(|name| captures.name(name))
+            .find(|value| !value.is_empty());
+    }
+    if let Some(field) = captures.name("query_field") {
+        if !credential_field(field.as_str())
+            && !field.as_str().eq_ignore_ascii_case("sig")
+            && !field.as_str().eq_ignore_ascii_case("signature")
+        {
+            return None;
+        }
+        return captures.name("value");
+    }
+    captures
+        .iter()
+        .skip(1)
+        .flatten()
+        .find(|value| !value.is_empty())
 }
 
 // Explicit template syntax only. A value merely starting with `$` or `<` can be a real
@@ -373,7 +423,7 @@ impl Redactor {
         }
         for regex in [&*ASSIGNMENT, &*AUTH, &*URL_AUTH, &*URL_SECRET, &*COOKIE] {
             for captures in regex.captures_iter(value) {
-                if let Some(m) = captures.iter().skip(1).flatten().find(|m| !m.is_empty()) {
+                if let Some(m) = credential_capture(&captures) {
                     // Generated B values stay placeholders in assignment/auth
                     // text too. Saved or learned real credentials matched above
                     // still take priority, even when they have B's exact format.
@@ -645,7 +695,7 @@ impl Redactor {
             (&*URL_USERNAME, "internal_identity"),
         ] {
             for c in regex.captures_iter(value) {
-                if let Some(m) = c.iter().skip(1).flatten().find(|m| !m.is_empty()) {
+                if let Some(m) = credential_capture(&c) {
                     // A template or masked value names a credential without carrying one.
                     if reason != "internal_identity" && placeholder_value(m.as_str()) {
                         continue;
@@ -1090,6 +1140,54 @@ mod tests {
             .into_iter()
             .map(|s| s.reason)
             .collect()
+    }
+
+    #[test]
+    fn assignment_and_url_fields_share_structural_credential_names() {
+        let redactor = Redactor::new(&json!({}));
+        let secret = "freshPlainCredentialValue42";
+        for field in CREDENTIAL_FIELDS {
+            for name in [
+                field.to_string(),
+                field.to_ascii_uppercase(),
+                field
+                    .chars()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join("_"),
+            ] {
+                assert!(credential_field(&name));
+                assert!(ESCAPED_CREDENTIAL.is_match(&format!(r#"{{\"{name}\":\"{secret}"#)));
+                for text in [
+                    format!("Tool output: {name}={secret}"),
+                    format!("{name}=\"{secret}\""),
+                    format!("https://example.test/?{name}={secret}"),
+                ] {
+                    let start = text.find(secret).unwrap();
+                    assert_eq!(
+                        redactor.protection_ranges(&text, false),
+                        vec![(start, start + secret.len())],
+                        "{text}"
+                    );
+                    assert!(
+                        redactor
+                            .spans(&text)
+                            .iter()
+                            .any(|s| s.start <= start && s.end >= start + secret.len()),
+                        "{text}"
+                    );
+                }
+            }
+        }
+        for text in [
+            "type=string",
+            "encoding=utf8",
+            "https://example.test/?id=ordinary",
+            "MY_OPENAI_API_KEY=ordinary",
+            "Tool output: safe",
+        ] {
+            assert!(redactor.protection_ranges(text, false).is_empty(), "{text}");
+        }
     }
 
     #[test]
