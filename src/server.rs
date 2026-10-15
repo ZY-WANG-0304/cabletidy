@@ -43,6 +43,7 @@ pub struct AppState {
     config_operation: AsyncMutex<()>,
     pub catalog: Catalog,
     pub security: security::Security,
+    protection: crate::protection::Registry,
     client: reqwest::Client,
     claude_client: reqwest::Client,
     jobs: AtomicUsize,
@@ -180,6 +181,7 @@ pub async fn create(
             config_operation: AsyncMutex::new(()),
             catalog: Catalog::default(),
             security: security::Security::new(&paths.home, config::AuditSettings::from_config(&config)),
+            protection: crate::protection::Registry::default(),
             client: upstream_client(reqwest::redirect::Policy::default())?,
             claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
@@ -231,6 +233,17 @@ pub async fn serve_controlled(
         lock,
         control: control_listener,
     } = app;
+    let cleanup_state = Arc::downgrade(&state);
+    let protection_cleanup = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let Some(state) = cleanup_state.upgrade() else {
+                break;
+            };
+            state.protection.expire();
+        }
+    });
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
     let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut ipc = control_listener.serve(text(&state.identity["controlId"]).to_owned(), ipc_tx);
@@ -298,6 +311,7 @@ pub async fn serve_controlled(
     }
     let released = lock.release().await;
     signals.abort();
+    protection_cleanup.abort();
     result?;
     released?;
     ipc.finish().await;
@@ -729,11 +743,13 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             return Ok(json_response(200, state.security.status()));
         }
         let query = if let Some(rest) = path.strip_prefix("/api/v1/security/audit/") {
+            let protection_locations = rest.ends_with("/protection-locations");
             let response_content = rest.ends_with("/response-content");
             let content_page = response_content || rest.ends_with("/content");
             let rest = rest
                 .strip_suffix("/response-content")
                 .or_else(|| rest.strip_suffix("/content"))
+                .or_else(|| rest.strip_suffix("/protection-locations"))
                 .unwrap_or(rest);
             let (id, body_page) = rest
                 .strip_suffix("/body")
@@ -743,6 +759,36 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             }
             let mut query = security::store::Query::default();
             query.detail = Some(id.into());
+            if protection_locations {
+                let mut mapping = None;
+                let mut side = None;
+                let mut offset = 0;
+                for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
+                    match k.as_ref() {
+                        "mapping" if !v.is_empty() && v.len() <= 200 => {
+                            mapping = Some(v.into_owned())
+                        }
+                        "side" if matches!(v.as_ref(), "request" | "response") => {
+                            side = Some(v.into_owned())
+                        }
+                        "offset" => match v.parse::<usize>() {
+                            Ok(n) if n <= i64::MAX as usize => offset = n,
+                            _ => {
+                                return Ok(error(
+                                    400,
+                                    "invalid_protection_query",
+                                    "保护位置偏移无效",
+                                ))
+                            }
+                        },
+                        _ => return Ok(error(400, "invalid_protection_query", "保护位置参数无效")),
+                    }
+                }
+                let (Some(mapping), Some(side)) = (mapping, side) else {
+                    return Ok(error(400, "invalid_protection_query", "缺少凭据或内容方向"));
+                };
+                query.protection_locations = Some((mapping, side, offset));
+            }
             if content_page {
                 let mut offset = 0;
                 for (k, v) in url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()) {
@@ -1441,6 +1487,19 @@ async fn proxy(
     if method != Method::POST || !supported {
         return Ok(protocol_error(protocol, 404, "not_found", "接口不存在"));
     }
+    let protect = p["credentialProtection"]
+        .as_bool()
+        .unwrap_or(c["credentialProtection"]["enabled"] == true);
+    if protect {
+        let mut record = json!({"kind":"request","providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}});
+        security::session::identify_headers(&mut record, &security::headers_value(headers));
+        state.protection.touch(
+            &record,
+            c["credentialProtection"]["mappingTtlSeconds"]
+                .as_u64()
+                .unwrap_or(3600),
+        );
+    }
     let spool = match read_raw(body, audit.as_ref()).await {
         Ok(v) => v,
         Err((s, code, msg)) => return Ok(protocol_error(protocol, s, code, msg)),
@@ -1490,6 +1549,75 @@ async fn proxy(
         Ok(b) => b,
         Err(e) => return Ok(protocol_error(protocol, 503, e.code, &e.message)),
     };
+    let mut protection = if protect {
+        let mut record = audit.as_ref().map(|a| a.metadata()).unwrap_or_else(|| json!({"id":uuid::Uuid::new_v4().to_string(),"kind":"request","providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}}));
+        security::session::identify_headers(&mut record, &security::headers_value(headers));
+        let registry_state = state.clone();
+        let source = spool.clone();
+        let secrets = snapshot.secrets.clone();
+        let ttl = c["credentialProtection"]["mappingTtlSeconds"]
+            .as_u64()
+            .unwrap_or(3600);
+        match tokio::task::spawn_blocking(move || {
+            registry_state
+                .protection
+                .prepare(&source, &secrets, record, ttl)
+        })
+        .await?
+        {
+            Ok(request) => Some(request),
+            Err(_) => {
+                if let Some(a) = &audit {
+                    a.set("protection",json!({"enabled":true,"status":"failed","reason":"request_protection_failed"}));
+                }
+                return Ok(protocol_error(
+                    protocol,
+                    422,
+                    "credential_protection_failed",
+                    "无法完整保护凭据，请求未发送到上游",
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let spool = if let Some(mut request) = protection.take() {
+        let source = spool.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            let body = request.transform(&source, false)?;
+            request.check_outbound(&body)?;
+            Ok::<_, anyhow::Error>((body, request))
+        })
+        .await?;
+        match prepared {
+            Ok((body, request)) => {
+                if let Some(a) = &audit {
+                    a.protection(&request.report);
+                }
+                protection = Some(request);
+                body
+            }
+            Err(_) => {
+                if let Some(a) = &audit {
+                    a.set("protection",json!({"enabled":true,"status":"failed","reason":"request_protection_failed"}));
+                }
+                return Ok(protocol_error(
+                    protocol,
+                    422,
+                    "credential_protection_failed",
+                    "无法完整保护凭据，请求未发送到上游",
+                ));
+            }
+        }
+    } else {
+        spool
+    };
+    // Credential edits changed byte offsets; resolve model locations on the new body.
+    let info = if protection.is_some() {
+        streaming::request_info(&spool)?
+    } else {
+        info
+    };
     let mut edits = Edits::new();
     let replacement = serde_json::to_vec(&selected.model)?;
     for node in &info.models {
@@ -1530,7 +1658,46 @@ async fn proxy(
             ["openai-beta", "openai-organization", "openai-project"].contains(&key.as_str())
         };
         if copy {
+            if protection
+                .as_ref()
+                .is_some_and(|r| !value.to_str().is_ok_and(|value| r.safe_parameter(value)))
+            {
+                if let Some(a) = &audit {
+                    a.protection_failed("unsafe_request_header");
+                }
+                return Ok(protocol_error(
+                    protocol,
+                    422,
+                    "credential_protection_failed",
+                    "附加请求头无法安全检查或包含受保护凭据，请求未发送到上游",
+                ));
+            }
             outbound.insert(key.clone(), value.clone());
+        }
+    }
+    if protection.as_ref().is_some_and(|r| {
+        !r.safe_query(query.unwrap_or(""))
+            || !r.safe_parameter(url.as_str())
+            || !r.safe_query(url.query().unwrap_or(""))
+            || !r.safe_parameter(&selected.model)
+            || !outbound
+                .get("accept")
+                .is_some_and(|value| value.to_str().is_ok_and(|value| r.safe_parameter(value)))
+    }) {
+        if let Some(a) = &audit {
+            a.protection_failed("unsafe_request_parameter");
+        }
+        return Ok(protocol_error(
+            protocol,
+            422,
+            "credential_protection_failed",
+            "转发参数无法安全检查或包含受保护凭据，请求未发送到上游",
+        ));
+    }
+    if let Some(request) = &mut protection {
+        request.report["status"] = json!("protected");
+        if let Some(a) = &audit {
+            a.protection(&request.report);
         }
     }
     auth(
@@ -1593,9 +1760,128 @@ async fn proxy(
         state,
         text(&u["id"]),
         audit,
+        protection,
     )
     .await
 }
+#[allow(clippy::too_many_arguments)]
+async fn relay_protected(
+    upstream: reqwest::Response,
+    client: &str,
+    mapped: &str,
+    claude: bool,
+    state: Arc<AppState>,
+    upstream_id: &str,
+    audit: Option<Arc<security::Audit>>,
+    mut protection: crate::protection::Request,
+) -> Result<Response> {
+    let status = upstream.status();
+    let mut headers = HeaderMap::new();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .cloned()
+        .unwrap_or_else(|| HeaderValue::from_static("application/json"));
+    let sse = content_type
+        .to_str()
+        .unwrap_or("")
+        .contains("text/event-stream");
+    let json_response = content_type.to_str().unwrap_or("").contains("json");
+    headers.insert("content-type", content_type);
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    for (key, value) in upstream.headers() {
+        if [
+            "x-request-id",
+            "request-id",
+            "retry-after",
+            "x-should-retry",
+        ]
+        .contains(&key.as_str())
+            || key.as_str().starts_with("anthropic-ratelimit-")
+        {
+            headers.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(a) = &audit {
+        a.response(status.as_u16(), sse, upstream.headers());
+    }
+    let guard = security::ResponseGuard(audit.clone());
+    let mut source = upstream.bytes_stream();
+    let client = client.to_owned();
+    let mapped = mapped.to_owned();
+    let upstream_id = upstream_id.to_owned();
+    let output = async_stream::try_stream! {
+        let _guard=guard;
+        let failure_audit = audit.clone();
+        let inner = async_stream::try_stream! {
+            if sse {
+                let mut framer=streaming::EventFramer::new();
+                let mut restore=crate::protection::Sse::new();
+                while let Some(chunk)=source.next().await {
+                    let bytes=chunk?;
+                    for &b in &bytes {
+                        if let Some(event)=framer.byte(b)? {
+                            let transformed=restore.event(&mut protection,&event,&client,&mapped,claude)?;
+                            if let Some(a)=&audit { a.protection(&protection.report); }
+                            for transformed in transformed {
+                                let mut r=transformed.reader(); let mut buf=vec![0;PAGE];
+                                loop {
+                                    let n = r.read(&mut buf)?;
+                                    if n == 0 { break; }
+                                    if let Some(a) = &audit { a.feed(&buf[..n]); }
+                                    yield Bytes::copy_from_slice(&buf[..n]);
+                                }
+                            }
+                        }
+                    }
+                }
+                if framer.finish()?.is_some() { Err(anyhow::anyhow!("protection_incomplete_sse_event"))?; }
+                for event in restore.finish(&mut protection, &client, &mapped, claude)? {
+                    if let Some(a)=&audit { a.protection(&protection.report); }
+                    let mut r=event.reader(); let mut buf=vec![0;PAGE];
+                    loop {
+                        let n = r.read(&mut buf)?;
+                        if n == 0 { break; }
+                        if let Some(a) = &audit { a.feed(&buf[..n]); }
+                        yield Bytes::copy_from_slice(&buf[..n]);
+                    }
+                }
+            } else {
+                let mut spool=Spool::new()?;
+                while let Some(chunk)=source.next().await { spool.write_all(&chunk?)?; }
+                let source=spool.seal()?;
+                let body=if json_response { protection.transform(&source,true)? } else { protection.restore_text(&source)? };
+                let edits=if json_response { streaming::response_edits(&body,&client,&mapped,claude)? } else { Edits::new() };
+                if let Some(a)=&audit { a.protection(&protection.report); }
+                let mut r=edits.reader(&body); let mut buf=vec![0;PAGE];
+                loop {
+                    let n = r.read(&mut buf)?;
+                    if n == 0 { break; }
+                    if let Some(a) = &audit { a.feed(&buf[..n]); }
+                    yield Bytes::copy_from_slice(&buf[..n]);
+                }
+            }
+            protection.report["status"]=json!("completed");
+            if let Some(a)=&audit {a.protection(&protection.report);a.eof();}
+        };
+        futures_util::pin_mut!(inner);
+        while let Some(chunk) = futures_util::StreamExt::next(&mut inner).await {
+            let chunk: Result<Bytes, anyhow::Error> = chunk;
+            match chunk { Ok(bytes) => yield bytes, Err(_) => {
+            state.health(&upstream_id,"failure",None);
+            if let Some(a)=&failure_audit {a.protection_failed("response_restore_failed");a.finish("stream_error");}
+            Err(std::io::Error::other("credential_response_restore_failed"))?;
+            }}
+        }
+    };
+    let output: std::pin::Pin<Box<dyn futures_util::Stream<Item = std::io::Result<Bytes>> + Send>> =
+        Box::pin(output);
+    let mut response = Response::new(Body::from_stream(output));
+    *response.status_mut() = status;
+    *response.headers_mut() = headers;
+    Ok(response)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn relay(
     upstream: reqwest::Response,
@@ -1606,7 +1892,21 @@ async fn relay(
     state: Arc<AppState>,
     upstream_id: &str,
     audit: Option<Arc<security::Audit>>,
+    protection: Option<crate::protection::Request>,
 ) -> Result<Response> {
+    if let Some(protection) = protection {
+        return relay_protected(
+            upstream,
+            client,
+            mapped,
+            claude,
+            state,
+            upstream_id,
+            audit,
+            protection,
+        )
+        .await;
+    }
     let status = upstream.status();
     let mut headers = HeaderMap::new();
     let content_type = upstream

@@ -152,7 +152,7 @@ pub async fn apply(current: &Value, operation: &Value, catalog: &Catalog) -> Res
     let data = &operation["data"];
     if matches!(
         kind,
-        "cable.create" | "cable.upstream" | "model.save" | "claude.save"
+        "cable.create" | "cable.upstream" | "cable.protection" | "model.save" | "claude.save"
     ) && !data.is_object()
     {
         bail!("配置操作 data 必须是 object");
@@ -274,6 +274,16 @@ pub async fn apply(current: &Value, operation: &Value, catalog: &Catalog) -> Res
             .context("Virtual Provider 不存在")?
             .clone();
         match kind {
+            "cable.protection" => match data["enabled"].as_bool() {
+                Some(value) => provider["credentialProtection"] = json!(value),
+                None if data["enabled"].is_null() => {
+                    provider
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("credentialProtection");
+                }
+                None => bail!("凭据保护开关必须是布尔值，或 null（沿用全局设置）"),
+            },
             "cable.delete" => {
                 c["cables"].as_object_mut().unwrap().remove(&id);
                 let rid = text(&provider["route"]).to_owned();

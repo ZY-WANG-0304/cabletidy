@@ -77,6 +77,32 @@ pub fn validate(input: &Value) -> Value {
     );
     check!(c["audit"].is_object(), "audit", "审计设置必须是 object");
     check!(
+        c["credentialProtection"].is_object(),
+        "credentialProtection",
+        "凭据保护设置必须是 object"
+    );
+    check!(
+        c["credentialProtection"]["enabled"].is_boolean(),
+        "credentialProtection.enabled",
+        "凭据保护开关必须是布尔值"
+    );
+    check!(
+        c["credentialProtection"]["mappingTtlSeconds"]
+            .as_u64()
+            .is_some_and(|n| (60..=2_592_000).contains(&n)),
+        "credentialProtection.mappingTtlSeconds",
+        "映射有效期必须是 60 秒到 30 天之间的整数秒数"
+    );
+    for (id, provider) in entries(&c["virtualProviders"]) {
+        check!(
+            provider
+                .get("credentialProtection")
+                .is_none_or(Value::is_boolean),
+            format!("virtualProviders.{id}.credentialProtection"),
+            "线路凭据保护开关必须是布尔值"
+        );
+    }
+    check!(
         crate::temporary::valid_setting(&c["temporaryDirectory"]),
         "temporaryDirectory",
         "临时目录必须是服务器上的绝对路径，或 null（使用默认目录）"

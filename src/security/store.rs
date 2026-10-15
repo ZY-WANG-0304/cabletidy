@@ -49,6 +49,7 @@ pub struct Query {
     pub response_content: bool,
     pub folded_content: bool,
     pub finding: Option<String>,
+    pub protection_locations: Option<(String, String, usize)>,
     filters: BTreeMap<String, String>,
     hours: i64,
     cursor: i64,
@@ -267,7 +268,7 @@ impl Store {
         let content = query
             .detail
             .as_ref()
-            .filter(|_| query.body.is_none())
+            .filter(|_| query.body.is_none() && query.protection_locations.is_none())
             .map(|id| {
                 (
                     id.clone(),
@@ -887,7 +888,8 @@ pub(super) fn read_body_page(
         let sensitive: Vec<_> = marks.iter().filter(|m| m["kind"] == "sensitive").collect();
         let coverage: Vec<_> = marks.iter().filter(|m| m["kind"] == "coverage").collect();
         let legacy: Vec<_> = marks.iter().filter(|m| m["kind"].is_null()).collect();
-        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"sensitiveRanges":sensitive,"coverageRanges":coverage,"redactions":legacy}));
+        let protected: Vec<_> = marks.iter().filter(|m| m["kind"] == "protected").collect();
+        items.push(json!({"start":at+left as u64,"end":at+right as u64,"content":&content[left..right],"sensitiveRanges":sensitive,"coverageRanges":coverage,"redactions":legacy,"protectionRanges":protected}));
     }
     let first = items
         .first()
@@ -919,6 +921,29 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
         if !visible {
             return Ok(Value::Null);
         }
+        if let Some((mapping, side, offset)) = query.protection_locations {
+            // Tagged body annotations are the retained original coordinates. Do
+            // not count preview/structure projections of the same hit twice.
+            let sql = "SELECT DISTINCT c.snapshot_id, json_extract(m.value,'$.start') AS start, json_extract(m.value,'$.end') AS end, s.rowid AS ordinal
+                FROM audit_body_chunks c JOIN audit_snapshots s ON s.audit_id=c.audit_id AND s.id=c.snapshot_id, json_each(c.redactions) m
+                WHERE c.audit_id=?1 AND json_extract(m.value,'$.kind')='protected' AND json_extract(m.value,'$.mappingId')=?2
+                AND ((?3='request' AND c.snapshot_id='request') OR (?3='response' AND (c.snapshot_id='response' OR c.snapshot_id LIKE 'stream/%')))";
+            let total: u64 = db.query_row(
+                &format!("SELECT count(*) FROM ({sql})"),
+                params![id, mapping, side],
+                |r| r.get(0),
+            )?;
+            let mut stmt = db.prepare(&format!(
+                "{sql} ORDER BY ordinal, start, end LIMIT 40 OFFSET ?4"
+            ))?;
+            let items = stmt.query_map(params![id, mapping, side, offset as u64], |r| {
+                Ok(json!({"snapshotId":r.get::<_,String>(0)?,"start":r.get::<_,u64>(1)?,"end":r.get::<_,u64>(2)?}))
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let next = offset as u64 + items.len() as u64;
+            return Ok(
+                json!({"items":items,"total":total,"offset":offset,"nextOffset":if next < total {Some(next)} else {None}}),
+            );
+        }
         if let Some((snapshot, mut offset)) = query.body {
             let findings = super::evidence::findings(db, &id)?;
             let selection = query
@@ -936,6 +961,7 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
             let mut page = read_body_page(db, &id, &snapshot, offset)?;
             if page.is_object() {
                 super::evidence::normalize_body(&mut page, &findings, &snapshot);
+                crate::protection::annotate_body(db, &id, &snapshot, &mut page)?;
                 if let Some(mut selection) = selection {
                     if let Some(range) = super::evidence::structural_range(
                         &page["locations"],
@@ -959,6 +985,18 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
             return Ok(Value::Null);
         };
         let mut data: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
+        match crate::protection::report(db, &id) {
+            Ok(Some(mut report)) => {
+                if data["protection"]["evidenceState"] == "unavailable" {
+                    for (key, value) in data["protection"].as_object().unwrap() {
+                        report[key] = value.clone();
+                    }
+                }
+                data["protection"] = report;
+            }
+            Ok(None) if data["protection"]["enabled"] != true => {}
+            _ => data["protection"]["evidenceState"] = json!("unavailable"),
+        }
         let mut stmt = db.prepare("SELECT data FROM findings WHERE audit_id=? ORDER BY seq")?;
         let findings = stmt
             .query_map([&id], |r| r.get::<_, String>(0))?
@@ -984,6 +1022,24 @@ fn read(db: &Connection, mut query: Query) -> Result<Value> {
                 v
             }))
             .collect::<serde_json::Result<Vec<_>>>()?);
+        for finding in data["findings"].as_array_mut().into_iter().flatten() {
+            if finding["ruleId"] != "SEC-SECRET-001" {
+                continue;
+            }
+            let reference = &finding["evidence"]["bodyRef"];
+            let snapshot = reference["sourceSnapshotId"]
+                .as_str()
+                .or_else(|| reference["snapshotId"].as_str())
+                .unwrap_or("");
+            let (Some(start), Some(end)) = (reference["start"].as_u64(), reference["end"].as_u64())
+            else {
+                continue;
+            };
+            let protected: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM audit_body_chunks c,json_each(c.redactions) m WHERE c.audit_id=? AND c.snapshot_id=? AND c.end>? AND c.start<? AND json_extract(m.value,'$.kind')='protected' AND json_extract(m.value,'$.start')<=? AND json_extract(m.value,'$.end')>=?)",params![id,snapshot,start,end,start,end],|r|r.get(0))?;
+            if protected {
+                finding["credentialProtection"] = json!({"side":if snapshot == "request" {"request"} else {"response"},"state":"substituted"});
+            }
+        }
         data["findingCount"] = json!(config::array(&data["findings"]).len());
         super::evidence::normalize_record(&mut data);
         return Ok(json!({"record":data}));
@@ -1322,6 +1378,28 @@ fn content_worker(path: PathBuf, receiver: mpsc::Receiver<ContentJob>) {
                     }
                 }
             }
+            if visible {
+                if detail {
+                    crate::protection::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["requestContent"],
+                        false,
+                        &cancelled,
+                    )?;
+                    crate::protection::annotate_page(
+                        &tx,
+                        &audit,
+                        &mut value["responseContent"],
+                        true,
+                        &cancelled,
+                    )?;
+                } else {
+                    crate::protection::annotate_page(
+                        &tx, &audit, &mut value, response, &cancelled,
+                    )?;
+                }
+            }
             tx.commit()?;
             Ok(value)
         })();
@@ -1505,6 +1583,113 @@ fn update_health(health: &Mutex<Value>, path: &Path, ready: bool, error: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protection_locations_page_distinct_marks_and_preserve_missing_evidence_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(
+            &dir.path().join("audit.sqlite3"),
+            true,
+            AuditSettings::default(),
+        )
+        .unwrap();
+        let mut audit = record("protected", "completed");
+        audit["protection"] =
+            json!({"enabled":true,"status":"completed","requestCount":41,"responseCount":0});
+        persist(&mut db, audit).unwrap();
+        for snapshot in ["request", "response", "stream/one", "evidence/copy"] {
+            persist_body(
+                &db,
+                "protected",
+                &json!({"id":snapshot,"state":"receiving","byteLength":0}),
+                AuditSettings::default(),
+            )
+            .unwrap();
+            let marks: Vec<_> = (0..41)
+                .map(|i| json!({"kind":"protected","mappingId":"mapping","start":i*2,"end":i*2+1}))
+                .collect();
+            // Repeated marks also occur when a hit spans multiple stored chunks.
+            persist_body(&db, "protected", &json!({"id":snapshot,"start":0,"end":100,"content":"x".repeat(100),"annotations":([marks.clone(),marks].concat())}), AuditSettings::default()).unwrap();
+        }
+        let locate = |side: &str, offset| {
+            read(
+                &db,
+                Query {
+                    detail: Some("protected".into()),
+                    protection_locations: Some(("mapping".into(), side.into(), offset)),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        let first = locate("request", 0);
+        assert_eq!(first["total"], 41);
+        assert_eq!(first["items"].as_array().unwrap().len(), 40);
+        assert_eq!(first["nextOffset"], 40);
+        let last = locate("request", 40);
+        assert_eq!(last["items"].as_array().unwrap().len(), 1);
+        assert_eq!(last["items"][0]["start"], 80);
+        assert!(last["nextOffset"].is_null());
+        assert_eq!(locate("response", 0)["total"], 82);
+        assert!(locate("request", 41)["items"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("protected".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            detail["record"]["protection"]["evidenceState"],
+            "unavailable"
+        );
+        assert_eq!(detail["record"]["protection"]["requestCount"], 41);
+        persist_body(
+            &db,
+            "protected",
+            &json!({"id":"protection","state":"receiving","byteLength":0}),
+            AuditSettings::default(),
+        )
+        .unwrap();
+        let report =
+            json!({"enabled":true,"status":"protected","requestCount":1,"mappings":[]}).to_string();
+        persist_body(&db, "protected", &json!({"id":"protection","start":0,"end":report.len(),"content":report,"annotations":[]}), AuditSettings::default()).unwrap();
+        let mut summary = record("protected", "completed");
+        summary["protection"] = json!({"enabled":true,"status":"failed","reason":"response_restore_failed","requestCount":41,"evidenceState":"unavailable"});
+        persist(&mut db, summary).unwrap();
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("protected".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(detail["record"]["protection"]["status"], "failed");
+        assert_eq!(detail["record"]["protection"]["requestCount"], 41);
+        db.execute(
+            "UPDATE audit_body_chunks SET content='invalid json' WHERE snapshot_id='protection'",
+            [],
+        )
+        .unwrap();
+        let detail = read(
+            &db,
+            Query {
+                detail: Some("protected".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            detail["record"]["protection"]["evidenceState"],
+            "unavailable"
+        );
+        assert!(detail["record"]["findings"].is_array());
+    }
 
     #[test]
     fn configured_retention_survives_restart_and_protects_active_records() {
@@ -2395,6 +2580,7 @@ mod tests {
             },
             true,
             true,
+            None,
         );
         store.flush().await;
         drop(store);

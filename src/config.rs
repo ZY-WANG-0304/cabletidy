@@ -88,7 +88,7 @@ impl Paths {
 }
 pub fn defaults() -> Value {
     let audit = AuditSettings::default();
-    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}})
+    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"credentialProtection":{"enabled":false,"mappingTtlSeconds":3600},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {

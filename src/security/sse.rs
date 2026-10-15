@@ -506,7 +506,11 @@ pub(super) fn inspect(p: &mut Pipeline, source: Arc<Spool>, gap: bool) -> Result
         p.store.clone(),
         text(&p.record["id"]),
         "response",
-        "upstream_response",
+        if p.record["protection"]["enabled"] == true {
+            "client_response"
+        } else {
+            "upstream_response"
+        },
     )?;
     let base = p.inspected;
     let mut processed = 0;

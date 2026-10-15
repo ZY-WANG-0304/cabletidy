@@ -192,6 +192,7 @@ function render(preservedForms = []) {
       top: node.scrollTop,
       left: node.scrollLeft,
     })) : [];
+  if (state.security.protectionSource && !protectionSourceCurrent(state.security.protectionSource)) closeProtectionSource();
   traceOverviewObserver?.disconnect();
   traceOverviewObserver = null;
   pageContent.innerHTML = renderers[state.page]();
@@ -422,6 +423,13 @@ pageContent.addEventListener("click", (event) => {
   if (element.dataset.action) handleAction(element.dataset.action, element);
   else navigatePage(element.dataset.page);
 });
+
+const protectionDialog = document.querySelector("#protection-source-dialog");
+protectionDialog.addEventListener("click", event => {
+  const button = event.target.closest("[data-action]");
+  if (button) securityAction(button.dataset.action, button);
+});
+protectionDialog.addEventListener("close", () => { if (!protectionDialog.open) closeProtectionSource(); });
 
 pageContent.addEventListener("submit", (event) => handleFormSubmit(event, event.target));
 window.addEventListener("beforeunload", (event) => {
@@ -789,6 +797,8 @@ pageContent.addEventListener("toggle", (event) => {
   if (record && panel.matches("[data-content-index]")) {
     (record.contentOpen ||= {})[`${panel.dataset.contentResponse}:${panel.dataset.contentIndex}`] = panel.open;
   }
+  if (record && panel.matches("[data-protection-history]")) record.protectionHistoryOpen = panel.open;
+  if (record && panel.matches("[data-protection-mapping]")) (record.protectionOpen ||= {})[panel.dataset.protectionMapping] = panel.open;
   if (record && panel.matches("[data-history-risks]")) record.historyRisksOpen = panel.open;
   if (record && panel.matches("[data-history-start]")) {
     const range = (record.historyRanges ||= {})[panel.dataset.historyStart] ||= {};
@@ -869,6 +879,10 @@ function renderCableDetail() {
             </div>
           </form>
         ` : `<div class="empty"><strong>未配置上游</strong></div>`}
+      </section>
+      <section class="cable-section" aria-labelledby="cable-protection-title">
+        <div class="cable-section-heading"><h2 id="cable-protection-title">凭据保护</h2><p>Key、Token 等凭据在发往模型前替换，返回客户端时还原。</p></div>
+        <form id="cable-protection-form" data-cable-context="${esc(cable.id)}"><div class="form-grid"><label class="field"><span>此线路</span><select name="enabled"><option value="inherit" ${provider.credentialProtection == null ? "selected" : ""}>沿用全局（${state.config.credentialProtection?.enabled ? "启用" : "关闭"}）</option><option value="true" ${provider.credentialProtection === true ? "selected" : ""}>启用</option><option value="false" ${provider.credentialProtection === false ? "selected" : ""}>关闭</option></select></label></div><div class="form-actions"><button class="button" type="submit">保存保护设置</button></div></form>
       </section>
       <section class="cable-section" aria-labelledby="cable-models-title">
         <div class="cable-section-heading cable-models-heading">
@@ -1395,7 +1409,7 @@ function traceSegments(items) {
   return items.map((item, i) => {
     const risk = securityRiskCounts(item);
     return { id: item.id, order: i + 1, duration: item.durationMs || 0,
-      legacyFindingCount: risk.legacy, newFindingCount: risk.new, historicalFindingCount: risk.historical,
+      legacyFindingCount: risk.legacy, newFindingCount: risk.new, historicalFindingCount: risk.historical, protection: item.protection,
       selected: item.id === state.security.detailId };
   });
 }
@@ -1458,7 +1472,7 @@ function retainedContentItems(record, response, visible = false) {
   return [...new Map(loaded.map(item => [item.index,item])).values()];
 }
 function retainedRiskText(item, field) {
-  const text = item[field] || "", ranges = item.riskRanges?.[field] || [];
+  const text = item[field] || "", ranges = [...(item.riskRanges?.[field] || []), ...(item.protectionRanges?.[field] || []).map(r => ({ ...r, findingId: `protection:${r.mappingId}` }))];
   const selected = state.security.contentNavigation;
   const events = [{ at: 0, delta: 0 }, { at: text.length, delta: 0 }];
   for (const range of ranges) {
@@ -1471,7 +1485,9 @@ function retainedRiskText(item, field) {
     if (event.at > at) {
       const hit = selected?.index === item.index && selected.field === field && active.has(selected.findingId);
       const content = esc(text.slice(at, event.at));
-      html += active.size ? `<mark class="security-risk-hit${hit ? " security-body-hit" : ""}"${hit ? ' data-security-content-anchor tabindex="-1"' : ""}>${content}</mark>` : content;
+      const protectedHit = [...active.keys()].some(id => id?.startsWith("protection:"));
+      const riskHit = [...active.keys()].some(id => !id?.startsWith("protection:"));
+      html += active.size ? `<mark class="${riskHit ? "security-risk-hit" : ""}${protectedHit ? " security-protection-hit" : ""}${hit ? " security-body-hit" : ""}"${hit ? ' data-security-content-anchor tabindex="-1"' : ""}>${content}</mark>` : content;
       at = event.at;
     }
     if (event.delta) {
@@ -1572,6 +1588,7 @@ function renderRetainedContent(record, response) {
     ${claude && !response ? `<p class="trace-content-note">按消息内容块展示；工具结果属于工具上下文，消息角色为 user 也不会计为用户输入。</p>` : ""}
     <div class="trace-content-counts" aria-label="${title}组成">${Object.entries(labels).map(([kind, label]) => `<span>${label} <strong>${counts[kind] || 0}</strong></span>`).join("")}</div>
     ${content.state !== "complete" ? `<p class="notice warning">${content.state === "unavailable" ? `${response ? "响应" : "请求"}正文未保留，无法还原内容组成。` : `${response ? "响应" : "请求"}正文存在缺口或尚未解析完整，以下为已保留的内容。`}</p>` : content.total === 0 ? `<p class="muted">${response ? "本次响应未包含输出内容。" : "本次请求未包含提示词、输入或工具上下文。"}</p>` : ""}
+    ${content.protectionState === "unavailable" ? '<p class="notice warning">保护高亮暂不可用，以下仍显示保留原文；映射可在凭据保护页复核。</p>' : ""}
     <div class="trace-content-timeline">${timeline}</div>
     ${definitions.length ? `<details class="trace-content-tools"><summary>可用工具定义 · 本页 ${definitions.length} 个</summary>${definitions.map(row).join("")}</details>` : ""}
     ${content.total ? `<div class="trace-content-pagination"><button class="mini-button" data-action="${action}-page" data-offset="${Math.max(0, content.offset - 40)}" ${!content.offset || loading ? "disabled" : ""}>上一组内容</button><span>${content.offset + 1}–${content.offset + nodes.length} / ${content.nodeTotal ?? content.total}</span><button class="mini-button" data-action="${action}-page" data-offset="${content.nextOffset ?? ""}" ${content.nextOffset == null || loading ? "disabled" : ""}>下一组内容</button></div>` : ""}
@@ -1630,15 +1647,147 @@ async function loadHistoryRange(start, end, offset = start) {
   if (current()) render();
 }
 
+function protectionOccurred(record) { return (record.protection?.requestCount || 0) + (record.protection?.responseCount || 0) > 0; }
+function protectionKeyIcon() { return '<svg class="protection-key" viewBox="0 0 14 24" aria-hidden="true"><circle cx="7" cy="5" r="3.5"/><path d="M7 8.5V22M7 15h4M7 19h4"/></svg>'; }
+function protectionCredentials(report) {
+  const grouped = new Map();
+  for (const mapping of report?.mappings || []) {
+    const existing = grouped.get(mapping.original);
+    if (existing) {
+      existing.requestCount += mapping.requestCount || 0;
+      existing.responseCount += mapping.responseCount || 0;
+      existing.reused &&= !!mapping.reused;
+      existing.mappings.push(mapping);
+    } else grouped.set(mapping.original, { ...mapping, requestCount: mapping.requestCount || 0, responseCount: mapping.responseCount || 0, mappings: [mapping] });
+  }
+  return [...grouped.values()];
+}
+
+function protectionMappingDetails(record, credential) {
+  const open = record.protectionOpen?.[credential.id];
+  return `<details class="protection-mapping-details" data-protection-mapping="${esc(credential.id)}" ${open ? "open" : ""}><summary>映射详情</summary>${credential.mappings.map(m => `<dl><dt>占位符 B</dt><dd><code>${esc(m.replacement)}</code></dd><dt>映射创建时间</dt><dd>${esc(securityTime(m.createdAtMs))}</dd><dt>本次续期到期时间</dt><dd>${esc(securityTime(m.expiresAtMs))}</dd></dl>`).join("")}</details>`;
+}
+
+function renderProtection(record) {
+  const p = record.protection;
+  const failed = p?.status === "failed", unavailable = p?.evidenceState === "unavailable" || p?.enabled && !Array.isArray(p.mappings);
+  const credentials = protectionCredentials(p), used = credentials.filter(m => m.requestCount + m.responseCount > 0), history = credentials.filter(m => m.requestCount + m.responseCount === 0);
+  const labels = { prepared: "已准备", protected: "请求已保护", completed: "已完成", failed: "保护失败" };
+  const label = failed ? "保护失败" : unavailable ? "证据不可用" : p?.enabled ? labels[p.status] || "已启用" : "未启用";
+  const empty = (title, note) => `<div class="protection-empty"><h4>${title}</h4><p>${note}</p></div>`;
+  const heading = `<header class="protection-heading"><h3>${protectionKeyIcon()} 凭据保护</h3><span class="protection-state ${failed || unavailable ? "is-warning" : !p?.enabled ? "is-muted" : ""}">${label}</span></header>`;
+  if (!p?.enabled) return `<section class="credential-protection">${heading}${empty("此请求未启用凭据保护", "本次没有执行凭据替换或响应还原。")}</section>`;
+  const summary = unavailable ? '<p class="protection-counts">凭据数量不可确认 · 请求替换 ' + esc(p.requestCount ?? "未知") + ' 次 · 响应还原 ' + esc(p.responseCount ?? "未知") + ' 次</p>'
+    : `<p class="protection-counts">涉及 <b>${used.length}</b> 个凭据 · 请求替换 <b>${esc(p.requestCount || 0)}</b> 次 · 响应还原 <b>${esc(p.responseCount || 0)}</b> 次</p>`;
+  const historyHtml = !unavailable ? `<details class="protection-history" data-protection-history ${record.protectionHistoryOpen ? "open" : ""}><summary>会话已有映射 · ${history.length} 条 <small>本次未使用</small></summary>${history.map(m => `<article class="protection-history-item"><pre>${esc(m.original)}</pre>${protectionMappingDetails(record, m)}</article>`).join("") || '<p class="muted">没有本次未使用的会话映射。</p>'}</details>` : "";
+  const failure = failed ? `<div class="protection-failure" role="alert"><strong>${p.reason === "response_restore_failed" ? "响应还原未完成" : p.reason === "request_protection_failed" ? "请求保护未完成 · 请求未发送到上游" : "保护或还原未完成"}</strong><p>请结合请求结果复核，本次操作次数不代表保护完整完成。</p>${p.reason ? `<details><summary>失败详情</summary><p>${esc(p.reason)}</p></details>` : ""}</div>` : "";
+  const rows = used.map((m, i) => `<article class="security-finding protection-mapping"><header class="protection-entry-heading">${protectionKeyIcon()}<strong>凭据 ${String(i + 1).padStart(2, "0")}</strong><span class="protection-reuse ${m.reused ? "" : "is-new"}">${m.reused ? "复用" : "新建"}</span><button class="protection-copy" data-action="security-protection-copy" data-id="${esc(m.id)}" aria-label="复制凭据 ${i + 1} 的原文 A">复制 A</button></header><div class="protection-value"><span>原文 A</span><code class="security-protection-hit" title="${esc(m.original)}">${esc(m.original)}</code></div><p class="protection-entry-counts">请求替换 ${m.requestCount} 次 · 响应还原 ${m.responseCount} 次</p><div class="protection-entry-actions">${["request", "response"].map(side => m[side + "Count"] ? `<button class="security-location" data-action="security-protection-source" data-side="${side}" data-id="${esc(m.id)}">${side === "request" ? "请求" : "响应"}原文（${m[side + "Count"]} 处）</button>` : "").join("")}</div>${protectionMappingDetails(record, m)}</article>`).join("");
+  return `<section class="credential-protection">${heading}${summary}<p class="protection-note">会话闲置 ${esc((p.mappingTtlSeconds || 3600) / 3600)} 小时后过期，每次新请求重置倒计时。下方显示本次操作。</p>${historyHtml}${failure}${unavailable ? empty("保护证据不可用", "未保留完整映射证据，无法列出或确认全部 A↔B。请结合请求结果复核。") : rows || (!failed ? empty("已启用，本次没有替换或还原", "本次保护操作为 0；会话已有映射可在上方展开查看。") : "")}<p class="protection-read-note">本地审计保留原文 A。映射详情中的到期时间是本次请求续期后的证据时间。完整内容可通过原有请求、响应和原始内容页签查看。</p></section>`;
+}
+
+function closeProtectionSource() {
+  const source = state.security.protectionSource;
+  state.security.protectionSource = null;
+  source?.controller.abort();
+  document.querySelector("#protection-source-dialog")?.close?.();
+}
+
+function protectionSourceCurrent(source) {
+  return state.security.protectionSource === source && state.security.detail === source.record
+    && state.security.detailSequence === source.sequence && state.page === "security-session" && state.trace.tab === "protection";
+}
+
+function protectionContextPage(pages, hit) {
+  const encoder = new TextEncoder(), decoder = new TextDecoder();
+  const chunks = pages.flatMap(page => page.chunks || []);
+  const left = Math.max(0, hit.start - 600), right = hit.end + 600;
+  const clipped = chunks.filter(c => c.start < right && c.end > left).map(chunk => {
+    const bytes = encoder.encode(chunk.content);
+    let from = Math.max(0, left - chunk.start), to = Math.min(bytes.length, right - chunk.start);
+    while (from < to && (bytes[from] & 0xc0) === 0x80) from++;
+    while (to > from && (bytes[to] & 0xc0) === 0x80) to--;
+    return { ...chunk, start: chunk.start + from, end: chunk.start + to, content: decoder.decode(bytes.slice(from, to)) };
+  });
+  const unique = ranges => [...new Map(ranges.map(r => [JSON.stringify(r), r])).values()];
+  return { chunks: clipped, protectionRanges: unique(pages.flatMap(p => p.protectionRanges || [])), riskRanges: unique(pages.flatMap(p => p.riskRanges || [])), gap: pages.some(p => p.gap) };
+}
+
+function renderProtectionSource() {
+  const source = state.security.protectionSource;
+  if (!source) return;
+  const dialog = document.querySelector("#protection-source-dialog");
+  const focus = dialog.contains?.(document.activeElement) ? document.activeElement.dataset : null;
+  const hit = source.hits[source.at];
+  const count = source.total ?? 0;
+  const retained = source.expected !== count ? `<p class="protection-note">操作记录 ${source.expected} 次，已保留 ${count} 处可定位原文；未保留的位置无法在此展示。</p>` : "";
+  const content = source.loading ? '<p role="status">正在读取命中上下文…</p>' : source.error ? `<p class="notice warning" role="alert">${esc(source.error)}</p><button class="mini-button" data-action="security-protection-retry">重试</button>` : hit ? `<p class="protection-source-location">${hit.snapshotId === "request" ? "请求正文" : hit.snapshotId === "response" ? "响应正文" : "响应流式内容"} · 字节 ${hit.start}–${hit.end}</p>${source.page?.gap ? '<p class="notice warning">此范围原文保留存在缺口，以下上下文可能不完整。</p>' : ""}<pre class="protection-source-snippet">${securityPageText(source.page, hit)}</pre>${retained}` : '<p class="notice warning">保护原文未保留或位置证据不可用，无法定位。完整内容仍可在原有页签复核。</p>';
+  dialog.innerHTML = `<header class="protection-source-heading"><strong id="protection-source-title">${source.response ? "响应" : "请求"}原文 · 凭据 ${source.ordinal}</strong><button data-action="security-protection-close" aria-label="关闭定位弹出框">×</button></header><div class="protection-source-body"><div class="protection-source-controls"><button class="mini-button" data-action="security-protection-step" data-step="-1" ${source.loading || source.at <= 0 ? "disabled" : ""}>上一处</button><span role="status">${count ? source.at + 1 : 0} / ${count} 处</span><button class="mini-button" data-action="security-protection-step" data-step="1" ${source.loading || source.at + 1 >= count ? "disabled" : ""}>下一处</button></div>${content}<p class="protection-note">显示原文 A 和命中上下文。完整请求、响应仍通过原有页签查看。</p></div>`;
+  if (focus) {
+    const selector = `[data-action="${focus.action}"]${focus.step ? `[data-step="${focus.step}"]` : ""}`;
+    const button = dialog.querySelector(selector);
+    (button && !button.disabled ? button : dialog.querySelector('[data-action="security-protection-close"]'))?.focus({ preventScroll: true });
+  }
+}
+
+async function loadProtectionSource(source) {
+  source.loading = true; source.error = null; renderProtectionSource();
+  const request = path => api(`/security/audit/${encodeURIComponent(source.record.id)}/${path}`, { signal: source.controller.signal });
+  try {
+    if (source.total == null) {
+      source.hits = [];
+      // Locations are small paged metadata; body content is fetched only for the
+      // current occurrence, including non-message fields and reconstructed SSE.
+      for (const mapping of source.credential.mappings) {
+        let offset = 0;
+        do {
+          const page = await request(`protection-locations?${new URLSearchParams({ mapping: mapping.id, side: source.response ? "response" : "request", offset })}`);
+          if (!protectionSourceCurrent(source)) return;
+          source.hits.push(...(page.items || []));
+          offset = page.nextOffset;
+        } while (offset != null);
+      }
+      source.total = source.hits.length;
+    }
+    const hit = source.hits[source.at];
+    if (hit) {
+      const pages = [];
+      let offset = Math.max(0, hit.start - 768);
+      do {
+        const page = await request(`body?${new URLSearchParams({ snapshot: hit.snapshotId, offset })}`);
+        if (!protectionSourceCurrent(source)) return;
+        pages.push(page);
+        if (page.nextOffset == null || page.nextOffset <= offset || page.nextOffset >= hit.end + 600) break;
+        offset = page.nextOffset;
+      } while (true);
+      source.page = protectionContextPage(pages, hit);
+    }
+  } catch (error) { if (protectionSourceCurrent(source)) source.error = error.message; }
+  if (!protectionSourceCurrent(source)) return;
+  source.loading = false; renderProtectionSource();
+}
+
+async function locateProtection(id, response) {
+  const s = state.security, record = s.detail;
+  const used = protectionCredentials(record?.protection).filter(m => m.requestCount + m.responseCount > 0);
+  const credential = used.find(m => m.id === id);
+  if (!credential) return;
+  closeProtectionSource();
+  const source = s.protectionSource = { record, sequence: s.detailSequence, credential, ordinal: used.indexOf(credential) + 1, response, expected: credential[response ? "responseCount" : "requestCount"], hits: [], at: 0, loading: true, controller: new AbortController() };
+  renderProtectionSource();
+  document.querySelector("#protection-source-dialog").showModal?.();
+  await loadProtectionSource(source);
+}
+
 function renderTraceInspector() {
   const s = state.security, t = state.trace, r = s.detail;
-  const tabs = `<div class="trace-tabs" aria-label="步骤详情"><button data-action="security-trace-tab" data-tab="overview" aria-pressed="${t.tab === "overview"}">概览</button><button data-action="security-trace-tab" data-tab="risks" aria-pressed="${t.tab === "risks"}">风险 ${r?.findingCount || 0}</button><button data-action="security-trace-tab" data-tab="request" aria-pressed="${t.tab === "request"}">请求内容</button><button data-action="security-trace-tab" data-tab="response" aria-pressed="${t.tab === "response"}">响应内容</button><button data-action="security-trace-tab" data-tab="body" aria-pressed="${t.tab === "body"}">原始内容</button></div>`;
+  const tabs = `<div class="trace-tabs" aria-label="步骤详情"><button data-action="security-trace-tab" data-tab="overview" aria-pressed="${t.tab === "overview"}">概览</button><button data-action="security-trace-tab" data-tab="risks" aria-pressed="${t.tab === "risks"}">风险 ${r?.findingCount || 0}</button><button data-action="security-trace-tab" data-tab="protection" aria-pressed="${t.tab === "protection"}">凭据保护</button><button data-action="security-trace-tab" data-tab="request" aria-pressed="${t.tab === "request"}">请求内容</button><button data-action="security-trace-tab" data-tab="response" aria-pressed="${t.tab === "response"}">响应内容</button><button data-action="security-trace-tab" data-tab="body" aria-pressed="${t.tab === "body"}">原始内容</button></div>`;
   if (s.detailLoading) return `${tabs}<p class="empty" role="status">正在加载步骤详情…</p>`;
   if (s.detailError) return `${tabs}<p class="notice warning" role="alert">${esc(s.detailError)}</p>`;
   if (!r) return `${tabs}<p class="empty">选择一条请求查看详情。</p>`;
   let body;
   if (t.tab === "body") body = renderSecurityBody(r);
   else if (t.tab === "risks") body = `<p class="muted">工具真实执行状态未知；工具结果来自客户端报告。</p>${renderSecurityFindings(r)}`;
+  else if (t.tab === "protection") body = renderProtection(r);
   else if (t.tab === "request") body = renderRequestContent(r);
   else if (t.tab === "response") body = renderResponseContent(r);
   else body = `<div class="trace-inspector-heading"><strong>${esc(securityLabel("outcome", r.outcome))}</strong>${r.findingCount ? securityBadge(r.severity) : ""}</div>
@@ -1661,7 +1810,7 @@ function renderSecuritySession() {
   const minimumWidth = weights.reduce((width, weight) => width + Math.max(12, weight * 12) + 2, 20);
   const minimap = segments.map((item, i) => {
     const label = `请求 ${item.order}`;
-    return `<div class="trace-step" style="flex-grow:${weights[i]}">${item.order % 5 === 0 ? `<span class="trace-axis-tick" aria-hidden="true"><span>${item.order}</span></span>` : ""}<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}" aria-label="选择${label}" aria-pressed="${item.selected}"></button></div>`;
+    return `<div class="trace-step" style="flex-grow:${weights[i]}">${item.order % 5 === 0 ? `<span class="trace-axis-tick" aria-hidden="true"><span>${item.order}</span></span>` : ""}<button class="trace-segment ${item.newFindingCount ? "has-new-risk" : item.legacyFindingCount ? "has-risk" : item.historicalFindingCount ? "has-history-risk" : ""} ${item.selected ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" title="${label} · ${esc(securityDuration(item.duration))} · ${esc(securityRiskSummary(item))}${protectionOccurred(item) ? ` · 请求替换 ${item.protection?.requestCount || 0} 次，响应还原 ${item.protection?.responseCount || 0} 次` : ""}" aria-label="选择${label}" aria-pressed="${item.selected}"${protectionOccurred(item) ? ` data-credential-protected` : ""}>${protectionOccurred(item) ? protectionKeyIcon() : ""}</button></div>`;
   }).join("");
   const positions = new Map(all.map((item, i) => [item.id, i]));
   return `<nav class="security-detail-nav"><button class="button" data-action="security-back">返回审计记录</button><span class="muted">审计记录 / 会话轨迹</span><span class="status-badge">仅记录</span></nav>
@@ -1673,7 +1822,7 @@ function renderSecuritySession() {
       <div class="trace-overview"><div class="trace-scale-row"><button class="mini-button trace-scale-toggle" data-action="security-trace-scale" aria-pressed="${t.scale === "duration"}" title="${t.scale === "duration" ? "当前按耗时分配宽度，点击恢复按请求数分配" : "点击按已记录的请求耗时分配宽度"}">耗时占比</button></div>
         <div class="trace-map-viewport" tabindex="0" aria-label="可横向滚动的请求导航，刻度为请求序号"><div class="trace-map-track" style="min-width:${minimumWidth}px"><div class="trace-minimap">${minimap}</div></div></div>
         <div class="trace-scroll-rail" hidden><input class="trace-scroll-control" type="range" min="0" max="0" step="1" value="0" aria-label="左右滚动请求轨迹"></div>
-        <p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>每格对应一条请求</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击），刻度为请求序号</span>" : ""}</p></div>
+        <p class="trace-overview-caption"><strong>已加载轨迹概览</strong><span>每格对应一条请求</span><span class="trace-legend">${protectionKeyIcon()} 发生凭据替换 / 还原</span><span class="trace-legend"><i class="trace-legend-swatch trace-request-swatch" aria-hidden="true"></i>未发现风险</span><span class="trace-legend"><i class="trace-legend-swatch trace-risk-swatch" aria-hidden="true"></i>${hasLegacy ? hasModern ? "风险 / 新增风险" : "风险" : "新增风险"}</span>${hasModern ? `<span class="trace-legend"><i class="trace-legend-swatch trace-history-risk-swatch" aria-hidden="true"></i>仅历史风险</span>` : ""}${t.scale === "duration" ? "<span>宽度表示已记录的请求耗时（最小宽度便于点击），刻度为请求序号</span>" : ""}</p></div>
       <div class="trace-columns"><section class="trace-events" aria-label="请求列表"><form id="security-trace-search" class="trace-search"><input name="search" aria-label="搜索已加载轨迹" placeholder="搜索已加载输入、输出、工具或模型" value="${esc(t.search)}"><button class="mini-button" type="submit">搜索</button><button class="mini-button" type="button" data-action="security-trace-risk" aria-pressed="${t.riskOnly}">仅看风险</button></form>
         <div class="trace-event-list" tabindex="0" aria-label="可滚动请求列表" aria-busy="${t.loadingMore}">${items.map(item => { const i = positions.get(item.id), risk = securityRiskCounts(item); return `<button class="trace-event-row ${s.detailId === item.id ? "is-selected" : ""}" data-action="security-trace-select" data-id="${esc(item.id)}" aria-pressed="${s.detailId === item.id}"><span class="trace-order">${String(i + 1).padStart(2,"0")}</span><span class="trace-event-main"><span class="trace-event-meta"><span class="trace-event-models"><span>模型</span><strong title="${esc(securityModelMapping(item))}">${esc(securityModelMapping(item))}</strong></span><span>${esc(securityDuration(item.durationMs))}</span><span class="${risk.new || risk.legacy ? "trace-risk-count" : "muted"}">${esc(securityRiskSummary(item))}</span></span><span class="trace-event-preview"><span>输入</span>${esc(item.requestPreview || (item.kind === "request" ? "无文本摘要，查看原始内容" : securityLabel("action", item.action)))}</span><span class="trace-event-preview"><span>输出</span>${esc(item.responsePreview || securityLabel("outcome", item.outcome))}</span><span class="trace-event-status">${esc(securityLabel("outcome", item.outcome))} · ${esc(securityInspectionLabel(item))}</span></span></button>`; }).join("") || `<p class="empty" role="status">${t.loading ? "正在读取轨迹…" : all.length ? "已加载的轨迹中没有匹配的步骤。可继续向下加载，或清空搜索与筛选。" : "会话暂无记录，或已超出保留范围。"}</p>`}<div class="trace-load-status" role="status">${t.moreError ? `<span>${esc(t.moreError)}</span><button class="mini-button" data-action="security-trace-more">重试加载</button>` : t.loadingMore ? "正在加载更多请求…" : t.result?.nextCursor ? `<span>向下滚动加载更多请求</span><button class="mini-button" data-action="security-trace-more">继续加载</button>` : all.length ? "已显示全部请求" : ""}</div></div>
       </section><aside class="trace-inspector" aria-label="选中步骤详情">${renderTraceInspector()}</aside></div>
@@ -1687,7 +1836,7 @@ function securitySourceAnchor(text) {
 }
 
 const SECURITY_BODY_LABELS = {
-  source: { observed_headers: "请求 / 响应头", tool_inspection: "检测时的工具参数", inspection_range: "检测时的正文范围", client_request: "客户端请求正文", upstream_response: "上游响应正文", gateway_response: "网关本地响应", stream_inspection: "检测时的流式内容快照", response_inspection: "检测时的响应内容快照" },
+  source: { observed_headers: "请求 / 响应头", tool_inspection: "检测时的工具参数", inspection_range: "检测时的正文范围", client_request: "客户端请求正文", upstream_response: "上游响应正文", client_response: "还原后客户端响应正文", gateway_response: "网关本地响应", stream_inspection: "检测时的流式内容快照", response_inspection: "检测时的响应内容快照" },
   state: { complete: "已完整保留", receiving: "分段保存中", gap: "保留存在缺口", partial: "部分内容不可复核", truncated: "旧版截断记录", interrupted: "接收中断或未观察到协议结束", not_observed: "网关未读取正文", capture_unavailable: "正文保留不可用", redaction_unavailable: "凭据脱敏超限，内容已隐藏", pending: "仍在接收或等待保存" },
   redaction: { unsupported_stream_fragment: "无法安全重组的未知流式片段", credential_in_arguments: "工具参数中的凭据", credential_continuation: "跨段凭据续片", url_authority_uncertain: "无法确认的长 URL 认证区", credential_prefix_uncertain: "无法确认的长令牌前缀", redaction_buffer_budget: "脱敏工作区不足", cookie_header: "Cookie 头", credential_field: "凭据字段", known_credential: "已知凭据", credential_pattern: "凭据格式", credential_assignment: "凭据赋值", authorization: "认证值", private_key: "私钥", url_credentials: "URL 认证信息", url_credential_parameter: "URL 凭据参数", nested_json_credentials: "参数内嵌 JSON 凭据", incomplete_stream_fragment: "未完成的流式片段", incomplete_body_fragment: "截断文本末尾", unparsed_json_credentials: "含凭据的内嵌 JSON 无法解析", redaction_depth_limit: "脱敏深度上限", redaction_catalog_limit: "凭据字典上限", internal_host: "内网地址与端口", public_host: "公网服务器地址与端口", internal_identity: "URL 用户名" },
 };
@@ -1719,6 +1868,7 @@ function securityPageText(page, selection, riskRanges = page.riskRanges || []) {
     };
     for (const range of chunk.sensitiveRanges || []) add(range, "sensitive");
     for (const range of riskRanges) add(range, "risk");
+    for (const range of page.protectionRanges || []) add(range, "protected");
     // Endpoints are recorded, not hidden, so they read differently from credentials.
     for (const range of chunk.coverageRanges || []) if (ENDPOINT_REASONS.includes(range.reason)) add(range, "endpoint");
     if (!selection.hitUnavailable) add(selection, "selected");
@@ -1733,12 +1883,12 @@ function securityPageText(page, selection, riskRanges = page.riskRanges || []) {
       if (start < bytes.length) add({ start: chunk.start + start, end: chunk.start + end }, "anchor");
     }
     events.sort((a, b) => a.at - b.at);
-    let at = 0, sensitive = 0, selected = 0, risk = 0, endpoint = 0, anchor = 0, html = "";
+    let at = 0, sensitive = 0, selected = 0, risk = 0, endpoint = 0, anchor = 0, protectedCount = 0, html = "";
     for (const event of events) {
       if (event.at > at) {
         const text = decoder.decode(bytes.slice(at, event.at));
         const content = anchor > 0 ? securitySourceAnchor(text) : esc(text);
-        const classes = [sensitive > 0 && "security-sensitive-hit", risk > 0 && "security-risk-hit", endpoint > 0 && "security-endpoint-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
+        const classes = [protectedCount > 0 && "security-protection-hit", sensitive > 0 && "security-sensitive-hit", risk > 0 && "security-risk-hit", endpoint > 0 && "security-endpoint-hit", selected > 0 && "security-body-hit"].filter(Boolean).join(" ");
         html += classes ? `<mark class="${classes}"${selected > 0 ? ' tabindex="-1"' : ""}>${content}</mark>` : content;
         at = event.at;
       }
@@ -1747,6 +1897,7 @@ function securityPageText(page, selection, riskRanges = page.riskRanges || []) {
       risk += event.risk || 0;
       endpoint += event.endpoint || 0;
       anchor += event.anchor || 0;
+      protectedCount += event.protected || 0;
     }
     return html;
   }).join("");
@@ -1846,7 +1997,7 @@ async function loadSecurityStream(snapshotId, offset = Math.max(0, (state.securi
 function renderSecurityFindings(record) {
   const findings = record.findings || [];
   const fresh = findings.filter(finding => !finding.historical), historical = findings.filter(finding => finding.historical);
-  const row = f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div>${f.reusedFrom ? `<p class="trace-content-note">复用已有检查结果 · ${esc(securityTime(f.reusedFrom.checkedAt))}</p>` : ""}<p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`;
+  const row = f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div>${f.reusedFrom ? `<p class="trace-content-note">复用已有检查结果 · ${esc(securityTime(f.reusedFrom.checkedAt))}</p>` : ""}<p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.credentialProtection ? `<p class="trace-content-note">${f.credentialProtection.side === "request" ? "此凭据位置已在发送前替换，上游收到占位符。" : "此位置是响应中占位符还原后的原文。"}</p>` : ""}${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`;
   return `<h3>关联风险 · ${findings.length}</h3>${historical.length ? `<p class="muted">新增 ${fresh.length} 项 · 历史 ${historical.length} 项</p>` : ""}
     ${fresh.map(row).join("") || (!historical.length ? `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>` : "")}
     ${historical.length ? `<details class="trace-content-history" data-history-risks ${record.historyRisksOpen ? "open" : ""}><summary>历史风险 · ${historical.length} 项</summary>${historical.map(row).join("")}</details>` : ""}`;
@@ -1903,6 +2054,24 @@ async function securityAction(action, element) {
     pendingTraceSelection = true;
     await loadSecurityDetail(element.dataset.id, true, true);
     pageContent.querySelector(`.trace-event-row.is-selected`)?.scrollIntoView({ block: "nearest", behavior: "instant" });
+    return;
+  }
+  if (action === "security-protection-copy") {
+    const credential = protectionCredentials(s.detail?.protection).find(m => m.id === element.dataset.id);
+    if (!credential) return;
+    try { await navigator.clipboard.writeText(credential.original); toast("已复制原始凭据 A"); }
+    catch { toast("复制失败，请从原文 A 预览中手动复制。", true); }
+    return;
+  }
+  if (action === "security-protection-close") { closeProtectionSource(); return; }
+  if (action === "security-protection-step" || action === "security-protection-retry") {
+    const source = s.protectionSource;
+    if (!source || source.loading || !protectionSourceCurrent(source)) return;
+    if (action === "security-protection-step") source.at = Math.max(0, Math.min(source.total - 1, source.at + Number(element.dataset.step)));
+    await loadProtectionSource(source); return;
+  }
+  if (action === "security-protection-source") {
+    await locateProtection(element.dataset.id, element.dataset.side === "response");
     return;
   }
   if (action === "security-trace-tab") {
@@ -2040,6 +2209,15 @@ function renderSettings() {
         <div class="settings-footer"><span class="muted">保存后立即生效</span><button class="button button-primary" type="submit">保存设置</button></div>
       </form>
     </section>
+    <section class="panel" aria-labelledby="protection-settings-title">
+      <div class="panel-header"><h2 id="protection-settings-title">凭据保护</h2></div>
+      <form id="protection-settings-form">
+        <div class="settings-row"><label for="protection-enabled">默认启用</label><div class="settings-control"><label><input id="protection-enabled" name="enabled" type="checkbox" ${state.config.credentialProtection?.enabled ? "checked" : ""}> 替换模型上下文中的 Key、Token 和其他凭据</label></div></div>
+        <div class="settings-row"><label for="protection-ttl">会话闲置有效期</label><div class="settings-control"><div class="settings-value"><input id="protection-ttl" name="mappingTtlSeconds" type="number" min="60" max="2592000" step="1" required value="${state.config.credentialProtection?.mappingTtlSeconds || 3600}"><span>秒</span></div></div></div>
+        <p class="muted protection-settings-note">同一会话每次进入新请求后重新倒计时；闲置超时才过期。请求发送前替换，响应返回前还原；上游认证仍使用真实凭据。本地审计保留原文。</p>
+        <div class="settings-footer"><span class="muted">保存后立即生效，可在线路中单独设置</span><button class="button button-primary" type="submit">保存设置</button></div>
+      </form>
+    </section>
     <section class="panel" aria-labelledby="temporary-settings-title">
       <div class="panel-header"><h2 id="temporary-settings-title">临时目录</h2></div>
       <form id="temporary-settings-form">
@@ -2080,6 +2258,12 @@ function saveAuditSettings(data) {
     throw new Error(`存储上限必须至少为 ${MIN_AUDIT_BUDGET_MIB} MiB，且换算后的字节数须为有效整数，或选择不设上限。`);
   }
   state.candidate.audit = { ...state.candidate.audit, retentionDays: days, budgetBytes: bytes };
+}
+
+function saveProtectionSettings(data) {
+  const seconds = Number(data.get("mappingTtlSeconds"));
+  if (!Number.isInteger(seconds) || seconds < 60 || seconds > 2592000) throw new Error("映射有效期须为 60 秒到 30 天之间的整数秒数。");
+  state.candidate.credentialProtection = { enabled: data.has("enabled"), mappingTtlSeconds: seconds };
 }
 
 function saveTemporarySettings(data) {
@@ -2394,6 +2578,8 @@ async function handleFormSubmit(event, form) {
     const handlers = {
       "audit-settings-form": () => saveAuditSettings(data),
       "temporary-settings-form": () => saveTemporarySettings(data),
+      "protection-settings-form": () => saveProtectionSettings(data),
+      "cable-protection-form": () => ({ type: "cable.protection", cableId: selectedCable().id, data: { enabled: data.get("enabled") === "inherit" ? null : data.get("enabled") === "true" } }),
       "cable-create-form": () => saveCableCreate(data, form),
       "cable-upstream-form": () => saveCableUpstream(data),
       "cable-models-form": () => saveCableModels(form),
