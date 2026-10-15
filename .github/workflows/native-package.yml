@@ -2,14 +2,25 @@ name: Build Native Package
 
 on:
   workflow_dispatch:
+    inputs:
+      recover_rc2:
+        description: Recover the unchanged v0.5.0-rc.2 package with the audit test waiting fix
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
 
+env:
+  RELEASE_TAG: v0.5.0-rc.2
+  RELEASE_COMMIT: d5e369a3d2d623d05d35d7ba7bd8b0eb39e42d94
+  ORIGINAL_RUN: "38756023314"
+
 jobs:
   checks:
+    if: github.event_name != 'workflow_dispatch' || !inputs.recover_rc2
     uses: ./.github/workflows/test.yml
 
   native:
@@ -141,3 +152,157 @@ jobs:
           gh release create "$RELEASE_TAG" \
             dist-release/package.tgz dist-release/SHA256SUMS dist-release/release.json \
             --verify-tag --title "CableTidy $version" --notes-file "$notes" "${flags[@]}"
+
+  recover-native:
+    if: github.event_name == 'workflow_dispatch' && inputs.recover_rc2
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.5.0-rc.2
+          fetch-depth: 0
+      - name: Verify source and apply test-only waiting fix
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          git diff --exit-code HEAD "$GITHUB_SHA" -- . ':!test/security.test.mjs' ':!.github/workflows/native-package.yml'
+          git show "$GITHUB_SHA:test/security.test.mjs" > test/security.test.mjs
+          git diff --stat
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-apple-darwin
+      - run: npm ci
+      - run: npm run check:version
+        env:
+          GITHUB_REF: refs/tags/v0.5.0-rc.2
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets --features test-support -- -D warnings
+      - run: npm test
+      - run: npm run build -- --target x86_64-apple-darwin
+      - run: npm run test:package:built
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-x86_64-apple-darwin
+          path: native/
+          if-no-files-found: error
+
+  recover-package:
+    needs: recover-native
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.5.0-rc.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify original successful checks and platform builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          gh api "repos/$GH_REPO/actions/runs/$ORIGINAL_RUN" > "$RUNNER_TEMP/original-run.json"
+          gh api "repos/$GH_REPO/actions/runs/$ORIGINAL_RUN/jobs?per_page=100" > "$RUNNER_TEMP/original-jobs.json"
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const run = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/original-run.json`));
+          assert.equal(run.head_sha, process.env.RELEASE_COMMIT);
+          assert.equal(run.head_branch, process.env.RELEASE_TAG);
+          const jobs = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/original-jobs.json`)).jobs;
+          const checks = jobs.filter(job => job.name.startsWith('checks / test'));
+          assert.equal(checks.length, 6);
+          assert.ok(checks.every(job => job.conclusion === 'success'));
+          for (const name of [
+            'native (ubuntu-latest, x86_64-unknown-linux-musl)',
+            'native (ubuntu-24.04-arm, aarch64-unknown-linux-musl)',
+            'native (macos-latest, aarch64-apple-darwin)',
+            'native (windows-latest, x86_64-pc-windows-msvc)',
+          ]) assert.equal(jobs.find(job => job.name === name)?.conclusion, 'success', name);
+          JS
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 38756023314
+          pattern: native-*
+          merge-multiple: true
+          path: native/
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-x86_64-apple-darwin
+          path: native/
+      - run: chmod +x native/linux-*/cabletidy native/darwin-*/cabletidy
+      - run: npm ci
+      - run: npm run pack:release
+        env:
+          GITHUB_REF: refs/tags/v0.5.0-rc.2
+      - run: npm run test:package:built
+        env:
+          CABLETIDY_PACKAGE_TARBALL: dist-release/package.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cabletidy-npm-package
+          path: dist-release/
+          if-no-files-found: error
+
+  recover-release:
+    needs: recover-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.5.0-rc.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: cabletidy-npm-package
+          path: dist-release/
+      - name: Verify release artifact
+        working-directory: dist-release
+        run: |
+          sha256sum -c SHA256SUMS
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          const release = JSON.parse(fs.readFileSync('release.json', 'utf8'));
+          const bytes = fs.readFileSync('package.tgz');
+          assert.equal(release.ref, `refs/tags/${process.env.RELEASE_TAG}`);
+          assert.equal(release.commit, process.env.RELEASE_COMMIT);
+          assert.equal(release.runId, process.env.GITHUB_RUN_ID);
+          assert.equal(`v${release.version}`, process.env.RELEASE_TAG);
+          assert.equal(release.sha256, createHash('sha256').update(bytes).digest('hex'));
+          assert.equal(release.integrity, `sha512-${createHash('sha512').update(bytes).digest('base64')}`);
+          JS
+      - name: Create GitHub Pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          printf '%s\n\n' 'These assets passed the release recovery workflow. npm publication is managed separately; this GitHub Release does not confirm npm availability.' > "$notes"
+          printf '%s\n\n' 'The public tag and product source are unchanged. Six compatibility checks and four platform builds passed run 38756023314. The macOS x64 build was recovered with a test-only audit waiting fix; the final five-platform tarball passed installation checks.' >> "$notes"
+          cat docs/releases/0.5.0-rc.2.md >> "$notes"
+          gh release create "$RELEASE_TAG" \
+            dist-release/package.tgz dist-release/SHA256SUMS dist-release/release.json \
+            --verify-tag --title "CableTidy 0.5.0-rc.2" --notes-file "$notes" --prerelease --latest=false

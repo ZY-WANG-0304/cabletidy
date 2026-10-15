@@ -59,13 +59,16 @@ async function fixture(t, handler, { claude = false, passthrough = false, unavai
       assert.equal(response.status, 200, response.status === 200 ? undefined : await response.text());
       return response.json();
     },
-    async waitFor(predicate) {
-      for (let i = 0; i < 1500; i++) {
-        const result = await this.list("audit", "kind=request");
+    async waitFor(predicate, { timeoutMs } = {}) {
+      const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
+      const attempts = timeoutMs === undefined ? 1500 : Infinity;
+      let result;
+      for (let i = 0; i < attempts && Date.now() < deadline; i++) {
+        result = await this.list("audit", "kind=request");
         if (predicate(result) && result.items.every(item => item.inspectionProgress?.active !== true && !["pending", "running"].includes(item.inspectionStatus))) return result;
         await delay(20);
       }
-      assert.fail("Audit state did not settle");
+      assert.fail(`Audit state did not settle${timeoutMs === undefined ? "" : ` within ${timeoutMs} ms`}: ${JSON.stringify(result)}`);
     },
     async restart(env) { await app.close(); app = await createApplication({ ...applicationOptions, env }); },
     close: () => app.close(),
@@ -455,7 +458,9 @@ for (const claude of [false, true]) {
       { type: "function_call_output", call_id: id, output: { text, metadata: { tail: "结果末尾" } } },
     ], tools };
     await (await f.request(body)).text();
-    const audit = (await f.waitFor(result => result.total === 1)).items[0];
+    // These fixtures retain several MiB of escaped text. Allow the full audit
+    // scan to finish on two-core release runners before asserting its content.
+    const audit = (await f.waitFor(result => result.total === 1, { timeoutMs: 180000 })).items[0];
     const first = (await (await f.call(`api/v1/security/audit/${audit.id}`)).json()).record.requestContent;
     assert.equal(first.state, "complete");
     assert.equal(first.total, 47);
