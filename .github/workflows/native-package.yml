@@ -287,7 +287,7 @@ jobs:
           import { createHash } from 'node:crypto';
           const release = JSON.parse(fs.readFileSync('release.json', 'utf8'));
           const bytes = fs.readFileSync('package.tgz');
-          assert.equal(release.ref, `refs/tags/${process.env.RELEASE_TAG}`);
+          assert.equal(release.ref, process.env.GITHUB_REF);
           assert.equal(release.commit, process.env.RELEASE_COMMIT);
           assert.equal(release.runId, process.env.GITHUB_RUN_ID);
           assert.equal(`v${release.version}`, process.env.RELEASE_TAG);
