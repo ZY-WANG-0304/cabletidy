@@ -2,6 +2,8 @@
 
 提交基线为 `57711d2`（`fix: unify credential detection, protection, and audit evidence`）。本目录记录后续独立实验，缓存只通过 test-support 构建的 `CABLETIDY_TEST_CREDENTIAL_CACHE=1` 开启。普通构建继续使用完整检测流程。
 
+PR 分支已 rebase 至 `origin/main` 的 `d5e369a`（0.5.0-rc.2），原基线提交对应 `6add8ea`；`git range-diff` 确认检测修复和缓存实验补丁内容保持一致。以下性能数值与二进制校验和来自 rebase 前的 0.5.0-rc.1 构建，未将发布元数据更新后的新二进制冒充为原始测量对象。重新运行可使用 PR 中的 `6add8ea` 构建等价检测基线，输出校验和与分位数将重新生成。
+
 ## 实验实现
 
 采用确认过的流程：复用兼容旧内容的检测事实 → 检测新增／变化内容 → 用新增可信值复查历史 → 为当前原文生成候选和执行保护。
