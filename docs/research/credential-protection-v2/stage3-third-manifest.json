@@ -1,0 +1,1017 @@
+{
+  "version": 1,
+  "corpusSha256": "6afe21569646b5a624333ccdddcbb83c61295e893a2b4dc3be45ce2ccebca07e",
+  "specimens": 112,
+  "families": 28,
+  "contracts": 0,
+  "partition": [
+    {
+      "id": "final/source/string-rust-let/0",
+      "family": "final/source/string-rust-let",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "e5f651bd95a5271587d1e3adee61549ed24955b3dc4a9dea52a4effc4599d7b0",
+      "expectedSha256": "7997df68f6a523d00fbefe53586c0b17aac6e53e986b189214027a22e224f4ea"
+    },
+    {
+      "id": "final/source/string-rust-let/1",
+      "family": "final/source/string-rust-let",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "ab1745b7f5a0a286608a6fd0c5f442c8adf5bf0444f4120e1f3b73e504c234a6",
+      "expectedSha256": "7997df68f6a523d00fbefe53586c0b17aac6e53e986b189214027a22e224f4ea"
+    },
+    {
+      "id": "final/source/string-rust-let/2",
+      "family": "final/source/string-rust-let",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "d467f1439736c7c6b1c2a7c27eecaf554eaace851253a01226fa1c6d9b9da733",
+      "expectedSha256": "7997df68f6a523d00fbefe53586c0b17aac6e53e986b189214027a22e224f4ea"
+    },
+    {
+      "id": "final/source/string-rust-let/3",
+      "family": "final/source/string-rust-let",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "246d3845aed62a1e5225864aaee546a08236d5228af45eb1a062a6acc9c52a94",
+      "expectedSha256": "7997df68f6a523d00fbefe53586c0b17aac6e53e986b189214027a22e224f4ea"
+    },
+    {
+      "id": "final/source/qualified-type-member/0",
+      "family": "final/source/qualified-type-member",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "62bdf9cfccd2f2f9dc036dc8b60e9bddd335890a87d49ed1d7b17198391a4540",
+      "expectedSha256": "62bdf9cfccd2f2f9dc036dc8b60e9bddd335890a87d49ed1d7b17198391a4540"
+    },
+    {
+      "id": "final/source/qualified-type-member/1",
+      "family": "final/source/qualified-type-member",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "cecda4fb989dec2dbf6bd48b90b4c3c1e62e337a73291f50189d439d10cac276",
+      "expectedSha256": "cecda4fb989dec2dbf6bd48b90b4c3c1e62e337a73291f50189d439d10cac276"
+    },
+    {
+      "id": "final/source/qualified-type-member/2",
+      "family": "final/source/qualified-type-member",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "ac1b8116c9b73ee846fcdeee8e3653ab66626b954b06d909ab9667f8ec0378cc",
+      "expectedSha256": "ac1b8116c9b73ee846fcdeee8e3653ab66626b954b06d909ab9667f8ec0378cc"
+    },
+    {
+      "id": "final/source/qualified-type-member/3",
+      "family": "final/source/qualified-type-member",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "4ceeddf7e9f8bd9d19f2b885760d3abd48bc72c56813c83aadf0c2b18f61482a",
+      "expectedSha256": "4ceeddf7e9f8bd9d19f2b885760d3abd48bc72c56813c83aadf0c2b18f61482a"
+    },
+    {
+      "id": "final/source/single-unknown-escape/0",
+      "family": "final/source/single-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "cbbfd415d0548f79050fbd9e39f005edafb35d888aecd849434b13ea54305c1b",
+      "expectedSha256": "cbbfd415d0548f79050fbd9e39f005edafb35d888aecd849434b13ea54305c1b"
+    },
+    {
+      "id": "final/source/single-unknown-escape/1",
+      "family": "final/source/single-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "4370644b4075aecb84d87eca3682ab25b94c935c9b5660ed46f53b71eece2600",
+      "expectedSha256": "4370644b4075aecb84d87eca3682ab25b94c935c9b5660ed46f53b71eece2600"
+    },
+    {
+      "id": "final/source/single-unknown-escape/2",
+      "family": "final/source/single-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "0c13d2dca6f9ed1ba7dd8dbf7a61decafe0e6429b18a40388e2a949993588613",
+      "expectedSha256": "0c13d2dca6f9ed1ba7dd8dbf7a61decafe0e6429b18a40388e2a949993588613"
+    },
+    {
+      "id": "final/source/single-unknown-escape/3",
+      "family": "final/source/single-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "ed034a1141f45e2b3aeec5cffc7c4ebf1465783c0c0a178f728e9165a2123b42",
+      "expectedSha256": "ed034a1141f45e2b3aeec5cffc7c4ebf1465783c0c0a178f728e9165a2123b42"
+    },
+    {
+      "id": "final/source/typed-object-expression/0",
+      "family": "final/source/typed-object-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "461074216d23ea73b514376d84cbec52279edf070035882035a622682ce4535f",
+      "expectedSha256": "461074216d23ea73b514376d84cbec52279edf070035882035a622682ce4535f"
+    },
+    {
+      "id": "final/source/typed-object-expression/1",
+      "family": "final/source/typed-object-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "2ec1a1f7fdefcde160bcdfdd857feb35f00e7cd5cc61721ac91236a95eda251b",
+      "expectedSha256": "2ec1a1f7fdefcde160bcdfdd857feb35f00e7cd5cc61721ac91236a95eda251b"
+    },
+    {
+      "id": "final/source/typed-object-expression/2",
+      "family": "final/source/typed-object-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "07dd0feb041b0aaef2819e95834c1e173febf52630bb5f659cce62ab00111025",
+      "expectedSha256": "07dd0feb041b0aaef2819e95834c1e173febf52630bb5f659cce62ab00111025"
+    },
+    {
+      "id": "final/source/typed-object-expression/3",
+      "family": "final/source/typed-object-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "aa5f2e6862e1cde3e5bef40395ff18f82fa4c871185e44a411a89d760fe20d28",
+      "expectedSha256": "aa5f2e6862e1cde3e5bef40395ff18f82fa4c871185e44a411a89d760fe20d28"
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/0",
+      "family": "final/environment/dot-env-leading-space",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "570fb05463b805986d26e2b42d4cb2ef8fa62569dd25f660f7145d5048d03f9c",
+      "expectedSha256": "d0cb5cdc1856a86afae51201cf6adc8569cb6aa2264cc759b6345c661d777a1b"
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/1",
+      "family": "final/environment/dot-env-leading-space",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "9a028bb61edbfdc6b3f0e33f176a7c477f7ec0dc2b6762798995e4cf3b588bab",
+      "expectedSha256": "d0cb5cdc1856a86afae51201cf6adc8569cb6aa2264cc759b6345c661d777a1b"
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/2",
+      "family": "final/environment/dot-env-leading-space",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "fec9a4d0f3acdade7c05891b531a6251f0c43594bd685aad5f04bce4b191f541",
+      "expectedSha256": "d0cb5cdc1856a86afae51201cf6adc8569cb6aa2264cc759b6345c661d777a1b"
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/3",
+      "family": "final/environment/dot-env-leading-space",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "5098c11c299dd4395fa8bb27a902a236aff23e54e58fcc32643f55124ff780d7",
+      "expectedSha256": "d0cb5cdc1856a86afae51201cf6adc8569cb6aa2264cc759b6345c661d777a1b"
+    },
+    {
+      "id": "final/environment/secret-suffix-single/0",
+      "family": "final/environment/secret-suffix-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "c86c6db069e41e77ec80c175d211f3f1c8444221de315ff4b16f4fdf36c3f6b5",
+      "expectedSha256": "41ae9059342a122f48278c7f9a47b1b844b2e44f9f11f77dc148fe8166cbc25a"
+    },
+    {
+      "id": "final/environment/secret-suffix-single/1",
+      "family": "final/environment/secret-suffix-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "1459b6cbd9e583bd77b2ac22b8fea039be7382ae097d480e0bcee3f25b6755ce",
+      "expectedSha256": "41ae9059342a122f48278c7f9a47b1b844b2e44f9f11f77dc148fe8166cbc25a"
+    },
+    {
+      "id": "final/environment/secret-suffix-single/2",
+      "family": "final/environment/secret-suffix-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "e3c12842b6a095cbb2925fdf7da7dbd921687ab93f1f68bcf0b34ff6f1bf51b3",
+      "expectedSha256": "41ae9059342a122f48278c7f9a47b1b844b2e44f9f11f77dc148fe8166cbc25a"
+    },
+    {
+      "id": "final/environment/secret-suffix-single/3",
+      "family": "final/environment/secret-suffix-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "ac994215dcf22dec8e94ebd2c0dab18ddeaad4785e7d0e3dc2933c3813d9b5e8",
+      "expectedSha256": "41ae9059342a122f48278c7f9a47b1b844b2e44f9f11f77dc148fe8166cbc25a"
+    },
+    {
+      "id": "final/environment/placeholder-after-export/0",
+      "family": "final/environment/placeholder-after-export",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "f0c4e2d4c33c23a6b4d48ed1a8a4ca95cf79ef1dccf919f959d610b91428528f",
+      "expectedSha256": "f0c4e2d4c33c23a6b4d48ed1a8a4ca95cf79ef1dccf919f959d610b91428528f"
+    },
+    {
+      "id": "final/environment/placeholder-after-export/1",
+      "family": "final/environment/placeholder-after-export",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "4b5511538e6eb66a0025496814eba5c481b2356c59abc9f8b30f399476c44126",
+      "expectedSha256": "4b5511538e6eb66a0025496814eba5c481b2356c59abc9f8b30f399476c44126"
+    },
+    {
+      "id": "final/environment/placeholder-after-export/2",
+      "family": "final/environment/placeholder-after-export",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "36d9473b019a2e1321f26277cf1cd8e50a92f6f5aa28110d85d1be30e6187486",
+      "expectedSha256": "36d9473b019a2e1321f26277cf1cd8e50a92f6f5aa28110d85d1be30e6187486"
+    },
+    {
+      "id": "final/environment/placeholder-after-export/3",
+      "family": "final/environment/placeholder-after-export",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "839b2dce9cf7efe50672a5328d127ec27b02009fd29f7069f8433f6d466d7722",
+      "expectedSha256": "839b2dce9cf7efe50672a5328d127ec27b02009fd29f7069f8433f6d466d7722"
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/0",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "2a684393830d92dff2d00f6f546fb3dbbf050007a685788bd821291ad364ee78",
+      "expectedSha256": "2a684393830d92dff2d00f6f546fb3dbbf050007a685788bd821291ad364ee78"
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/1",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "323ec11ea3250ca65e912e39a12e23919ed24ef48545105216b168b2ff233a9b",
+      "expectedSha256": "323ec11ea3250ca65e912e39a12e23919ed24ef48545105216b168b2ff233a9b"
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/2",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "79d975ad52f180d720945e5e5a6e4588f822e7275ea456c2d66f522f794740c3",
+      "expectedSha256": "79d975ad52f180d720945e5e5a6e4588f822e7275ea456c2d66f522f794740c3"
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/3",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "84dc5ac3a44cde3c6198b4857a3c5f4a684506547ac82083f4c30a57ba053e6d",
+      "expectedSha256": "84dc5ac3a44cde3c6198b4857a3c5f4a684506547ac82083f4c30a57ba053e6d"
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/0",
+      "family": "final/json/camel-field-multi-deep",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "81d1740f869118e2b84731103582866eebceaf07aa32872f8d20a69a0a64b5e4",
+      "expectedSha256": "002acfd4e85356d52a8f9d9c33d21ff7c523e9e93b50faf22100680441995829"
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/1",
+      "family": "final/json/camel-field-multi-deep",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "97e482a7e9b16a4f07c68384fd818ba17592d4c7d9284a39e49736b531db009a",
+      "expectedSha256": "002acfd4e85356d52a8f9d9c33d21ff7c523e9e93b50faf22100680441995829"
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/2",
+      "family": "final/json/camel-field-multi-deep",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "dbf91a66411543e65de52212dfb5c641e28093f179268040f8eb0d809c1dd968",
+      "expectedSha256": "002acfd4e85356d52a8f9d9c33d21ff7c523e9e93b50faf22100680441995829"
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/3",
+      "family": "final/json/camel-field-multi-deep",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "3f03c1121ce7ac0edfc8651f726484ca8ac83fa47023445af11c2c7b7a85cb30",
+      "expectedSha256": "002acfd4e85356d52a8f9d9c33d21ff7c523e9e93b50faf22100680441995829"
+    },
+    {
+      "id": "final/json/schema-example-value/0",
+      "family": "final/json/schema-example-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "e34e2fb901ee50d3b9899c492e2d217c3ed315b6de2209bc36f8e13c5ecaea5c",
+      "expectedSha256": "b76ed1a2115042ee469aeb73e8dd0d4b9c0f1163f5b5b9a4a835a7d1b3cc16ce"
+    },
+    {
+      "id": "final/json/schema-example-value/1",
+      "family": "final/json/schema-example-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "8335ac2c1f5ec8ec9cf0883771da65c4658a75f279b7812a80121bbb1109f601",
+      "expectedSha256": "b76ed1a2115042ee469aeb73e8dd0d4b9c0f1163f5b5b9a4a835a7d1b3cc16ce"
+    },
+    {
+      "id": "final/json/schema-example-value/2",
+      "family": "final/json/schema-example-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "538b17e08eb4484f0a0c228c7f39191bce1b13bcd994134121cdafbba49c2e05",
+      "expectedSha256": "b76ed1a2115042ee469aeb73e8dd0d4b9c0f1163f5b5b9a4a835a7d1b3cc16ce"
+    },
+    {
+      "id": "final/json/schema-example-value/3",
+      "family": "final/json/schema-example-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "1fd8f2b0870278969714c3303243e29a9362c07b636fab9372d3b8e9e014ce1a",
+      "expectedSha256": "b76ed1a2115042ee469aeb73e8dd0d4b9c0f1163f5b5b9a4a835a7d1b3cc16ce"
+    },
+    {
+      "id": "final/json/schema-password-policy/0",
+      "family": "final/json/schema-password-policy",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "1a03feab119fa4824870f58c5e763bcedc580f0e3ddc28034194e2b40643ad87",
+      "expectedSha256": "1a03feab119fa4824870f58c5e763bcedc580f0e3ddc28034194e2b40643ad87"
+    },
+    {
+      "id": "final/json/schema-password-policy/1",
+      "family": "final/json/schema-password-policy",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "af45829e0cef17ba81e2e7a336b2ab5aba837499da49cab60afe0f34a958b6f8",
+      "expectedSha256": "af45829e0cef17ba81e2e7a336b2ab5aba837499da49cab60afe0f34a958b6f8"
+    },
+    {
+      "id": "final/json/schema-password-policy/2",
+      "family": "final/json/schema-password-policy",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "85914b2a883566416bc7b2abdc95b8d1a0015f0df114686edb77579c365e8aca",
+      "expectedSha256": "85914b2a883566416bc7b2abdc95b8d1a0015f0df114686edb77579c365e8aca"
+    },
+    {
+      "id": "final/json/schema-password-policy/3",
+      "family": "final/json/schema-password-policy",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "b1cc301ec99fae587616a8eb2010f476e80f619487432bfe4396192da0809251",
+      "expectedSha256": "b1cc301ec99fae587616a8eb2010f476e80f619487432bfe4396192da0809251"
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/0",
+      "family": "final/json/unsupported-single-escape-nested",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "4d3a6608653d9f5bf9f0b1287668c220a26cc4bfd943263312d49070f442e8c2",
+      "expectedSha256": "4d3a6608653d9f5bf9f0b1287668c220a26cc4bfd943263312d49070f442e8c2"
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/1",
+      "family": "final/json/unsupported-single-escape-nested",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "c90c9625ec0ab0dc9f69ffdf226b2b32d4a806d03cb78929278b3a376900be0d",
+      "expectedSha256": "c90c9625ec0ab0dc9f69ffdf226b2b32d4a806d03cb78929278b3a376900be0d"
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/2",
+      "family": "final/json/unsupported-single-escape-nested",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "784c60777f9ac009e4d09ff616cbc3047c5a2af1ff84a7d0277bffae9b82683a",
+      "expectedSha256": "784c60777f9ac009e4d09ff616cbc3047c5a2af1ff84a7d0277bffae9b82683a"
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/3",
+      "family": "final/json/unsupported-single-escape-nested",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "0865afe571595eaff3cfff0f4a562f78ab035de30d3ca67f51af2b8ff08cf193",
+      "expectedSha256": "0865afe571595eaff3cfff0f4a562f78ab035de30d3ca67f51af2b8ff08cf193"
+    },
+    {
+      "id": "final/markdown/heading-python-password/0",
+      "family": "final/markdown/heading-python-password",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "409cd6484b74aba37c65a6c3e306b25f6cbb3ae50fc57f78d5f23639c8ea5403",
+      "expectedSha256": "cfa8929f749da953d3f97d52992e9b9222107ca5227c8bc276487e695a380970"
+    },
+    {
+      "id": "final/markdown/heading-python-password/1",
+      "family": "final/markdown/heading-python-password",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "071c41e22ab8f31b832f02f692afe8f790ce1b7e8baa5dab94eac61a1dc0382d",
+      "expectedSha256": "cfa8929f749da953d3f97d52992e9b9222107ca5227c8bc276487e695a380970"
+    },
+    {
+      "id": "final/markdown/heading-python-password/2",
+      "family": "final/markdown/heading-python-password",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "e95a4ec67e9768a5aa123a31cdeadbc13abfedf62546db9fa361a1d24793fca9",
+      "expectedSha256": "cfa8929f749da953d3f97d52992e9b9222107ca5227c8bc276487e695a380970"
+    },
+    {
+      "id": "final/markdown/heading-python-password/3",
+      "family": "final/markdown/heading-python-password",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "eace8a4fb543268b33c5c26ab3afffac4b17f8f2c3ce47782077caa45ecd76e6",
+      "expectedSha256": "cfa8929f749da953d3f97d52992e9b9222107ca5227c8bc276487e695a380970"
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/0",
+      "family": "final/markdown/backtick-field-and-prose",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "5f850de8076675468d3440b24bb3f07e2f24110975ffed31c97942cc6b23f4b3",
+      "expectedSha256": "5f850de8076675468d3440b24bb3f07e2f24110975ffed31c97942cc6b23f4b3"
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/1",
+      "family": "final/markdown/backtick-field-and-prose",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "c8adab534bd450f53a4efe228b09c0cebcdb56975a0a5ed879050eb38b518445",
+      "expectedSha256": "c8adab534bd450f53a4efe228b09c0cebcdb56975a0a5ed879050eb38b518445"
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/2",
+      "family": "final/markdown/backtick-field-and-prose",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "34673b19497be7137c93a245428f77c553fcb813da7105fb1438d79146b95a33",
+      "expectedSha256": "34673b19497be7137c93a245428f77c553fcb813da7105fb1438d79146b95a33"
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/3",
+      "family": "final/markdown/backtick-field-and-prose",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "5b28c7588880c8696da8b37cc2b732514f69428390c7540aeb19e7309cf25f69",
+      "expectedSha256": "5b28c7588880c8696da8b37cc2b732514f69428390c7540aeb19e7309cf25f69"
+    },
+    {
+      "id": "final/markdown/fenced-comparison/0",
+      "family": "final/markdown/fenced-comparison",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "120f5a3a48b0e82fdee971a9dd5ed07ce76ba907df8b3cab3f8f88edba23f2d5",
+      "expectedSha256": "120f5a3a48b0e82fdee971a9dd5ed07ce76ba907df8b3cab3f8f88edba23f2d5"
+    },
+    {
+      "id": "final/markdown/fenced-comparison/1",
+      "family": "final/markdown/fenced-comparison",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "982be22be6278114e6d55ad0ab1ee6fd7dd059b7da600bfc884a260ec0320530",
+      "expectedSha256": "982be22be6278114e6d55ad0ab1ee6fd7dd059b7da600bfc884a260ec0320530"
+    },
+    {
+      "id": "final/markdown/fenced-comparison/2",
+      "family": "final/markdown/fenced-comparison",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "12762ab3a8a87d4563a026d4e87b25affa2bc0f4c45b73dc78695e27bd71127f",
+      "expectedSha256": "12762ab3a8a87d4563a026d4e87b25affa2bc0f4c45b73dc78695e27bd71127f"
+    },
+    {
+      "id": "final/markdown/fenced-comparison/3",
+      "family": "final/markdown/fenced-comparison",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "40bded0326f30b52580376087367e751cf80c5251f1a2ea8238f87ec3d6219c5",
+      "expectedSha256": "40bded0326f30b52580376087367e751cf80c5251f1a2ea8238f87ec3d6219c5"
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/0",
+      "family": "final/markdown/inline-unclosed-single",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "d056f74f8e2e525257c7ca08c893b83995096d5a044c23c5e6a5625dce238d1c",
+      "expectedSha256": "d056f74f8e2e525257c7ca08c893b83995096d5a044c23c5e6a5625dce238d1c"
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/1",
+      "family": "final/markdown/inline-unclosed-single",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "e3a19c20c3002d29ac44026572a536f7d6cfcc860139dc98c2b8ae3e1cc74ccf",
+      "expectedSha256": "e3a19c20c3002d29ac44026572a536f7d6cfcc860139dc98c2b8ae3e1cc74ccf"
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/2",
+      "family": "final/markdown/inline-unclosed-single",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "8900eb6f9bf6b9cbfde62069bb3b3ff624c3a14a9a2e1017b9d82642155ce3f2",
+      "expectedSha256": "8900eb6f9bf6b9cbfde62069bb3b3ff624c3a14a9a2e1017b9d82642155ce3f2"
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/3",
+      "family": "final/markdown/inline-unclosed-single",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "1f5922b87e79aa8c20363c173a45a1e633a21e56b241ef7ce032ac72f81ee9eb",
+      "expectedSha256": "1f5922b87e79aa8c20363c173a45a1e633a21e56b241ef7ce032ac72f81ee9eb"
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/0",
+      "family": "final/protocol/mixed-basic-prose",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "9898f870bd2d28af873239e35698b706e3ab27bea4ca4ca525f602c34fe2abd8",
+      "expectedSha256": "ca68186c1ad29e7d6ff95e4bc34357305b7eb834db1d965b197c813d13a507db"
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/1",
+      "family": "final/protocol/mixed-basic-prose",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "8241b1a29a608c6405758ad7b0e2925cef5dca49b49e22de99bc3b15e809e15b",
+      "expectedSha256": "ca68186c1ad29e7d6ff95e4bc34357305b7eb834db1d965b197c813d13a507db"
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/2",
+      "family": "final/protocol/mixed-basic-prose",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "8a6b44be9ad20e059c0a4a85f46dc6208c1a5aa32cd74cfb77f3dcec8e0b5860",
+      "expectedSha256": "ca68186c1ad29e7d6ff95e4bc34357305b7eb834db1d965b197c813d13a507db"
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/3",
+      "family": "final/protocol/mixed-basic-prose",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "ddd6313eb0405cb336e479a8346e16881f4ae59e0faa250a13dfe606517b383d",
+      "expectedSha256": "ca68186c1ad29e7d6ff95e4bc34357305b7eb834db1d965b197c813d13a507db"
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/0",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "158d58946880044db92959698372c27c80c2c475c0731de8adb489ae2b371d77",
+      "expectedSha256": "0eb26fe2f5a6e29ddb554d91691942904ad9088aa390c8b58b5bce50f3c66a96"
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/1",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "b77500d6236a445e447fce8e2c7ebb327f0517756e1ba34fc9002f5cdca06cc6",
+      "expectedSha256": "0eb26fe2f5a6e29ddb554d91691942904ad9088aa390c8b58b5bce50f3c66a96"
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/2",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "3bb9634d4be8f98993eb649cf0bb32ab192ea92bde44718fae7863081f1c9b5d",
+      "expectedSha256": "0eb26fe2f5a6e29ddb554d91691942904ad9088aa390c8b58b5bce50f3c66a96"
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/3",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "6ab2eb4be1a080b476063537afe9939dd7cfe15a75fccea87536c01ba76cd74d",
+      "expectedSha256": "0eb26fe2f5a6e29ddb554d91691942904ad9088aa390c8b58b5bce50f3c66a96"
+    },
+    {
+      "id": "final/protocol/public-route-fragment/0",
+      "family": "final/protocol/public-route-fragment",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "046a266ae74be90776799f0851edfe2ce16620c372cf5b0e279487bd10b22a57",
+      "expectedSha256": "046a266ae74be90776799f0851edfe2ce16620c372cf5b0e279487bd10b22a57"
+    },
+    {
+      "id": "final/protocol/public-route-fragment/1",
+      "family": "final/protocol/public-route-fragment",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "b6b54e866bf1555f504feae2f75c12a228fde022dfeaaedcf337876e180f13f4",
+      "expectedSha256": "b6b54e866bf1555f504feae2f75c12a228fde022dfeaaedcf337876e180f13f4"
+    },
+    {
+      "id": "final/protocol/public-route-fragment/2",
+      "family": "final/protocol/public-route-fragment",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "4d848558fde1b5197651d98772433ed920333cd77462339252acdd872297e3c7",
+      "expectedSha256": "4d848558fde1b5197651d98772433ed920333cd77462339252acdd872297e3c7"
+    },
+    {
+      "id": "final/protocol/public-route-fragment/3",
+      "family": "final/protocol/public-route-fragment",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "cc1244d8c62bfe20e1d1ea113cbd7f398d2a6012f18aec0b4b64f1207681f59f",
+      "expectedSha256": "cc1244d8c62bfe20e1d1ea113cbd7f398d2a6012f18aec0b4b64f1207681f59f"
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/0",
+      "family": "final/protocol/opaque-no-auth",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "fa342a5281f77185719dd4278f457dc78cf7174cd01f91f293b7d1b6ca2ca2b9",
+      "expectedSha256": "fa342a5281f77185719dd4278f457dc78cf7174cd01f91f293b7d1b6ca2ca2b9"
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/1",
+      "family": "final/protocol/opaque-no-auth",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "b6e2c647dcbe92d406119ca309429708a88ec96b817a6ab69abc5618c4dd464d",
+      "expectedSha256": "b6e2c647dcbe92d406119ca309429708a88ec96b817a6ab69abc5618c4dd464d"
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/2",
+      "family": "final/protocol/opaque-no-auth",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "abbdbcb7c523d381db36dd6160633e15af8684ddec50dcbb91851d8f807e6c93",
+      "expectedSha256": "abbdbcb7c523d381db36dd6160633e15af8684ddec50dcbb91851d8f807e6c93"
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/3",
+      "family": "final/protocol/opaque-no-auth",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "a26babb0adba32c75a18aef38bb9235cbca1b98573507ffc32bbcb95f180b108",
+      "expectedSha256": "a26babb0adba32c75a18aef38bb9235cbca1b98573507ffc32bbcb95f180b108"
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/0",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "7b83f770adf91fba2a677e4e3f9cda4986ae4b991d8e69c7e673e2a699715b4b",
+      "expectedSha256": "0df379a6af6644dddf83c9b44253ba7382c4f6dd611837349c69256b089cc0ad"
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/1",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "3ed6c622bdf91b81b0845626cd3bf30ffece1aa05218801f977df5afddf13d87",
+      "expectedSha256": "0df379a6af6644dddf83c9b44253ba7382c4f6dd611837349c69256b089cc0ad"
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/2",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "58cb35caed9c6839b97290d5c5e45d5945aa3721dcf26deacb803d6430ea6ed7",
+      "expectedSha256": "0df379a6af6644dddf83c9b44253ba7382c4f6dd611837349c69256b089cc0ad"
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/3",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "abfd59a2ebae635f2d5d5b0537c9b5281e34b8ee0b7d1b1558a65350abdfc464",
+      "expectedSha256": "0df379a6af6644dddf83c9b44253ba7382c4f6dd611837349c69256b089cc0ad"
+    },
+    {
+      "id": "final/provider/aws-format-code/0",
+      "family": "final/provider/aws-format-code",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "7bcdb0785d5e27c06955e63b03ba6844440b5252894949c626840addf7f53ff3",
+      "expectedSha256": "bf3e2027a7a2cfc9ba45d00dd34ab61e1ec84913caa9de16ba27eb87e519c53a"
+    },
+    {
+      "id": "final/provider/aws-format-code/1",
+      "family": "final/provider/aws-format-code",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "456e85f4492c75050659f0f4575d4623e741b81b189917bca2bce054dacce01f",
+      "expectedSha256": "bf3e2027a7a2cfc9ba45d00dd34ab61e1ec84913caa9de16ba27eb87e519c53a"
+    },
+    {
+      "id": "final/provider/aws-format-code/2",
+      "family": "final/provider/aws-format-code",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "b67addec306cf00770074c5f83f075b8d9ccee22c50c76aa2aaa84d3bc1788a1",
+      "expectedSha256": "bf3e2027a7a2cfc9ba45d00dd34ab61e1ec84913caa9de16ba27eb87e519c53a"
+    },
+    {
+      "id": "final/provider/aws-format-code/3",
+      "family": "final/provider/aws-format-code",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "2d129113e42b1fc8a67d428db79d2fbc4ddaccb590bc849ad8951f64fbc794a2",
+      "expectedSha256": "bf3e2027a7a2cfc9ba45d00dd34ab61e1ec84913caa9de16ba27eb87e519c53a"
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/0",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "9030fc7523e3e228052043f9c6ee422c772657d043464b8b06ef711b8cc58cfb",
+      "expectedSha256": "9030fc7523e3e228052043f9c6ee422c772657d043464b8b06ef711b8cc58cfb"
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/1",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "3c99cd003fcf46e615a55e872e355db7c5e8443be48ebb33da315e9a0cd63759",
+      "expectedSha256": "3c99cd003fcf46e615a55e872e355db7c5e8443be48ebb33da315e9a0cd63759"
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/2",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "400ea46413644ceff2f854952a3a6c4b9100419c1c91f65ca78bf626b6f3879d",
+      "expectedSha256": "400ea46413644ceff2f854952a3a6c4b9100419c1c91f65ca78bf626b6f3879d"
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/3",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "ae57f0e25ea69fb71b05aaef47524f326421369376bd76e8b1ac8f99ab7b58d2",
+      "expectedSha256": "ae57f0e25ea69fb71b05aaef47524f326421369376bd76e8b1ac8f99ab7b58d2"
+    },
+    {
+      "id": "final/provider/token-look-like-word/0",
+      "family": "final/provider/token-look-like-word",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "2dc551ab6fc991bbb60da8183b54023e7d9cbb152abef65f49e4e05b519e2d27",
+      "expectedSha256": "2dc551ab6fc991bbb60da8183b54023e7d9cbb152abef65f49e4e05b519e2d27"
+    },
+    {
+      "id": "final/provider/token-look-like-word/1",
+      "family": "final/provider/token-look-like-word",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "e2bad9f8fbbbf73fea224b2cbe6bfcbedb32b9b407d2af8e0a19248fde2630d5",
+      "expectedSha256": "e2bad9f8fbbbf73fea224b2cbe6bfcbedb32b9b407d2af8e0a19248fde2630d5"
+    },
+    {
+      "id": "final/provider/token-look-like-word/2",
+      "family": "final/provider/token-look-like-word",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "a492c6d509eeb761fcf68a5c4d2e19e371e2618b138a8482e8163ab40c061cee",
+      "expectedSha256": "a492c6d509eeb761fcf68a5c4d2e19e371e2618b138a8482e8163ab40c061cee"
+    },
+    {
+      "id": "final/provider/token-look-like-word/3",
+      "family": "final/provider/token-look-like-word",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "f8dbdd6086f6eda773aa7dac4fc38af79d15741a6505ca634a8f97eb6e735b9b",
+      "expectedSha256": "f8dbdd6086f6eda773aa7dac4fc38af79d15741a6505ca634a8f97eb6e735b9b"
+    },
+    {
+      "id": "final/structure/format-regex-key-block/0",
+      "family": "final/structure/format-regex-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "4cd5cc06b043b0723d080850a5acc065505e2860bbb64b681c921bb5aa3bc839",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/format-regex-key-block/1",
+      "family": "final/structure/format-regex-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "a1072a8259e1d9510aba471d766f14fc5bdd998d6068360c9edf1aa8a2dad2c3",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/format-regex-key-block/2",
+      "family": "final/structure/format-regex-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "18c3bf1c4d620c3dd4c58eb8f1bc86e7c4d2d38d334240ca176f44cbd6773a80",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/format-regex-key-block/3",
+      "family": "final/structure/format-regex-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "509ec86b1331967f19aead3977ae11bca64719b93559a20d7452fd1ec940efb4",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/function-name-key-block/0",
+      "family": "final/structure/function-name-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "fdc4b4234257ec157892ecf6d363762304c0df49c69d0c70654368bf6e8fda49",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/function-name-key-block/1",
+      "family": "final/structure/function-name-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "0e0c6fbbbc94d185b15159d5d07172482deabee99c189a08ca96a0c57a4fc881",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/function-name-key-block/2",
+      "family": "final/structure/function-name-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "8bb4d6089276a9b46555c557589124bcdc11383fb776e322e065e3f820c2af95",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/function-name-key-block/3",
+      "family": "final/structure/function-name-key-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "1962fbbb40570c967e604f2af1437a4f2f6ee193ea0e5d32d01bf4b96565d4cc",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/0",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "304fd5cc5fcb37b77807fc5d79fc24be54645277a0c786e3622abcc6d4d30b9b",
+      "expectedSha256": "304fd5cc5fcb37b77807fc5d79fc24be54645277a0c786e3622abcc6d4d30b9b"
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/1",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "9fa68dbf82582af28bca8c72d134ef84311a57aa94201c5fa4ea77ecf7aaec49",
+      "expectedSha256": "9fa68dbf82582af28bca8c72d134ef84311a57aa94201c5fa4ea77ecf7aaec49"
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/2",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "de5ff1dd4fdbcb2ca3099f0733ae911ccb8dbb44804553924c63339651461e7c",
+      "expectedSha256": "de5ff1dd4fdbcb2ca3099f0733ae911ccb8dbb44804553924c63339651461e7c"
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/3",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "0fffb7f0f0dbe147c9acda4a7e00d71d2eb74cedf1a32dc0d4be95b537db3222",
+      "expectedSha256": "0fffb7f0f0dbe147c9acda4a7e00d71d2eb74cedf1a32dc0d4be95b537db3222"
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/0",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "47a427df8b22ae98ce777fa251d5872dbca448e916f070f517fe89b3d386649e",
+      "expectedSha256": "47a427df8b22ae98ce777fa251d5872dbca448e916f070f517fe89b3d386649e"
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/1",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "130e410d491a3049d60e7cda54daf7cd03748d212efcdceb632413d71ddf684f",
+      "expectedSha256": "130e410d491a3049d60e7cda54daf7cd03748d212efcdceb632413d71ddf684f"
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/2",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "efa81681a44c4e98b63827e2efbc5dac127bc029dde11947ea0b09aea7822f5c",
+      "expectedSha256": "efa81681a44c4e98b63827e2efbc5dac127bc029dde11947ea0b09aea7822f5c"
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/3",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "2d2bc91fa99387a25fcb88e7cdc94efc8c444ddba640cf690282e96233ee531e",
+      "expectedSha256": "2d2bc91fa99387a25fcb88e7cdc94efc8c444ddba640cf690282e96233ee531e"
+    }
+  ]
+}

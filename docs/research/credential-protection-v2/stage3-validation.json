@@ -1,0 +1,1624 @@
+{
+  "date": "2026-10-16T19:07:11.299Z",
+  "phase": "fourth-synthetic-holdout",
+  "detectorVersion": "credentials-4",
+  "auditPolicyVersion": "audit-4",
+  "binarySha256": "d1386be0b9729fd7bfdecd607afa36e5b3d617c28bd431487495ba7d3abe3b46",
+  "manifestSha256": "fda01548dea143efcdf9c7714b6fd71cbf9e3aed8a0641b34e882977770d4790",
+  "scope": "Local synthetic grouped diagnostic evaluation. Families contain correlated variants; Wilson intervals are descriptive specimen intervals, not independent or production inference. Exact full wire payload comparison verifies noncredential bytes as well as replacement. Refusals are separate. No online credential validation.",
+  "auditSettled": true,
+  "auditCount": 112,
+  "strata": {
+    "tuning": {
+      "total": {
+        "specimens": 0,
+        "families": 0,
+        "pass": 0,
+        "precision": null,
+        "positivePayloadRecall": null,
+        "negativeChangeRate": null,
+        "blocked": {
+          "total": 0,
+          "correct": 0
+        },
+        "ambiguous": {
+          "total": 0,
+          "unchanged": 0
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "environment": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "json": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "markdown": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "protocol": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "provider": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "structure": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        }
+      }
+    },
+    "heldout": {
+      "total": {
+        "specimens": 112,
+        "families": 28,
+        "pass": 112,
+        "precision": {
+          "estimate": 1,
+          "lower": 0.9258998703338824,
+          "upper": 0.9999999999999999,
+          "n": 48
+        },
+        "positivePayloadRecall": {
+          "estimate": 1,
+          "lower": 0.9258998703338824,
+          "upper": 0.9999999999999999,
+          "n": 48
+        },
+        "negativeChangeRate": {
+          "estimate": 0,
+          "lower": 0,
+          "upper": 0.09641862859446367,
+          "n": 36
+        },
+        "blocked": {
+          "total": 8,
+          "correct": 8
+        },
+        "ambiguous": {
+          "total": 20,
+          "unchanged": 20
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "environment": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "json": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "markdown": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "protocol": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "provider": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "structure": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 8,
+            "correct": 8
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        }
+      }
+    }
+  },
+  "contractSummary": {},
+  "results": [
+    {
+      "id": "validation/source/multi-statement-typed-client-secret/0",
+      "family": "validation/source/multi-statement-typed-client-secret",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/multi-statement-typed-client-secret/1",
+      "family": "validation/source/multi-statement-typed-client-secret",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/multi-statement-typed-client-secret/2",
+      "family": "validation/source/multi-statement-typed-client-secret",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/multi-statement-typed-client-secret/3",
+      "family": "validation/source/multi-statement-typed-client-secret",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/python-double-annotated-in-block/0",
+      "family": "validation/source/python-double-annotated-in-block",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/python-double-annotated-in-block/1",
+      "family": "validation/source/python-double-annotated-in-block",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/python-double-annotated-in-block/2",
+      "family": "validation/source/python-double-annotated-in-block",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/python-double-annotated-in-block/3",
+      "family": "validation/source/python-double-annotated-in-block",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/source/typescript-conditional-expression/0",
+      "family": "validation/source/typescript-conditional-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typescript-conditional-expression/1",
+      "family": "validation/source/typescript-conditional-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typescript-conditional-expression/2",
+      "family": "validation/source/typescript-conditional-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typescript-conditional-expression/3",
+      "family": "validation/source/typescript-conditional-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typed-unterminated-double/0",
+      "family": "validation/source/typed-unterminated-double",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typed-unterminated-double/1",
+      "family": "validation/source/typed-unterminated-double",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typed-unterminated-double/2",
+      "family": "validation/source/typed-unterminated-double",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/source/typed-unterminated-double/3",
+      "family": "validation/source/typed-unterminated-double",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/multiple-env-lines/0",
+      "family": "validation/environment/multiple-env-lines",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/multiple-env-lines/1",
+      "family": "validation/environment/multiple-env-lines",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/multiple-env-lines/2",
+      "family": "validation/environment/multiple-env-lines",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/multiple-env-lines/3",
+      "family": "validation/environment/multiple-env-lines",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/spaced-client-suffix/0",
+      "family": "validation/environment/spaced-client-suffix",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/spaced-client-suffix/1",
+      "family": "validation/environment/spaced-client-suffix",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/spaced-client-suffix/2",
+      "family": "validation/environment/spaced-client-suffix",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/spaced-client-suffix/3",
+      "family": "validation/environment/spaced-client-suffix",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/environment/empty-and-dynamic/0",
+      "family": "validation/environment/empty-and-dynamic",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/empty-and-dynamic/1",
+      "family": "validation/environment/empty-and-dynamic",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/empty-and-dynamic/2",
+      "family": "validation/environment/empty-and-dynamic",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/empty-and-dynamic/3",
+      "family": "validation/environment/empty-and-dynamic",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/unsupported-single-escape/0",
+      "family": "validation/environment/unsupported-single-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/unsupported-single-escape/1",
+      "family": "validation/environment/unsupported-single-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/unsupported-single-escape/2",
+      "family": "validation/environment/unsupported-single-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/environment/unsupported-single-escape/3",
+      "family": "validation/environment/unsupported-single-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/nested-schema-examples/0",
+      "family": "validation/json/nested-schema-examples",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/nested-schema-examples/1",
+      "family": "validation/json/nested-schema-examples",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/nested-schema-examples/2",
+      "family": "validation/json/nested-schema-examples",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/nested-schema-examples/3",
+      "family": "validation/json/nested-schema-examples",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/credentials-multi-array-ordinary/0",
+      "family": "validation/json/credentials-multi-array-ordinary",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/credentials-multi-array-ordinary/1",
+      "family": "validation/json/credentials-multi-array-ordinary",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/credentials-multi-array-ordinary/2",
+      "family": "validation/json/credentials-multi-array-ordinary",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/credentials-multi-array-ordinary/3",
+      "family": "validation/json/credentials-multi-array-ordinary",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/json/negative-reference-extensions/0",
+      "family": "validation/json/negative-reference-extensions",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/negative-reference-extensions/1",
+      "family": "validation/json/negative-reference-extensions",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/negative-reference-extensions/2",
+      "family": "validation/json/negative-reference-extensions",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/negative-reference-extensions/3",
+      "family": "validation/json/negative-reference-extensions",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/unknown-escape-source-extension/0",
+      "family": "validation/json/unknown-escape-source-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/unknown-escape-source-extension/1",
+      "family": "validation/json/unknown-escape-source-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/unknown-escape-source-extension/2",
+      "family": "validation/json/unknown-escape-source-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/json/unknown-escape-source-extension/3",
+      "family": "validation/json/unknown-escape-source-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/blockquote-env-value/0",
+      "family": "validation/markdown/blockquote-env-value",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/blockquote-env-value/1",
+      "family": "validation/markdown/blockquote-env-value",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/blockquote-env-value/2",
+      "family": "validation/markdown/blockquote-env-value",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/blockquote-env-value/3",
+      "family": "validation/markdown/blockquote-env-value",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/inline-python-typed-snippet/0",
+      "family": "validation/markdown/inline-python-typed-snippet",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/inline-python-typed-snippet/1",
+      "family": "validation/markdown/inline-python-typed-snippet",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/inline-python-typed-snippet/2",
+      "family": "validation/markdown/inline-python-typed-snippet",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/inline-python-typed-snippet/3",
+      "family": "validation/markdown/inline-python-typed-snippet",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/markdown/typed-doc-reference/0",
+      "family": "validation/markdown/typed-doc-reference",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/typed-doc-reference/1",
+      "family": "validation/markdown/typed-doc-reference",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/typed-doc-reference/2",
+      "family": "validation/markdown/typed-doc-reference",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/typed-doc-reference/3",
+      "family": "validation/markdown/typed-doc-reference",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/unknown-escape-fenced-token/0",
+      "family": "validation/markdown/unknown-escape-fenced-token",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/unknown-escape-fenced-token/1",
+      "family": "validation/markdown/unknown-escape-fenced-token",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/unknown-escape-fenced-token/2",
+      "family": "validation/markdown/unknown-escape-fenced-token",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/markdown/unknown-escape-fenced-token/3",
+      "family": "validation/markdown/unknown-escape-fenced-token",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/session-token-spaces-and-attrs/0",
+      "family": "validation/protocol/session-token-spaces-and-attrs",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/session-token-spaces-and-attrs/1",
+      "family": "validation/protocol/session-token-spaces-and-attrs",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/session-token-spaces-and-attrs/2",
+      "family": "validation/protocol/session-token-spaces-and-attrs",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/session-token-spaces-and-attrs/3",
+      "family": "validation/protocol/session-token-spaces-and-attrs",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/cookie-camel-newline-header/0",
+      "family": "validation/protocol/cookie-camel-newline-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/cookie-camel-newline-header/1",
+      "family": "validation/protocol/cookie-camel-newline-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/cookie-camel-newline-header/2",
+      "family": "validation/protocol/cookie-camel-newline-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/cookie-camel-newline-header/3",
+      "family": "validation/protocol/cookie-camel-newline-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/protocol/preferences-and-timeout/0",
+      "family": "validation/protocol/preferences-and-timeout",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/preferences-and-timeout/1",
+      "family": "validation/protocol/preferences-and-timeout",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/preferences-and-timeout/2",
+      "family": "validation/protocol/preferences-and-timeout",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/preferences-and-timeout/3",
+      "family": "validation/protocol/preferences-and-timeout",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/public-url-tokenizer/0",
+      "family": "validation/protocol/public-url-tokenizer",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/public-url-tokenizer/1",
+      "family": "validation/protocol/public-url-tokenizer",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/public-url-tokenizer/2",
+      "family": "validation/protocol/public-url-tokenizer",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/protocol/public-url-tokenizer/3",
+      "family": "validation/protocol/public-url-tokenizer",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/format-in-code-array/0",
+      "family": "validation/provider/format-in-code-array",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/format-in-code-array/1",
+      "family": "validation/provider/format-in-code-array",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/format-in-code-array/2",
+      "family": "validation/provider/format-in-code-array",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/format-in-code-array/3",
+      "family": "validation/provider/format-in-code-array",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/github-token-new-code/0",
+      "family": "validation/provider/github-token-new-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/github-token-new-code/1",
+      "family": "validation/provider/github-token-new-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/github-token-new-code/2",
+      "family": "validation/provider/github-token-new-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/github-token-new-code/3",
+      "family": "validation/provider/github-token-new-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "validation/provider/uuid-column-text/0",
+      "family": "validation/provider/uuid-column-text",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uuid-column-text/1",
+      "family": "validation/provider/uuid-column-text",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uuid-column-text/2",
+      "family": "validation/provider/uuid-column-text",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uuid-column-text/3",
+      "family": "validation/provider/uuid-column-text",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uppercase-random-word/0",
+      "family": "validation/provider/uppercase-random-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uppercase-random-word/1",
+      "family": "validation/provider/uppercase-random-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uppercase-random-word/2",
+      "family": "validation/provider/uppercase-random-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/provider/uppercase-random-word/3",
+      "family": "validation/provider/uppercase-random-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/protocol-call-id-block/0",
+      "family": "validation/structure/protocol-call-id-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/protocol-call-id-block/1",
+      "family": "validation/structure/protocol-call-id-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/protocol-call-id-block/2",
+      "family": "validation/structure/protocol-call-id-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/protocol-call-id-block/3",
+      "family": "validation/structure/protocol-call-id-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-const-nested-array-block/0",
+      "family": "validation/structure/schema-const-nested-array-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-const-nested-array-block/1",
+      "family": "validation/structure/schema-const-nested-array-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-const-nested-array-block/2",
+      "family": "validation/structure/schema-const-nested-array-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-const-nested-array-block/3",
+      "family": "validation/structure/schema-const-nested-array-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-metadata-doc-ref/0",
+      "family": "validation/structure/schema-metadata-doc-ref",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-metadata-doc-ref/1",
+      "family": "validation/structure/schema-metadata-doc-ref",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-metadata-doc-ref/2",
+      "family": "validation/structure/schema-metadata-doc-ref",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-metadata-doc-ref/3",
+      "family": "validation/structure/schema-metadata-doc-ref",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-description-unknown/0",
+      "family": "validation/structure/schema-description-unknown",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-description-unknown/1",
+      "family": "validation/structure/schema-description-unknown",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-description-unknown/2",
+      "family": "validation/structure/schema-description-unknown",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "validation/structure/schema-description-unknown/3",
+      "family": "validation/structure/schema-description-unknown",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    }
+  ],
+  "contracts": [],
+  "partitionUse": "Fresh synthetic diagnostic partition frozen before this pass. Some syntax mechanisms were already seen in earlier rounds; this is not source-independent validation."
+}

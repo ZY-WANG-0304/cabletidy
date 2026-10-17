@@ -560,7 +560,21 @@ async fn read_body(
 fn reader_stream(
     mut reader: impl Read + Send + 'static,
 ) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> + Send {
-    async_stream::try_stream! {let mut bytes=vec![0;PAGE];loop {let n=reader.read(&mut bytes)?;if n==0{break;}yield Bytes::copy_from_slice(&bytes[..n]);}}
+    async_stream::try_stream! {
+        let mut bytes=vec![0;PAGE];
+        loop {
+            // EditedReader can return a few bytes at each edit boundary. Fill
+            // the bounded page from this local reader before yielding to HTTP.
+            let mut n=0;
+            while n<bytes.len() {
+                let read=reader.read(&mut bytes[n..])?;
+                if read==0 {break;}
+                n+=read;
+            }
+            if n==0 {break;}
+            yield Bytes::copy_from_slice(&bytes[..n]);
+        }
+    }
 }
 
 async fn audited_local_result(
@@ -1531,6 +1545,17 @@ async fn proxy(
             "请求 body 必须是 JSON object",
         ));
     }
+    if !protect {
+        if let Some(a) = &audit {
+            let source = spool.clone();
+            let secrets = snapshot.secrets.clone();
+            let detection = tokio::task::spawn_blocking(move || {
+                security::credentials::detect(&source, &secrets, &[])
+            })
+            .await?;
+            a.detection(detection);
+        }
+    }
     let body = &info.value;
     if let Some(a) = &audit {
         a.set("clientModelId", json!(text(&body["model"])));
@@ -1565,7 +1590,13 @@ async fn proxy(
         })
         .await?
         {
-            Ok(request) => Some(request),
+            Ok(request) => {
+                if let Some(a) = &audit {
+                    a.detection(request.detection.clone());
+                    a.protection(&request.report);
+                }
+                Some(request)
+            }
             Err(_) => {
                 if let Some(a) = &audit {
                     a.set("protection",json!({"enabled":true,"status":"failed","reason":"request_protection_failed"}));
@@ -1597,15 +1628,20 @@ async fn proxy(
                 protection = Some(request);
                 body
             }
-            Err(_) => {
+            Err(error) => {
+                let reason = error.to_string();
                 if let Some(a) = &audit {
-                    a.set("protection",json!({"enabled":true,"status":"failed","reason":"request_protection_failed"}));
+                    a.protection_failed(&reason);
                 }
                 return Ok(protocol_error(
                     protocol,
                     422,
                     "credential_protection_failed",
-                    "无法完整保护凭据，请求未发送到上游",
+                    if reason.contains("protocol_structure") {
+                        "工具定义或协议结构包含无法安全替换的凭据，请求未发送到上游"
+                    } else {
+                        "无法完整保护凭据，请求未发送到上游"
+                    },
                 ));
             }
         }
@@ -1736,6 +1772,12 @@ async fn proxy(
             ));
         }
     };
+    if let Some(request) = &mut protection {
+        request.report["forwarded"] = json!(true);
+        if let Some(a) = &audit {
+            a.protection(&request.report);
+        }
+    }
     let status = upstream.status();
     state.health(
         text(&u["id"]),
@@ -2070,6 +2112,32 @@ fn rewrite_spooled_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn edited_reader_stream_fills_bounded_pages_and_preserves_all_bytes() {
+        use std::io::Write;
+        let original = "x".repeat(PAGE * 2 + 23);
+        let mut spool = Spool::new().unwrap();
+        spool.write_all(original.as_bytes()).unwrap();
+        let source = spool.seal().unwrap();
+        let mut edits = Edits::new();
+        edits.add(1, 2, b"replacement".to_vec()).unwrap();
+        edits.add(17, 18, b"other".to_vec()).unwrap();
+        let mut expected = original[..1].to_owned();
+        expected.push_str("replacement");
+        expected.push_str(&original[2..17]);
+        expected.push_str("other");
+        expected.push_str(&original[18..]);
+        let chunks = reader_stream(edits.reader(&source))
+            .collect::<Vec<_>>()
+            .await;
+        let chunks = chunks
+            .into_iter()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks[..2].iter().all(|c| c.len() == PAGE));
+        assert_eq!(chunks.concat(), expected.as_bytes());
+    }
 
     #[cfg(feature = "test-support")]
     async fn confirmation_fixture() -> (tempfile::TempDir, Application, String) {

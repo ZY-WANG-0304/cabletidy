@@ -973,3 +973,216 @@ for (const field of ['text','partial_json']) for (const buffered of [false,true]
   else assert.equal(text,`Credential: ${key}`);
   await assertRestorationCount(f,buffered ? 3 : 2);
 });
+
+async function detectionEvidence(f, record) {
+  const page = await (await f.call(`api/v1/security/audit/${record.id}/body?snapshot=credential-detection`)).json();
+  return JSON.parse(page.chunks.map(c => c.content).join(''));
+}
+async function protectionEvidence(f, record) {
+  const page = await (await f.call(`api/v1/security/audit/${record.id}/body?snapshot=protection`)).json();
+  return JSON.parse(page.chunks.map(c => c.content).join(''));
+}
+
+for (const enabled of [true, false]) test(`audit consumes frozen credential facts and records actual replacement state (protection=${enabled})`, async t => {
+  const f = await fixture(t, (body,res) => respond(res,body,'ok'), {enabled});
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.q7M2rX9hK5zT8pB4';
+  const body = {input:`Known ${key}\nCandidate ${jwt}`,metadata:{password:'test'}};
+  const response = await f.request(body); assert.equal(response.status,200); await response.text();
+  assert.equal(f.calls[0].body.input.includes(jwt),true,'unauthenticated JWT is audit-only');
+  assert.equal(f.calls[0].body.input.includes(key),!enabled);
+  assert.equal(f.calls[0].body.metadata.password === 'test',!enabled,'literal short passwords stay credentials');
+  const record = (await f.records())[0];
+  const facts = await detectionEvidence(f,record);
+  assert.equal(record.credentialDetection.detectionRuns,1);
+  assert.equal(facts.length,3);
+  assert.ok(facts.every(c => c.snapshotId === record.credentialDetection.snapshotId));
+  const detail = (await (await f.call(`api/v1/security/audit/${record.id}`)).json()).record;
+  const findings = detail.findings.filter(f => f.ruleId === 'SEC-SECRET-001');
+  assert.ok(findings.every(f => f.evidence.credentialCandidates?.length));
+  for (const finding of findings) for (const candidate of finding.evidence.credentialCandidates) {
+    const fact = facts.find(f => f.candidateId === candidate.candidateId); assert.ok(fact);
+    for (const field of ['snapshotId','evidenceClass','source','credentialType','valueType','matchPolicy','location','start','end','rawStart','rawEnd','payloadRole','confidence']) assert.deepEqual(candidate[field],fact[field]);
+  }
+  if (enabled) {
+    const protection = await protectionEvidence(f,record);
+    assert.equal(protection.forwarded,true);
+    for (const fact of facts) {
+      const decision = protection.decisions.find(d => d.candidateId === fact.candidateId); assert.ok(decision);
+      for (const field of ['snapshotId','evidenceClass','source','credentialType','valueType','matchPolicy','location','start','end','rawStart','rawEnd','payloadRole','confidence','replacementStatus']) assert.deepEqual(decision[field],fact[field]);
+      assert.equal(decision.replacementStatus,fact.confidence === 'low' ? 'not_replaced':'replaced');
+    }
+  } else assert.ok(facts.every(c => c.replacementStatus === 'not_replaced' && c.reason === 'protection_disabled'));
+});
+
+test('source references, types, masks and grammar symbols neither replace nor poison later requests', async t => {
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const grammar='start: plain_source\nplain_source: SOURCE\nSOURCE: /[\\s\\S]+/\n';
+  const input=['const value = {api_key:plain};','const token = get_secret_key();','fn connect(secret: &str) {}','type Settings = {token: string};','type Settings = {token: "string"};','Read the `api_key:` field.','const secretRef="secret://upstreams/relay";','api_key="[REDACTED]"','const pattern = /api_key:([A-Za-z0-9_]+)/;'].join('\n');
+  const tools=[{type:'custom',name:'exec',format:{type:'grammar',syntax:'lark',definition:grammar}}];
+  for (const text of [input,'Explain plain_source and a plain response.']) {
+    const response=await f.request({input:text,tools});assert.equal(response.status,200);await response.text();
+    assert.equal(f.calls.at(-1).body.input,text);assert.deepEqual(f.calls.at(-1).body.tools,tools);
+  }
+  for (const record of await f.records()) {
+    assert.equal(record.protection.requestCount,0);assert.equal(record.credentialDetection.candidateCount,0);assert.equal(record.findingCount,0);
+  }
+});
+
+for (const location of ['grammar','pattern','enum','const','identifier']) test(`strong credentials in ${location} remain unmodified and block forwarding with auditable facts`, async t => {
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const tools=location==='grammar'?[{type:'custom',name:'exec',format:{type:'grammar',syntax:'lark',definition:`start: "${key}"`}}]:
+    [{type:'function',name:'connect',parameters:{type:'object',properties:{token:{type:'string',...(location==='enum'?{enum:[key]}:location==='const'?{const:key}:{pattern:key})}}}}];
+  const response=await f.request(location==='identifier'?{input:'safe',previous_response_id:key}:{input:'safe',tools});
+  assert.equal(response.status,422);assert.match(await response.text(),/协议结构/);assert.equal(f.calls.length,0);
+  const record=(await f.records())[0];const facts=await detectionEvidence(f,record);const protection=await protectionEvidence(f,record);
+  assert.ok(facts.length);assert.equal(protection.forwarded,false);
+  assert.ok(protection.decisions.every(d=>d.replacementStatus==='not_replaced' && d.reason==='protection_credential_in_protocol_structure'));
+  assert.ok(facts.every(f=>f.payloadRole==='protocol_structure'));
+});
+
+test('low-entropy session credentials use complete values without changing identifier substrings', async t => {
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  await(await f.request({metadata:{password:'plain'}})).text();
+  const response=await f.request({input:'Explain plain_source and a plain response.',metadata:{value:'plain'}});assert.equal(response.status,200);await response.text();
+  assert.equal(f.calls.at(-1).body.input,'Explain plain_source and a plain response.');
+  assert.match(f.calls.at(-1).body.metadata.value,/^CTSEC_v1_/);
+});
+
+test('structured authorization and cookies protect values while preserving syntax and preferences', async t => {
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const response=await f.request({input:'DATABASE_PASSWORD=hunter2\nASIAJQ7M5R2T6V3X4N7P',metadata:{authorization:'Bearer short',cookie:'session=short; theme=dark; locale=en-US'}});
+  assert.equal(response.status,200);await response.text();
+  const body=f.calls[0].body;assert.match(body.metadata.authorization,/^Bearer CTSEC_v1_[a-f0-9]{32}$/);
+  assert.match(body.metadata.cookie,/^session=CTSEC_v1_[a-f0-9]{32}; theme=dark; locale=en-US$/);
+  assert.ok(!body.input.includes('hunter2'));assert.ok(!body.input.includes('ASIAJQ7M5R2T6V3X4N7P'));
+});
+
+for (const enabled of [true,false]) test(`segmented fields and lexical exclusions preserve non-credential bytes (protection=${enabled})`,async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'),{enabled});
+  const input=[
+    'const notapassword = "visible";',
+    'interface Settings {\n password: "visible";\n token: string;\n}',
+    'const password: "visible" = value;',
+    'const pattern = /password=12345/;',
+    'if (token === "visible") {}',
+    'const token = "partial" + variable;',
+    'const token = `prefix${variable}`;',
+  ].join('\n');
+  const metadata={notapassword:'visible',password_policy:'visible',token_count:'visible',secretRef:'secret://upstream/ref'};
+  const response=await f.request({input,metadata});assert.equal(response.status,200);await response.text();
+  assert.equal(f.calls[0].body.input,input);assert.deepEqual(f.calls[0].body.metadata,metadata);
+  const record=(await f.records())[0];assert.equal(record.credentialDetection.candidateCount,0);assert.equal(record.findingCount,0);
+});
+
+test('source literal decoding preserves spelling during restoration and learns the complete decoded value',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,body.input));
+  const input=String.raw`const password = "密\u7801\"abc"; const token = \`staticTokenValue42\`;`.replaceAll('\\`','`');
+  const response=await f.request({input});assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,input);
+  assert.equal(f.calls[0].body.input,input.replace(String.raw`密\u7801\"abc`,f.calls[0].body.input.match(/CTSEC_v1_[a-f0-9]{32}/)[0]).replace('staticTokenValue42',f.calls[0].body.input.match(/CTSEC_v1_[a-f0-9]{32}/g)[1]));
+  const next=await f.request({input:'密码"abc'});assert.equal(next.status,200);assert.equal((await next.json()).output[0].content[0].text,'密码"abc');
+  assert.match(f.calls[1].body.input,/^CTSEC_v1_[a-f0-9]{32}$/);
+  for(const record of await f.records()){
+    const facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+    assert.ok(facts.every(c=>c.valueType==='literal' && c.replacementStatus==='replaced'));
+    for(const fact of facts){
+      const decision=protection.decisions.find(d=>d.candidateId===fact.candidateId);
+      for(const field of ['source','credentialType','valueType','matchPolicy','rawStart','rawEnd','replacementStatus']) assert.deepEqual(decision[field],fact[field]);
+    }
+  }
+});
+
+test('unknown and unfinished source literals remain audit candidates without contaminating the session',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const input=String.raw`const password = "prefix\x21";`;
+  await(await f.request({input})).text();assert.equal(f.calls[0].body.input,input);
+  let record=(await f.records())[0],facts=await detectionEvidence(f,record);
+  assert.equal(facts.length,1);assert.equal(facts[0].confidence,'low');assert.equal(facts[0].valueType,'unknown');assert.equal(facts[0].replacementStatus,'not_replaced');
+  await(await f.request({input:'prefix\\x21'})).text();assert.equal(f.calls[1].body.input,'prefix\\x21');
+  await(await f.request({input:'const password = "unfinished'})).text();assert.equal(f.calls[2].body.input,'const password = "unfinished');
+  record=(await f.records())[0];facts=await detectionEvidence(f,record);assert.equal(facts[0].replacementStatus,'not_replaced');
+});
+
+test('learned token units preserve identifier substrings while registered credentials remain authoritative',async t=>{
+  const value='a1-b2-c3-d4',input=`prefix${value}suffix / ${value}`;
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  await(await f.request({metadata:{password:value}})).text();
+  await(await f.request({input,metadata:{ordinary:value}})).text();
+  assert.equal(f.calls[1].body.input.split(' / ')[0],`prefix${value}suffix`);
+  assert.match(f.calls[1].body.input.split(' / ')[1],/^CTSEC_v1_[a-f0-9]{32}$/);
+  assert.match(f.calls[1].body.metadata.ordinary,/^CTSEC_v1_/);
+  const record=(await f.records())[0],facts=await detectionEvidence(f,record);
+  assert.ok(facts.every(c=>c.matchPolicy==='credential_unit' && c.credentialType==='password' && c.source==='trusted_catalog'));
+  const registered=await fixture(t,(body,res)=>respond(res,body,'ok'),{upstreamSecret:value});
+  await(await registered.request({input})).text();assert.ok(!registered.calls[0].body.input.includes(value));
+});
+
+test('short authorization values and quoted cookie values retain separators and attributes',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const input='Authorization: bearer short\nCookie: session="other"; theme=dark; locale=en-US';
+  const response=await f.request({input,metadata:{authorization:'  bEaReR\tshort  ',cookie:'session="other"; theme=dark; locale=en-US',setCookie:'session="third"; Path=/; HttpOnly; SameSite=Lax'}});
+  assert.equal(response.status,200);await response.text();const body=f.calls[0].body;
+  assert.match(body.input,/^Authorization: bearer CTSEC_v1_[a-f0-9]{32}\nCookie: session="CTSEC_v1_[a-f0-9]{32}"; theme=dark; locale=en-US$/);
+  assert.match(body.metadata.authorization,/^  bEaReR\tCTSEC_v1_[a-f0-9]{32}  $/);
+  assert.match(body.metadata.cookie,/^session="CTSEC_v1_[a-f0-9]{32}"; theme=dark; locale=en-US$/);
+  assert.match(body.metadata.setCookie,/^session="CTSEC_v1_[a-f0-9]{32}"; Path=\/; HttpOnly; SameSite=Lax$/);
+});
+
+test('audit policy distinguishes evidence from execution and preserves history on restart',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
+  const samples=[
+    {body:{metadata:{password:'tiny'}},reason:'credential_value_context',confidence:'high',decision:'credential_warning'},
+    {body:{input:key},reason:'credential_format_evidence',confidence:'high',decision:'credential_warning'},
+    {body:{input:authentication},reason:'known_credential_match',confidence:'high',decision:'credential_warning'},
+    {body:{input:String.raw`const password = "unknown\x21";`},reason:'credential_candidate_unverified',confidence:'low',decision:'candidate_notice'},
+  ];
+  const observed=[];
+  for(const [index,sample] of samples.entries()){
+    const response=await f.request(sample.body,`audit-policy-${index}`);assert.equal(response.status,200);await response.text();
+    const row=(await f.records()).find(r=>r.credentialDetection?.candidateCount===1 && !observed.some(v=>v.id===r.id));assert.ok(row);
+    const record=(await(await f.call(`api/v1/security/audit/${row.id}`)).json()).record;
+    const finding=record.findings.find(v=>v.ruleId==='SEC-SECRET-001' && v.evidence.credentialCandidates?.length);assert.ok(finding);
+    assert.equal(finding.ruleVersion,'4');assert.equal(finding.auditPolicyVersion,'audit-4');
+    assert.equal(finding.confidenceReason,sample.reason);assert.equal(finding.confidence,sample.confidence);assert.equal(finding.auditDecision,sample.decision);
+    const facts=await detectionEvidence(f,record);
+    assert.equal(facts[0].replacementStatus,sample.confidence==='low'?'not_replaced':'replaced');
+    assert.equal(finding.evidence.credentialCandidates[0].replacementStatus,facts[0].replacementStatus);
+    observed.push({id:record.id,finding});
+  }
+  await f.restart();
+  for(const saved of observed){const record=(await(await f.call(`api/v1/security/audit/${saved.id}`)).json()).record;assert.deepEqual(record.findings.find(v=>v.id===saved.finding.id),saved.finding);}
+});
+
+test('parallel audit consumers keep their own candidate snapshots and request outcomes',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,body.input));
+  const requests=Array.from({length:12},(_,i)=>({input:`row ${i} ${key}`,metadata:{password:`parallel-${i}-Q8`}}));
+  const responses=await Promise.all(requests.map((body,i)=>f.request(body,`isolated-${i}`).then(async r=>{assert.equal(r.status,200);return r.json();})));
+  for(let i=0;i<responses.length;i++)assert.equal(responses[i].output[0].content[0].text,requests[i].input);
+  const records=await f.records();assert.equal(records.length,12);
+  const seen=new Set();
+  for(const record of records){
+    const facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+    assert.equal(record.credentialDetection.detectionRuns,1);assert.equal(facts.length,2);
+    assert.ok(!seen.has(record.credentialDetection.snapshotId));seen.add(record.credentialDetection.snapshotId);
+    assert.equal(protection.forwarded,true);
+    for(const fact of facts)assert.deepEqual(protection.decisions.find(d=>d.candidateId===fact.candidateId),Object.fromEntries(Object.entries(fact).filter(([k])=>!['auditPolicyVersion','auditDecision'].includes(k))));
+  }
+  assert.equal(new Set(f.calls.map(c=>c.body.input.match(/CTSEC_v1_[a-f0-9]{32}/)[0])).size,12);
+});
+
+test('bounded scalar type annotations protect assigned literals while preserving declarations and expressions',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,body.input));
+  const input=['const password: string = "typed-one-R8";','password: str = "typed-two-Q7"','let password: &str = "typed-three-V9";','const password: string = config.value;','interface C { password: "string"; }','type C = { password: string };'].join('\n');
+  const response=await f.request({input});assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,input);
+  const actual=f.calls[0].body.input;
+  assert.equal(actual.replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER'),input.replace('typed-one-R8','MARKER').replace('typed-two-Q7','MARKER').replace('typed-three-V9','MARKER'));
+  const record=(await f.records())[0];assert.equal(record.credentialDetection.candidateCount,3);
+});
+
+test('session token cookies share value detection without treating preferences as credentials',async t=>{
+  const f=await fixture(t,(body,res)=>respond(res,body,body.input));
+  const input='Cookie: session_token="localSession-R8Q2"; session_timeout=3600; theme=dark';
+  const response=await f.request({input,metadata:{cookie:'sessionToken="otherSession-Q7"; token_count=3'}});assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,input);
+  assert.match(f.calls[0].body.input,/^Cookie: session_token="CTSEC_v1_[a-f0-9]{32}"; session_timeout=3600; theme=dark$/);
+  assert.match(f.calls[0].body.metadata.cookie,/^sessionToken="CTSEC_v1_[a-f0-9]{32}"; token_count=3$/);
+  const record=(await f.records())[0];assert.equal(record.credentialDetection.candidateCount,2);assert.ok((await detectionEvidence(f,record)).every(c=>c.source==='cookie_pair'));
+});

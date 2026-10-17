@@ -17,6 +17,9 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   page.on("pageerror", error => errors.push(error.message));
+  const auditForm = page.locator("#audit-settings-form");
+  const protectionForm = page.locator("#protection-settings-form");
+  const auditSave = auditForm.getByRole("button", { name: "保存设置", exact: true });
   const persisted = async () => (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   const commit = async audit => {
     const config = await persisted();
@@ -32,7 +35,7 @@ try {
     await page.waitForFunction(() => !document.querySelector("#refresh-button").disabled);
   };
   const save = async audit => {
-    await page.getByRole("button", { name: "保存设置", exact: true }).click();
+    await auditSave.click();
     await page.waitForFunction(() => !document.querySelector('#audit-settings-form button[type="submit"]').disabled);
     assert.deepEqual((await persisted()).audit, audit);
   };
@@ -45,6 +48,31 @@ try {
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "30");
   assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).inputValue(), "5120");
   assert.equal(await page.locator("#audit-settings-cleanup").isVisible(), false);
+  const protectionEnabled = protectionForm.getByRole("checkbox", { name: "启用凭据保护", exact: true });
+  const protectionTtl = protectionForm.getByLabel("映射闲置有效期（秒）", { exact: true });
+  const saveProtection = async protection => {
+    await protectionForm.getByRole("button", { name: "保存设置", exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('#protection-settings-form button[type="submit"]').disabled);
+    assert.deepEqual((await persisted()).credentialProtection, protection);
+  };
+  assert.equal(await protectionEnabled.isChecked(), false);
+  assert.equal(await protectionTtl.inputValue(), "3600");
+  await protectionEnabled.check();
+  await protectionTtl.fill("60");
+  await saveProtection({ enabled: true, mappingTtlSeconds: 60 });
+  await page.reload();
+  await protectionEnabled.waitFor();
+  assert.equal(await protectionEnabled.isChecked(), true);
+  assert.equal(await protectionTtl.inputValue(), "60");
+  await protectionEnabled.uncheck();
+  await protectionTtl.fill("3600");
+  await saveProtection({ enabled: false, mappingTtlSeconds: 3600 });
+  await refresh();
+  assert.equal(await protectionEnabled.isChecked(), false);
+  assert.equal(await protectionTtl.inputValue(), "3600");
+  await protectionTtl.fill("59");
+  assert.equal(await protectionTtl.evaluate(input => input.checkValidity()), false);
+  await protectionTtl.fill("3600");
   const temporary = page.getByLabel("服务器目录", { exact: true });
   assert.equal(await temporary.inputValue(), "");
   const customTemporary = path.join(home, "custom temporary files");
@@ -72,7 +100,7 @@ try {
   assert.equal(await page.getByLabel("存储上限（MiB）", { exact: true }).isDisabled(), true);
   await save({ retentionDays: null, budgetBytes: null });
   await page.reload();
-  await page.getByRole("button", { name: "保存设置", exact: true }).waitFor();
+  await auditSave.waitFor();
   assert.equal(await page.getByLabel("保存周期不设上限", { exact: true }).isChecked(), true);
   assert.equal(await page.getByLabel("存储不设上限", { exact: true }).isChecked(), true);
   await page.getByRole("button", { name: "审计记录", exact: true }).click();
@@ -80,7 +108,7 @@ try {
   assert.match(await page.locator("#page-content").textContent(), /保存周期不设上限/);
   assert.match(await page.locator("#page-content").textContent(), /存储不设上限/);
   await page.goBack();
-  await page.getByRole("button", { name: "保存设置", exact: true }).waitFor();
+  await auditSave.waitFor();
 
   await page.getByLabel("保存周期不设上限", { exact: true }).uncheck();
   await page.getByLabel("保存周期（天）", { exact: true }).fill("7");
@@ -105,7 +133,7 @@ try {
     body: JSON.stringify({ baseRevision: external.revision, config: external }),
   });
   assert.equal(response.status, 200);
-  await page.getByRole("button", { name: "保存设置", exact: true }).click();
+  await auditSave.click();
   await page.getByRole("alert").filter({ hasText: "配置已在其他窗口变更" }).waitFor();
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "14");
   await page.getByRole("button", { name: "刷新", exact: true }).click();
@@ -123,11 +151,18 @@ try {
   await budgetInput.fill("256");
   await page.setViewportSize({ width: 375, height: 812 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-  assert.equal(await page.getByRole("button", { name: "保存设置", exact: true }).isVisible(), true);
-  const saveBounds = await page.getByRole("button", { name: "保存设置", exact: true }).boundingBox();
+  assert.equal(await auditSave.isVisible(), true);
+  const saveBounds = await auditSave.boundingBox();
   assert.ok(saveBounds.y + saveBounds.height <= 812, "Save stays within the mobile viewport");
   await page.locator(".toast").last().waitFor({ state: "hidden", timeout: 10000 });
   await page.screenshot({ path: path.join(output, "settings-mobile.png"), fullPage: true });
+  await protectionEnabled.check();
+  await saveProtection({ enabled: true, mappingTtlSeconds: 3600 });
+  assert.equal(await protectionEnabled.isChecked(), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  await protectionForm.screenshot({ path: path.join(output, "protection-mobile.png") });
+  await protectionEnabled.uncheck();
+  await saveProtection({ enabled: false, mappingTtlSeconds: 3600 });
 
   const defaults = { retentionDays: 14, budgetBytes: 256 * 1048576 };
   for (const [key, label, toggle, unit, finite, local, remote] of [
@@ -143,14 +178,14 @@ try {
       if (localValue !== null) await input.fill(String(localValue));
       const draft = await input.inputValue();
       await commit({ ...defaults, [key]: remoteValue === null ? null : remoteValue * unit });
-      await page.getByRole("button", { name: "保存设置", exact: true }).click();
+      await auditSave.click();
       await page.getByRole("alert").filter({ hasText: "配置已在其他窗口变更" }).waitFor();
       await refresh();
       await page.getByRole("alert").filter({ hasText: "冲突，已暂停保存" }).waitFor();
       assert.equal(await input.inputValue(), draft);
       assert.equal(await unlimited.isChecked(), localValue === null);
       const revision = (await persisted()).revision;
-      await page.getByRole("button", { name: "保存设置", exact: true }).click();
+      await auditSave.click();
       assert.equal((await persisted()).revision, revision, "Conflicting settings cannot be submitted");
       page.once("dialog", dialog => dialog.accept());
       await page.getByRole("button", { name: "加载最新配置", exact: true }).click();
@@ -162,7 +197,7 @@ try {
     await page.getByLabel(toggle, { exact: true }).check();
     const agreed = { ...defaults, [key]: null };
     await commit(agreed);
-    await page.getByRole("button", { name: "保存设置", exact: true }).click();
+    await auditSave.click();
     await page.getByRole("alert").filter({ hasText: "配置已在其他窗口变更" }).waitFor();
     await refresh();
     assert.equal(await page.getByRole("alert").count(), 0, "Matching unlimited edits merge without a conflict");
@@ -199,7 +234,7 @@ try {
   await page.goBack();
   assert.equal(await page.getByLabel("保存周期（天）", { exact: true }).inputValue(), "14");
   assert.deepEqual(errors, []);
-  console.log("Settings browser checks passed: finite/unlimited combinations, reload, semantic conflicts, back/forward draft protection, validation, desktop and mobile.");
+  console.log("Settings browser checks passed: credential protection on/off persistence, finite/unlimited combinations, reload, semantic conflicts, back/forward draft protection, validation, desktop and mobile.");
   console.log(`Screenshots: ${output}`);
 } finally {
   await browser?.close();

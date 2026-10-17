@@ -1,0 +1,1623 @@
+{
+  "date": "2026-10-16T18:55:29.582Z",
+  "phase": "second-synthetic-holdout",
+  "detectorVersion": "credentials-4",
+  "auditPolicyVersion": "audit-4",
+  "binarySha256": "14f6dbaac14b4e4a9e277f79fa201062e2043cd3197ef6fe2d6250da94ec6ecb",
+  "manifestSha256": "cc7fc552a2e9b280ae4881fb7f1bb899fa51d84c4ac9e2a367b33c433f729b59",
+  "scope": "Local synthetic grouped diagnostic evaluation. Families contain correlated variants; Wilson intervals are descriptive specimen intervals, not independent or production inference. Original heldout split became regression after first failure informed a fix. Exact full wire payload comparison verifies noncredential bytes as well as replacement. Refusals are separate. No online credential validation.",
+  "auditSettled": true,
+  "auditCount": 112,
+  "strata": {
+    "tuning": {
+      "total": {
+        "specimens": 0,
+        "families": 0,
+        "pass": 0,
+        "precision": null,
+        "positivePayloadRecall": null,
+        "negativeChangeRate": null,
+        "blocked": {
+          "total": 0,
+          "correct": 0
+        },
+        "ambiguous": {
+          "total": 0,
+          "unchanged": 0
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "environment": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "json": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "markdown": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "protocol": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "provider": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "structure": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        }
+      }
+    },
+    "heldout": {
+      "total": {
+        "specimens": 112,
+        "families": 28,
+        "pass": 108,
+        "precision": {
+          "estimate": 1,
+          "lower": 0.9197043962415192,
+          "upper": 1,
+          "n": 44
+        },
+        "positivePayloadRecall": {
+          "estimate": 0.9166666666666666,
+          "lower": 0.8044669820963272,
+          "upper": 0.9671162431819081,
+          "n": 48
+        },
+        "negativeChangeRate": {
+          "estimate": 0,
+          "lower": 1.3877787807814457e-17,
+          "upper": 0.12064330476584563,
+          "n": 28
+        },
+        "blocked": {
+          "total": 8,
+          "correct": 8
+        },
+        "ambiguous": {
+          "total": 28,
+          "unchanged": 28
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 12,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "positivePayloadRecall": {
+            "estimate": 0.5,
+            "lower": 0.21521606221387757,
+            "upper": 0.7847839377861224,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "environment": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "json": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "markdown": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "protocol": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "provider": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "structure": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 8,
+            "correct": 8
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        }
+      }
+    }
+  },
+  "contractSummary": {},
+  "results": [
+    {
+      "id": "fresh/source/python-annotated-single/0",
+      "family": "fresh/source/python-annotated-single",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/source/python-annotated-single/1",
+      "family": "fresh/source/python-annotated-single",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/source/python-annotated-single/2",
+      "family": "fresh/source/python-annotated-single",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/source/python-annotated-single/3",
+      "family": "fresh/source/python-annotated-single",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/0",
+      "family": "fresh/source/js-let-typed-template",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/1",
+      "family": "fresh/source/js-let-typed-template",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/2",
+      "family": "fresh/source/js-let-typed-template",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/3",
+      "family": "fresh/source/js-let-typed-template",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-expression/0",
+      "family": "fresh/source/annotated-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-expression/1",
+      "family": "fresh/source/annotated-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-expression/2",
+      "family": "fresh/source/annotated-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-expression/3",
+      "family": "fresh/source/annotated-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/0",
+      "family": "fresh/source/annotated-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/1",
+      "family": "fresh/source/annotated-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/2",
+      "family": "fresh/source/annotated-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/3",
+      "family": "fresh/source/annotated-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/0",
+      "family": "fresh/environment/spaced-single-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/1",
+      "family": "fresh/environment/spaced-single-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/2",
+      "family": "fresh/environment/spaced-single-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/3",
+      "family": "fresh/environment/spaced-single-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/0",
+      "family": "fresh/environment/mixed-case-spaced",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/1",
+      "family": "fresh/environment/mixed-case-spaced",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/2",
+      "family": "fresh/environment/mixed-case-spaced",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/3",
+      "family": "fresh/environment/mixed-case-spaced",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/environment/quoted-ref/0",
+      "family": "fresh/environment/quoted-ref",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/quoted-ref/1",
+      "family": "fresh/environment/quoted-ref",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/quoted-ref/2",
+      "family": "fresh/environment/quoted-ref",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/quoted-ref/3",
+      "family": "fresh/environment/quoted-ref",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/truncated-export/0",
+      "family": "fresh/environment/truncated-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/truncated-export/1",
+      "family": "fresh/environment/truncated-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/truncated-export/2",
+      "family": "fresh/environment/truncated-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/environment/truncated-export/3",
+      "family": "fresh/environment/truncated-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/deep-extension/0",
+      "family": "fresh/json/deep-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/deep-extension/1",
+      "family": "fresh/json/deep-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/deep-extension/2",
+      "family": "fresh/json/deep-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/deep-extension/3",
+      "family": "fresh/json/deep-extension",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/triple-encoded/0",
+      "family": "fresh/json/triple-encoded",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/triple-encoded/1",
+      "family": "fresh/json/triple-encoded",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/triple-encoded/2",
+      "family": "fresh/json/triple-encoded",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/triple-encoded/3",
+      "family": "fresh/json/triple-encoded",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/json/metadata-count-description/0",
+      "family": "fresh/json/metadata-count-description",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/metadata-count-description/1",
+      "family": "fresh/json/metadata-count-description",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/metadata-count-description/2",
+      "family": "fresh/json/metadata-count-description",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/metadata-count-description/3",
+      "family": "fresh/json/metadata-count-description",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/0",
+      "family": "fresh/json/encoded-unknown-source",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/1",
+      "family": "fresh/json/encoded-unknown-source",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/2",
+      "family": "fresh/json/encoded-unknown-source",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/3",
+      "family": "fresh/json/encoded-unknown-source",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/0",
+      "family": "fresh/markdown/numbered-inline-double",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/1",
+      "family": "fresh/markdown/numbered-inline-double",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/2",
+      "family": "fresh/markdown/numbered-inline-double",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/3",
+      "family": "fresh/markdown/numbered-inline-double",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/0",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/1",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/2",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/3",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/0",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/1",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/2",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/3",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/0",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/1",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/2",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/3",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/basic-structured/0",
+      "family": "fresh/protocol/basic-structured",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/basic-structured/1",
+      "family": "fresh/protocol/basic-structured",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/basic-structured/2",
+      "family": "fresh/protocol/basic-structured",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/basic-structured/3",
+      "family": "fresh/protocol/basic-structured",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/0",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/1",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/2",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/3",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/0",
+      "family": "fresh/protocol/query-policy-public",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/1",
+      "family": "fresh/protocol/query-policy-public",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/2",
+      "family": "fresh/protocol/query-policy-public",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/3",
+      "family": "fresh/protocol/query-policy-public",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/0",
+      "family": "fresh/protocol/unknown-auth-source",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/1",
+      "family": "fresh/protocol/unknown-auth-source",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/2",
+      "family": "fresh/protocol/unknown-auth-source",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/3",
+      "family": "fresh/protocol/unknown-auth-source",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/readme-comment/0",
+      "family": "fresh/provider/readme-comment",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/readme-comment/1",
+      "family": "fresh/provider/readme-comment",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/readme-comment/2",
+      "family": "fresh/provider/readme-comment",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/readme-comment/3",
+      "family": "fresh/provider/readme-comment",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/0",
+      "family": "fresh/provider/ordinary-array-value",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/1",
+      "family": "fresh/provider/ordinary-array-value",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/2",
+      "family": "fresh/provider/ordinary-array-value",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/3",
+      "family": "fresh/provider/ordinary-array-value",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "fresh/provider/near-format-partial/0",
+      "family": "fresh/provider/near-format-partial",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/near-format-partial/1",
+      "family": "fresh/provider/near-format-partial",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/near-format-partial/2",
+      "family": "fresh/provider/near-format-partial",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/near-format-partial/3",
+      "family": "fresh/provider/near-format-partial",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/0",
+      "family": "fresh/provider/escape-auth-looking",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/1",
+      "family": "fresh/provider/escape-auth-looking",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/2",
+      "family": "fresh/provider/escape-auth-looking",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/3",
+      "family": "fresh/provider/escape-auth-looking",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/0",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/1",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/2",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/3",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/0",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/1",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/2",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/3",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/0",
+      "family": "fresh/structure/schema-type-and-names",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/1",
+      "family": "fresh/structure/schema-type-and-names",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/2",
+      "family": "fresh/structure/schema-type-and-names",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/3",
+      "family": "fresh/structure/schema-type-and-names",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/0",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/1",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/2",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/3",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    }
+  ],
+  "contracts": []
+}

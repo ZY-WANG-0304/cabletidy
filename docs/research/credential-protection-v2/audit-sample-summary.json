@@ -1,0 +1,82 @@
+{
+  "sample": "latest 8000 audit rows; only kind=request and protection.enabled=true; repeated replays included",
+  "counts": {
+    "requests": 265,
+    "status_404": 62,
+    "protection_completed": 198,
+    "status_200": 202,
+    "protection_protected": 33,
+    "protection_failed": 34,
+    "status_None": 1
+  },
+  "uniqueMappedValues": 27,
+  "mappingRows": 1072,
+  "requestOperations": 7462,
+  "confirmedBenignSourceCandidates": [
+    {
+      "value": "${encoded}`,{model:f.model,input:",
+      "audits": 11,
+      "sessions": 1,
+      "requestCount": 11,
+      "responseCount": 0
+    },
+    {
+      "value": "&str)",
+      "audits": 6,
+      "sessions": 1,
+      "requestCount": 72,
+      "responseCount": 0
+    },
+    {
+      "value": "plain",
+      "audits": 59,
+      "sessions": 21,
+      "requestCount": 1485,
+      "responseCount": 3
+    },
+    {
+      "value": "safe\"))",
+      "audits": 6,
+      "sessions": 1,
+      "requestCount": 6,
+      "responseCount": 0
+    },
+    {
+      "value": "{type:'string'",
+      "audits": 11,
+      "sessions": 1,
+      "requestCount": 11,
+      "responseCount": 0
+    },
+    {
+      "value": "body.metadata.api_key",
+      "audits": 67,
+      "sessions": 49,
+      "requestCount": 201,
+      "responseCount": 0
+    },
+    {
+      "value": "special",
+      "audits": 67,
+      "sessions": 49,
+      "requestCount": 469,
+      "responseCount": 0
+    },
+    {
+      "value": "{relay:upstreamSecret",
+      "audits": 67,
+      "sessions": 49,
+      "requestCount": 67,
+      "responseCount": 0
+    },
+    {
+      "value": "`",
+      "audits": 6,
+      "sessions": 1,
+      "requestCount": 4270,
+      "responseCount": 2
+    }
+  ],
+  "confirmedBenignRequestOperations": 6592,
+  "classificationNote": "Only source variables, type syntax, parsed expression fragments, and a lone Markdown delimiter are manually classified benign; remaining values are unclassified. Requests include repeated debugging replays; this is not a production false-positive estimate."
+}

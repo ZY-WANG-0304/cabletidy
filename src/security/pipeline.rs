@@ -10,7 +10,7 @@ use crate::{
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::{
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     sync::Arc,
 };
 
@@ -29,8 +29,36 @@ pub struct Pipeline {
     pub count_progress: bool,
     credential_catalog_complete: bool,
     protection: Option<Value>,
+    detection: Option<Arc<super::credentials::Detection>>,
+    pub(super) body_detection: Option<Arc<super::credentials::Detection>>,
 }
 impl Pipeline {
+    fn credential_fact(
+        &self,
+        candidate: &super::credentials::Candidate,
+        detection: &super::credentials::Detection,
+    ) -> Value {
+        let mut fact = candidate.fact(&detection.snapshot_id);
+        if self
+            .detection
+            .as_ref()
+            .is_some_and(|d| d.snapshot_id == detection.snapshot_id)
+        {
+            if let Some(report) = &self.protection {
+                if let Some(decision) = crate::config::array(&report["decisions"])
+                    .iter()
+                    .find(|d| d["candidateId"] == candidate.id)
+                {
+                    fact["replacementStatus"] = decision["replacementStatus"].clone();
+                    fact["reason"] = decision["reason"].clone();
+                }
+            } else {
+                fact["replacementStatus"] = json!("not_replaced");
+                fact["reason"] = json!("protection_disabled");
+            }
+        }
+        fact
+    }
     pub fn new(store: Arc<Store>, record: Value, secrets: &Value, redactor: Redactor) -> Self {
         Self {
             store,
@@ -47,6 +75,8 @@ impl Pipeline {
             count_progress: true,
             credential_catalog_complete: true,
             protection: None,
+            detection: None,
+            body_detection: None,
         }
     }
     pub fn publish(&mut self, state: &str) {
@@ -156,12 +186,20 @@ impl Pipeline {
         self.incomplete = !complete;
         let prior_progress = self.count_progress;
         self.count_progress = matches!(id, "request" | "response");
-        let valid = learn_credentials(&spool, &mut self.redactor);
+        let detection = if id == "request" {
+            self.detection.clone().unwrap()
+        } else {
+            super::credentials::detect_snapshot(&spool, &json!({}), &self.redactor.catalog(), id)
+        };
+        detection.learn(&mut self.redactor);
+        let valid = detection.complete;
+        self.body_detection = Some(detection);
+        self.rules.shared_credentials = true;
         if id == "request" && complete && valid {
             if let Ok(items) = super::content::index_spool(&spool, &mut self.record) {
                 // Known-secret rules use the configured subset, while redaction also learns credentials.
                 let dependency = format!(
-                    "rules-2:parser-1:{}:{}",
+                    "rules-4:parser-2:{}:{}",
                     self.redactor.catalog_digest(),
                     self.rules.secrets_digest()
                 );
@@ -251,6 +289,7 @@ impl Pipeline {
                         .inspection_cache(&self.record, &reuse.dependency, reuse.entries());
             }
         }
+        self.body_detection = None;
         parsed.and(finalized)
     }
     pub(super) fn render_json(
@@ -260,6 +299,22 @@ impl Pipeline {
         root: &str,
         inspect: bool,
     ) -> Result<()> {
+        let prior_detection = self.body_detection.take();
+        let detection = if matches!(root, "request" | "response") {
+            prior_detection.clone().unwrap_or_else(|| {
+                super::credentials::detect_snapshot(
+                    &spool,
+                    &json!({}),
+                    &self.redactor.catalog(),
+                    root,
+                )
+            })
+        } else {
+            super::credentials::detect_snapshot(&spool, &json!({}), &self.redactor.catalog(), root)
+        };
+        detection.learn(&mut self.redactor);
+        self.body_detection = Some(detection);
+        self.rules.shared_credentials = true;
         let mut visitor = BodyVisitor {
             pipeline: self,
             writer,
@@ -270,7 +325,32 @@ impl Pipeline {
             last_progress: 0,
             navigation: super::session::Capture::default(),
         };
-        JsonStream::new(spool.reader()).parse(&mut visitor, root)
+        let result = JsonStream::new(spool.reader()).parse(&mut visitor, root);
+        if result.is_err() {
+            while !visitor.frames.is_empty() {
+                let frame = visitor.frames.last_mut().unwrap();
+                if let Some(masker) = &mut frame.text {
+                    // An unfinished encoded tool argument cannot be safely decoded;
+                    // retain the gap instead of publishing its unchecked nested tail.
+                    if !frame.credential
+                        && matches!(frame.field.as_str(), "arguments" | "input" | "text")
+                    {
+                        visitor.frames.pop();
+                        continue;
+                    }
+                    masker.mark_incomplete();
+                    let pieces = if let Some(marks) = &frame.detected_marks {
+                        masker.feed_detected("", &visitor.pipeline.redactor, true, marks)
+                    } else {
+                        masker.feed("", &visitor.pipeline.redactor, true)
+                    };
+                    visitor.pieces(pieces)?;
+                }
+                visitor.frames.pop();
+            }
+        }
+        visitor.pipeline.body_detection = prior_detection;
+        result
     }
     pub(super) fn render_text(
         &mut self,
@@ -280,6 +360,7 @@ impl Pipeline {
         inspect: bool,
         complete: bool,
     ) -> Result<()> {
+        self.rules.shared_credentials = true;
         let mut masker = StreamText::new(false)?;
         let mut reader = Utf8Reader::new(spool.reader());
         let mut previous = String::new();
@@ -524,6 +605,7 @@ struct Frame {
     protection_offset: u64,
     instruction_bits: u8,
     _meta_memory: Reservation,
+    detected_marks: Option<Vec<Value>>,
 }
 struct BodyVisitor<'a> {
     pipeline: &'a mut Pipeline,
@@ -636,6 +718,21 @@ impl BodyVisitor<'_> {
                     },
                 );
             }
+            {
+                if let Some(detection) = &self.pipeline.body_detection {
+                    let facts = detection
+                        .candidates
+                        .iter()
+                        .filter(|c| piece.marks.iter().any(|m| m["candidateId"] == c.id))
+                        .map(|c| self.pipeline.credential_fact(c, detection))
+                        .collect::<Vec<_>>();
+                    for finding in &mut self.pipeline.rules.findings[before..] {
+                        if finding["ruleId"] == "SEC-SECRET-001" {
+                            super::credentials::audit_finding(finding, facts.clone());
+                        }
+                    }
+                }
+            }
             if self.writer.position() - self.last_progress >= 1024 * 1024 {
                 self.writer.flush()?;
                 self.pipeline.publish("running");
@@ -721,6 +818,11 @@ impl Visitor for BodyVisitor<'_> {
             protection_offset: 0,
             instruction_bits: 0,
             _meta_memory: meta_memory,
+            detected_marks: self
+                .pipeline
+                .body_detection
+                .as_ref()
+                .map(|d| d.marks(at).to_vec()),
         });
         Ok(())
     }
@@ -730,11 +832,12 @@ impl Visitor for BodyVisitor<'_> {
             self.pipeline.inspected += s.len() as u64;
         }
         let frame = self.frames.last_mut().unwrap();
-        let pieces = frame
-            .text
-            .as_mut()
-            .unwrap()
-            .feed(s, &self.pipeline.redactor, false);
+        let masker = frame.text.as_mut().unwrap();
+        let pieces = if let Some(marks) = &frame.detected_marks {
+            masker.feed_detected(s, &self.pipeline.redactor, false, marks)
+        } else {
+            masker.feed(s, &self.pipeline.redactor, false)
+        };
         self.pieces(pieces)
     }
     fn scalar(&mut self, s: &str) -> Result<()> {
@@ -743,14 +846,18 @@ impl Visitor for BodyVisitor<'_> {
         let start = self.writer.position();
         let end = start + s.len() as u64;
         // JSON null means the credential is absent, but must still be retained.
-        let credential = frame.credential && s != "null";
+        let credential = if let Some(marks) = &frame.detected_marks {
+            !marks.is_empty()
+        } else {
+            frame.credential && s != "null"
+        };
         let hit = credential.then_some((start, end));
         if credential {
             self.writer.mark("credential_field", start, end);
             if self.inspect {
                 self.pipeline
                     .rules
-                    .credential(&frame.stage, &frame.path, true);
+                    .credential(&frame.stage, &frame.path, false);
             }
         }
         self.writer.push(s)?;
@@ -766,6 +873,24 @@ impl Visitor for BodyVisitor<'_> {
                 },
             );
         }
+        if let Some(detection) = &self.pipeline.body_detection {
+            let facts = detection
+                .candidates
+                .iter()
+                .filter(|c| {
+                    frame
+                        .detected_marks
+                        .as_ref()
+                        .is_some_and(|marks| marks.iter().any(|m| m["candidateId"] == c.id))
+                })
+                .map(|c| self.pipeline.credential_fact(c, detection))
+                .collect::<Vec<_>>();
+            for finding in &mut self.pipeline.rules.findings[before..] {
+                if finding["ruleId"] == "SEC-SECRET-001" {
+                    super::credentials::audit_finding(finding, facts.clone());
+                }
+            }
+        }
         Ok(())
     }
     fn punctuation(&mut self, s: &str) -> Result<()> {
@@ -777,11 +902,16 @@ impl Visitor for BodyVisitor<'_> {
                 self.frames.last().unwrap().field.as_str(),
                 "arguments" | "input" | "text" | "thinking"
             );
+        let detected_marks = self.frames.last().unwrap().detected_marks.clone();
         if let Some(text) = self.frames.last_mut().unwrap().text.as_mut() {
             if incomplete_payload {
                 text.mark_incomplete();
             }
-            let pieces = text.feed("", &self.pipeline.redactor, true);
+            let pieces = if let Some(marks) = &detected_marks {
+                text.feed_detected("", &self.pipeline.redactor, true, marks)
+            } else {
+                text.feed("", &self.pipeline.redactor, true)
+            };
             self.pieces(pieces)?;
         }
         self.navigation.end(&mut self.pipeline.record, &self.root);
@@ -1011,107 +1141,6 @@ fn tool_input(
     Ok((result, version, locator))
 }
 
-struct Credentials<'a> {
-    redactor: &'a mut Redactor,
-    stack: Vec<CredentialFrame>,
-    depth: usize,
-}
-impl Drop for Credentials<'_> {
-    fn drop(&mut self) {
-        // A credential string cut off at EOF still must be learned before replaying
-        // earlier fields that may echo it. The incomplete tail is never stored raw.
-        for frame in &self.stack {
-            if frame.forced && !frame.value.is_empty() {
-                self.redactor.credential(&frame.value);
-            }
-        }
-    }
-}
-struct CredentialFrame {
-    forced: bool,
-    value: String,
-    memory: Reservation,
-    nested: Option<Spool>,
-    decided: bool,
-}
-impl Visitor for Credentials<'_> {
-    fn start(&mut self, _path: &str, field: &str, kind: u8, _at: u64) -> Result<()> {
-        let forced = kind != b'k'
-            && (credential_field(field) || self.stack.last().is_some_and(|v| v.forced));
-        self.stack.push(CredentialFrame {
-            forced,
-            value: String::new(),
-            memory: Reservation::memory(),
-            nested: None,
-            decided: false,
-        });
-        Ok(())
-    }
-    fn text(&mut self, s: &str) -> Result<()> {
-        let frame = self.stack.last_mut().unwrap();
-        if frame.forced {
-            if frame.memory.grow(s.len() * 2).is_err() {
-                self.redactor.unavailable();
-            } else {
-                frame.value.push_str(s);
-            }
-        } else {
-            if !frame.decided && !s.trim().is_empty() {
-                frame.decided = true;
-                if s.trim_start().starts_with(['{', '[']) {
-                    frame.nested = Spool::new().ok();
-                    if frame.nested.is_none() {
-                        self.redactor.unavailable();
-                    }
-                }
-            }
-            if let Some(n) = &mut frame.nested {
-                if n.write_all(s.as_bytes()).is_err() {
-                    self.redactor.unavailable();
-                    frame.nested = None;
-                }
-            }
-        }
-        Ok(())
-    }
-    fn end(&mut self, _node: &Node) -> Result<()> {
-        let frame = self.stack.pop().unwrap();
-        if frame.forced && !frame.value.is_empty() {
-            self.redactor.credential(&frame.value);
-        }
-        if let Some(nested) = frame.nested {
-            if let Ok(nested) = nested.seal() {
-                if self.depth < 32 {
-                    let _ = JsonStream::new(nested.reader()).parse(
-                        &mut Credentials {
-                            redactor: self.redactor,
-                            stack: Vec::new(),
-                            depth: self.depth + 1,
-                        },
-                        "nested",
-                    );
-                } else {
-                    self.redactor.unavailable();
-                }
-            } else {
-                self.redactor.unavailable();
-            }
-        }
-        Ok(())
-    }
-}
-pub(super) fn learn_credentials(spool: &Arc<Spool>, redactor: &mut Redactor) -> bool {
-    JsonStream::new(spool.reader())
-        .parse(
-            &mut Credentials {
-                redactor,
-                stack: Vec::new(),
-                depth: 0,
-            },
-            "body",
-        )
-        .is_ok()
-}
 fn tail(value: &str, count: usize) -> &str {
     let mut at = value.len().saturating_sub(count);
     while !value.is_char_boundary(at) {
@@ -1160,9 +1189,50 @@ pub(super) fn run(
     sse: bool,
     upstream: bool,
     protection: Option<Value>,
+    detection: Option<Arc<super::credentials::Detection>>,
 ) {
     let mut p = Pipeline::new(store, record, &secrets, redactor);
     p.protection = protection;
+    p.detection = detection.or_else(|| {
+        request
+            .sealed
+            .as_ref()
+            .map(|spool| super::credentials::detect(spool, &secrets, &[]))
+    });
+    if let Some(detection) = &p.detection {
+        detection.learn(&mut p.redactor);
+        p.credential_catalog_complete &= detection.complete;
+        p.record["credentialDetection"] = detection.summary();
+        let stored = (|| -> Result<()> {
+            let mut writer = BodyWriter::new(
+                p.store.clone(),
+                text(&p.record["id"]),
+                "credential-detection",
+                "credential_detection",
+            )?;
+            writer.push("[")?;
+            for (i, c) in detection.candidates.iter().enumerate() {
+                if i > 0 {
+                    writer.push(",")?;
+                }
+                let mut fact = p.credential_fact(c, detection);
+                fact["auditPolicyVersion"] = json!(super::credentials::AUDIT_POLICY_VERSION);
+                fact["auditDecision"] = json!(if c.strong {
+                    "credential_warning"
+                } else {
+                    "candidate_notice"
+                });
+                writer.push(&fact.to_string())?;
+            }
+            writer.push("]")?;
+            writer.finish("complete", writer.position())
+        })();
+        if stored.is_err() {
+            p.rules
+                .reasons
+                .insert("credential_detection_storage_failure");
+        }
+    }
     if let Some(report) = &p.protection {
         let stored = (|| -> Result<()> {
             let mut writer = BodyWriter::new(
@@ -1181,14 +1251,6 @@ pub(super) fn run(
     p.record["usage"] = json!({});
     p.redactor.observe(&request.headers);
     p.redactor.observe(&response.headers);
-    if let Some(spool) = &request.sealed {
-        p.credential_catalog_complete &= learn_credentials(spool, &mut p.redactor);
-    }
-    if !sse {
-        if let Some(spool) = &response.sealed {
-            p.credential_catalog_complete &= learn_credentials(spool, &mut p.redactor);
-        }
-    }
     super::limit_labels(&mut p.record);
     if !p.record["captureGap"].is_null() {
         p.rules.reasons.insert("shared_encrypted_spool_budget");
@@ -1260,6 +1322,7 @@ pub(super) fn run(
 #[cfg(test)]
 mod locator_tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn tool_locators_identify_observed_argument_bytes_before_display_formatting() {

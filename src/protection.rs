@@ -2,8 +2,8 @@
 use crate::{
     config,
     security::{
-        capture::{credential_field, Redactor},
-        session,
+        capture::{credential_field, Credential, Redactor},
+        credentials::{self, Detection},
     },
     streaming::{self, Edits, JsonStream, Node, Reservation, Spool, Visitor},
 };
@@ -34,6 +34,8 @@ struct Mapping {
     original: String,
     replacement: String,
     created: u64,
+    rule_version: &'static str,
+    credential: Credential,
 
     _memory: Reservation,
 }
@@ -48,253 +50,14 @@ pub(crate) struct Registry {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
-#[derive(Clone, Copy, Default)]
-struct ScanScope {
-    forced: bool,
-    schema: bool,
-    credential_definition: bool,
-    tool_definition: bool,
-}
-impl ScanScope {
-    fn child(self, parent_field: &str, field: &str, kind: u8) -> Self {
-        let tool_definition = self.tool_definition || field == "tools";
-        let schema_value =
-            self.schema && matches!(field, "default" | "const" | "enum" | "examples");
-        let schema = !schema_value
-            && (self.schema
-                || kind == b'{'
-                    && (matches!(field, "schema" | "json_schema")
-                        || tool_definition && matches!(field, "parameters" | "input_schema")));
-        let credential_definition = if self.schema && parent_field == "properties" {
-            kind != b'k' && credential_field(field)
-        } else {
-            self.credential_definition
-        };
-        let forced = kind != b'k'
-            && (self.forced
-                || !schema && credential_field(field)
-                || credential_definition
-                    && matches!(field, "default" | "const" | "enum" | "examples"));
-        Self {
-            forced,
-            schema,
-            credential_definition,
-            tool_definition,
-        }
-    }
-}
-#[derive(Default)]
-struct Frame {
-    value: String,
-    scope: ScanScope,
-    kind: u8,
-    opaque: bool,
-    field: String,
-    contains_credential: bool,
-    memory: Option<Reservation>,
-}
-struct Scan<'a> {
-    stack: Vec<Frame>,
-    redactor: &'a mut Redactor,
-    found: BTreeSet<String>,
-    identity: session::Capture,
-    record: Value,
-    memory: Reservation,
-}
-fn nested_credentials(
-    value: &str,
-    redactor: &Redactor,
-    found: &mut BTreeSet<String>,
-    scope: ScanScope,
-    field: &str,
-    depth: usize,
-) -> Result<()> {
-    if depth > 32 {
-        bail!("protection_nested_json_limit");
-    }
-    // Visit the original members instead of constructing a Value: duplicate
-    // keys must never erase an earlier credential still present on the wire.
-    if value.trim_start().starts_with(['{', '['])
-        && JsonStream::new(value.as_bytes())
-            .parse(&mut ValidateJson, "nested")
-            .is_ok()
-    {
-        struct Nested {
-            scope: ScanScope,
-            stack: Vec<Frame>,
-            strings: Vec<Frame>,
-            memory: Reservation,
-        }
-        impl Visitor for Nested {
-            fn start(&mut self, _: &str, field: &str, kind: u8, _: u64) -> Result<()> {
-                self.memory
-                    .grow(field.len().saturating_mul(4).saturating_add(256))?;
-                self.stack.push(Frame {
-                    scope: self.stack.last().map_or(self.scope, |parent| {
-                        parent.scope.child(&parent.field, field, kind)
-                    }),
-                    field: field.into(),
-                    kind,
-                    memory: Some(Reservation::memory()),
-                    ..Frame::default()
-                });
-                Ok(())
-            }
-            fn text(&mut self, text: &str) -> Result<()> {
-                let frame = self.stack.last_mut().unwrap();
-                frame
-                    .memory
-                    .as_mut()
-                    .unwrap()
-                    .grow(text.len().saturating_mul(12))?;
-                frame.value.push_str(text);
-                Ok(())
-            }
-            fn scalar(&mut self, value: &str) -> Result<()> {
-                if value != "null" && self.stack.last().is_some_and(|frame| frame.scope.forced) {
-                    bail!("protection_non_string_credential");
-                }
-                Ok(())
-            }
-            fn end(&mut self, _: &Node) -> Result<()> {
-                let frame = self.stack.pop().unwrap();
-                if matches!(frame.kind, b'"' | b'k') {
-                    self.strings.push(frame);
-                }
-                Ok(())
-            }
-        }
-        let mut memory = Reservation::memory();
-        memory.grow(value.len().saturating_mul(24))?;
-        let mut nested = Nested {
-            scope,
-            stack: Vec::new(),
-            strings: Vec::new(),
-            memory: Reservation::memory(),
-        };
-        // Root strings retain the outer field's forced/schema semantics.
-        JsonStream::new(value.as_bytes()).one_item(&mut nested, "nested", field)?;
-        for frame in nested.strings {
-            if frame.kind == b'k' {
-                let mut keys = BTreeSet::new();
-                nested_credentials(
-                    &frame.value,
-                    redactor,
-                    &mut keys,
-                    frame.scope,
-                    &frame.field,
-                    depth + 1,
-                )?;
-                if !keys.is_empty() {
-                    bail!("protection_credential_in_key");
-                }
-            } else {
-                nested_credentials(
-                    &frame.value,
-                    redactor,
-                    found,
-                    frame.scope,
-                    &frame.field,
-                    depth + 1,
-                )?;
-            }
-        }
-        return Ok(());
-    }
-    for (start, end) in redactor.protection_ranges(value, scope.forced) {
-        found.insert(value[start..end].to_owned());
-    }
-    Ok(())
-}
-impl Visitor for Scan<'_> {
-    fn start(&mut self, _: &str, field: &str, kind: u8, _: u64) -> Result<()> {
-        self.identity.start(field, kind);
-        self.stack.push(Frame {
-            scope: self.stack.last().map_or_else(
-                || ScanScope::default().child("", field, kind),
-                |f| f.scope.child(&f.field, field, kind),
-            ),
-            opaque: self.stack.last().is_some_and(|f| f.opaque)
-                || matches!(
-                    field,
-                    "thinking" | "signature" | "encrypted_content" | "redacted_thinking"
-                ),
-            kind,
-            field: field.to_owned(),
-            memory: Some(Reservation::memory()),
-            ..Frame::default()
-        });
-        Ok(())
-    }
-    fn text(&mut self, s: &str) -> Result<()> {
-        self.identity.text(s);
-        let f = self.stack.last_mut().unwrap();
-        f.memory
-            .as_mut()
-            .unwrap()
-            .grow(s.len().saturating_mul(12))?;
-        f.value.push_str(s);
-        Ok(())
-    }
-    fn scalar(&mut self, value: &str) -> Result<()> {
-        if value != "null" && self.stack.last().is_some_and(|f| f.scope.forced) {
-            bail!("protection_non_string_credential");
-        }
-        Ok(())
-    }
-    fn end(&mut self, _: &Node) -> Result<()> {
-        self.identity.end(&mut self.record, "request");
-        let f = self.stack.pop().unwrap();
-        if f.field == "type" && matches!(f.value.as_str(), "thinking" | "redacted_thinking") {
-            if let Some(parent) = self.stack.last_mut() {
-                parent.opaque = true;
-            }
-        }
-        if f.kind != b'"' && f.kind != b'k' {
-            if f.opaque && f.contains_credential {
-                bail!("protection_signed_or_opaque_content");
-            }
-            if f.contains_credential {
-                if let Some(parent) = self.stack.last_mut() {
-                    parent.contains_credential = true;
-                }
-            }
-            return Ok(());
-        }
-        let mut found = BTreeSet::new();
-        nested_credentials(&f.value, self.redactor, &mut found, f.scope, &f.field, 0)?;
-        if f.kind == b'k' && !found.is_empty() {
-            bail!("protection_credential_in_key");
-        }
-        if f.opaque && !found.is_empty() {
-            bail!("protection_signed_or_opaque_content");
-        }
-        if !found.is_empty() {
-            if let Some(parent) = self.stack.last_mut() {
-                parent.contains_credential = true;
-            }
-        }
-        // Learn every complete recognized value before the replacement pass.
-        for s in found {
-            self.redactor.credential(&s);
-            if !self.found.contains(&s) {
-                self.memory
-                    .grow(s.len().saturating_mul(4).saturating_add(128))?;
-            }
-            self.found.insert(s);
-        }
-        if !self.redactor.available() {
-            bail!("protection_credential_budget");
-        }
-        Ok(())
-    }
-}
-
 pub(crate) struct Request {
     mappings: Vec<Arc<Mapping>>,
     pub report: Value,
     memory: Reservation,
     redactor: Redactor,
+    pub detection: Arc<Detection>,
+    source: Arc<Spool>,
+    outbound: Option<Arc<Spool>>,
 }
 impl Registry {
     pub fn touch(&self, record: &Value, ttl: u64) {
@@ -341,19 +104,11 @@ impl Registry {
         ttl: u64,
         at: u64,
     ) -> Result<Request> {
-        let mut redactor = Redactor::new(secrets);
-        let mut scan = Scan {
-            stack: Vec::new(),
-            redactor: &mut redactor,
-            found: BTreeSet::new(),
-            identity: session::Capture::default(),
-            record,
-            memory: Reservation::memory(),
-        };
-        JsonStream::new(source.reader()).parse(&mut scan, "request")?;
-        let scope = config::text(&scan.record["sessionKey"]);
+        let mut record = record;
+        credentials::identify(source, &mut record)?;
+        let scope = config::text(&record["sessionKey"]);
         let scope = if scope.is_empty() {
-            config::text(&scan.record["id"]).to_owned()
+            config::text(&record["id"]).to_owned()
         } else {
             scope.to_owned()
         };
@@ -380,36 +135,29 @@ impl Registry {
         let session = sessions.get_mut(&scope).unwrap();
         session.last_request = session.last_request.max(at);
         session.ttl = ttl;
-        let Scan {
-            record,
-            found,
-            memory,
-            ..
-        } = scan;
-        // Seed values learned in earlier rounds, including tokens without a
-        // recognizable prefix. Serializing this pass also prevents concurrent
-        // same-session requests from creating conflicting mappings.
-        for m in &session.mappings {
-            redactor.credential(&m.original);
-        }
-        if !redactor.available() {
-            bail!("protection_credential_budget");
-        }
-        // Scan again after learning credentials declared later in this request.
-        let mut scan = Scan {
-            stack: Vec::new(),
-            redactor: &mut redactor,
-            found,
-            identity: session::Capture::default(),
-            record,
-            memory,
-        };
-        JsonStream::new(source.reader()).parse(&mut scan, "request")?;
+        let trusted = session
+            .mappings
+            .iter()
+            .filter(|m| m.rule_version == credentials::VERSION)
+            .map(|m| m.credential.clone())
+            .collect::<Vec<_>>();
+        let detection = credentials::detect(source, secrets, &trusted);
+        let mut redactor = Redactor::new(secrets);
+        detection.learn(&mut redactor);
         let entries = &mut session.mappings;
         let mut mappings = Vec::new();
         let mut rows = Vec::new();
-        for original in scan.found {
-            let existing = entries.iter().find(|m| m.original == original).cloned();
+        let originals = detection
+            .candidates
+            .iter()
+            .filter(|c| c.strong && c.blocked.is_none() && detection.complete)
+            .map(|c| c.original.clone())
+            .collect::<BTreeSet<_>>();
+        for original in originals {
+            let existing = entries
+                .iter()
+                .find(|m| m.original == original && m.rule_version == credentials::VERSION)
+                .cloned();
             let reused = existing.is_some();
             let m = if let Some(m) = existing {
                 m
@@ -418,19 +166,27 @@ impl Registry {
                 memory.grow(
                     original
                         .len()
-                        .saturating_mul(4)
+                        .saturating_mul(8)
                         .saturating_add(scope.len() + 512),
                 )?;
                 let m = Arc::new(Mapping {
-                    original,
                     replacement: format!("{PREFIX}{}", uuid::Uuid::new_v4().simple()),
                     created: at,
+                    rule_version: credentials::VERSION,
+                    credential: detection
+                        .candidates
+                        .iter()
+                        .filter(|c| c.original == original && c.strong)
+                        .max_by_key(|c| c.match_policy)
+                        .unwrap()
+                        .credential(),
+                    original,
                     _memory: memory,
                 });
                 entries.push(m.clone());
                 m
             };
-            rows.push(json!({"id":m.replacement,"original":m.original,"replacement":m.replacement,"createdAtMs":m.created,"expiresAtMs":at+ttl*1000,"reused":reused,"requestCount":0,"responseCount":0}));
+            rows.push(json!({"id":m.replacement,"original":m.original,"replacement":m.replacement,"evidenceClass":m.credential.evidence,"credentialType":m.credential.credential_type,"matchPolicy":m.credential.match_policy.name(),"ruleVersion":m.rule_version,"createdAtMs":m.created,"expiresAtMs":at+ttl*1000,"reused":reused,"requestCount":0,"responseCount":0}));
             mappings.push(m);
         }
         // Responses may reference earlier server-side context. Keep all live
@@ -442,6 +198,9 @@ impl Registry {
             report: json!({"enabled":true,"status":"prepared","mappingTtlSeconds":ttl,"expiryMode":"session_idle","expiresAtMs":at+ttl*1000,"sessionId":scope,"requestCount":0,"responseCount":0,"mappings":rows}),
             memory: Reservation::memory(),
             redactor,
+            detection,
+            source: source.clone(),
+            outbound: None,
         };
         request
             .memory
@@ -455,43 +214,40 @@ impl Registry {
                 request
                     .memory
                     .grow(m.original.len().saturating_mul(12).saturating_add(2048))?;
-                request.report["mappings"].as_array_mut().unwrap().push(json!({"id":m.replacement,"original":m.original,"replacement":m.replacement,"createdAtMs":m.created,"expiresAtMs":at+ttl*1000,"reused":true,"requestCount":0,"responseCount":0}));
+                request.report["mappings"].as_array_mut().unwrap().push(json!({"id":m.replacement,"original":m.original,"replacement":m.replacement,"evidenceClass":m.credential.evidence,"credentialType":m.credential.credential_type,"matchPolicy":m.credential.match_policy.name(),"ruleVersion":m.rule_version,"createdAtMs":m.created,"expiresAtMs":at+ttl*1000,"reused":true,"requestCount":0,"responseCount":0}));
                 request.mappings.push(m);
             }
+        }
+        request.report["detection"] = request.detection.summary();
+        request.report["policyVersion"] = json!("protection-2");
+        request.report["forwarded"] = json!(false);
+        request.report["decisions"] = json!(request
+            .detection
+            .candidates
+            .iter()
+            .map(|c| {
+                let mut fact = c.fact(&request.detection.snapshot_id);
+                fact["replacementStatus"] = json!("not_replaced");
+                fact["reason"] = json!(if !c.strong {
+                    "policy_not_selected"
+                } else {
+                    c.blocked.unwrap_or("pending_execution")
+                });
+                fact
+            })
+            .collect::<Vec<_>>());
+        let size = request.report.to_string().len().saturating_mul(12) as u64;
+        if size > request.memory.bytes {
+            request
+                .memory
+                .grow((size - request.memory.bytes) as usize)?;
         }
         Ok(request)
     }
 }
 // Map decoded UTF-8 boundaries back to the actual JSON spelling, including
 // Unicode escapes and surrogate pairs. Audit positions stay in the original A.
-fn string_offsets(raw: &str) -> Result<Vec<usize>> {
-    let mut offsets = vec![1];
-    let mut at = 1;
-    while at + 1 < raw.len() {
-        let start = at;
-        let end = if raw.as_bytes()[at] == b'\\' {
-            if raw.as_bytes().get(at + 1) == Some(&b'u') {
-                let first = u16::from_str_radix(&raw[at + 2..at + 6], 16)?;
-                at + if (0xd800..=0xdbff).contains(&first) {
-                    12
-                } else {
-                    6
-                }
-            } else {
-                at + 2
-            }
-        } else {
-            at + raw[at..].chars().next().unwrap().len_utf8()
-        };
-        let decoded: String = serde_json::from_str(&format!("\"{}\"", &raw[start..end]))?;
-        for _ in 1..decoded.len() {
-            offsets.push(start);
-        }
-        offsets.push(end);
-        at = end;
-    }
-    Ok(offsets)
-}
+use crate::security::credentials::string_offsets;
 #[derive(Clone, Copy)]
 struct Candidate {
     start: usize,
@@ -561,7 +317,8 @@ fn literal_candidates(
 ) -> Vec<Candidate> {
     let mut result = Vec::new();
     for (mapping, m) in mappings.iter().enumerate() {
-        let needle = if restore { &m.replacement } else { &m.original };
+        debug_assert!(restore, "request replacements require frozen positions");
+        let needle = &m.replacement;
         for needle in variants(needle) {
             for (start, _) in text.match_indices(&needle) {
                 result.push(Candidate {
@@ -598,6 +355,9 @@ impl Request {
         base: u64,
         structured: bool,
     ) -> Result<String> {
+        if !restore {
+            bail!("protection_requires_detection_plan");
+        }
         let mut scratch = Reservation::memory();
         scratch.grow(text.len().saturating_mul(24))?;
         let mut candidates = if structured {
@@ -662,7 +422,70 @@ impl Request {
         Ok(out)
     }
     pub fn transform(&mut self, source: &Arc<Spool>, restore: bool) -> Result<Arc<Spool>> {
-        self.transform_except(source, restore, &[])
+        if restore {
+            return self.transform_except(source, true, &[]);
+        }
+        if !Arc::ptr_eq(source, &self.source) {
+            bail!("protection_snapshot_mismatch");
+        }
+        if !self.detection.complete {
+            bail!("protection_incomplete_detection");
+        }
+        if let Some(reason) = self
+            .detection
+            .candidates
+            .iter()
+            .filter(|c| c.strong)
+            .find_map(|c| c.blocked)
+        {
+            bail!(reason);
+        }
+        let mut edits = Edits::new();
+        for c in self.detection.candidates.iter().filter(|c| c.strong) {
+            let i = self
+                .mappings
+                .iter()
+                .position(|m| m.original == c.original)
+                .unwrap();
+            edits.add(
+                c.raw_start,
+                c.raw_end,
+                self.mappings[i].replacement.as_bytes().to_vec(),
+            )?;
+        }
+        let mut out = Spool::new()?;
+        std::io::copy(&mut edits.reader(source), &mut out)?;
+        let out = out.seal()?;
+        // Retain the exact plan output. Verification checks these bytes, rather
+        // than rerunning candidate detection on the modified snapshot.
+        JsonStream::new(out.reader()).parse(&mut ValidateJson, "verify")?;
+        self.outbound = Some(out.clone());
+        for (index, c) in self
+            .detection
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.strong)
+        {
+            let i = self
+                .mappings
+                .iter()
+                .position(|m| m.original == c.original)
+                .unwrap();
+            self.report["requestCount"] =
+                json!(self.report["requestCount"].as_u64().unwrap_or(0) + 1);
+            let row = &mut self.report["mappings"][i];
+            row["requestCount"] = json!(row["requestCount"].as_u64().unwrap_or(0) + 1);
+            if !row["locations"].is_array() {
+                row["locations"] = json!([]);
+            }
+            let mut location = c.fact(&self.detection.snapshot_id);
+            location["side"] = json!("request");
+            row["locations"].as_array_mut().unwrap().push(location);
+            self.report["decisions"][index]["replacementStatus"] = json!("replaced");
+            self.report["decisions"][index]["reason"] = Value::Null;
+        }
+        Ok(out)
     }
     fn transform_except(
         &mut self,
@@ -765,37 +588,27 @@ impl Request {
         Ok(output.seal()?)
     }
     pub fn check_outbound(&self, source: &Arc<Spool>) -> Result<()> {
-        struct Verify<'a> {
-            request: &'a Request,
-            stack: Vec<String>,
-            memory: Reservation,
+        let expected = self
+            .outbound
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("protection_not_executed"))?;
+        if source.len != expected.len {
+            bail!("protection_verification_failed");
         }
-        impl Visitor for Verify<'_> {
-            fn start(&mut self, _: &str, _: &str, _: u8, _: u64) -> Result<()> {
-                self.stack.push(String::new());
-                Ok(())
+        let mut left = source.reader();
+        let mut right = expected.reader();
+        let mut a = [0; streaming::PAGE];
+        let mut b = [0; streaming::PAGE];
+        loop {
+            let n = left.read(&mut a)?;
+            if n == 0 {
+                break;
             }
-            fn text(&mut self, s: &str) -> Result<()> {
-                self.memory.grow(s.len().saturating_mul(12))?;
-                self.stack.last_mut().unwrap().push_str(s);
-                Ok(())
-            }
-            fn end(&mut self, _: &Node) -> Result<()> {
-                let value = self.stack.pop().unwrap();
-                if !candidates(&value, &self.request.mappings, false, 0)?.is_empty() {
-                    bail!("protection_verification_failed");
-                }
-                Ok(())
+            right.read_exact(&mut b[..n])?;
+            if a[..n] != b[..n] {
+                bail!("protection_verification_failed");
             }
         }
-        JsonStream::new(source.reader()).parse(
-            &mut Verify {
-                request: self,
-                stack: Vec::new(),
-                memory: Reservation::memory(),
-            },
-            "verify",
-        )?;
         Ok(())
     }
     pub fn safe_parameter(&self, value: &str) -> bool {
@@ -805,7 +618,6 @@ impl Request {
         let mut decoded = value.to_owned();
         for depth in 0..=4 {
             if !self.redactor.protection_ranges(&decoded, forced).is_empty()
-                || self.mappings.iter().any(|m| decoded.contains(&m.original))
                 || decoded.contains(PREFIX)
             {
                 return false;
@@ -1723,6 +1535,52 @@ mod tests {
         );
     }
     #[test]
+    fn earlier_detector_mappings_restore_but_do_not_classify_or_reuse_a() {
+        let registry = Registry::default();
+        let original = "legacyWeakValue87";
+        let mut active = prepare(&registry, json!({"password":original}), "s", 1000);
+        let old_b = active.mappings[0].replacement.clone();
+        let mut memory = Reservation::memory();
+        memory.grow(1024).unwrap();
+        let old = Arc::new(Mapping {
+            original: original.into(),
+            replacement: old_b.clone(),
+            created: 1000,
+            rule_version: "credentials-2",
+            credential: active.mappings[0].credential.clone(),
+            _memory: memory,
+        });
+        registry
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut("s")
+            .unwrap()
+            .mappings[0] = old;
+        let mut later = prepare(&registry, json!({"input":original}), "s", 1001);
+        assert!(later.detection.candidates.is_empty());
+        let source = later.source.clone();
+        let out: Value =
+            serde_json::from_reader(later.transform(&source, false).unwrap().reader()).unwrap();
+        assert_eq!(out["input"], original);
+        assert_eq!(
+            later.replace(&old_b, true, "text", "response").unwrap(),
+            original
+        );
+        let current = prepare(&registry, json!({"password":original}), "s", 1002);
+        let new = current
+            .mappings
+            .iter()
+            .find(|m| m.rule_version == credentials::VERSION)
+            .unwrap();
+        assert_ne!(new.replacement, old_b);
+        assert_eq!(current.report["mappings"][0]["reused"], false);
+        assert_eq!(
+            active.replace(&old_b, true, "text", "response").unwrap(),
+            original
+        );
+    }
+    #[test]
     fn parameter_decoding_checks_the_final_layer_and_rejects_excessive_encoding() {
         let registry = Registry::default();
         let request = prepare(&registry, json!({"api_key":"actual secret"}), "s", 1000);
@@ -1814,15 +1672,21 @@ mod tests {
                 true
             )
             .is_err());
-        assert!(registry
+        let source = spool_json(&json!({"realToken":"value"})).unwrap();
+        let mut blocked = registry
             .prepare_at(
-                &spool_json(&json!({"realToken":"value"})).unwrap(),
+                &source,
                 &json!({}),
                 json!({"id":"r","sessionKey":"s"}),
                 3600,
-                1001
+                1001,
             )
-            .is_err());
+            .unwrap();
+        assert_eq!(
+            blocked.detection.candidates[0].blocked,
+            Some("protection_credential_in_key")
+        );
+        assert!(blocked.transform(&source, false).is_err());
     }
     #[test]
     fn display_ranges_preserve_unicode_offsets_and_partial_overlaps() {

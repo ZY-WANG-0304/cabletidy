@@ -122,6 +122,42 @@ try {
   await page.locator('.protection-empty').waitFor();
   assert.match(await page.locator('.protection-empty').textContent(),/已启用，本次没有替换或还原/);
   assert.match(await page.locator('.protection-history > summary').textContent(),/2 条/);
+  const observed = new Set(records.map(record => record.id));
+  const inspectNext = async (body, status, session) => {
+    const response = await post('relay/v1/responses',{model:'gpt-5.5',...body},{'session-id':session});
+    assert.equal(response.status,status);await response.text();
+    let record;
+    for(let i=0;i<200;i++) {
+      const rows=(await(await fetch(`${app.url}api/v1/security/audit?kind=request`)).json()).items;
+      record=rows.find(r=>!observed.has(r.id) && r.inspectionProgress?.active===false);
+      if(record)break;await delay(25);
+    }
+    assert.ok(record);observed.add(record.id);
+    await page.goto(`${app.url}#security/session/${record.sessionKey}`);
+    await page.locator('.trace-inspector-heading').waitFor();
+    await page.locator('[data-tab="protection"]').click();
+    await page.locator('.credential-decisions').waitFor();
+    return record;
+  };
+  await inspectNext({input:String.raw`const password = "unknown\x21";`},200,'browser-weak');
+  await page.locator('.credential-decisions summary').click();
+  assert.match(await page.locator('.credential-decision').textContent(),/低置信度[\s\S]*未替换/);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+  await page.locator('[data-tab="risks"]').click();
+  await page.locator('.credential-finding-facts').first().waitFor();
+  assert.match((await page.locator('.credential-finding-facts').allTextContents()).join('\n'),/候选提示[\s\S]*未替换/);
+  await inspectNext({previous_response_id:key},422,'browser-blocked');
+  await page.locator('.credential-decisions summary').click();
+  assert.match(await page.locator('.credential-decision').textContent(),/强证据[\s\S]*未替换 · 结构中无法安全替换/);
+  let latest=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
+  latest.credentialProtection.enabled=false;
+  response=await post('api/v1/config/commit',{config:latest,baseRevision:latest.revision});assert.equal(response.status,200);await response.text();
+  await inspectNext({metadata:{password:'browser-short'}},200,'browser-disabled');
+  await page.locator('.credential-decisions summary').click();
+  assert.match(await page.locator('.credential-decision').textContent(),/未替换 · 保护关闭/);
+  await page.screenshot({path:path.join(output,'mobile-disabled-candidate.png'),fullPage:true});
+  latest=(await(await fetch(`${app.url}api/v1/config`)).json()).config;latest.credentialProtection.enabled=true;
+  response=await post('api/v1/config/commit',{config:latest,baseRevision:latest.revision});assert.equal(response.status,200);await response.text();
   await page.goto(`${app.url}#settings`);
   await page.locator('#protection-enabled').waitFor();
   assert.equal(await page.locator('#protection-enabled').isChecked(),true);

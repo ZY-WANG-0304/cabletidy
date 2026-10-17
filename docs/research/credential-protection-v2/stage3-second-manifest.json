@@ -1,0 +1,1017 @@
+{
+  "version": 1,
+  "corpusSha256": "007b37d2637c215ef6e021f96f52aef1bf7a9116e8664e7ce00ae5ccef90707d",
+  "specimens": 112,
+  "families": 28,
+  "contracts": 0,
+  "partition": [
+    {
+      "id": "fresh/source/python-annotated-single/0",
+      "family": "fresh/source/python-annotated-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "bda0b493ea97c669d776f310d21c190f5e2a6c51b7f68dce1704324b9c0e74b8",
+      "expectedSha256": "20d9c88a6845313b426c7ccbfa981145c0403b32ce2ad70565bbfaab256b8153"
+    },
+    {
+      "id": "fresh/source/python-annotated-single/1",
+      "family": "fresh/source/python-annotated-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "74e40460f80428756c5e1c1df0200d4871c99d73ca3e1df6f0209ae96e651f2a",
+      "expectedSha256": "20d9c88a6845313b426c7ccbfa981145c0403b32ce2ad70565bbfaab256b8153"
+    },
+    {
+      "id": "fresh/source/python-annotated-single/2",
+      "family": "fresh/source/python-annotated-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "24908c3f90cb2b3080030676b58c362c0d1ae0adbb10666b6c1324acde7d6078",
+      "expectedSha256": "20d9c88a6845313b426c7ccbfa981145c0403b32ce2ad70565bbfaab256b8153"
+    },
+    {
+      "id": "fresh/source/python-annotated-single/3",
+      "family": "fresh/source/python-annotated-single",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "e4638cab5f6f2ea22bc5c768617642476f5e5637186918554d402d74f1712dce",
+      "expectedSha256": "20d9c88a6845313b426c7ccbfa981145c0403b32ce2ad70565bbfaab256b8153"
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/0",
+      "family": "fresh/source/js-let-typed-template",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "d4963c4fc068736f676367acce9bc2958e93248e12ec990fd3773273ccf71739",
+      "expectedSha256": "0f0d9acc5fe2229f2bbd2863d6efe9de6a6cfb60659d1faaccb28d9c89a11778"
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/1",
+      "family": "fresh/source/js-let-typed-template",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "a6acf8f5ef5f3e131e6d8933d2b4f2401f81884eaf53275976555bacca616d2c",
+      "expectedSha256": "0f0d9acc5fe2229f2bbd2863d6efe9de6a6cfb60659d1faaccb28d9c89a11778"
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/2",
+      "family": "fresh/source/js-let-typed-template",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "5d3db2630ff65bb2355b7c248427b090872ce2725cc81337bd8601432f4e7927",
+      "expectedSha256": "0f0d9acc5fe2229f2bbd2863d6efe9de6a6cfb60659d1faaccb28d9c89a11778"
+    },
+    {
+      "id": "fresh/source/js-let-typed-template/3",
+      "family": "fresh/source/js-let-typed-template",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "source",
+      "payloadSha256": "6da898acfdd2b85be25ac815c6ae4395e9197d9b2f1af2f9cdcb3e73387d6247",
+      "expectedSha256": "0f0d9acc5fe2229f2bbd2863d6efe9de6a6cfb60659d1faaccb28d9c89a11778"
+    },
+    {
+      "id": "fresh/source/annotated-expression/0",
+      "family": "fresh/source/annotated-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "b11d972a8c9a8ab65f24543cc0c67b9e2e0c5cd3301aedbf09822f870672b471",
+      "expectedSha256": "b11d972a8c9a8ab65f24543cc0c67b9e2e0c5cd3301aedbf09822f870672b471"
+    },
+    {
+      "id": "fresh/source/annotated-expression/1",
+      "family": "fresh/source/annotated-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "e44342f28ea3ed2a448d9a1ecd02aed91694433aa3afb1ce9d86f2b1ec4aceb2",
+      "expectedSha256": "e44342f28ea3ed2a448d9a1ecd02aed91694433aa3afb1ce9d86f2b1ec4aceb2"
+    },
+    {
+      "id": "fresh/source/annotated-expression/2",
+      "family": "fresh/source/annotated-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "721370069ffe74f981e08c24ceda6413d4a15868541fb6f47f38999cebd01719",
+      "expectedSha256": "721370069ffe74f981e08c24ceda6413d4a15868541fb6f47f38999cebd01719"
+    },
+    {
+      "id": "fresh/source/annotated-expression/3",
+      "family": "fresh/source/annotated-expression",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "source",
+      "payloadSha256": "c9369cd4ff6e8b0ba67de6330479a45a717a1fc3f5e25bf5f9fc21f019c9e3b5",
+      "expectedSha256": "c9369cd4ff6e8b0ba67de6330479a45a717a1fc3f5e25bf5f9fc21f019c9e3b5"
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/0",
+      "family": "fresh/source/annotated-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "66736bdbee3bfb046ffb9609c246941cd6157311a374a15660eb914957fc47a2",
+      "expectedSha256": "66736bdbee3bfb046ffb9609c246941cd6157311a374a15660eb914957fc47a2"
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/1",
+      "family": "fresh/source/annotated-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "b49c46fd818eb05634796d87b18930a0e61a88840c4a4de65c2875a1da07ecb7",
+      "expectedSha256": "b49c46fd818eb05634796d87b18930a0e61a88840c4a4de65c2875a1da07ecb7"
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/2",
+      "family": "fresh/source/annotated-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "8606d48c8a5f35019c96223ecf914d987dbf4dc702d937187bf932b6e2dcab40",
+      "expectedSha256": "8606d48c8a5f35019c96223ecf914d987dbf4dc702d937187bf932b6e2dcab40"
+    },
+    {
+      "id": "fresh/source/annotated-unknown-escape/3",
+      "family": "fresh/source/annotated-unknown-escape",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "source",
+      "payloadSha256": "eeaaaf4fc30a7952b440eb2725642e7d9fee6500131477b97b0485a40ba1d1e3",
+      "expectedSha256": "eeaaaf4fc30a7952b440eb2725642e7d9fee6500131477b97b0485a40ba1d1e3"
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/0",
+      "family": "fresh/environment/spaced-single-export",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "b00896486f71745fd435e1a2238d2e8a272a6ddb5577a3bfdf2dd4a8df64a798",
+      "expectedSha256": "7b42462f6f5845067a141d2610384dd001ddf2bea74818022e46b41e31d54f5b"
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/1",
+      "family": "fresh/environment/spaced-single-export",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "3e33c405cc668c00975bc356e70ade2a98d9e2f4c9314dab8fd72d574363ea49",
+      "expectedSha256": "7b42462f6f5845067a141d2610384dd001ddf2bea74818022e46b41e31d54f5b"
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/2",
+      "family": "fresh/environment/spaced-single-export",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "714dc67466d43abfd6076616b3d40ec00dc426df6f312b86bb46e35d28a60db0",
+      "expectedSha256": "7b42462f6f5845067a141d2610384dd001ddf2bea74818022e46b41e31d54f5b"
+    },
+    {
+      "id": "fresh/environment/spaced-single-export/3",
+      "family": "fresh/environment/spaced-single-export",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "bdfc47dc8808e78ad8c3af00ce6579b531aa1239a42b982e59b2d1d0ffa63631",
+      "expectedSha256": "7b42462f6f5845067a141d2610384dd001ddf2bea74818022e46b41e31d54f5b"
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/0",
+      "family": "fresh/environment/mixed-case-spaced",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "24f4cda8ab34820866a23624d52b623db1a2a6248f2392f0b74cb2858a584cf2",
+      "expectedSha256": "acee5f3da4571a8150157d3c00c8a53f5517c8ed7e89e7b94740089b06b4ef39"
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/1",
+      "family": "fresh/environment/mixed-case-spaced",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "61185b02624fa922e10f98b55b4a6388e67a5d7dcca17a89938388c24b774769",
+      "expectedSha256": "acee5f3da4571a8150157d3c00c8a53f5517c8ed7e89e7b94740089b06b4ef39"
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/2",
+      "family": "fresh/environment/mixed-case-spaced",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "fc60e00907865e8857bec10c835fccd12517a420db9bc23d65723ebfd9f238cf",
+      "expectedSha256": "acee5f3da4571a8150157d3c00c8a53f5517c8ed7e89e7b94740089b06b4ef39"
+    },
+    {
+      "id": "fresh/environment/mixed-case-spaced/3",
+      "family": "fresh/environment/mixed-case-spaced",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "environment",
+      "payloadSha256": "c0fbeb097fd645b038f62a69f1e21aa04022a4d1886a57804c000d78cb7a156e",
+      "expectedSha256": "acee5f3da4571a8150157d3c00c8a53f5517c8ed7e89e7b94740089b06b4ef39"
+    },
+    {
+      "id": "fresh/environment/quoted-ref/0",
+      "family": "fresh/environment/quoted-ref",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "b47be7fd887d5627cc9e69e0fadd83085c3d424ed1e65a3f62f809135d66bbcf",
+      "expectedSha256": "b47be7fd887d5627cc9e69e0fadd83085c3d424ed1e65a3f62f809135d66bbcf"
+    },
+    {
+      "id": "fresh/environment/quoted-ref/1",
+      "family": "fresh/environment/quoted-ref",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "b6af0c2fbbeaa07e11e508921fb6591f35c2a7d4065ccb9ba95f6ac21e85e2d1",
+      "expectedSha256": "b6af0c2fbbeaa07e11e508921fb6591f35c2a7d4065ccb9ba95f6ac21e85e2d1"
+    },
+    {
+      "id": "fresh/environment/quoted-ref/2",
+      "family": "fresh/environment/quoted-ref",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "2480c57bb3aa9c6cabb0b83746ad07cfb4dc4017accd76c09b0e9664f58761fc",
+      "expectedSha256": "2480c57bb3aa9c6cabb0b83746ad07cfb4dc4017accd76c09b0e9664f58761fc"
+    },
+    {
+      "id": "fresh/environment/quoted-ref/3",
+      "family": "fresh/environment/quoted-ref",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "environment",
+      "payloadSha256": "dd8861f15996f8fe7404988f0d3121232773a376cad570c3bc63f23412d67179",
+      "expectedSha256": "dd8861f15996f8fe7404988f0d3121232773a376cad570c3bc63f23412d67179"
+    },
+    {
+      "id": "fresh/environment/truncated-export/0",
+      "family": "fresh/environment/truncated-export",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "f90870a2f5d08c1f79998e8ff09f3d3bc35f4a367bacb49632cc31f91df940cf",
+      "expectedSha256": "f90870a2f5d08c1f79998e8ff09f3d3bc35f4a367bacb49632cc31f91df940cf"
+    },
+    {
+      "id": "fresh/environment/truncated-export/1",
+      "family": "fresh/environment/truncated-export",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "166e65b3d4ed8438d386ee61f47b5a9ea1c9750b0bcee8e72489ea368e5a2e5e",
+      "expectedSha256": "166e65b3d4ed8438d386ee61f47b5a9ea1c9750b0bcee8e72489ea368e5a2e5e"
+    },
+    {
+      "id": "fresh/environment/truncated-export/2",
+      "family": "fresh/environment/truncated-export",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "84f8196056af5ef895d8c9793f10f94c3ddbee1f42c435619779ee0ee994e5f0",
+      "expectedSha256": "84f8196056af5ef895d8c9793f10f94c3ddbee1f42c435619779ee0ee994e5f0"
+    },
+    {
+      "id": "fresh/environment/truncated-export/3",
+      "family": "fresh/environment/truncated-export",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "environment",
+      "payloadSha256": "e89f31a437120b73185bba6737b28b0001e9d4c50f2161fceff4694c2ec558c0",
+      "expectedSha256": "e89f31a437120b73185bba6737b28b0001e9d4c50f2161fceff4694c2ec558c0"
+    },
+    {
+      "id": "fresh/json/deep-extension/0",
+      "family": "fresh/json/deep-extension",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "5b42169a561d1924d4944fb196ef499f3783edb22c2780a8398670208dd07172",
+      "expectedSha256": "222f8dc744a69ffed08da38f1e33f7a9cbdbc81ecf655da8614e2d00b1e08c55"
+    },
+    {
+      "id": "fresh/json/deep-extension/1",
+      "family": "fresh/json/deep-extension",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "bd62bd30fea859653db637f49cc95ee9b423d641bc26a1a9ba4e6dcbdef2c74b",
+      "expectedSha256": "222f8dc744a69ffed08da38f1e33f7a9cbdbc81ecf655da8614e2d00b1e08c55"
+    },
+    {
+      "id": "fresh/json/deep-extension/2",
+      "family": "fresh/json/deep-extension",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "8040be586ce5b299fb2e31e99fe40bb72251a900906f9e96c6bb3215f6dfc6d0",
+      "expectedSha256": "222f8dc744a69ffed08da38f1e33f7a9cbdbc81ecf655da8614e2d00b1e08c55"
+    },
+    {
+      "id": "fresh/json/deep-extension/3",
+      "family": "fresh/json/deep-extension",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "3a50d261d7f8ec8a67a140e9f5272391e65406bf4cf50d55c3c21c49e9386ae4",
+      "expectedSha256": "222f8dc744a69ffed08da38f1e33f7a9cbdbc81ecf655da8614e2d00b1e08c55"
+    },
+    {
+      "id": "fresh/json/triple-encoded/0",
+      "family": "fresh/json/triple-encoded",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "cbd072db3c919022b0920e66553ec806f9c2ee2c24380ab60dce0d5c8d0e9992",
+      "expectedSha256": "832177727b3bc363479e357d87a4ad9d6e1dcc2d970dcece3cd0e17bbae13364"
+    },
+    {
+      "id": "fresh/json/triple-encoded/1",
+      "family": "fresh/json/triple-encoded",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "6e546a7290dac163b438ba6cdb83fc31164c04403ab0ff94fb7bd8180f191c23",
+      "expectedSha256": "832177727b3bc363479e357d87a4ad9d6e1dcc2d970dcece3cd0e17bbae13364"
+    },
+    {
+      "id": "fresh/json/triple-encoded/2",
+      "family": "fresh/json/triple-encoded",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "bea54a0de150147106f4077325d839b381fbb5e4ebf36277696e78caaf2690eb",
+      "expectedSha256": "832177727b3bc363479e357d87a4ad9d6e1dcc2d970dcece3cd0e17bbae13364"
+    },
+    {
+      "id": "fresh/json/triple-encoded/3",
+      "family": "fresh/json/triple-encoded",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "json",
+      "payloadSha256": "3b7ed3c3e19edbebfff8124c32e7adf6b63da7b6ced3bde97f6e0784a923c8e4",
+      "expectedSha256": "832177727b3bc363479e357d87a4ad9d6e1dcc2d970dcece3cd0e17bbae13364"
+    },
+    {
+      "id": "fresh/json/metadata-count-description/0",
+      "family": "fresh/json/metadata-count-description",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "ddb1b1c7deab2903d686982b38cab15ce4e77a76857d0bb1987a13d699009bb7",
+      "expectedSha256": "ddb1b1c7deab2903d686982b38cab15ce4e77a76857d0bb1987a13d699009bb7"
+    },
+    {
+      "id": "fresh/json/metadata-count-description/1",
+      "family": "fresh/json/metadata-count-description",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "e952a770548fe3412de174639c20d2ce0d1a38049237b32e4e2be27fdf2c95b4",
+      "expectedSha256": "e952a770548fe3412de174639c20d2ce0d1a38049237b32e4e2be27fdf2c95b4"
+    },
+    {
+      "id": "fresh/json/metadata-count-description/2",
+      "family": "fresh/json/metadata-count-description",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "e37fee5936d39698b3202fc0b9f1a3116310ccb8f16eb8b35c01fabc50ebfc37",
+      "expectedSha256": "e37fee5936d39698b3202fc0b9f1a3116310ccb8f16eb8b35c01fabc50ebfc37"
+    },
+    {
+      "id": "fresh/json/metadata-count-description/3",
+      "family": "fresh/json/metadata-count-description",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "json",
+      "payloadSha256": "2bbb2ffc4f2d2fc403354ec20dfa66086b5c31b581e84b66189f6e3101103958",
+      "expectedSha256": "2bbb2ffc4f2d2fc403354ec20dfa66086b5c31b581e84b66189f6e3101103958"
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/0",
+      "family": "fresh/json/encoded-unknown-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "dc922cabe2c838a3b99890ae3227ec1cda4ab167f3fe8002cb38272cd088c677",
+      "expectedSha256": "dc922cabe2c838a3b99890ae3227ec1cda4ab167f3fe8002cb38272cd088c677"
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/1",
+      "family": "fresh/json/encoded-unknown-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "6160242e81d56b78561d77d365129b43e94cd7a43d267b6dcbe350315acc46c4",
+      "expectedSha256": "6160242e81d56b78561d77d365129b43e94cd7a43d267b6dcbe350315acc46c4"
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/2",
+      "family": "fresh/json/encoded-unknown-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "fce3082c2e54e3a2169f13cde2d207d5cf80908d1b7fd74ca0c9c69c323b19ce",
+      "expectedSha256": "fce3082c2e54e3a2169f13cde2d207d5cf80908d1b7fd74ca0c9c69c323b19ce"
+    },
+    {
+      "id": "fresh/json/encoded-unknown-source/3",
+      "family": "fresh/json/encoded-unknown-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "json",
+      "payloadSha256": "f57ce36f1561f02c5256866891cbca0ae4e1cc4abe7962474ea758982f4f9049",
+      "expectedSha256": "f57ce36f1561f02c5256866891cbca0ae4e1cc4abe7962474ea758982f4f9049"
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/0",
+      "family": "fresh/markdown/numbered-inline-double",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "31ce9d49dd7873b8a5e01f390798457f83a032476917cc8dc7d06a981bcd58fc",
+      "expectedSha256": "117d5e5715669ecf1a56c807733eef6c4b22eb659373361f9b65e794b7b1f0da"
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/1",
+      "family": "fresh/markdown/numbered-inline-double",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "ed90f0e5dfee9d15c5e2f8e1c9229c4b0b4dd5c83b6b9c40d287262d4fcae3ea",
+      "expectedSha256": "117d5e5715669ecf1a56c807733eef6c4b22eb659373361f9b65e794b7b1f0da"
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/2",
+      "family": "fresh/markdown/numbered-inline-double",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "a006ff7384ce1aef3f6e61b26f321098b24f96a97e5d87149acdeb1900ee3548",
+      "expectedSha256": "117d5e5715669ecf1a56c807733eef6c4b22eb659373361f9b65e794b7b1f0da"
+    },
+    {
+      "id": "fresh/markdown/numbered-inline-double/3",
+      "family": "fresh/markdown/numbered-inline-double",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "6ef6af09f03f9582649ed5c11f97e86d95d45394332eaa8a266310c9856e2ada",
+      "expectedSha256": "117d5e5715669ecf1a56c807733eef6c4b22eb659373361f9b65e794b7b1f0da"
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/0",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "2632c152be14e642e70fddf25762575602a166abf9a1f3e85e916a7fa1a2933d",
+      "expectedSha256": "8524002deaa17ff69c887d3893aa5efd214e9e257e06e44e8ed653aa9ecf1e0a"
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/1",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "defab0764f695b56e27518466bfa1c80d41a4dbb6e5c09b2d43aa27d1db6f4d7",
+      "expectedSha256": "8524002deaa17ff69c887d3893aa5efd214e9e257e06e44e8ed653aa9ecf1e0a"
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/2",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "2924f6a9d5f43a5dbf166c077e51911ec9dfddc07ab3db168080ead19db1b806",
+      "expectedSha256": "8524002deaa17ff69c887d3893aa5efd214e9e257e06e44e8ed653aa9ecf1e0a"
+    },
+    {
+      "id": "fresh/markdown/literal-plus-negative-comment/3",
+      "family": "fresh/markdown/literal-plus-negative-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "markdown",
+      "payloadSha256": "5ee4f507d708e277a3229d72f2ed54d293a549adab9248b8002107ce1bab9b98",
+      "expectedSha256": "8524002deaa17ff69c887d3893aa5efd214e9e257e06e44e8ed653aa9ecf1e0a"
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/0",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "88b6937343b5b3a9a0790801b33a10c2ebaa58b5fcd3a84ebf606b9ef1e4e495",
+      "expectedSha256": "88b6937343b5b3a9a0790801b33a10c2ebaa58b5fcd3a84ebf606b9ef1e4e495"
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/1",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "3dcdbdd18d92ee026810959f60668ab52e88ad6f8fb466b2297581a8de7b35c5",
+      "expectedSha256": "3dcdbdd18d92ee026810959f60668ab52e88ad6f8fb466b2297581a8de7b35c5"
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/2",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "54f205af6706d9f1288bcebdf8954abc0806fe7b451ef8c831071e5e69d69d02",
+      "expectedSha256": "54f205af6706d9f1288bcebdf8954abc0806fe7b451ef8c831071e5e69d69d02"
+    },
+    {
+      "id": "fresh/markdown/unresolved-member-doc/3",
+      "family": "fresh/markdown/unresolved-member-doc",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "markdown",
+      "payloadSha256": "5aea3721eda7df808434d72dbcca193b46bfaa5f5dcf0df23068d21368669ea5",
+      "expectedSha256": "5aea3721eda7df808434d72dbcca193b46bfaa5f5dcf0df23068d21368669ea5"
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/0",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "8cdb322b3adf1e9026b692c79868b342325109e2b12884139f9d358ede4f6202",
+      "expectedSha256": "8cdb322b3adf1e9026b692c79868b342325109e2b12884139f9d358ede4f6202"
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/1",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "35f1ea5546362bce8f2a60aedd9df22708be59a34292d0d568b778cb433a3f55",
+      "expectedSha256": "35f1ea5546362bce8f2a60aedd9df22708be59a34292d0d568b778cb433a3f55"
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/2",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "f7504f6a1417e6fdd4fcb772e9698485ea72b7188f67bcc8739e101fa4ba00d8",
+      "expectedSha256": "f7504f6a1417e6fdd4fcb772e9698485ea72b7188f67bcc8739e101fa4ba00d8"
+    },
+    {
+      "id": "fresh/markdown/truncated-fenced-source/3",
+      "family": "fresh/markdown/truncated-fenced-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "markdown",
+      "payloadSha256": "0c82ef070bc06efa516cdb47123708ce2c4ae45be5702010c6aaf0ed0f0741fd",
+      "expectedSha256": "0c82ef070bc06efa516cdb47123708ce2c4ae45be5702010c6aaf0ed0f0741fd"
+    },
+    {
+      "id": "fresh/protocol/basic-structured/0",
+      "family": "fresh/protocol/basic-structured",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "bfa1fdc992b107bbf0076080927462434ce5fe39001bb4bac503810e13b47f71",
+      "expectedSha256": "a8dcef5acfc9b725f37d340e78fde19c18dab3825c2b26c0a1ae8cfdc7a92e4e"
+    },
+    {
+      "id": "fresh/protocol/basic-structured/1",
+      "family": "fresh/protocol/basic-structured",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "cd4edc5287537daac6046411506c5ce43994550e5bb62ed708c40395a61a86cd",
+      "expectedSha256": "a8dcef5acfc9b725f37d340e78fde19c18dab3825c2b26c0a1ae8cfdc7a92e4e"
+    },
+    {
+      "id": "fresh/protocol/basic-structured/2",
+      "family": "fresh/protocol/basic-structured",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "008f4d6aff9dac5fb8ccd7d44d2951e1744ebc1107c5ac36cb0f1bcb02cf7ca7",
+      "expectedSha256": "a8dcef5acfc9b725f37d340e78fde19c18dab3825c2b26c0a1ae8cfdc7a92e4e"
+    },
+    {
+      "id": "fresh/protocol/basic-structured/3",
+      "family": "fresh/protocol/basic-structured",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "f3d4923046a96b9b4997bcdb4b878ed8f065d7ef8c9074bf0cf6312f42ec84ba",
+      "expectedSha256": "a8dcef5acfc9b725f37d340e78fde19c18dab3825c2b26c0a1ae8cfdc7a92e4e"
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/0",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "f3ac8ebd26357fff475226cedb92be4a9da1f55bb907b97a5be56c42cde31dbe",
+      "expectedSha256": "6823edd6ffcfbd353a631d97ee00022f5389297364499c905fca3f79ba6a072b"
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/1",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "bf4690cfb120fa0033fd34a5ad9feba572d28dcbdaa021bcc68c12543bb98e73",
+      "expectedSha256": "6823edd6ffcfbd353a631d97ee00022f5389297364499c905fca3f79ba6a072b"
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/2",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "5243ccb305559293db3143506267dc90987b687b4e57ce72507c4322fdca6bdb",
+      "expectedSha256": "6823edd6ffcfbd353a631d97ee00022f5389297364499c905fca3f79ba6a072b"
+    },
+    {
+      "id": "fresh/protocol/mixed-sid-and-header/3",
+      "family": "fresh/protocol/mixed-sid-and-header",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "protocol",
+      "payloadSha256": "1dcb5415edaed5a885a31573478650ba4759e491d6107923ce31e9bf30d4d699",
+      "expectedSha256": "6823edd6ffcfbd353a631d97ee00022f5389297364499c905fca3f79ba6a072b"
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/0",
+      "family": "fresh/protocol/query-policy-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "082d21af218a834059f671c30724faf04a2bec26cd31a9b0d445ec6c323eccf0",
+      "expectedSha256": "082d21af218a834059f671c30724faf04a2bec26cd31a9b0d445ec6c323eccf0"
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/1",
+      "family": "fresh/protocol/query-policy-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "866223b015ec270603499dbe73e2115fa28e57f1eced8266fccfa38fc0537ea5",
+      "expectedSha256": "866223b015ec270603499dbe73e2115fa28e57f1eced8266fccfa38fc0537ea5"
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/2",
+      "family": "fresh/protocol/query-policy-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "36c4cd492dda2363b74c13c09011fc2810e318674eb7394e74da29618e39d265",
+      "expectedSha256": "36c4cd492dda2363b74c13c09011fc2810e318674eb7394e74da29618e39d265"
+    },
+    {
+      "id": "fresh/protocol/query-policy-public/3",
+      "family": "fresh/protocol/query-policy-public",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "protocol",
+      "payloadSha256": "ad54e84dc49c69ea526b51f20136a7a78f6ea124858072d60e795bd581224bfc",
+      "expectedSha256": "ad54e84dc49c69ea526b51f20136a7a78f6ea124858072d60e795bd581224bfc"
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/0",
+      "family": "fresh/protocol/unknown-auth-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "protocol",
+      "payloadSha256": "638ce8612719f68918510bc0471217fc206c81ac77b93247029b0a94669f255c",
+      "expectedSha256": "638ce8612719f68918510bc0471217fc206c81ac77b93247029b0a94669f255c"
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/1",
+      "family": "fresh/protocol/unknown-auth-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "protocol",
+      "payloadSha256": "265932253e8d4ae7c6ed3b5d0655db57223459de50a8d1509b9e440d0cada761",
+      "expectedSha256": "265932253e8d4ae7c6ed3b5d0655db57223459de50a8d1509b9e440d0cada761"
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/2",
+      "family": "fresh/protocol/unknown-auth-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "protocol",
+      "payloadSha256": "a1de975a398a01842287f0f3291046b57558f73365763121123ff00dbdbc0adc",
+      "expectedSha256": "a1de975a398a01842287f0f3291046b57558f73365763121123ff00dbdbc0adc"
+    },
+    {
+      "id": "fresh/protocol/unknown-auth-source/3",
+      "family": "fresh/protocol/unknown-auth-source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "protocol",
+      "payloadSha256": "9cb4788863fd882fd262908a47d859cd27a7d58c52bf30372dc7daa461976c78",
+      "expectedSha256": "9cb4788863fd882fd262908a47d859cd27a7d58c52bf30372dc7daa461976c78"
+    },
+    {
+      "id": "fresh/provider/readme-comment/0",
+      "family": "fresh/provider/readme-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "5dd35e5b935f505f2c85d2790cbbc8be06c2307dd9c7c482b035ec6521929fef",
+      "expectedSha256": "066538702a7419d001093ee9dd6d1415fa657153ae596c091b59af256b9d1103"
+    },
+    {
+      "id": "fresh/provider/readme-comment/1",
+      "family": "fresh/provider/readme-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "df8eadacdd2eaba8eda6985ebd6052616460ad681c7729cdcb430faeb123d5a5",
+      "expectedSha256": "066538702a7419d001093ee9dd6d1415fa657153ae596c091b59af256b9d1103"
+    },
+    {
+      "id": "fresh/provider/readme-comment/2",
+      "family": "fresh/provider/readme-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "354e2d63ef6463458f3db6b8fe03224a6476e83f2a88de058a6a02e333044fee",
+      "expectedSha256": "066538702a7419d001093ee9dd6d1415fa657153ae596c091b59af256b9d1103"
+    },
+    {
+      "id": "fresh/provider/readme-comment/3",
+      "family": "fresh/provider/readme-comment",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "5fe53637837fdc1d7d9b6dd7999545e398a32058c857f3ac63f55eddc03684c6",
+      "expectedSha256": "066538702a7419d001093ee9dd6d1415fa657153ae596c091b59af256b9d1103"
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/0",
+      "family": "fresh/provider/ordinary-array-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "0e799298f63ad67a92a901cd15f96662e1b97a1b35677bb2ecc2278ed3769078",
+      "expectedSha256": "6e443b40eeaae068a696bbec8d61561cfda05dc201f7cf816cb3eed481ddeab6"
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/1",
+      "family": "fresh/provider/ordinary-array-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "32580d562e545aa883ec0e56f927fb920fa76ef51438925e027399da5f3993c3",
+      "expectedSha256": "6e443b40eeaae068a696bbec8d61561cfda05dc201f7cf816cb3eed481ddeab6"
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/2",
+      "family": "fresh/provider/ordinary-array-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "dd657792576950115e32754e640bfc8d6704780816d68bb20cf5aaae5e277f02",
+      "expectedSha256": "6e443b40eeaae068a696bbec8d61561cfda05dc201f7cf816cb3eed481ddeab6"
+    },
+    {
+      "id": "fresh/provider/ordinary-array-value/3",
+      "family": "fresh/provider/ordinary-array-value",
+      "split": "heldout",
+      "label": "positive",
+      "layer": "provider",
+      "payloadSha256": "9f7f88fa89592029c961a54e1545063b5a03ee61baa62e2696d4904b184514cf",
+      "expectedSha256": "6e443b40eeaae068a696bbec8d61561cfda05dc201f7cf816cb3eed481ddeab6"
+    },
+    {
+      "id": "fresh/provider/near-format-partial/0",
+      "family": "fresh/provider/near-format-partial",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "1cda8f5e0335f719a0f33929004e67e62ab471859ae65900d375700169a728f5",
+      "expectedSha256": "1cda8f5e0335f719a0f33929004e67e62ab471859ae65900d375700169a728f5"
+    },
+    {
+      "id": "fresh/provider/near-format-partial/1",
+      "family": "fresh/provider/near-format-partial",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "cea4c049708b00044fd6af8a7a9af94ba42f81356dbb387ad03700a12ba45d2f",
+      "expectedSha256": "cea4c049708b00044fd6af8a7a9af94ba42f81356dbb387ad03700a12ba45d2f"
+    },
+    {
+      "id": "fresh/provider/near-format-partial/2",
+      "family": "fresh/provider/near-format-partial",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "81034d40af4718ee3c61e4600431231fdbdb7cbcd62c5d1cf8799b09e06e8892",
+      "expectedSha256": "81034d40af4718ee3c61e4600431231fdbdb7cbcd62c5d1cf8799b09e06e8892"
+    },
+    {
+      "id": "fresh/provider/near-format-partial/3",
+      "family": "fresh/provider/near-format-partial",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "provider",
+      "payloadSha256": "10817349696abc4d76574423b7b61d9d91804cf35d22f3b65183378b30cd54a4",
+      "expectedSha256": "10817349696abc4d76574423b7b61d9d91804cf35d22f3b65183378b30cd54a4"
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/0",
+      "family": "fresh/provider/escape-auth-looking",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "provider",
+      "payloadSha256": "52cc0a6731631b430db36599084536ed6da2dc3eaef5d7270447df5c49a0732f",
+      "expectedSha256": "52cc0a6731631b430db36599084536ed6da2dc3eaef5d7270447df5c49a0732f"
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/1",
+      "family": "fresh/provider/escape-auth-looking",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "provider",
+      "payloadSha256": "2e9a9b654a3472fc74f4c00a9df40671d6e4ff557684ed7764dfb43ae3925932",
+      "expectedSha256": "2e9a9b654a3472fc74f4c00a9df40671d6e4ff557684ed7764dfb43ae3925932"
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/2",
+      "family": "fresh/provider/escape-auth-looking",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "provider",
+      "payloadSha256": "55130228904121a2e04af83b311b6f6b2e2c786edd3a93562107233c10003a78",
+      "expectedSha256": "55130228904121a2e04af83b311b6f6b2e2c786edd3a93562107233c10003a78"
+    },
+    {
+      "id": "fresh/provider/escape-auth-looking/3",
+      "family": "fresh/provider/escape-auth-looking",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "provider",
+      "payloadSha256": "9b0964013a3487ce5f49e8e9e55ec92c659be3b64788afeb6929641dc9206bbc",
+      "expectedSha256": "9b0964013a3487ce5f49e8e9e55ec92c659be3b64788afeb6929641dc9206bbc"
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/0",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "2ed286b5a297ba93175b98640bee4d278636a88f7072fe68dde74082d243f79a",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/1",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "a4bcdc3db41ed64f7e022d170a3cb63c0bcd472c4cde70e78a942e7780802806",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/2",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "ee5264a331997d4e303b089a6aa131f0e2e588ff2554909e59858c6c55b895e5",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/schema-nested-enum-block/3",
+      "family": "fresh/structure/schema-nested-enum-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "478fbb88eeecd3c16f2569fad81b67a7c58cb3d043f880732b74ef84c8eeddeb",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/0",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "6ba5f15df2f72593bbb632bb8ea67cff8f1ed2968668da8653fbab299c8f46be",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/1",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "0740e5083ef0b535f4b163e36a0135b679b0ad30eb6940857ff62b4225356152",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/2",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "2600363c553daf0f9c5bb5a0b2b1b1b2e3866e22182d1677e035ebe87adbb1cc",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/grammar-python-auth-block/3",
+      "family": "fresh/structure/grammar-python-auth-block",
+      "split": "heldout",
+      "label": "blocked",
+      "layer": "structure",
+      "payloadSha256": "dd2fb52f7b441a8cd14c13b66e0eb22a55d9ded6e657c5d43297355bc5274892",
+      "expectedSha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/0",
+      "family": "fresh/structure/schema-type-and-names",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "4672be0f464fa8233e3004d49b126cc0ec5babca94861c172a8e49248b5757d2",
+      "expectedSha256": "4672be0f464fa8233e3004d49b126cc0ec5babca94861c172a8e49248b5757d2"
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/1",
+      "family": "fresh/structure/schema-type-and-names",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "dfa732ba025ed5b4890d8876cfeec306d368ce9a20f1c3ae9a8945ee9b04caed",
+      "expectedSha256": "dfa732ba025ed5b4890d8876cfeec306d368ce9a20f1c3ae9a8945ee9b04caed"
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/2",
+      "family": "fresh/structure/schema-type-and-names",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "cce6ecfaa39e5af828f6e301c49ffecb61f273aaef61f5fec8f1b59aef34de03",
+      "expectedSha256": "cce6ecfaa39e5af828f6e301c49ffecb61f273aaef61f5fec8f1b59aef34de03"
+    },
+    {
+      "id": "fresh/structure/schema-type-and-names/3",
+      "family": "fresh/structure/schema-type-and-names",
+      "split": "heldout",
+      "label": "negative",
+      "layer": "structure",
+      "payloadSha256": "52b6078dc91b84f4058f1c8572550327d0b5ec696ca1e68fbdc7cd0491105068",
+      "expectedSha256": "52b6078dc91b84f4058f1c8572550327d0b5ec696ca1e68fbdc7cd0491105068"
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/0",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "c7c5c92908fcafec644704bb4120f7d2c40b685d98ae9aeb059252753d713876",
+      "expectedSha256": "c7c5c92908fcafec644704bb4120f7d2c40b685d98ae9aeb059252753d713876"
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/1",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "f9f62e35dc0c2582accf16f728fe098fa1451d789bb1ca62ef23438da734c087",
+      "expectedSha256": "f9f62e35dc0c2582accf16f728fe098fa1451d789bb1ca62ef23438da734c087"
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/2",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "4804d86fc36a46a89d5480850c10fa449c3662e39004c69bea4cd445038a76b8",
+      "expectedSha256": "4804d86fc36a46a89d5480850c10fa449c3662e39004c69bea4cd445038a76b8"
+    },
+    {
+      "id": "fresh/structure/grammar-unsupported-literal/3",
+      "family": "fresh/structure/grammar-unsupported-literal",
+      "split": "heldout",
+      "label": "ambiguous",
+      "layer": "structure",
+      "payloadSha256": "7430f54d9900bd52787f140a53ac039dacaf885444172f88d8c0cbdf11a8e24d",
+      "expectedSha256": "7430f54d9900bd52787f140a53ac039dacaf885444172f88d8c0cbdf11a8e24d"
+    }
+  ]
+}

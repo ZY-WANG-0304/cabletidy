@@ -1,0 +1,38 @@
+// Third frozen diagnostic holdout: new families and credential base values.
+// No rule implementation imports. Four variants/family remain correlated.
+import {createHash} from 'node:crypto';
+export const marker='__LABELLED_CREDENTIAL__';
+export const contracts=[];
+const rows=[];
+const add=(layer,family,label,build,make=id=>`final-${createHash('sha256').update(id).digest('hex').slice(0,20)}-Q9w2`)=>rows.push({layer,family,label,build,make});
+const text=fn=>s=>({input:fn(s)});
+add('source','string-rust-let','positive',text(s=>`let password: String = "${s}";`));
+add('source','qualified-type-member','negative',text(s=>`const password: app.String = runtime.${s.replaceAll('-','_')};`));
+add('source','single-unknown-escape','ambiguous',text(s=>`password: str = '${s}\\r';`));
+add('source','typed-object-expression','negative',text(s=>`const password: string = {value: "${s}"};`));
+add('environment','dot-env-leading-space','positive',text(s=>`  DATABASE_PASSWORD = "${s}"\nPUBLIC_COLOR=blue`));
+add('environment','secret-suffix-single','positive',text(s=>`AZURE_CLIENT_SECRET='${s}'`));
+add('environment','placeholder-after-export','negative',text(s=>`export API_KEY="<TOKEN>"\nPUBLIC_NAME=${s}`));
+add('environment','double-unsupported-newline-escape','ambiguous',text(s=>`export DB_PASSWORD="${s}\\q"`));
+add('json','camel-field-multi-deep','positive',s=>({options:{credentials:[{stripeApiKey:s}],theme:'dark'}}));
+add('json','schema-example-value','positive',s=>({tools:[{type:'function',name:'auth',parameters:{type:'object',properties:{clientSecret:{type:'string',example:s}}}}]}));
+add('json','schema-password-policy','negative',s=>({tools:[{type:'function',name:'policy',parameters:{type:'object',properties:{password_policy:{type:'string',default:s}}}}]}));
+add('json','unsupported-single-escape-nested','ambiguous',s=>({input:JSON.stringify({snippet:`api_key = '${s}\\x41';`})}));
+add('markdown','heading-python-password','positive',text(s=>`### Local setup\n    password = '${s}'\n    retries = 1`));
+add('markdown','backtick-field-and-prose','negative',text(s=>`\`password:\` describes a field. The label is ${s}.`));
+add('markdown','fenced-comparison','negative',text(s=>`\`\`\`js\nif (token !== "${s}") return;\n\`\`\``));
+add('markdown','inline-unclosed-single','ambiguous',text(s=>`Local example: api_key='${s}`));
+add('protocol','mixed-basic-prose','positive',text(s=>`Authorization: bAsIc ${s}`),id=>Buffer.from(`new-fixture:${id}`).toString('base64'));
+add('protocol','cookie-quoted-prefixed-name','positive',s=>({metadata:{cookie:`session_token="${s}"; theme=light`}}));
+add('protocol','public-route-fragment','negative',text(s=>`https://example.invalid/api/${s}#token_count`));
+add('protocol','opaque-no-auth','negative',text(s=>`Digest shown here: ${s}`));
+const key=id=>`sk-proj-final-${createHash('sha256').update(id).digest('hex').slice(0,32)}`;
+add('provider','registered-like-format-in-metadata','positive',s=>({metadata:{note:`demo ${s} end`}}),key);
+add('provider','aws-format-code','positive',text(s=>`const example_id = "${s}";`),id=>`ASIA${createHash('sha256').update(id).digest('hex').slice(0,16).toUpperCase()}`);
+add('provider','short-gh-prefix-plus-public','negative',text(s=>`${s}: ghp_demo`));
+add('provider','token-look-like-word','negative',text(s=>`value ${s} is an identifier`));
+add('structure','format-regex-key-block','blocked',s=>({tools:[{type:'custom',name:'run',format:{type:'grammar',syntax:'lark',definition:`start: /${s}/`}}]}),key);
+add('structure','function-name-key-block','blocked',s=>({tools:[{type:'function',name:s,parameters:{type:'object'}}]}),key);
+add('structure','grammar-symbol-prose-negative','negative',s=>({input:`api_key:plain; ${s}`,tools:[{type:'custom',name:'run',format:{type:'grammar',syntax:'lark',definition:'start: plain_source\nplain_source: /ordinary/'}}]}));
+add('structure','unknown-escape-in-schema-description','ambiguous',s=>({tools:[{type:'function',name:'run',parameters:{type:'object',description:`const password = "${s}\\x25";`,properties:{}}}]}));
+export const cases=rows.flatMap(f=>Array.from({length:4},(_,i)=>{const id=`final/${f.layer}/${f.family}/${i}`,body=f.build(f.make(id));return {id,family:`final/${f.layer}/${f.family}`,layer:f.layer,split:'heldout',label:f.label,body,expected:f.label==='positive'?f.build(marker):f.label==='blocked'?null:body};}));
