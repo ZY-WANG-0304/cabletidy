@@ -1226,6 +1226,83 @@ test('session token cookies share value detection without treating preferences a
 });
 
 for (const cache of [false,true]) {
+  test(`business schema names do not inherit protocol constraints (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
+    const data={schema:{pattern:key,const:key,enum:[key]},json_schema:{pattern:key,const:key,enum:[key]},tools:[{parameters:{pattern:key},input_schema:{const:key}}]};
+    const expected=JSON.parse(JSON.stringify(data).replaceAll(key,'MARKER'));
+    const text=JSON.stringify(data),input=[
+      {type:'function_call',name:'process_record',id:'i',call_id:'c',arguments:text},
+      {type:'function_call_output',call_id:'c',output:text},
+      {role:'user',content:[{type:'input_text',text}]},
+    ];
+    const response=await f.request({input,metadata:data});assert.equal(response.status,200);await response.text();
+    const actual=f.calls[0].body;
+    assert.deepEqual(JSON.parse(JSON.stringify(actual.metadata).replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER')),expected);
+    for(const text of [actual.input[0].arguments,actual.input[1].output,actual.input[2].content[0].text])assert.deepEqual(JSON.parse(text.replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER')),expected);
+    const record=(await f.records())[0],facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+    assert.equal(facts.length,32);assert.ok(facts.every(c=>c.payloadRole==='content' && c.replacementStatus==='replaced'));
+    for(const fact of facts)assert.deepEqual(protection.decisions.find(c=>c.candidateId===fact.candidateId),Object.fromEntries(Object.entries(fact).filter(([k])=>!['auditPolicyVersion','auditDecision'].includes(k))));
+  });
+
+  test(`actual tool and output schemas preserve protocol constraints (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,'ok'),{cache});
+    for(const field of ['pattern','const','enum']) {
+      const schema={type:'object',properties:{value:{type:'string',[field]:field==='enum'?[key]:key}}};
+      const bodies=[
+        {tools:[{type:'function',name:'process_record',parameters:schema}]},
+        {tools:[{type:'function',function:{name:'process_record',parameters:schema}}]},
+        {tools:[{name:'process_record',input_schema:schema}]},
+        {text:{format:{type:'json_schema',name:'result',schema}}},
+        {response_format:{type:'json_schema',json_schema:{name:'result',schema}}},
+        {output_config:{format:{type:'json_schema',schema}}},
+      ];
+      for(const [index,body] of bodies.entries()) {
+        const response=await f.request({input:'safe',...body},`schema-constraint-${field}-${index}`);assert.equal(response.status,422);await response.text();
+      }
+    }
+    assert.equal(f.calls.length,0);
+    for(const record of await f.records()) {
+      const facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+      assert.equal(facts.length,1);assert.equal(facts[0].payloadRole,'protocol_structure');
+      assert.equal(facts[0].replacementStatus,'not_replaced');assert.equal(facts[0].reason,'protection_credential_in_protocol_structure');assert.equal(protection.forwarded,false);
+    }
+  });
+
+  test(`composite and commented type declarations never learn literal fragments (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,'ok'),{cache});
+    const declarations=[
+      'type Headers = Base & { authorization: "Bearer short"; };',
+      'type Headers = Base | { authorization: "Bearer short"; };',
+      'type Headers = { authorization: "Bearer short"; } & { password: "typedValueQ78" };',
+      'type Headers = (Base | { authorization: "Bearer short"; }) & { password: "typedValueQ78" };',
+      'interface Headers /* documentation */ { authorization: "Bearer short"; }',
+      'type /* documentation */ Headers = Base /* } ; */ & { authorization: "Bearer short"; };',
+      'interface Headers extends Base /* documentation */ { authorization: "Bearer short"; }',
+      'type Headers<T> = T extends Base ? { authorization: "Bearer short"; } : { password: "typedValueQ78" };',
+      'type Headers = Base\n  & { authorization: "Bearer short"; }\n  | { password: "typedValueQ78" }',
+      'type Headers = Base & // documentation\n{ authorization: "Bearer short"; }',
+      'type HeaderValue = "Bearer abc123FragmentQ78" | "Bearer short";',
+      'export /* documentation */ interface Headers { authorization: "Bearer short"; }',
+      'type Headers<T extends { authorization: "Bearer short"; }> = Base & { password: "typedValueQ78" };',
+      'interface Headers extends Base<{ authorization: "Bearer short"; }> { password: "typedValueQ78"; }',
+      'type Headers = () =>\n{ authorization: "Bearer short"; };',
+      'type Headers<T> = T\n extends Base ? { authorization: "Bearer short"; } : { password: "typedValueQ78" };',
+      'export /* documentation */ type HeaderValue = "Bearer abc123FragmentQ78" | "Bearer short";',
+    ];
+    for(const [index,input] of declarations.entries()) {
+      const session=`composite-type-${index}`;
+      for(const text of [input,'short','typedValueQ78','abc123FragmentQ78']) {
+        const response=await f.request({input:text},session);assert.equal(response.status,200);await response.text();assert.equal(f.calls.at(-1).body.input,text);
+      }
+    }
+    for(const record of await f.records()){assert.equal(record.credentialDetection.candidateCount,0);assert.equal(record.protection.requestCount,0);assert.equal(record.findingCount,0);}
+    for(const [index,declaration] of declarations.entries()) {
+      const input=declaration+'\npassword: "actualCredentialQ78"';
+      const response=await f.request({input},`type-followed-by-data-${index}`);assert.equal(response.status,200);await response.text();
+      assert.equal(f.calls.at(-1).body.input.replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER'),declaration+'\npassword: "MARKER"');
+    }
+  });
+
   test(`ordinary type prose does not suppress later credential assignments (cache ${cache})`,async t=>{
     const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
     const secret='actualCredentialQ78';

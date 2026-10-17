@@ -7,9 +7,8 @@ static FIELD_HINT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\b[A-Za-z][A-Za-z0-9_-]*["']?\s*[:=]"#).unwrap());
 static SIMPLE_TYPE_ASSIGNMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:string|str|&str|String)\s*=\s*").unwrap());
-static TYPE_BODY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^{};=\r\n]{1,128}>)?\s*=\s*|interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^{};=\r\n]{1,128}>)?(?:\s+extends\s+[A-Za-z0-9_$.,<> \t]+)?\s*)\{").unwrap()
-});
+static TYPE_HINT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:type|interface)\b").unwrap());
 
 fn skip_space(text: &str, mut at: usize) -> usize {
     while let Some(c) = text[at..].chars().next().filter(|c| c.is_whitespace()) {
@@ -30,6 +29,180 @@ fn quoted(text: &str, at: usize) -> (usize, bool) {
         }
     }
     (text.len(), false)
+}
+
+#[derive(Clone, Copy)]
+enum TokenKind<'a> {
+    Name(&'a str),
+    Literal,
+    Symbol(char),
+}
+struct Token<'a> {
+    kind: TokenKind<'a>,
+    start: usize,
+    end: usize,
+    newline: bool,
+}
+// Linear lexical reading bounded by the supplied text. Comments and strings
+// cannot open/close a type body; no source expressions are evaluated.
+fn token(text: &str, mut at: usize) -> Option<Token<'_>> {
+    let mut newline = false;
+    loop {
+        let next = skip_space(text, at);
+        newline |= text[at..next].contains(['\r', '\n']);
+        at = next;
+        if text[at..].starts_with("/*") {
+            let end = text[at + 2..].find("*/")? + at + 4;
+            newline |= text[at..end].contains(['\r', '\n']);
+            at = end;
+        } else if text[at..].starts_with("//") {
+            at = text[at..].find(['\r', '\n']).map_or(text.len(), |i| at + i);
+        } else {
+            break;
+        }
+    }
+    let c = text[at..].chars().next()?;
+    let (kind, end) = if matches!(c, '\'' | '"' | '`') {
+        let (end, closed) = quoted(text, at);
+        (TokenKind::Literal, end + usize::from(closed))
+    } else if c.is_ascii_alphabetic() || matches!(c, '_' | '$') {
+        let end = text[at..]
+            .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '$'))
+            .map_or(text.len(), |i| at + i);
+        (TokenKind::Name(&text[at..end]), end)
+    } else {
+        (TokenKind::Symbol(c), at + c.len_utf8())
+    };
+    Some(Token {
+        kind,
+        start: at,
+        end,
+        newline,
+    })
+}
+fn type_parameters_end(text: &str, mut at: usize) -> Option<usize> {
+    let (mut depth, mut nested, mut arrow) = (1usize, 0usize, false);
+    while depth > 0 {
+        let next = token(text, at)?;
+        match next.kind {
+            TokenKind::Symbol('<') => {
+                depth += 1;
+                if depth > 512 {
+                    return None;
+                }
+            }
+            TokenKind::Symbol('>') if !arrow => depth -= 1,
+            TokenKind::Symbol('{' | '[' | '(') => nested += 1,
+            TokenKind::Symbol('}' | ']' | ')') => nested = nested.checked_sub(1)?,
+            TokenKind::Symbol(';') if nested == 0 => return None,
+            _ => {}
+        }
+        arrow = matches!(next.kind, TokenKind::Symbol('='));
+        at = next.end;
+    }
+    Some(at)
+}
+fn type_declaration_end(text: &str, keyword: &str, mut at: usize) -> Option<usize> {
+    let name = token(text, at)?;
+    if !matches!(name.kind, TokenKind::Name(_)) {
+        return None;
+    }
+    let mut next = token(text, name.end)?;
+    if matches!(next.kind, TokenKind::Symbol('<')) {
+        at = type_parameters_end(text, next.end)?;
+        next = token(text, at)?;
+    }
+    if keyword == "interface" {
+        if matches!(next.kind, TokenKind::Name("extends")) {
+            at = next.end;
+            loop {
+                next = token(text, at)?;
+                match next.kind {
+                    TokenKind::Name(_) | TokenKind::Symbol('.' | ',') => at = next.end,
+                    TokenKind::Symbol('<') => at = type_parameters_end(text, next.end)?,
+                    _ => break,
+                }
+            }
+        }
+        if !matches!(next.kind, TokenKind::Symbol('{')) {
+            return None;
+        }
+    } else if !matches!(next.kind, TokenKind::Symbol('=')) {
+        return None;
+    }
+    let mut brackets = Vec::new();
+    let mut continuation = true;
+    let mut previous_equal = false;
+    at = if keyword == "interface" {
+        next.start
+    } else {
+        next.end
+    };
+    while let Some(next) = token(text, at) {
+        if brackets.is_empty()
+            && (matches!(next.kind, TokenKind::Symbol(';'))
+                || next.newline
+                    && !continuation
+                    && !matches!(
+                        next.kind,
+                        TokenKind::Symbol('&' | '|' | '?' | ':') | TokenKind::Name("extends")
+                    ))
+        {
+            return Some(if matches!(next.kind, TokenKind::Symbol(';')) {
+                next.end
+            } else {
+                at
+            });
+        }
+        let arrow = previous_equal && matches!(next.kind, TokenKind::Symbol('>'));
+        previous_equal = matches!(next.kind, TokenKind::Symbol('='));
+        continuation = arrow
+            || matches!(
+                next.kind,
+                TokenKind::Symbol('=' | '&' | '|' | '?' | ':' | ',')
+            )
+            || matches!(
+                next.kind,
+                TokenKind::Name("extends" | "keyof" | "typeof" | "infer")
+            );
+        match next.kind {
+            TokenKind::Symbol('{' | '[' | '(' | '<') => {
+                if brackets.len() >= 512 {
+                    return Some(text.len());
+                }
+                if let TokenKind::Symbol(c) = next.kind {
+                    brackets.push(c);
+                }
+            }
+            TokenKind::Symbol(c @ ('}' | ']' | ')' | '>')) => {
+                let open = match c {
+                    '}' => '{',
+                    ']' => '[',
+                    ')' => '(',
+                    _ => '<',
+                };
+                if !arrow && brackets.last() == Some(&open) {
+                    brackets.pop();
+                }
+                if keyword == "interface" && brackets.is_empty() {
+                    return Some(next.end);
+                }
+            }
+            _ => {}
+        }
+        at = next.end;
+    }
+    Some(text.len())
+}
+fn declaration_prefix(prefix: &str) -> bool {
+    let mut at = 0;
+    while let Some(next) = token(prefix, at) {
+        if !matches!(next.kind, TokenKind::Name("export" | "declare" | "default")) {
+            return false;
+        }
+        at = next.end;
+    }
+    true
 }
 fn decode(raw: &str, quote: u8) -> Option<String> {
     if !raw.contains('\\') {
@@ -94,13 +267,12 @@ pub(super) fn assignments(text: &str) -> Assignments {
             m.as_str()
                 .trim_end_matches([':', '=', ' ', '\t', '\r', '\n', '"', '\'']),
         )
-    }) {
+    }) && !TYPE_HINT.is_match(text)
+    {
         return Assignments::default();
     }
     let mut result = Assignments::default();
     let mut at = 0;
-    let mut depth = 0usize;
-    let mut type_depth = None;
     let mut unclosed = [false; 2];
     while at < text.len() {
         let c = text[at..].chars().next().unwrap();
@@ -141,18 +313,6 @@ pub(super) fn assignments(text: &str) -> Assignments {
             }
             (&text[begin..at], at)
         } else {
-            match c {
-                '{' => {
-                    depth += 1;
-                }
-                '}' => {
-                    if type_depth == Some(depth) {
-                        type_depth = None;
-                    }
-                    depth = depth.saturating_sub(1);
-                }
-                _ => {}
-            }
             at += c.len_utf8();
             continue;
         };
@@ -163,14 +323,10 @@ pub(super) fn assignments(text: &str) -> Assignments {
                 .next()
                 .unwrap_or("")
                 .trim();
-            if matches!(
-                prefix,
-                "" | "export" | "declare" | "export declare" | "export default"
-            ) {
-                if let Some(body) = TYPE_BODY.find(&text[begin..]) {
-                    depth += 1;
-                    type_depth = Some(depth);
-                    at = begin + body.end();
+            if declaration_prefix(prefix) {
+                if let Some(end) = type_declaration_end(text, key, next) {
+                    result.authorization_ranges.push(begin..end);
+                    at = end;
                     continue;
                 }
             }
@@ -202,12 +358,11 @@ pub(super) fn assignments(text: &str) -> Assignments {
             .then(|| SIMPLE_TYPE_ASSIGNMENT.find(&text[start..annotation_limit]))
             .flatten();
         let source_type = text.as_bytes()[separator] == b':'
-            && (type_depth.is_some()
-                || (matches!(statement, "const" | "let")
-                    || statement.starts_with("const ")
-                    || statement.starts_with("let "))
-                    && !line.contains('=')
-                    && annotation.is_none());
+            && ((matches!(statement, "const" | "let")
+                || statement.starts_with("const ")
+                || statement.starts_with("let "))
+                && !line.contains('=')
+                && annotation.is_none());
         let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
         if text.as_bytes()[separator] == b':' {
             // Only common scalar annotations followed by an assignment. Type

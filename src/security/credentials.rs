@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) const VERSION: &str = "credentials-5";
+pub(crate) const VERSION: &str = "credentials-6";
 #[derive(Clone, Copy, Default)]
 enum Context {
     #[default]
@@ -26,7 +26,10 @@ enum Context {
     Item,
     Tools,
     Tool,
+    ToolFunction,
     Function,
+    OutputOptions,
+    OutputFormat,
     Data,
 }
 #[derive(Clone, Copy, Default)]
@@ -35,7 +38,6 @@ struct Scope {
     credential: bool,
     schema: bool,
     property: bool,
-    tools: bool,
     immutable: bool,
     opaque: bool,
 }
@@ -52,17 +54,22 @@ impl Scope {
             (Envelope, "tools", b'[') => Tools,
             (Items, "", b'{') => Item,
             (Tools, "", b'{') => Tool,
-            (Tool | Item, "function", b'{') => Function,
+            (Tool, "function", b'{') => ToolFunction,
+            (Item, "function", b'{') => Function,
+            (Envelope, "text" | "output_config", b'{') => OutputOptions,
+            (Envelope, "response_format" | "output_format", b'{')
+            | (OutputOptions, "format", b'{')
+            | (OutputFormat, "json_schema", b'{') => OutputFormat,
             _ => Data,
         };
-        let tools = self.tools || matches!(context, Tools | Tool | Function);
         let schema_value =
             self.schema && matches!(field, "default" | "example" | "examples" | "const" | "enum");
         let schema = !schema_value
             && (self.schema
                 || kind == b'{'
-                    && (matches!(field, "schema" | "json_schema")
-                        || tools && matches!(field, "parameters" | "input_schema")));
+                    && (matches!(self.context, Tool | ToolFunction)
+                        && matches!(field, "parameters" | "input_schema")
+                        || matches!(self.context, OutputFormat) && field == "schema"));
         // A nested property starts its own value semantics. A parent named password
         // must not make boolean/encoding defaults in its child schema credentials.
         let property = if self.schema && parent == "properties" {
@@ -83,24 +90,25 @@ impl Scope {
             || matches!(self.context, Tool) && field == "format"
             || schema && matches!(field, "pattern" | "required" | "type")
             || self.schema && matches!(field, "const" | "enum")
-            || matches!(self.context, Envelope | Item | Tool | Function)
-                && matches!(
-                    field,
-                    "type"
-                        | "name"
-                        | "id"
-                        | "call_id"
-                        | "tool_use_id"
-                        | "model"
-                        | "previous_response_id"
-                        | "conversation"
-                );
+            || matches!(
+                self.context,
+                Envelope | Item | Tool | ToolFunction | Function | OutputFormat
+            ) && matches!(
+                field,
+                "type"
+                    | "name"
+                    | "id"
+                    | "call_id"
+                    | "tool_use_id"
+                    | "model"
+                    | "previous_response_id"
+                    | "conversation"
+            );
         Self {
             context,
             credential,
             schema,
             property,
-            tools,
             immutable,
             opaque,
         }
@@ -563,7 +571,6 @@ impl Scan<'_> {
                 frame.scope.credential,
                 frame.scope.schema,
                 frame.scope.property,
-                frame.scope.tools,
                 frame.scope.immutable,
                 frame.scope.opaque
             ])
@@ -1073,6 +1080,42 @@ mod tests {
         }
     }
     #[test]
+    fn schema_scope_uses_protocol_placement_and_cache_preserves_business_facts() {
+        let value = "sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD";
+        let business = json!({"schema":{"pattern":value,"const":value,"enum":[value]}});
+        for raw in [
+            json!({"metadata":business}).to_string(),
+            json!({"input":business.to_string()}).to_string(),
+            json!({"input":[{"type":"function_call","name":"process_record","arguments":business.to_string()}]}).to_string(),
+        ] {
+            let mut cache = Cache::default();
+            for _ in 0..2 {
+                let next = cached_check(&raw, &json!({}), &[], &mut cache);
+                assert!(next.complete);
+                assert_eq!(next.candidates.len(), 3);
+                assert!(next.candidates.iter().all(|c| c.strong && c.role == "content" && c.blocked.is_none()));
+            }
+        }
+        let mut cache = Cache::default();
+        for field in ["pattern", "const", "enum"] {
+            let constraint = if field == "enum" {
+                json!([value])
+            } else {
+                json!(value)
+            };
+            let raw = json!({"text":{"format":{"type":"json_schema","name":"result","schema":{"properties":{"value":{field:constraint}}}}}}).to_string();
+            for _ in 0..2 {
+                let next = cached_check(&raw, &json!({}), &[], &mut cache);
+                assert_eq!(next.candidates.len(), 1);
+                assert_eq!(next.candidates[0].role, "protocol_structure");
+                assert_eq!(
+                    next.candidates[0].blocked,
+                    Some("protection_credential_in_protocol_structure")
+                );
+            }
+        }
+    }
+    #[test]
     fn cache_reuses_history_but_emits_fresh_ids_and_current_raw_ranges() {
         let mut cache = Cache::default();
         let initial = r#"{"password":"密🙂","input":"ordinary history"}"#;
@@ -1166,7 +1209,7 @@ mod tests {
                 json!({"input":[{"text":value,"type":"thinking"}]}),
                 json!({"tools":[{"type":"custom","name":"exec","format":{"type":"grammar","definition":value}}]}),
                 json!({"previous_response_id":value}),
-                json!({"schema":{"properties":{"token":{"const":value}}}}),
+                json!({"text":{"format":{"type":"json_schema","name":"result","schema":{"properties":{"token":{"const":value}}}}}}),
                 json!({value:"ordinary"}),
             ] {
                 let next = cached_check(&changed.to_string(), &json!({}), &[], &mut cache);
