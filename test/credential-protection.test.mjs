@@ -13,7 +13,7 @@ import { claudeConfigFixture } from './helpers/claude-fixture.mjs';
 const key = 'sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD';
 const authentication = 'upstream-auth-only-4fR8';
 const event = v => `data: ${JSON.stringify(v)}\n\n`;
-async function fixture(t, handler, { claude = false, enabled = true, upstreamSecret = authentication, ttl = 3600 } = {}) {
+async function fixture(t, handler, { claude = false, enabled = true, upstreamSecret = authentication, ttl = 3600, cache } = {}) {
   const calls = [];
   const upstream = http.createServer(async (req, res) => {
     let text = ''; for await (const chunk of req) text += chunk;
@@ -22,7 +22,8 @@ async function fixture(t, handler, { claude = false, enabled = true, upstreamSec
   });
   await new Promise(r => upstream.listen(0, '127.0.0.1', r));
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'cabletidy-protection-'));
-  let app = await createApplication({paths:getPaths(home), loadCodexCatalog:async () => catalogFixture()});
+  const env = cache === undefined ? {} : {CABLETIDY_TEST_CREDENTIAL_CACHE:cache ? '1':'0'};
+  let app = await createApplication({paths:getPaths(home), env, loadCodexCatalog:async () => catalogFixture()});
   t.after(async () => { upstream.closeAllConnections(); await Promise.all([app.close(),new Promise(r=>upstream.close(r))]); await fs.rm(home,{recursive:true,force:true}); });
   const config = normalizeConfig(claude ? claudeConfigFixture() : codexConfigFixture());
   config.web.port = Number(new URL(app.url).port);
@@ -35,7 +36,7 @@ async function fixture(t, handler, { claude = false, enabled = true, upstreamSec
   const endpoint = claude ? 'claude-main/v1/messages':'relay/v1/responses';
   return {calls,call,home,app,model,config,request:(body={},session='session-1')=>call(endpoint,{model,max_tokens:100,...body},claude?{'x-claude-code-session-id':session}:{'session-id':session}),
     async records() { for(let i=0;i<300;i++){const v=await (await call('api/v1/security/audit?kind=request')).json();if(v.items?.length && v.items.every(r=>r.inspectionProgress?.active===false))return v.items;await delay(20);}assert.fail('audit did not settle'); },
-    async restart(){await app.close();app=await createApplication({paths:getPaths(home),loadCodexCatalog:async()=>catalogFixture()});},
+    async restart(){await app.close();app=await createApplication({paths:getPaths(home),env,loadCodexCatalog:async()=>catalogFixture()});},
   };
 }
 const respond=(res,body,text)=>{res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({type:'response',model:body.model,output:[{type:'message',role:'assistant',content:[{type:'output_text',text}]}]}));};
@@ -982,6 +983,42 @@ async function protectionEvidence(f, record) {
   const page = await (await f.call(`api/v1/security/audit/${record.id}/body?snapshot=protection`)).json();
   return JSON.parse(page.chunks.map(c => c.content).join(''));
 }
+
+test('cached history discovers later credentials and audit records fresh current replacement facts', async t => {
+  const f = await fixture(t, (body,res) => respond(res,body,body.input[0].content), {cache:true});
+  const value = 'laterCredential9Q8m';
+  const history = [{role:'user',content:`Earlier ${value}`}];
+  const snapshots = [];
+  for (const body of [
+    {input:history},
+    {input:[...history,{role:'user',content:'safe append'}],metadata:{password:value}},
+    {input:[...history,{role:'user',content:'safe append'},{role:'user',content:'another append'}]},
+  ]) {
+    const response = await f.request(body);
+    assert.equal(response.status,200);
+    assert.equal((await response.json()).output[0].content[0].text,history[0].content);
+    const record = (await f.records())[0];
+    const facts = await detectionEvidence(f,record);
+    const protection = await protectionEvidence(f,record);
+    snapshots.push(record.credentialDetection.snapshotId);
+    assert.equal(record.credentialDetection.work.cacheEnabled,true);
+    if (snapshots.length > 1) {
+      assert.ok(record.credentialDetection.work.reusedNodes > 0);
+      assert.equal(facts.length,snapshots.length === 2 ? 2 : 1);
+      assert.ok(facts.every(c=>c.replacementStatus === 'replaced'));
+      assert.ok(!JSON.stringify(f.calls.at(-1).body).includes(value));
+      for (const fact of facts) {
+        const decision = protection.decisions.find(d=>d.candidateId === fact.candidateId);
+        assert.ok(decision);
+        for (const field of ['snapshotId','evidenceClass','source','credentialType','valueType','matchPolicy','location','start','end','rawStart','rawEnd','payloadRole','confidence','replacementStatus']) assert.deepEqual(decision[field],fact[field]);
+      }
+    } else assert.equal(facts.length,0);
+  }
+  assert.equal(new Set(snapshots).size,3);
+  const response = await f.request({input:history},'separate-session');
+  assert.equal(response.status,200);await response.text();
+  assert.equal(f.calls.at(-1).body.input[0].content,history[0].content);
+});
 
 for (const enabled of [true, false]) test(`audit consumes frozen credential facts and records actual replacement state (protection=${enabled})`, async t => {
   const f = await fixture(t, (body,res) => respond(res,body,'ok'), {enabled});

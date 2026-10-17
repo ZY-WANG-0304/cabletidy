@@ -250,7 +250,7 @@ impl MatchPolicy {
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Credential {
     pub value: String,
     pub evidence: &'static str,

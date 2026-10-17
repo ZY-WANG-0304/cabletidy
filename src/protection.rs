@@ -43,6 +43,7 @@ struct Session {
     mappings: Vec<Arc<Mapping>>,
     last_request: u64,
     ttl: u64,
+    cache: credentials::Cache,
     _memory: Reservation,
 }
 #[derive(Default)]
@@ -104,6 +105,21 @@ impl Registry {
         ttl: u64,
         at: u64,
     ) -> Result<Request> {
+        // Trial switch exists only in test-support builds. Production keeps the
+        // validated full detector until the experiment is reviewed.
+        let cached = cfg!(feature = "test-support")
+            && std::env::var("CABLETIDY_TEST_CREDENTIAL_CACHE").as_deref() == Ok("1");
+        self.prepare_at_mode(source, secrets, record, ttl, at, cached)
+    }
+    fn prepare_at_mode(
+        &self,
+        source: &Arc<Spool>,
+        secrets: &Value,
+        record: Value,
+        ttl: u64,
+        at: u64,
+        cached: bool,
+    ) -> Result<Request> {
         let mut record = record;
         credentials::identify(source, &mut record)?;
         let scope = config::text(&record["sessionKey"]);
@@ -128,6 +144,7 @@ impl Registry {
                     mappings: Vec::new(),
                     last_request: at,
                     ttl,
+                    cache: credentials::Cache::default(),
                     _memory: memory,
                 },
             );
@@ -141,7 +158,11 @@ impl Registry {
             .filter(|m| m.rule_version == credentials::VERSION)
             .map(|m| m.credential.clone())
             .collect::<Vec<_>>();
-        let detection = credentials::detect(source, secrets, &trusted);
+        let detection = if cached {
+            credentials::detect_cached(source, secrets, &trusted, &mut session.cache)
+        } else {
+            credentials::detect(source, secrets, &trusted)
+        };
         let mut redactor = Redactor::new(secrets);
         detection.learn(&mut redactor);
         let entries = &mut session.mappings;
@@ -1479,6 +1500,79 @@ mod tests {
                 at,
             )
             .unwrap()
+    }
+    #[test]
+    fn cached_history_is_scoped_to_session_and_discarded_after_idle_expiry() {
+        let registry = Registry::default();
+        let prepare_cached = |body: Value, scope: &str, at: u64| {
+            registry
+                .prepare_at_mode(
+                    &spool_json(&body).unwrap(),
+                    &json!({}),
+                    json!({"id":"request","sessionKey":scope}),
+                    3600,
+                    at,
+                    true,
+                )
+                .unwrap()
+        };
+        let mut first = prepare_cached(
+            json!({"password":"learnedCredential9Q8m","input":"learnedCredential9Q8m"}),
+            "s",
+            1000,
+        );
+        let placeholder = first.mappings[0].replacement.clone();
+        let same = prepare_cached(json!({"input":"learnedCredential9Q8m"}), "s", 1001);
+        assert_eq!(same.detection.candidates.len(), 1);
+        assert_eq!(same.mappings[0].replacement, placeholder);
+        assert!(
+            same.detection.summary()["work"]["reusedNodes"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let isolated = prepare_cached(json!({"input":"learnedCredential9Q8m"}), "other", 1002);
+        assert!(isolated.detection.candidates.is_empty());
+        let expired = prepare_cached(json!({"input":"learnedCredential9Q8m"}), "s", 3_601_001);
+        assert!(expired.detection.candidates.is_empty());
+        assert!(expired.mappings.is_empty());
+        assert_eq!(
+            first
+                .replace(&placeholder, true, "text", "response")
+                .unwrap(),
+            "learnedCredential9Q8m"
+        );
+    }
+    #[test]
+    fn cached_negative_history_is_reprotected_when_new_credential_is_discovered() {
+        let registry = Registry::default();
+        let prepare_cached = |body: Value, at| {
+            registry
+                .prepare_at_mode(
+                    &spool_json(&body).unwrap(),
+                    &json!({}),
+                    json!({"id":"request","sessionKey":"s"}),
+                    3600,
+                    at,
+                    true,
+                )
+                .unwrap()
+        };
+        let mut first = prepare_cached(json!({"input":"laterCredential9Q8m"}), 1000);
+        let source = first.source.clone();
+        let out: Value =
+            serde_json::from_reader(first.transform(&source, false).unwrap().reader()).unwrap();
+        assert_eq!(out["input"], "laterCredential9Q8m");
+        let mut next = prepare_cached(
+            json!({"input":"laterCredential9Q8m","password":"laterCredential9Q8m"}),
+            1001,
+        );
+        let source = next.source.clone();
+        let out: Value =
+            serde_json::from_reader(next.transform(&source, false).unwrap().reader()).unwrap();
+        assert_eq!(out["input"], out["password"]);
+        assert_ne!(out["input"], "laterCredential9Q8m");
+        assert_ne!(first.detection.snapshot_id, next.detection.snapshot_id);
     }
     #[test]
     fn only_complete_placeholders_are_exempt_and_saved_credentials_take_priority() {

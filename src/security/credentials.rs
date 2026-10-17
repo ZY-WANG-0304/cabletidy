@@ -9,6 +9,7 @@ use super::{
 use crate::streaming::{JsonStream, Node, Reservation, Spool, Visitor};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::{Read, Seek, SeekFrom},
@@ -124,6 +125,7 @@ pub(crate) struct Detection {
     pub reason: Option<String>,
     pub catalog_version: String,
     marks: BTreeMap<u64, Vec<Value>>,
+    work: Work,
     _memory: Reservation,
 }
 impl Detection {
@@ -131,7 +133,7 @@ impl Detection {
         json!({"snapshotId":self.snapshot_id,"ruleVersion":VERSION,"catalogVersion":self.catalog_version,
             "candidateCount":self.candidates.len(),"strongCount":self.candidates.iter().filter(|c|c.strong).count(),
             "lowConfidenceCount":self.candidates.iter().filter(|c|!c.strong).count(),
-            "detectionRuns":1,"coverage":if self.complete {"complete"} else {"partial"},"coverageReason":self.reason})
+            "detectionRuns":1,"work":self.work.fact(),"coverage":if self.complete {"complete"} else {"partial"},"coverageReason":self.reason})
     }
     pub fn marks(&self, at: u64) -> &[Value] {
         self.marks.get(&at).map(Vec::as_slice).unwrap_or(&[])
@@ -205,7 +207,13 @@ struct Scan<'a> {
     stack: Vec<Frame>,
     candidates: Vec<Candidate>,
     memory: Reservation,
+    cache: Option<&'a Cache>,
+    pending: &'a mut Cache,
+    catalog: Option<Arc<Catalog>>,
+    deltas: BTreeMap<[u8; 32], Option<Vec<String>>>,
+    work: Work,
 }
+#[derive(Clone)]
 struct Hit {
     start: usize,
     end: usize,
@@ -351,6 +359,230 @@ fn extract(
         })
         .collect())
 }
+
+// Optional runtime cache: only complete results are published into the owning
+// session. It never retains wire bodies, placeholders or candidate execution state.
+const CACHE_BYTES: usize = 4 * 1024 * 1024;
+const CACHE_ENTRIES: usize = 1024;
+#[derive(Default)]
+pub(crate) struct Cache {
+    entries: BTreeMap<[u8; 32], Arc<CachedHits>>,
+    catalogs: BTreeMap<usize, (usize, usize)>,
+    bytes: usize,
+}
+struct Catalog {
+    values: Vec<Credential>,
+    digest: [u8; 32],
+    _memory: Reservation,
+}
+impl Catalog {
+    fn new(redactor: &Redactor, pending: &Cache, cache: Option<&Cache>) -> Option<Arc<Self>> {
+        let digest = Sha256::digest(redactor.catalog_digest()).into();
+        if let Some(entry) = pending
+            .entries
+            .values()
+            .chain(cache.into_iter().flat_map(|c| c.entries.values()))
+            .find(|entry| entry.catalog.digest == digest)
+        {
+            return Some(entry.catalog.clone());
+        }
+        let values = redactor.catalog();
+        let mut memory = Reservation::memory();
+        memory
+            .grow(
+                values
+                    .iter()
+                    .map(|v| v.value.len().saturating_mul(12) + 256)
+                    .sum::<usize>()
+                    + 512,
+            )
+            .ok()?;
+        Some(Arc::new(Self {
+            values,
+            digest,
+            _memory: memory,
+        }))
+    }
+    fn additions(&self, previous: &Self) -> Option<Vec<String>> {
+        let current: BTreeMap<_, _> = self.values.iter().map(|v| (v.value.as_str(), v)).collect();
+        // Removals, source changes and policy changes require full extraction.
+        if previous.values.iter().any(|v| {
+            current
+                .get(v.value.as_str())
+                .is_none_or(|next| **next != *v)
+        }) {
+            return None;
+        }
+        let before: std::collections::BTreeSet<_> =
+            previous.values.iter().map(|v| v.value.as_str()).collect();
+        Some(
+            self.values
+                .iter()
+                .filter(|v| !before.contains(v.value.as_str()))
+                .map(|v| v.value.clone())
+                .collect(),
+        )
+    }
+}
+struct CachedHits {
+    hits: Vec<Hit>,
+    catalog: Arc<Catalog>,
+    _memory: Reservation,
+}
+impl Cache {
+    fn save(&mut self, key: [u8; 32], hits: &[Hit], catalog: Arc<Catalog>) {
+        let bytes = hits
+            .iter()
+            .map(|h| {
+                (h.original.len() + h.catalog_value.as_ref().map_or(0, String::len))
+                    .saturating_mul(12)
+                    + 512
+            })
+            .sum::<usize>()
+            + 256;
+        if bytes > CACHE_BYTES {
+            return;
+        }
+        let mut memory = Reservation::memory();
+        if memory.grow(bytes).is_err() {
+            return;
+        }
+        self.insert(
+            key,
+            Arc::new(CachedHits {
+                hits: hits.to_vec(),
+                catalog,
+                _memory: memory,
+            }),
+        );
+    }
+    fn insert(&mut self, key: [u8; 32], entry: Arc<CachedHits>) {
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes -= old._memory.bytes as usize;
+            let id = Arc::as_ptr(&old.catalog) as usize;
+            let count = &mut self.catalogs.get_mut(&id).unwrap().0;
+            *count -= 1;
+            if *count == 0 {
+                self.bytes -= self.catalogs.remove(&id).unwrap().1;
+            }
+        }
+        let bytes = entry._memory.bytes as usize;
+        let id = Arc::as_ptr(&entry.catalog) as usize;
+        let catalog_bytes = entry.catalog._memory.bytes as usize;
+        if bytes + catalog_bytes > CACHE_BYTES {
+            return;
+        }
+        let extra = if self.catalogs.contains_key(&id) {
+            0
+        } else {
+            catalog_bytes
+        };
+        if self.bytes + bytes + extra > CACHE_BYTES || self.entries.len() >= CACHE_ENTRIES {
+            self.entries.clear();
+            self.catalogs.clear();
+            self.bytes = 0;
+        }
+        let count = self.catalogs.entry(id).or_insert((0, catalog_bytes));
+        if count.0 == 0 {
+            self.bytes += catalog_bytes;
+        }
+        count.0 += 1;
+        self.bytes += bytes;
+        self.entries.insert(key, entry);
+    }
+}
+#[derive(Default)]
+struct Work {
+    cache_enabled: bool,
+    extracted_nodes: usize,
+    reused_nodes: usize,
+    reused_bytes: usize,
+    delta_checked_nodes: usize,
+    delta_invalidated_nodes: usize,
+    cache_bytes: usize,
+    micros: u64,
+}
+impl Work {
+    fn fact(&self) -> Value {
+        json!({"cacheEnabled":self.cache_enabled,"extractedNodes":self.extracted_nodes,"reusedNodes":self.reused_nodes,"reusedDecodedBytes":self.reused_bytes,"deltaCheckedNodes":self.delta_checked_nodes,"deltaInvalidatedNodes":self.delta_invalidated_nodes,"cacheBytes":self.cache_bytes,"elapsedMicros":self.micros})
+    }
+    fn add(&mut self, next: &Self) {
+        self.extracted_nodes += next.extracted_nodes;
+        self.reused_nodes += next.reused_nodes;
+        self.reused_bytes += next.reused_bytes;
+        self.delta_checked_nodes += next.delta_checked_nodes;
+        self.delta_invalidated_nodes += next.delta_invalidated_nodes;
+    }
+}
+impl Scan<'_> {
+    fn hits(&mut self, frame: &Frame, kind: u8) -> Result<Vec<Hit>> {
+        if self.catalog.is_none() {
+            self.work.extracted_nodes += 1;
+            return extract(&frame.value, frame.scope, &frame.field, 0, self.redactor);
+        }
+        // Path keeps separate field occurrences and ancestor placement. Scope is
+        // derived afresh by the current parser, including schema/opaque semantics.
+        // JSON spelling is remapped later; cached offsets belong to decoded text.
+        let mut hash = Sha256::new();
+        hash.update(
+            json!([
+                VERSION,
+                frame.path,
+                frame.field,
+                kind,
+                frame.scope.credential,
+                frame.scope.schema,
+                frame.scope.property,
+                frame.scope.tools,
+                frame.scope.immutable,
+                frame.scope.opaque
+            ])
+            .to_string(),
+        );
+        hash.update(frame.value.as_bytes());
+        let key: [u8; 32] = hash.finalize().into();
+        let cached = self
+            .pending
+            .entries
+            .get(&key)
+            .or_else(|| self.cache.and_then(|c| c.entries.get(&key)))
+            .cloned();
+        if let (Some(entry), Some(catalog)) = (cached, self.catalog.as_ref()) {
+            let valid = if entry.catalog.digest == catalog.digest {
+                true
+            } else {
+                self.work.delta_checked_nodes += 1;
+                let additions = self
+                    .deltas
+                    .entry(entry.catalog.digest)
+                    .or_insert_with(|| catalog.additions(&entry.catalog));
+                // Any escape might encode a newly trusted value in nested JSON or
+                // source spelling. Conservatively rescan instead of guessing it.
+                additions.as_ref().is_some_and(|values| {
+                    !frame.value.contains('\\') && !values.iter().any(|v| frame.value.contains(v))
+                })
+            };
+            if valid {
+                self.work.reused_nodes += 1;
+                self.work.reused_bytes += frame.value.len();
+                if entry.catalog.digest == catalog.digest {
+                    self.pending.insert(key, entry.clone());
+                } else {
+                    self.pending.save(key, &entry.hits, catalog.clone());
+                }
+                return Ok(entry.hits.clone());
+            }
+            self.work.delta_invalidated_nodes += 1;
+        }
+        self.work.extracted_nodes += 1;
+        let hits = extract(&frame.value, frame.scope, &frame.field, 0, self.redactor)?;
+        if let Some(catalog) = &self.catalog {
+            self.pending.save(key, &hits, catalog.clone());
+        }
+        Ok(hits)
+    }
+}
+
 // Sparse translation: ordinary long text never needs a byte-per-byte offset table.
 fn range_offsets(raw: &str, start: usize, end: usize) -> Result<(usize, usize)> {
     let mut at = 1;
@@ -437,12 +669,6 @@ impl Visitor for Scan<'_> {
         {
             return Ok(());
         }
-        let mut raw = String::new();
-        let mut reader = self.source.reader();
-        reader.seek(SeekFrom::Start(node.start))?;
-        reader
-            .take(node.end - node.start)
-            .read_to_string(&mut raw)?;
         let hits = if f.scalar {
             vec![Hit {
                 start: 0,
@@ -459,8 +685,16 @@ impl Visitor for Scan<'_> {
                 scalar: true,
             }]
         } else {
-            extract(&f.value, f.scope, &f.field, 0, self.redactor)?
+            self.hits(&f, node.kind)?
         };
+        let mut raw = String::new();
+        if !hits.is_empty() && !f.scalar {
+            let mut reader = self.source.reader();
+            reader.seek(SeekFrom::Start(node.start))?;
+            reader
+                .take(node.end - node.start)
+                .read_to_string(&mut raw)?;
+        }
         for hit in hits {
             let strong = strong_evidence(hit.evidence);
             let blocked = if hit.scalar {
@@ -557,6 +791,29 @@ pub(crate) fn detect_snapshot(
     trusted: &[Credential],
     root: &str,
 ) -> Arc<Detection> {
+    detect_inner(source, secrets, trusted, root, None)
+}
+pub(crate) fn detect_cached(
+    source: &Arc<Spool>,
+    secrets: &Value,
+    trusted: &[Credential],
+    cache: &mut Cache,
+) -> Arc<Detection> {
+    detect_inner(source, secrets, trusted, "request", Some(cache))
+}
+fn detect_inner(
+    source: &Arc<Spool>,
+    secrets: &Value,
+    trusted: &[Credential],
+    root: &str,
+    mut cache: Option<&mut Cache>,
+) -> Arc<Detection> {
+    let started = std::time::Instant::now();
+    let mut pending = Cache::default();
+    let mut work = Work {
+        cache_enabled: cache.is_some(),
+        ..Work::default()
+    };
     let mut redactor = Redactor::new(secrets);
     for value in trusted {
         redactor.trust(value);
@@ -578,17 +835,26 @@ pub(crate) fn detect_snapshot(
     // Bounded discovery, followed by a pass using a frozen strong-value directory.
     // Nothing learned from a weak candidate can affect this or a later request.
     for pass in 0..2 {
+        let catalog = cache
+            .as_ref()
+            .and_then(|_| Catalog::new(&redactor, &pending, cache.as_deref()));
         let mut scan = Scan {
             source,
             redactor: &redactor,
             stack: Vec::new(),
             candidates: Vec::new(),
             memory: Reservation::memory(),
+            cache: cache.as_deref(),
+            pending: &mut pending,
+            catalog,
+            deltas: BTreeMap::new(),
+            work: Work::default(),
         };
         if let Err(e) = JsonStream::new(source.reader()).parse(&mut scan, root) {
             complete = false;
             reason = Some(e.to_string());
         }
+        work.add(&scan.work);
         candidates = scan.candidates;
         memory = scan.memory;
         if pass == 1 {
@@ -640,12 +906,22 @@ pub(crate) fn detect_snapshot(
             .or_default()
             .push(json!({"reason":c.evidence,"start":c.start,"end":c.end,"candidateId":c.id}));
     }
+    if complete {
+        if let Some(cache) = cache.as_mut() {
+            for (key, entry) in pending.entries {
+                cache.insert(key, entry);
+            }
+            work.cache_bytes = cache.bytes;
+        }
+    }
+    work.micros = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
     Arc::new(Detection {
         snapshot_id,
         candidates,
         complete,
         reason,
         catalog_version,
+        work,
         marks,
         _memory: memory,
     })
@@ -688,6 +964,188 @@ mod tests {
         let mut s = Spool::new().unwrap();
         s.write_all(raw.as_bytes()).unwrap();
         s.seal().unwrap()
+    }
+    fn same_facts(full: &Detection, cached: &Detection) {
+        assert_eq!(full.complete, cached.complete);
+        assert_eq!(full.reason, cached.reason);
+        assert_eq!(full.catalog_version, cached.catalog_version);
+        let facts = |d: &Detection| {
+            d.candidates
+                .iter()
+                .map(|c| {
+                    let mut f = c.fact("");
+                    f.as_object_mut().unwrap().remove("candidateId");
+                    json!([f, c.original, c.catalog_value, c.blocked, c.node_start])
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(facts(full), facts(cached));
+    }
+    fn cached_check(
+        raw: &str,
+        secrets: &Value,
+        trusted: &[Credential],
+        cache: &mut Cache,
+    ) -> Arc<Detection> {
+        let s = source(raw);
+        let cached = detect_cached(&s, secrets, trusted, cache);
+        same_facts(&detect(&s, secrets, trusted), &cached);
+        cached
+    }
+    #[test]
+    fn cache_reuses_history_but_emits_fresh_ids_and_current_raw_ranges() {
+        let mut cache = Cache::default();
+        let initial = r#"{"password":"密🙂","input":"ordinary history"}"#;
+        let first = cached_check(initial, &json!({}), &[], &mut cache);
+        let trusted = first
+            .candidates
+            .iter()
+            .filter(|c| c.strong)
+            .map(Candidate::credential)
+            .collect::<Vec<_>>();
+        let changed = r#"{  "password" : "\u5bc6\ud83d\ude42", "input":"ordinary history","new":"added message"}"#;
+        let next = cached_check(changed, &json!({}), &trusted, &mut cache);
+        assert!(next.work.reused_nodes > 0);
+        assert_ne!(first.snapshot_id, next.snapshot_id);
+        assert_ne!(first.candidates[0].id, next.candidates[0].id);
+        assert_eq!(
+            &changed[next.candidates[0].raw_start as usize..next.candidates[0].raw_end as usize],
+            r#"\u5bc6\ud83d\ude42"#
+        );
+    }
+    #[test]
+    fn cache_new_directory_value_rechecks_old_plain_and_encoded_history() {
+        let value = "laterCredential9Q8m";
+        for old in [
+            value.to_owned(),
+            r#"{"note":"laterCredential9Q\u0038m"}"#.to_owned(),
+        ] {
+            let mut cache = Cache::default();
+            let initial = json!({"input":old}).to_string();
+            assert!(cached_check(&initial, &json!({}), &[], &mut cache)
+                .candidates
+                .is_empty());
+            let raw = json!({"input":old,"metadata":{"api_key":value}}).to_string();
+            let next = cached_check(&raw, &json!({}), &[], &mut cache);
+            assert_eq!(next.candidates.iter().filter(|c| c.strong).count(), 2);
+            assert!(next.work.delta_invalidated_nodes > 0);
+        }
+    }
+    #[test]
+    fn cache_unrelated_directory_addition_keeps_history_reusable() {
+        let mut cache = Cache::default();
+        let old = "ordinary historical text ".repeat(4096);
+        cached_check(
+            &json!({"input":old}).to_string(),
+            &json!({}),
+            &[],
+            &mut cache,
+        );
+        let next = cached_check(
+            &json!({"input":old,"password":"unrelatedCredential9Q8m"}).to_string(),
+            &json!({}),
+            &[],
+            &mut cache,
+        );
+        assert!(next.work.delta_checked_nodes > 0);
+        // The newly added password field itself must be rechecked in pass two.
+        assert_eq!(next.work.delta_invalidated_nodes, 1);
+        assert!(next.work.reused_bytes >= old.len());
+    }
+    #[test]
+    fn cache_catalog_removal_and_match_policy_change_invalidate_hits() {
+        let mut cache = Cache::default();
+        let raw = r#"{"input":"prefix retiredValue9Q8m suffix"}"#;
+        let mut credential = Credential {
+            value: "retiredValue9Q8m".into(),
+            evidence: "observed",
+            credential_type: "authentication_secret",
+            match_policy: MatchPolicy::Embedded,
+        };
+        assert_eq!(
+            cached_check(raw, &json!({}), &[credential.clone()], &mut cache)
+                .candidates
+                .len(),
+            1
+        );
+        credential.match_policy = MatchPolicy::CompleteValue;
+        let next = cached_check(raw, &json!({}), &[credential], &mut cache);
+        assert!(next.candidates.is_empty());
+        assert!(next.work.delta_invalidated_nodes > 0);
+        let next = cached_check(raw, &json!({}), &[], &mut cache);
+        assert!(next.candidates.is_empty());
+        assert!(next.work.delta_invalidated_nodes > 0);
+    }
+    #[test]
+    fn cache_rebuilds_structure_scope_and_retroactive_opaque_decisions() {
+        let value = "sk-proj-cache-9fK2mNvQ8xRtZ4wB7hLpY1cD";
+        for initial in [json!({"input":[{"text":value}]}), json!({"input":value})] {
+            let mut cache = Cache::default();
+            cached_check(&initial.to_string(), &json!({}), &[], &mut cache);
+            for changed in [
+                json!({"input":[{"text":value,"type":"thinking"}]}),
+                json!({"tools":[{"type":"custom","name":"exec","format":{"type":"grammar","definition":value}}]}),
+                json!({"previous_response_id":value}),
+                json!({"schema":{"properties":{"token":{"const":value}}}}),
+                json!({value:"ordinary"}),
+            ] {
+                let next = cached_check(&changed.to_string(), &json!({}), &[], &mut cache);
+                assert!(next
+                    .candidates
+                    .iter()
+                    .any(|c| c.strong && c.blocked.is_some()));
+            }
+        }
+    }
+    #[test]
+    fn cache_duplicates_nested_unicode_and_failed_json_preserve_facts() {
+        let mut cache = Cache::default();
+        let raw = r#"{"input":"{\"password\":\"密🙂\",\"password\":\"hunter2\"}","password":"密🙂","password":"hunter2"}"#;
+        cached_check(raw, &json!({}), &[], &mut cache);
+        let next = cached_check(raw, &json!({}), &[], &mut cache);
+        assert_eq!(next.candidates.len(), 4);
+        assert!(next.work.reused_nodes > 0);
+        let keys = cache.entries.keys().copied().collect::<Vec<_>>();
+        let bytes = cache.bytes;
+        let partial = cached_check(
+            r#"{"new":"unfinished", "password":"hunter2""#,
+            &json!({}),
+            &[],
+            &mut cache,
+        );
+        assert!(!partial.complete);
+        assert_eq!(cache.entries.keys().copied().collect::<Vec<_>>(), keys);
+        assert_eq!(cache.bytes, bytes);
+    }
+    #[test]
+    fn cache_caps_include_catalogs_and_eviction_does_not_change_detection() {
+        let mut cache = Cache::default();
+        for i in 0..12 {
+            let secrets = json!({"saved":format!("{}-{i}", "x".repeat(50000))});
+            cached_check(
+                &json!({"input":format!("unique-{i}")}).to_string(),
+                &secrets,
+                &[],
+                &mut cache,
+            );
+            let hit_bytes = cache
+                .entries
+                .values()
+                .map(|e| e._memory.bytes as usize)
+                .sum::<usize>();
+            let catalog_bytes = cache
+                .catalogs
+                .values()
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>();
+            assert_eq!(cache.bytes, hit_bytes + catalog_bytes);
+            assert!(cache.bytes <= CACHE_BYTES);
+        }
+        let raw = json!({"input":(0..1100).map(|i| format!("ordinary-{i}")).collect::<Vec<_>>()})
+            .to_string();
+        cached_check(&raw, &json!({}), &[], &mut cache);
+        assert!(cache.entries.len() <= CACHE_ENTRIES);
+        cached_check(&raw, &json!({}), &[], &mut cache);
     }
     #[test]
     fn duplicates_and_nested_unicode_keep_distinct_original_ranges() {
