@@ -7,6 +7,9 @@ static FIELD_HINT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\b[A-Za-z][A-Za-z0-9_-]*["']?\s*[:=]"#).unwrap());
 static SIMPLE_TYPE_ASSIGNMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:string|str|&str|String)\s*=\s*").unwrap());
+static TYPE_BODY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:type\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^{};=\r\n]{1,128}>)?\s*=\s*|interface\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^{};=\r\n]{1,128}>)?(?:\s+extends\s+[A-Za-z0-9_$.,<> \t]+)?\s*)\{").unwrap()
+});
 
 fn skip_space(text: &str, mut at: usize) -> usize {
     while let Some(c) = text[at..].chars().next().filter(|c| c.is_whitespace()) {
@@ -52,20 +55,52 @@ fn decode(raw: &str, quote: u8) -> Option<String> {
     Some(value)
 }
 
-pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
+#[derive(Default)]
+pub(super) struct Assignments {
+    pub hits: Vec<CredentialHit>,
+    // Scheme-only detection must respect the same literal/type/expression
+    // boundaries as field detection, including rejected authorization values.
+    pub authorization_ranges: Vec<std::ops::Range<usize>>,
+}
+
+fn spelling_range(raw: &str, quote: u8, start: usize, end: usize) -> Option<(usize, usize)> {
+    if !raw.contains('\\') {
+        return Some((start, end));
+    }
+    if quote == b'"' {
+        return super::credentials::range_offsets(&format!("\"{raw}\""), start, end)
+            .ok()
+            .map(|(start, end)| (start - 1, end - 1));
+    }
+    let (mut at, mut decoded, mut from) = (0, 0, None);
+    while decoded < end {
+        if decoded == start {
+            from = Some(at);
+        }
+        let next = if raw.as_bytes().get(at) == Some(&b'\\') {
+            at + 2
+        } else {
+            at + raw.get(at..)?.chars().next()?.len_utf8()
+        };
+        decoded += decode(raw.get(at..next)?, quote)?.len();
+        at = next;
+    }
+    Some((from?, at))
+}
+
+pub(super) fn assignments(text: &str) -> Assignments {
     if !FIELD_HINT.find_iter(text).any(|m| {
         credential_field(
             m.as_str()
                 .trim_end_matches([':', '=', ' ', '\t', '\r', '\n', '"', '\'']),
         )
     }) {
-        return Vec::new();
+        return Assignments::default();
     }
-    let mut hits = Vec::new();
+    let mut result = Assignments::default();
     let mut at = 0;
     let mut depth = 0usize;
     let mut type_depth = None;
-    let mut type_pending = false;
     let mut unclosed = [false; 2];
     while at < text.len() {
         let c = text[at..].chars().next().unwrap();
@@ -109,10 +144,6 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
             match c {
                 '{' => {
                     depth += 1;
-                    if type_pending {
-                        type_depth = Some(depth);
-                        type_pending = false;
-                    }
                 }
                 '}' => {
                     if type_depth == Some(depth) {
@@ -120,17 +151,29 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
                     }
                     depth = depth.saturating_sub(1);
                 }
-                ';' => type_pending = false,
                 _ => {}
             }
             at += c.len_utf8();
             continue;
         };
         at = next;
-        if matches!(key, "type" | "interface")
-            && text[skip_space(text, next)..].starts_with(|c: char| c.is_ascii_alphabetic())
-        {
-            type_pending = true;
+        if matches!(key, "type" | "interface") {
+            let prefix = text[..begin]
+                .rsplit(['\n', ';', '{', '}'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if matches!(
+                prefix,
+                "" | "export" | "declare" | "export declare" | "export default"
+            ) {
+                if let Some(body) = TYPE_BODY.find(&text[begin..]) {
+                    depth += 1;
+                    type_depth = Some(depth);
+                    at = begin + body.end();
+                    continue;
+                }
+            }
         }
         if !credential_field(key) {
             continue;
@@ -160,18 +203,12 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
             .flatten();
         let source_type = text.as_bytes()[separator] == b':'
             && (type_depth.is_some()
-                || type_pending
-                || statement.starts_with("type ")
-                || statement.starts_with("interface ")
                 || (matches!(statement, "const" | "let")
                     || statement.starts_with("const ")
                     || statement.starts_with("let "))
                     && !line.contains('=')
                     && annotation.is_none());
         let normalized = key.to_ascii_lowercase().replace(['_', '-'], "");
-        if source_type || normalized.contains("cookie") {
-            continue;
-        }
         if text.as_bytes()[separator] == b':' {
             // Only common scalar annotations followed by an assignment. Type
             // declarations above remain excluded; never evaluate an expression.
@@ -188,17 +225,36 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
             continue;
         }
         let is_quoted = matches!(quote, b'"' | b'\'' | b'`');
+        let cookie = normalized.contains("cookie");
+        let authorization = normalized.ends_with("authorization");
         let (end, closed) = if is_quoted {
             quoted(text, start)
-        } else {
+        } else if cookie {
             let end = text[start..]
-                .find(|c: char| c.is_whitespace() || ",;}]".contains(c))
+                .find(['\r', '\n'])
                 .map_or(text.len(), |offset| start + offset);
             (end, true)
+        } else {
+            let token_start = if authorization {
+                let scheme_end = text[start..]
+                    .find(char::is_whitespace)
+                    .map_or(text.len(), |offset| start + offset);
+                if matches!(
+                    text[start..scheme_end].to_ascii_lowercase().as_str(),
+                    "bearer" | "basic"
+                ) {
+                    skip_space(text, scheme_end)
+                } else {
+                    start
+                }
+            } else {
+                start
+            };
+            let end = text[token_start..]
+                .find(|c: char| c.is_whitespace() || ",;}]\"'".contains(c))
+                .map_or(text.len(), |offset| token_start + offset);
+            (end, true)
         };
-        if quote == b'`' && (!closed || env) {
-            continue;
-        }
         let content_start = start + usize::from(is_quoted);
         let raw = &text[content_start..end];
         let remainder = if closed && is_quoted {
@@ -223,12 +279,24 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
                 || raw.contains("${"));
         let bare_data = !is_quoted
             && (env
+                || (cookie || authorization)
+                    && text.as_bytes()[separator] == b':'
+                    && !line.contains(['{', '=', '('])
                 || line.is_empty()
                     && text.as_bytes()[separator] == b':'
                     && raw.chars().any(|c| c.is_ascii_digit())
                 || prefix.trim_end().ends_with("Tool output:")
                     && super::capture::substring_matchable(raw));
-        if raw.is_empty() || dynamic || reference || !is_quoted && !bare_data {
+        if authorization {
+            result.authorization_ranges.push(start..end);
+        }
+        if source_type
+            || quote == b'`' && (!closed || env)
+            || raw.is_empty()
+            || dynamic
+            || reference
+            || !is_quoted && !bare_data
+        {
             continue;
         }
         let decoded = if is_quoted && closed {
@@ -243,6 +311,29 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
         } else {
             "credential_literal_unverified"
         };
+        if cookie {
+            let value = decoded.as_deref().unwrap_or(raw);
+            for mut hit in super::capture::cookie_hits(value) {
+                let range = if decoded.is_some() {
+                    spelling_range(raw, quote, hit.start, hit.end)
+                } else {
+                    Some((hit.start, hit.end))
+                };
+                let Some((start, end)) = range else {
+                    continue;
+                };
+                hit.decoded = decoded.as_ref().map(|v| v[hit.start..hit.end].into());
+                hit.start = content_start + start;
+                hit.end = content_start + end;
+                if decoded.is_none() {
+                    hit.reason = "credential_literal_unverified";
+                    hit.value_type = "unknown";
+                }
+                result.hits.push(hit);
+            }
+            at = end + usize::from(is_quoted && closed);
+            continue;
+        }
         let mut hit = CredentialHit::new(
             content_start,
             end,
@@ -254,18 +345,46 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
             },
             credential_type(key),
         );
-        if normalized.ends_with("authorization") {
-            if let Some((scheme, token)) = raw.split_once(char::is_whitespace) {
+        if authorization {
+            let value = decoded.as_deref().unwrap_or(raw);
+            if let Some((scheme, rest)) = value.trim_start().split_once(char::is_whitespace) {
                 if matches!(scheme.to_ascii_lowercase().as_str(), "bearer" | "basic") {
-                    let token = token.trim();
-                    hit.start = end - token.len();
-                    hit.decoded = Some(token.into());
-                    hit.reason = "authorization";
+                    let token = if is_quoted {
+                        rest.trim()
+                    } else {
+                        rest.split_whitespace().next().unwrap_or("")
+                    };
+                    if token.is_empty() {
+                        continue;
+                    }
+                    let start = value.len() - rest.trim_start().len();
+                    let end = start + token.len();
+                    let range = if decoded.is_some() {
+                        spelling_range(raw, quote, start, end)
+                    } else {
+                        Some((start, end))
+                    };
+                    let Some((start, end)) = range else {
+                        continue;
+                    };
+                    hit.start = content_start + start;
+                    hit.end = content_start + end;
+                    hit.decoded = decoded.as_ref().map(|_| token.into());
+                    hit.reason = if decoded.is_some() {
+                        "authorization"
+                    } else {
+                        "credential_literal_unverified"
+                    };
+                    hit.value_type = if decoded.is_some() {
+                        "literal"
+                    } else {
+                        "unknown"
+                    };
                     hit.source = "authorization_header";
                     if !super::capture::substring_matchable(token) {
                         hit.match_policy = MatchPolicy::CompleteValue;
                     }
-                    hits.push(hit);
+                    result.hits.push(hit);
                 }
                 at = end + usize::from(is_quoted && closed);
                 continue;
@@ -283,8 +402,8 @@ pub(super) fn assignments(text: &str) -> Vec<CredentialHit> {
             MatchPolicy::CompleteValue
         };
         hit.decoded = decoded;
-        hits.push(hit);
+        result.hits.push(hit);
         at = end + usize::from(is_quoted && closed);
     }
-    hits
+    result
 }

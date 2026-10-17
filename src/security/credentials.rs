@@ -16,9 +16,22 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) const VERSION: &str = "credentials-4";
+pub(crate) const VERSION: &str = "credentials-5";
+#[derive(Clone, Copy, Default)]
+enum Context {
+    #[default]
+    Root,
+    Envelope,
+    Items,
+    Item,
+    Tools,
+    Tool,
+    Function,
+    Data,
+}
 #[derive(Clone, Copy, Default)]
 struct Scope {
+    context: Context,
     credential: bool,
     schema: bool,
     property: bool,
@@ -28,7 +41,21 @@ struct Scope {
 }
 impl Scope {
     fn child(self, parent: &str, field: &str, kind: u8) -> Self {
-        let tools = self.tools || field == "tools";
+        use Context::*;
+        let context = match (self.context, field, kind) {
+            (Root, _, b'{') => Envelope,
+            (Root, _, b'[') => Items,
+            (Envelope, "input" | "output" | "messages", b'[')
+            | (Item, "content" | "summary" | "tool_calls", b'[') => Items,
+            (Envelope, "input" | "item" | "content_block", b'{') => Item,
+            (Envelope, "response" | "message", b'{') => Envelope,
+            (Envelope, "tools", b'[') => Tools,
+            (Items, "", b'{') => Item,
+            (Tools, "", b'{') => Tool,
+            (Tool | Item, "function", b'{') => Function,
+            _ => Data,
+        };
+        let tools = self.tools || matches!(context, Tools | Tool | Function);
         let schema_value =
             self.schema && matches!(field, "default" | "example" | "examples" | "const" | "enum");
         let schema = !schema_value
@@ -53,21 +80,23 @@ impl Scope {
         let immutable = self.immutable
             || kind == b'k'
             || opaque
-            || tools && field == "format"
+            || matches!(self.context, Tool) && field == "format"
             || schema && matches!(field, "pattern" | "required" | "type")
             || self.schema && matches!(field, "const" | "enum")
-            || matches!(
-                field,
-                "type"
-                    | "name"
-                    | "id"
-                    | "call_id"
-                    | "tool_use_id"
-                    | "model"
-                    | "previous_response_id"
-                    | "conversation"
-            );
+            || matches!(self.context, Envelope | Item | Tool | Function)
+                && matches!(
+                    field,
+                    "type"
+                        | "name"
+                        | "id"
+                        | "call_id"
+                        | "tool_use_id"
+                        | "model"
+                        | "previous_response_id"
+                        | "conversation"
+                );
         Self {
+            context,
             credential,
             schema,
             property,
@@ -530,6 +559,7 @@ impl Scan<'_> {
                 frame.path,
                 frame.field,
                 kind,
+                frame.scope.context as u8,
                 frame.scope.credential,
                 frame.scope.schema,
                 frame.scope.property,
@@ -584,7 +614,7 @@ impl Scan<'_> {
 }
 
 // Sparse translation: ordinary long text never needs a byte-per-byte offset table.
-fn range_offsets(raw: &str, start: usize, end: usize) -> Result<(usize, usize)> {
+pub(super) fn range_offsets(raw: &str, start: usize, end: usize) -> Result<(usize, usize)> {
     let mut at = 1;
     let mut decoded = 0;
     let mut from = None;
@@ -648,7 +678,13 @@ impl Visitor for Scan<'_> {
     }
     fn end(&mut self, node: &Node) -> Result<()> {
         let f = self.stack.pop().unwrap();
-        if f.field == "type" && matches!(f.value.as_str(), "thinking" | "redacted_thinking") {
+        if f.field == "type"
+            && self
+                .stack
+                .last()
+                .is_some_and(|p| matches!(p.scope.context, Context::Item))
+            && matches!(f.value.as_str(), "thinking" | "redacted_thinking")
+        {
             if let Some(parent) = self.stack.last_mut() {
                 parent.scope.opaque = true;
                 parent.scope.immutable = true;
@@ -991,6 +1027,50 @@ mod tests {
         let cached = detect_cached(&s, secrets, trusted, cache);
         same_facts(&detect(&s, secrets, trusted), &cached);
         cached
+    }
+    #[test]
+    fn source_authentication_context_preserves_spelling_and_cached_facts() {
+        for (input, count) in [
+            (
+                "description: type of connection\npassword: \"actualCredentialQ78\"",
+                1,
+            ),
+            (
+                r#"const headers = {Cookie: "session=actualCredentialQ78; theme=dark"};"#,
+                1,
+            ),
+            (
+                r#"const cookie = "session=\"密\u7801ValueQ78\"; theme=dark";"#,
+                1,
+            ),
+            (
+                r#"const headers = {authorization: "Bearer actualCredentialQ\u00378"};"#,
+                1,
+            ),
+            (
+                r#"interface Headers { authorization: "Bearer actualCredentialQ78"; }"#,
+                0,
+            ),
+            (
+                r#"const headers = {authorization: "Bearer actualCredentialQ78" + suffix};"#,
+                0,
+            ),
+        ] {
+            let raw = json!({"input":input}).to_string();
+            let mut cache = Cache::default();
+            for _ in 0..2 {
+                let detection = cached_check(&raw, &json!({}), &[], &mut cache);
+                assert!(detection.complete);
+                assert_eq!(detection.candidates.len(), count, "{input}");
+                for candidate in &detection.candidates {
+                    assert!(candidate.strong);
+                    assert_eq!(candidate.role, "content");
+                    let spelling = &raw[candidate.raw_start as usize..candidate.raw_end as usize];
+                    let decoded: String = serde_json::from_str(&format!("\"{spelling}\"")).unwrap();
+                    assert_eq!(decoded, candidate.original);
+                }
+            }
+        }
     }
     #[test]
     fn cache_reuses_history_but_emits_fresh_ids_and_current_raw_ranges() {

@@ -22,9 +22,6 @@ static AUTH: LazyLock<Regex> = LazyLock::new(|| {
     r"(?i)\b(?:Bearer|Basic)\s+([A-Za-z0-9._~+/=-]*[0-9._~+/=-][A-Za-z0-9._~+/=-]*|[A-Za-z]{20,})"
 ).unwrap()
 });
-static AUTH_VALUE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?:proxy[-_]?authorization|authorization)["']?\s*[:=]\s*["']?(?:Bearer|Basic)\s+([^\s"';,]+)"#).unwrap()
-});
 // Only userinfo that carries a password component, or that is itself token shaped,
 // is treated as a credential. `ssh://git@host/repo.git` is an ordinary public form.
 static URL_AUTH: LazyLock<Regex> = LazyLock::new(|| {
@@ -62,8 +59,6 @@ static HOST_ENCODED: LazyLock<Regex> =
 static URL_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"[?&](?P<query_field>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^&#\s"']+)"#).unwrap()
 });
-static COOKIE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)\b(?:cookie|set-cookie)\s*:\s*([^\r\n]+)"#).unwrap());
 static ESCAPED_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r#"(?i)\\+["'](?:{})\\+["']\s*[:=]"#,
@@ -382,7 +377,7 @@ fn cookie_spans(value: &str) -> Vec<Span> {
     }
     spans
 }
-fn cookie_hits(value: &str) -> Vec<CredentialHit> {
+pub(super) fn cookie_hits(value: &str) -> Vec<CredentialHit> {
     cookie_spans(value)
         .into_iter()
         .map(|s| {
@@ -657,7 +652,8 @@ impl Redactor {
             hit.match_policy = MatchPolicy::Embedded;
             hits.push(hit);
         }
-        for hit in super::credential_source::assignments(value) {
+        let assignments = super::credential_source::assignments(value);
+        for hit in assignments.hits {
             let original = hit.decoded.as_deref().unwrap_or(&value[hit.start..hit.end]);
             if !placeholder_value(original) && !crate::protection::is_placeholder(original) {
                 hits.push(hit);
@@ -668,12 +664,6 @@ impl Redactor {
                 &*AUTH,
                 "authorization",
                 "authorization_scheme",
-                "authentication_secret",
-            ),
-            (
-                &*AUTH_VALUE,
-                "authorization",
-                "authorization_header",
                 "authentication_secret",
             ),
             (
@@ -691,6 +681,14 @@ impl Redactor {
         ] {
             for c in regex.captures_iter(value) {
                 if let Some(m) = credential_capture(&c) {
+                    if source == "authorization_scheme"
+                        && assignments
+                            .authorization_ranges
+                            .iter()
+                            .any(|range| m.start() < range.end && m.end() > range.start)
+                    {
+                        continue;
+                    }
                     if !placeholder_value(m.as_str())
                         && !crate::protection::is_placeholder(m.as_str())
                     {
@@ -705,14 +703,6 @@ impl Redactor {
                     }
                 }
             }
-        }
-        for c in COOKIE.captures_iter(value) {
-            let m = c.get(1).unwrap();
-            hits.extend(cookie_hits(m.as_str()).into_iter().map(|mut hit| {
-                hit.start += m.start();
-                hit.end += m.start();
-                hit
-            }));
         }
         if let Some(field) = field.filter(|f| credential_field(f)) {
             let normalized = field.to_ascii_lowercase().replace(['_', '-'], "");

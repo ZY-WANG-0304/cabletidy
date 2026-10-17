@@ -94,11 +94,13 @@ try{
  }
  // Ensure observations, including blocked requests, completed the audit path.
  let settled=false,auditCount=0;
+ const detectorVersions=new Set();
  for(let i=0;i<600;i++){
   let cursor,active=false,count=0;
   do {
    const data=await(await fetch(app.url+'api/v1/security/audit?kind=request&limit=100'+(cursor?'&cursor='+cursor:''))).json();
    assert.ok(Array.isArray(data.items),'audit listing failed');
+   for(const record of data.items)if(record.credentialDetection?.ruleVersion)detectorVersions.add(record.credentialDetection.ruleVersion);
    count+=data.items.length;active ||= data.items.some(r=>r.inspectionProgress?.active!==false);cursor=data.nextCursor;
   }while(cursor);
   auditCount=count;
@@ -112,7 +114,8 @@ try{
   return {specimens:rows.length,families:new Set(rows.map(r=>r.family)).size,pass:rows.filter(r=>r.correct).length,precision: wilson(correctAutomatic.reduce((n,r)=>n+r.replacements,0),automatic.reduce((n,r)=>n+r.replacements,0)),positivePayloadRecall:wilson(positive.filter(r=>r.correct).length,positive.length),negativeChangeRate:wilson(negative.filter(r=>r.changed).length,negative.length),blocked:{total:blocked.length,correct:blocked.filter(r=>r.correct).length},ambiguous:{total:ambiguous.length,unchanged:ambiguous.filter(r=>!r.changed).length}};
  };
  const strata={};for(const split of ['tuning','heldout'])strata[split]={total:metrics(results.filter(r=>r.split===split)),layers:Object.fromEntries([...new Set(cases.map(c=>c.layer))].map(layer=>[layer,metrics(results.filter(r=>r.split===split&&r.layer===layer))]))};
- const report={date:new Date().toISOString(),phase,partitionUse,detectorVersion:'credentials-4',auditPolicyVersion:'audit-4',binarySha256:hash(await fs.readFile(executable)),manifestSha256:hash(JSON.stringify(manifest)),scope:'Local synthetic grouped diagnostic evaluation. Families contain correlated variants; Wilson intervals are descriptive specimen intervals, not independent or production inference. Exact full wire payload comparison verifies noncredential bytes as well as replacement. Refusals are separate. No online credential validation.',auditSettled:settled,auditCount,strata,contractSummary:Object.fromEntries([...new Set(contracts.map(c=>c.group))].map(group=>[group,{total:contractResults.filter(c=>c.group===group).length,correct:contractResults.filter(c=>c.group===group&&c.correct).length}])),results,contracts:contractResults};
+ assert.equal(detectorVersions.size,1,'evaluation must observe one detector version');
+ const report={date:new Date().toISOString(),phase,partitionUse,detectorVersion:[...detectorVersions][0],auditPolicyVersion:'audit-4',binarySha256:hash(await fs.readFile(executable)),manifestSha256:hash(JSON.stringify(manifest)),scope:'Local synthetic grouped diagnostic evaluation. Families contain correlated variants; Wilson intervals are descriptive specimen intervals, not independent or production inference. Exact full wire payload comparison verifies noncredential bytes as well as replacement. Refusals are separate. No online credential validation.',auditSettled:settled,auditCount,strata,contractSummary:Object.fromEntries([...new Set(contracts.map(c=>c.group))].map(group=>[group,{total:contractResults.filter(c=>c.group===group).length,correct:contractResults.filter(c=>c.group===group&&c.correct).length}])),results,contracts:contractResults};
  await fs.writeFile(path.join(output,'stage3-evaluation.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify({strata,contractSummary:report.contractSummary,auditSettled:settled},null,2));
  assert.ok(results.every(r=>r.correct)&&contractResults.every(r=>r.correct)&&settled,'stage3 evaluation has failures');
 }finally{await app?.close();upstream.closeAllConnections();await new Promise(r=>upstream.close(r));await fs.rm(home,{recursive:true,force:true});}

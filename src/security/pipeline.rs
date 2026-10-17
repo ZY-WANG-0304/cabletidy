@@ -199,7 +199,8 @@ impl Pipeline {
             if let Ok(items) = super::content::index_spool(&spool, &mut self.record) {
                 // Known-secret rules use the configured subset, while redaction also learns credentials.
                 let dependency = format!(
-                    "rules-4:parser-2:{}:{}",
+                    "rules-4:parser-2:{}:{}:{}",
+                    super::credentials::VERSION,
                     self.redactor.catalog_digest(),
                     self.rules.secrets_digest()
                 );
