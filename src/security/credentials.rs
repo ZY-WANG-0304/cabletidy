@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) const VERSION: &str = "credentials-7";
+pub(crate) const VERSION: &str = "credentials-8";
 #[derive(Clone, Copy, Default)]
 enum Context {
     #[default]
@@ -1074,6 +1074,18 @@ mod tests {
             ),
             (
                 "/* docs\n*/ type 标头 = ()\n=> { authorization: \"Bearer short\" };\npassword: \"actualCredentialQ78\"",
+                1,
+            ),
+            (
+                "namespace Foo { export type Foo = string } const password = \"actualCredentialQ78\";",
+                1,
+            ),
+            (
+                "function f() { type Headers = { authorization: \"Bearer short\" } } const password = \"actualCredentialQ78\";",
+                1,
+            ),
+            (
+                "namespace Outer { namespace Inner { export type Headers = Base & { authorization: \"Bearer short\" } } } const password = \"actualCredentialQ78\";",
                 1,
             ),
             (

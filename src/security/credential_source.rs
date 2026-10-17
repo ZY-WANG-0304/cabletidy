@@ -182,7 +182,12 @@ fn type_declaration_end(text: &str, keyword: &str, mut at: usize) -> Option<usiz
                     ')' => '(',
                     _ => '<',
                 };
-                if !arrow && brackets.last() == Some(&open) {
+                if !arrow {
+                    // The enclosing block is outside this declaration. Leave its
+                    // delimiter for the caller so following statements are scanned.
+                    if brackets.last() != Some(&open) {
+                        return Some(next.start);
+                    }
                     brackets.pop();
                 }
                 if keyword == "interface" && brackets.is_empty() {

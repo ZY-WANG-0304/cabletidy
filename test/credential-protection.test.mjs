@@ -1226,6 +1226,39 @@ test('session token cookies share value detection without treating preferences a
 });
 
 for (const cache of [false,true]) {
+  test(`enclosing blocks end semicolonless type exclusions before following credentials (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
+    const declarations=[
+      'namespace Foo { export type Foo = string }',
+      'namespace Foo { export type Headers = { authorization: "Bearer short" } }',
+      'function f() { type Headers = { authorization: "Bearer short" } }',
+      'function f() { type Headers = { authorization: "Bearer actualCredentialQ78" } }',
+      'namespace Outer { namespace Inner { export type Headers = Base & { authorization: "Bearer short" } } }',
+      'function f() { type Headers = (Base | { authorization: "Bearer short" }) }',
+      'namespace Foo { export type Headers<T> = T extends Base ? { authorization: "Bearer short" } : { password: "typedValueQ78" } }',
+      'namespace Foo { export type Headers = Array<{ authorization: "Bearer short" }> /* outer } ; */ }',
+      'function f() { type Headers = () => { authorization: "Bearer short" } }',
+      'function f() { type Headers = [{ authorization: "Bearer short" }] }',
+      'namespace Foo { export type Headers = { authorization: "Bearer short" }; }',
+      'namespace Foo {\nexport type Headers = { authorization: "Bearer short" }\n}',
+    ];
+    for(const [index,declaration] of declarations.entries()) {
+      const session=`enclosing-type-${index}`,input=`${declaration} const password = "actualCredentialQ78";`;
+      for(const round of [0,1]) {
+        const response=await f.request({input},session);assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,input);
+        assert.equal(f.calls.at(-1).body.input.replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER'),`${declaration} const password = "MARKER";`);
+      }
+      const response=await f.request({input:'short'},session);assert.equal(response.status,200);await response.text();assert.equal(f.calls.at(-1).body.input,'short');
+    }
+    for(const record of await f.records()) {
+      const facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+      assert.equal(record.credentialDetection.coverage,'complete');assert.equal(protection.forwarded,true);
+      if(record.credentialDetection.candidateCount===0){assert.equal(facts.length,0);assert.equal(record.protection.requestCount,0);continue;}
+      assert.equal(facts.length,1);assert.equal(facts[0].source,'source_assignment');assert.equal(facts[0].payloadRole,'content');assert.equal(facts[0].replacementStatus,'replaced');
+      assert.deepEqual(protection.decisions[0],Object.fromEntries(Object.entries(facts[0]).filter(([k])=>!['auditPolicyVersion','auditDecision'].includes(k))));
+    }
+  });
+
   test(`credential occurrence context limits learned values while preserving restoration (cache ${cache})`,async t=>{
     const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
     for(const [index,value] of ['short','plain','hunter2'].entries()) {
