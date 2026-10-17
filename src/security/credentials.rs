@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) const VERSION: &str = "credentials-6";
+pub(crate) const VERSION: &str = "credentials-7";
 #[derive(Clone, Copy, Default)]
 enum Context {
     #[default]
@@ -181,7 +181,9 @@ impl Detection {
             if c.catalog_value.as_ref().is_some_and(|v| *v != c.original) {
                 let mut spelling = c.credential();
                 spelling.value = c.original.clone();
-                spelling.match_policy = MatchPolicy::CompleteValue;
+                if spelling.match_policy != MatchPolicy::ContextValue {
+                    spelling.match_policy = MatchPolicy::CompleteValue;
+                }
                 redactor.trust(&spelling);
             }
         }
@@ -1059,6 +1061,22 @@ mod tests {
                 0,
             ),
             (
+                "type Headers = ()\n=> { authorization: \"Bearer short\" };",
+                0,
+            ),
+            (
+                "/* docs\n*/ interface Headers { authorization: \"Bearer short\"; }",
+                0,
+            ),
+            (
+                "interface 标头 { authorization: \"Bearer short\"; }",
+                0,
+            ),
+            (
+                "/* docs\n*/ type 标头 = ()\n=> { authorization: \"Bearer short\" };\npassword: \"actualCredentialQ78\"",
+                1,
+            ),
+            (
                 r#"const headers = {authorization: "Bearer actualCredentialQ78" + suffix};"#,
                 0,
             ),
@@ -1409,6 +1427,52 @@ mod tests {
         let d = detect(&source(&raw), &json!({}), &strict);
         assert_eq!(d.candidates.len(), 1);
         assert_ne!(d.catalog_version, registered.catalog_version);
+    }
+    #[test]
+    fn ambiguous_values_require_current_context_and_learned_values_respect_declarations() {
+        let mut cache = Cache::default();
+        let initial = json!({"metadata":{"authorization":"Bearer short"}}).to_string();
+        let first = cached_check(&initial, &json!({}), &[], &mut cache);
+        assert_eq!(first.candidates.len(), 1);
+        assert_eq!(first.candidates[0].match_policy, MatchPolicy::ContextValue);
+        let trusted = vec![first.candidates[0].credential()];
+        let input = "/* docs\n*/ interface 标头 { authorization: \"Bearer short\"; }\nconst headers = {authorization: \"Bearer short\"};\nconst label = \"short\";";
+        let raw = json!({"input":input,"metadata":{"label":"short","authorization":"Bearer short","cookie":"session=short; theme=short"}}).to_string();
+        for _ in 0..2 {
+            let next = cached_check(&raw, &json!({}), &trusted, &mut cache);
+            assert_eq!(next.candidates.len(), 3);
+            assert!(next.candidates.iter().all(|c| c.strong
+                && c.match_policy == MatchPolicy::ContextValue
+                && c.source != "trusted_catalog"));
+        }
+        let plain = json!({"input":"short","metadata":{"label":"short"}}).to_string();
+        assert!(cached_check(&plain, &json!({}), &trusted, &mut cache)
+            .candidates
+            .is_empty());
+        let registered = cached_check(&plain, &json!({"saved":"short"}), &trusted, &mut cache);
+        assert_eq!(registered.candidates.len(), 2);
+        assert!(registered
+            .candidates
+            .iter()
+            .all(|c| c.source == "registered_catalog"));
+
+        let initial = json!({"metadata":{"password":"actualCredentialQ78"}}).to_string();
+        let first = cached_check(&initial, &json!({}), &[], &mut cache);
+        let trusted = vec![first.candidates[0].credential()];
+        let declaration = "type 标头 = ()\n=> { authorization: \"Bearer actualCredentialQ78\" };";
+        let raw = json!({"input":declaration}).to_string();
+        for _ in 0..2 {
+            assert!(cached_check(&raw, &json!({}), &trusted, &mut cache)
+                .candidates
+                .is_empty());
+        }
+        let raw = json!({"input":format!("{declaration}\nconst headers = {{authorization: \"Bearer actualCredentialQ78\"}};")}).to_string();
+        assert_eq!(
+            cached_check(&raw, &json!({}), &trusted, &mut cache)
+                .candidates
+                .len(),
+            1
+        );
     }
     #[test]
     fn undecodable_literals_are_low_confidence_and_never_learned() {

@@ -9,6 +9,8 @@ static SIMPLE_TYPE_ASSIGNMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:string|str|&str|String)\s*=\s*").unwrap());
 static TYPE_HINT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:type|interface)\b").unwrap());
+static NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[$_\p{ID_Start}][$_\u{200C}\u{200D}\p{ID_Continue}]*").unwrap());
 
 fn skip_space(text: &str, mut at: usize) -> usize {
     while let Some(c) = text[at..].chars().next().filter(|c| c.is_whitespace()) {
@@ -65,10 +67,8 @@ fn token(text: &str, mut at: usize) -> Option<Token<'_>> {
     let (kind, end) = if matches!(c, '\'' | '"' | '`') {
         let (end, closed) = quoted(text, at);
         (TokenKind::Literal, end + usize::from(closed))
-    } else if c.is_ascii_alphabetic() || matches!(c, '_' | '$') {
-        let end = text[at..]
-            .find(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '$'))
-            .map_or(text.len(), |i| at + i);
+    } else if let Some(name) = NAME.find(&text[at..]) {
+        let end = at + name.end();
         (TokenKind::Name(&text[at..end]), end)
     } else {
         (TokenKind::Symbol(c), at + c.len_utf8())
@@ -146,7 +146,8 @@ fn type_declaration_end(text: &str, keyword: &str, mut at: usize) -> Option<usiz
                     && !matches!(
                         next.kind,
                         TokenKind::Symbol('&' | '|' | '?' | ':') | TokenKind::Name("extends")
-                    ))
+                    )
+                    && !text[next.start..].starts_with("=>"))
         {
             return Some(if matches!(next.kind, TokenKind::Symbol(';')) {
                 next.end
@@ -194,15 +195,33 @@ fn type_declaration_end(text: &str, keyword: &str, mut at: usize) -> Option<usiz
     }
     Some(text.len())
 }
-fn declaration_prefix(prefix: &str) -> bool {
+fn declarations(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
     let mut at = 0;
-    while let Some(next) = token(prefix, at) {
-        if !matches!(next.kind, TokenKind::Name("export" | "declare" | "default")) {
-            return false;
+    let mut prefix = true;
+    while let Some(next) = token(text, at) {
+        prefix |= next.newline;
+        // Fenced code is source content. Skip only the fence delimiter, so the
+        // following line is still lexed; backtick type literals remain whole.
+        if text[next.start..].starts_with("```") {
+            at = next.start + 3;
+            prefix = false;
+            continue;
         }
+        if prefix {
+            if let TokenKind::Name(keyword @ ("type" | "interface")) = next.kind {
+                if let Some(end) = type_declaration_end(text, keyword, next.end) {
+                    ranges.push(next.start..end);
+                    at = end;
+                    continue;
+                }
+            }
+        }
+        prefix = matches!(next.kind, TokenKind::Symbol(';' | '{' | '}'))
+            || prefix && matches!(next.kind, TokenKind::Name("export" | "declare" | "default"));
         at = next.end;
     }
-    true
+    ranges
 }
 fn decode(raw: &str, quote: u8) -> Option<String> {
     if !raw.contains('\\') {
@@ -231,6 +250,7 @@ fn decode(raw: &str, quote: u8) -> Option<String> {
 #[derive(Default)]
 pub(super) struct Assignments {
     pub hits: Vec<CredentialHit>,
+    pub declaration_ranges: Vec<std::ops::Range<usize>>,
     // Scheme-only detection must respect the same literal/type/expression
     // boundaries as field detection, including rejected authorization values.
     pub authorization_ranges: Vec<std::ops::Range<usize>>,
@@ -271,10 +291,28 @@ pub(super) fn assignments(text: &str) -> Assignments {
     {
         return Assignments::default();
     }
-    let mut result = Assignments::default();
+    let ranges = if TYPE_HINT.is_match(text) {
+        declarations(text)
+    } else {
+        Vec::new()
+    };
+    let mut result = Assignments {
+        hits: Vec::new(),
+        authorization_ranges: ranges.clone(),
+        declaration_ranges: ranges,
+    };
+    let mut range = 0;
     let mut at = 0;
     let mut unclosed = [false; 2];
     while at < text.len() {
+        while range < result.declaration_ranges.len() && at >= result.declaration_ranges[range].end
+        {
+            range += 1;
+        }
+        if range < result.declaration_ranges.len() && at >= result.declaration_ranges[range].start {
+            at = result.declaration_ranges[range].end;
+            continue;
+        }
         let c = text[at..].chars().next().unwrap();
         let begin = at;
         // Markdown delimiters are not values. Backticks on the RHS are read below.
@@ -317,20 +355,6 @@ pub(super) fn assignments(text: &str) -> Assignments {
             continue;
         };
         at = next;
-        if matches!(key, "type" | "interface") {
-            let prefix = text[..begin]
-                .rsplit(['\n', ';', '{', '}'])
-                .next()
-                .unwrap_or("")
-                .trim();
-            if declaration_prefix(prefix) {
-                if let Some(end) = type_declaration_end(text, key, next) {
-                    result.authorization_ranges.push(begin..end);
-                    at = end;
-                    continue;
-                }
-            }
-        }
         if !credential_field(key) {
             continue;
         }
@@ -537,7 +561,7 @@ pub(super) fn assignments(text: &str) -> Assignments {
                     };
                     hit.source = "authorization_header";
                     if !super::capture::substring_matchable(token) {
-                        hit.match_policy = MatchPolicy::CompleteValue;
+                        hit.match_policy = MatchPolicy::ContextValue;
                     }
                     result.hits.push(hit);
                 }
@@ -554,7 +578,7 @@ pub(super) fn assignments(text: &str) -> Assignments {
         {
             MatchPolicy::CredentialUnit
         } else {
-            MatchPolicy::CompleteValue
+            MatchPolicy::ContextValue
         };
         hit.decoded = decoded;
         result.hits.push(hit);

@@ -1078,12 +1078,12 @@ for (const location of ['grammar','pattern','enum','const','identifier']) test(`
   assert.ok(facts.every(f=>f.payloadRole==='protocol_structure'));
 });
 
-test('low-entropy session credentials use complete values without changing identifier substrings', async t => {
+test('low-entropy session credentials require fresh context without changing business values', async t => {
   const f=await fixture(t,(body,res)=>respond(res,body,'ok'));
   await(await f.request({metadata:{password:'plain'}})).text();
   const response=await f.request({input:'Explain plain_source and a plain response.',metadata:{value:'plain'}});assert.equal(response.status,200);await response.text();
   assert.equal(f.calls.at(-1).body.input,'Explain plain_source and a plain response.');
-  assert.match(f.calls.at(-1).body.metadata.value,/^CTSEC_v1_/);
+  assert.equal(f.calls.at(-1).body.metadata.value,'plain');
 });
 
 test('structured authorization and cookies protect values while preserving syntax and preferences', async t => {
@@ -1226,6 +1226,40 @@ test('session token cookies share value detection without treating preferences a
 });
 
 for (const cache of [false,true]) {
+  test(`credential occurrence context limits learned values while preserving restoration (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
+    for(const [index,value] of ['short','plain','hunter2'].entries()) {
+      const type=`/* docs\n*/ interface 标头 { authorization: "Bearer ${value}"; }`;
+      const code=`${type}\nconst headers = {authorization: "Bearer ${value}"};\nconst label = "${value}";`;
+      for(const round of [0,1]) {
+        const response=await f.request({input:code,metadata:{label:value,authorization:`Bearer ${value}`,cookie:`session=${value}; theme=${value}`}},`context-${index}`);
+        assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,code);
+        const actual=f.calls.at(-1).body,marker=actual.metadata.authorization.slice(7);
+        assert.match(marker,/^CTSEC_v1_[a-f0-9]{32}$/);
+        assert.equal(actual.input,`${type}\nconst headers = {authorization: "Bearer ${marker}"};\nconst label = "${value}";`);
+        assert.equal(actual.metadata.label,value);assert.equal(actual.metadata.cookie,`session=${marker}; theme=${value}`);
+      }
+      const response=await f.request({input:value},`context-${index}`);assert.equal(response.status,200);await response.text();assert.equal(f.calls.at(-1).body.input,value);
+    }
+    const value='actualCredentialQ78',type=`type 标头 = ()\n=> { authorization: "Bearer ${value}" };`;
+    for(const input of [`${type}\nconst headers = {authorization: "Bearer ${value}"};`,type]) {
+      const response=await f.request({input},'long-value-type');assert.equal(response.status,200);await response.text();assert.ok(f.calls.at(-1).body.input.startsWith(type));
+    }
+    for(const record of await f.records()) {
+      const facts=await detectionEvidence(f,record),protection=await protectionEvidence(f,record);
+      assert.ok(facts.every(c=>c.replacementStatus==='replaced'));
+      for(const fact of facts)assert.deepEqual(protection.decisions.find(c=>c.candidateId===fact.candidateId),Object.fromEntries(Object.entries(fact).filter(([k])=>!['auditPolicyVersion','auditDecision'].includes(k))));
+    }
+  });
+
+  test(`registered short credentials remain authoritative in business and type text (cache ${cache})`,async t=>{
+    const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache,upstreamSecret:'short'});
+    const input='interface 标头 { authorization: "Bearer short"; }\nconst label = "short";';
+    const response=await f.request({input,metadata:{label:'short'}});assert.equal(response.status,200);assert.equal((await response.json()).output[0].content[0].text,input);
+    assert.equal(f.calls.at(-1).body.input.replace(/CTSEC_v1_[a-f0-9]{32}/g,'MARKER'),input.replaceAll('short','MARKER'));
+    assert.match(f.calls.at(-1).body.metadata.label,/^CTSEC_v1_[a-f0-9]{32}$/);
+  });
+
   test(`business schema names do not inherit protocol constraints (cache ${cache})`,async t=>{
     const f=await fixture(t,(body,res)=>respond(res,body,body.input),{cache});
     const data={schema:{pattern:key,const:key,enum:[key]},json_schema:{pattern:key,const:key,enum:[key]},tools:[{parameters:{pattern:key},input_schema:{const:key}}]};
@@ -1288,6 +1322,15 @@ for (const cache of [false,true]) {
       'type Headers = () =>\n{ authorization: "Bearer short"; };',
       'type Headers<T> = T\n extends Base ? { authorization: "Bearer short"; } : { password: "typedValueQ78" };',
       'export /* documentation */ type HeaderValue = "Bearer abc123FragmentQ78" | "Bearer short";',
+      'type Headers = ()\n=> { authorization: "Bearer short" };',
+      'type Headers = ()\r\n/* return type */ => { authorization: "Bearer short" };',
+      '/* docs\n*/ interface Headers { authorization: "Bearer short"; }',
+      'export /* docs\n; } {\n*/ declare interface Headers { authorization: "Bearer short"; }',
+      'interface 标头 { authorization: "Bearer short"; }',
+      'type 标头 = { authorization: "Bearer short"; };',
+      'interface 标头 extends 基础<{ password: "typedValueQ78" }> { authorization: "Bearer short"; }',
+      'interface H\u0301eaders { authorization: "Bearer short"; }',
+      '```typescript\n/* docs\n*/ interface 标头 { authorization: "Bearer short"; }\n```',
     ];
     for(const [index,input] of declarations.entries()) {
       const session=`composite-type-${index}`;

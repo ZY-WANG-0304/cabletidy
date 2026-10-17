@@ -1752,21 +1752,22 @@ mod tests {
     #[test]
     fn signed_response_fields_keep_their_signature_and_known_keys_fail_closed() {
         let registry = Registry::default();
-        let mut request = prepare(&registry, json!({"api_key":"realToken"}), "s", 1000);
+        let value = "realCredentialTokenQ78";
+        let mut request = prepare(&registry, json!({"api_key":value}), "s", 1000);
         let b = request.mappings[0].replacement.clone();
         let response = spool_json(&json!({"thinking":"immutable","signature":"signed","encrypted_content":"opaque","text":b})).unwrap();
         let restored: Value =
             serde_json::from_reader(request.transform(&response, true).unwrap().reader()).unwrap();
         assert_eq!(restored["thinking"], "immutable");
         assert_eq!(restored["signature"], "signed");
-        assert_eq!(restored["text"], "realToken");
+        assert_eq!(restored["text"], value);
         assert!(request
             .transform(
                 &spool_json(&json!({"thinking":b,"signature":"signature"})).unwrap(),
                 true
             )
             .is_err());
-        let source = spool_json(&json!({"realToken":"value"})).unwrap();
+        let source = spool_json(&json!({value:"value"})).unwrap();
         let mut blocked = registry
             .prepare_at(
                 &source,

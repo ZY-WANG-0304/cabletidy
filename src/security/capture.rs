@@ -232,6 +232,7 @@ fn placeholder_value(value: &str) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum MatchPolicy {
+    ContextValue,
     CompleteValue,
     CredentialUnit,
     Embedded,
@@ -239,6 +240,7 @@ pub(crate) enum MatchPolicy {
 impl MatchPolicy {
     pub fn name(self) -> &'static str {
         match self {
+            Self::ContextValue => "context_value",
             Self::CompleteValue => "complete_value",
             Self::CredentialUnit => "credential_unit",
             Self::Embedded => "embedded",
@@ -384,7 +386,7 @@ pub(super) fn cookie_hits(value: &str) -> Vec<CredentialHit> {
             let mut hit =
                 CredentialHit::new(s.start, s.end, s.reason, "cookie_pair", "session_token");
             if !substring_matchable(&value[s.start..s.end]) {
-                hit.match_policy = MatchPolicy::CompleteValue;
+                hit.match_policy = MatchPolicy::ContextValue;
             }
             hit
         })
@@ -538,7 +540,7 @@ fn host_reason(value: &str, ip_start: usize, ip: &str, port: bool) -> Option<&'s
 
 // Learned values are matched inside longer text only when they look like credentials.
 // A low entropy natural-language word would otherwise light up ordinary prose, so it
-// is demoted to whole-value or word-boundary matching instead of being dropped.
+// requires fresh credential context instead of matching arbitrary whole values.
 pub(crate) fn substring_matchable(s: &str) -> bool {
     s.len() >= 8
         && (!(word_shaped(s) && shannon_entropy(s) < 3.5)
@@ -589,14 +591,29 @@ impl Redactor {
     /// Facts only: consumers choose whether a candidate should be replaced.
     pub(crate) fn credential_hits(&self, value: &str, field: Option<&str>) -> Vec<CredentialHit> {
         let mut hits = Vec::new();
+        let assignments = super::credential_source::assignments(value);
         for secret in &self.secrets {
+            // Ambiguous learned values carry mappings for restoration and reuse,
+            // but only independent evidence at this occurrence can detect them.
+            if secret.match_policy == MatchPolicy::ContextValue {
+                continue;
+            }
             for (start, _) in value.match_indices(&secret.value) {
                 let end = start + secret.value.len();
+                if secret.evidence != "registered"
+                    && assignments
+                        .declaration_ranges
+                        .iter()
+                        .any(|range| start < range.end && end > range.start)
+                {
+                    continue;
+                }
                 let unit = |c: char| c.is_alphanumeric() || c == '_';
                 let boundary = !value[..start].chars().next_back().is_some_and(unit)
                     && !value[end..].chars().next().is_some_and(unit);
                 if value == secret.value
                     || match secret.match_policy {
+                        MatchPolicy::ContextValue => false,
                         MatchPolicy::CompleteValue => false,
                         MatchPolicy::CredentialUnit => boundary,
                         MatchPolicy::Embedded => boundary || !word_shaped(&secret.value),
@@ -652,7 +669,6 @@ impl Redactor {
             hit.match_policy = MatchPolicy::Embedded;
             hits.push(hit);
         }
-        let assignments = super::credential_source::assignments(value);
         for hit in assignments.hits {
             let original = hit.decoded.as_deref().unwrap_or(&value[hit.start..hit.end]);
             if !placeholder_value(original) && !crate::protection::is_placeholder(original) {
@@ -697,7 +713,7 @@ impl Redactor {
                             hit.credential_type = credential_type(field.as_str());
                         }
                         if !substring_matchable(m.as_str()) {
-                            hit.match_policy = MatchPolicy::CompleteValue;
+                            hit.match_policy = MatchPolicy::ContextValue;
                         }
                         hits.push(hit);
                     }
@@ -742,7 +758,7 @@ impl Redactor {
                             "authentication_secret",
                         );
                         if !substring_matchable(token) {
-                            hit.match_policy = MatchPolicy::CompleteValue;
+                            hit.match_policy = MatchPolicy::ContextValue;
                         }
                         hits.push(hit);
                     }
@@ -758,7 +774,7 @@ impl Redactor {
                     credential_type(field),
                 );
                 if !substring_matchable(value) {
-                    hit.match_policy = MatchPolicy::CompleteValue;
+                    hit.match_policy = MatchPolicy::ContextValue;
                 }
                 hits.push(hit);
             }
