@@ -2267,6 +2267,53 @@ mod tests {
     }
 
     #[test]
+    fn reopening_keeps_earlier_audit_policy_and_candidate_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.sqlite3");
+        let settings = AuditSettings::default();
+        let mut db = open(&path, true, settings).unwrap();
+        let mut audit = record("legacy-policy", "completed");
+        audit["ruleVersion"] = json!("3");
+        audit["findings"][0]["ruleId"] = json!("SEC-SECRET-001");
+        audit["findings"][0]["ruleVersion"] = json!("3");
+        audit["findings"][0]["auditPolicyVersion"] = json!("audit-3");
+        audit["findings"][0]["confidence"] = json!("medium");
+        audit["findings"][0]["confidenceReason"] = json!("credential_pattern_match");
+        audit["findings"][0]["evidence"] = json!({"credentialCandidates":[{"candidateId":"old-id","ruleVersion":"credentials-3","snapshotId":"old-snapshot","rawStart":18,"rawEnd":24}]});
+        persist(&mut db, audit).unwrap();
+        let stored: String = db
+            .query_row(
+                "SELECT data FROM findings WHERE audit_id='legacy-policy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(db);
+        let db = open(&path, true, settings).unwrap();
+        let reopened: String = db
+            .query_row(
+                "SELECT data FROM findings WHERE audit_id='legacy-policy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reopened, stored);
+        let result = read(
+            &db,
+            Query {
+                detail: Some("legacy-policy".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result["record"]["ruleVersion"], "3");
+        assert_eq!(
+            result["record"]["findings"][0]["auditPolicyVersion"],
+            "audit-3"
+        );
+        assert_eq!(result["record"]["findings"][0]["confidence"], "medium");
+    }
+    #[test]
     fn session_summaries_separate_legacy_risks_without_rewriting_records() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = open(
@@ -2580,6 +2627,7 @@ mod tests {
             },
             true,
             true,
+            None,
             None,
         );
         store.flush().await;

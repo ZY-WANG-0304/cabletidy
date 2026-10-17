@@ -338,7 +338,7 @@ test("temporary directory form saves independently, restores the default and pre
   const app = await controller(undefined, { url: "http://test/#settings" });
   const audit = clone(app.persisted().audit);
   assert.match(app.node("#page-content").innerHTML, /id="temporary-settings-form"/);
-  assert.match(app.node("#page-content").innerHTML, /保存后重启生效/);
+  assert.match(app.node("#page-content").innerHTML, /保存后需重启 CableTidy 才会切换目录/);
   await app.submit(formNode("temporary-settings-form", { temporaryDirectory: " /data/cabletidy temporary " }));
   assert.equal(app.persisted().temporaryDirectory, "/data/cabletidy temporary");
   assert.deepEqual(app.persisted().audit, audit);
@@ -3376,4 +3376,21 @@ for (const change of ["selection", "tab", "close"]) test(`late protection modal 
   if (change === "selection") assert.equal(app.read('state.security.detail.id'), "new");
   else if (change === "tab") assert.equal(app.read('state.trace.tab'), "response");
   assert.equal(app.requests.filter(r=>r.url.includes('/body?')).length,0);
+});
+
+test('credential evidence UI presents actual states, low candidates and legacy uncertainty',async()=>{
+  const app=await controller();
+  const strong={candidateId:'s',snapshotId:'request',confidence:'strong',credentialType:'password',source:'json_field',location:'request.metadata.password',rawStart:24,rawEnd:28,replacementStatus:'replaced',reason:'executed'};
+  const weak={...strong,candidateId:'w',confidence:'low',source:'source_assignment',replacementStatus:'not_replaced',reason:'policy_not_selected',location:'request.input.<img>'};
+  const blocked={...strong,candidateId:'b',replacementStatus:'not_replaced',reason:'protection_credential_in_protocol_structure'};
+  const render=record=>app.read(`renderProtection(${JSON.stringify(record)})`);
+  let html=render({credentialDetection:{snapshotId:'request',candidateCount:3,lowConfidenceCount:1},protection:{enabled:true,status:'completed',mappings:[],decisions:[strong,weak,blocked]}});
+  assert.match(html,/低置信候选 1 处/);assert.match(html,/未替换候选 · 2 处/);assert.match(html,/低置信度/);assert.match(html,/结构中无法安全替换/);assert.match(html,/request.input.&lt;img&gt;/);assert.doesNotMatch(html,/<img>/);
+  html=render({credentialDetection:{snapshotId:'request',candidateCount:1},findings:[{evidence:{credentialCandidates:[{...strong,replacementStatus:'not_replaced',reason:'protection_disabled'}]}}]});
+  assert.match(html,/未替换 · 保护关闭/);
+  html=render({credentialDetection:{snapshotId:'request',candidateCount:1},protection:{enabled:true,mappings:[],decisions:[{...strong,replacementStatus:undefined}]}});
+  assert.match(html,/替换结果未在此处记录/);assert.doesNotMatch(html,/未替换候选/);
+  assert.equal(app.read(`credentialStatus(${JSON.stringify({...weak,replacementStatus:'replaced'})})`),'已替换','confidence cannot override actual state');
+  html=app.read(`renderSecurityFindings(${JSON.stringify({findings:[{id:'legacy',ruleId:'SEC-SECRET-001',ruleVersion:'2',confidence:'medium',confidenceReason:'credential_pattern_match',evidence:{}}]})})`);
+  assert.match(html,/v2/);assert.doesNotMatch(html,/已替换/);
 });

@@ -1,0 +1,40 @@
+// Frozen fourth synthetic holdout after annotation/Cookie fixes. Distinct template
+// families and value seeds; four variants per family remain correlated.
+import {createHash} from 'node:crypto';
+export const marker='__LABELLED_CREDENTIAL__';
+export const contracts=[];
+const families=[];
+const add=(layer,name,label,build,make=id=>`val-${createHash('sha256').update(id).digest('hex').slice(0,22)}-R7q2`)=>families.push({layer,name,label,build,make});
+const text=fn=>s=>({input:fn(s)});
+const provider=id=>`sk-proj-val-${createHash('sha256').update(id).digest('hex').slice(0,34)}`;
+add('source','multi-statement-typed-client-secret','positive',text(s=>`const retries = 2; let client_secret: string = '${s}';`));
+add('source','python-double-annotated-in-block','positive',text(s=>`if enabled:\n  api_key: str = "${s}"\n  connect(api_key)`));
+add('source','typescript-conditional-expression','negative',text(s=>`const token: string = enabled ? '${s}' : other;`));
+add('source','typed-unterminated-double','ambiguous',text(s=>`const api_key: string = "${s}`));
+add('environment','multiple-env-lines','positive',text(s=>`NAME=worker\nexport SERVICE_API_KEY='${s}'\nMODE=local`));
+add('environment','spaced-client-suffix','positive',text(s=>`LOCAL_CLIENT_SECRET = "${s}"`));
+add('environment','empty-and-dynamic','negative',text(s=>`PASSWORD=""\nNAME=${s}\nTOKEN=$TOKEN`));
+add('environment','unsupported-single-escape','ambiguous',text(s=>`CLIENT_SECRET='${s}\\x34'`));
+add('json','nested-schema-examples','positive',s=>({tools:[{type:'function',name:'create',parameters:{type:'object',properties:{account:{type:'object',properties:{password:{type:'string',examples:[s]}}}}}}]}));
+add('json','credentials-multi-array-ordinary','positive',s=>({metadata:{clientSecret:s,items:[{ordinary:'public-data'}]}}));
+add('json','negative-reference-extensions','negative',s=>({metadata:{passwordPolicy:s,credentialDescription:s,tokenizer:s}}));
+add('json','unknown-escape-source-extension','ambiguous',s=>({extension:{notes:`const api_key = '${s}\\j';`}}));
+add('markdown','blockquote-env-value','positive',text(s=>`> Local configuration:\n> API_KEY="${s}"`));
+add('markdown','inline-python-typed-snippet','positive',text(s=>`Store a local value: \`password: str = '${s}'\`.`));
+add('markdown','typed-doc-reference','negative',text(s=>`Document \`const token: string = settings.value;\` in ${s}.`));
+add('markdown','unknown-escape-fenced-token','ambiguous',text(s=>`\`\`\`js\nconst client_secret = '${s}\\z';\n\`\`\``));
+add('protocol','session-token-spaces-and-attrs','positive',s=>({metadata:{setCookie:`session_token = "${s}"; Path=/; Max-Age=60; Secure`}}));
+add('protocol','cookie-camel-newline-header','positive',text(s=>`Cookie: sessionToken=${s}; locale=zh-CN\nAccept: */*`));
+add('protocol','preferences-and-timeout','negative',s=>({metadata:{cookie:`theme=${s}; session_timeout=1800; SameSite=Lax`}}));
+add('protocol','public-url-tokenizer','negative',text(s=>`https://example.invalid/?tokenizer=${s}&password_policy=min8`));
+add('provider','format-in-code-array','positive',text(s=>`const fixture = ["${s}", "ordinary"];`),provider);
+add('provider','github-token-new-code','positive',text(s=>`# Fixture value\n${s}`),id=>`gho_${createHash('sha256').update(id).digest('hex').slice(0,38)}`);
+add('provider','uuid-column-text','negative',text(s=>`ID column: ${s}`),id=>{const v=createHash('sha256').update(id).digest('hex');return `${v.slice(0,8)}-${v.slice(8,12)}-4${v.slice(13,16)}-b${v.slice(17,20)}-${v.slice(20,32)}`;});
+add('provider','uppercase-random-word','negative',text(s=>`WORD_${s.toUpperCase()}`));
+add('structure','protocol-call-id-block','blocked',s=>({input:[{type:'function_call',name:'write',call_id:s,arguments:'{}'}]}),provider);
+add('structure','schema-const-nested-array-block','blocked',s=>({tools:[{type:'function',name:'write',parameters:{type:'object',properties:{options:{type:'array',items:{type:'string',const:s}}}}}]}),provider);
+add('structure','schema-metadata-doc-ref','negative',s=>({tools:[{type:'function',name:'write',parameters:{type:'object',properties:{password:{type:'string',description:`${s}: config.password`}}}}]}));
+add('structure','schema-description-unknown','ambiguous',s=>({tools:[{type:'function',name:'write',parameters:{type:'object',description:`password: str = '${s}\\x71';`,properties:{}}}]}));
+export const cases=families.flatMap(f=>Array.from({length:4},(_,i)=>{
+ const id=`validation/${f.layer}/${f.name}/${i}`,body=f.build(f.make(id));return {id,family:`validation/${f.layer}/${f.name}`,layer:f.layer,split:'heldout',label:f.label,body,expected:f.label==='positive'?f.build(marker):f.label==='blocked'?null:body};
+}));

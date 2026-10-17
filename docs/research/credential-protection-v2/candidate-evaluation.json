@@ -1,0 +1,826 @@
+{
+  "date": "2026-10-16T18:26:34.393Z",
+  "ruleVersion": "credentials-3",
+  "sourceCommit": "0c95d6dccc30fd38bc568bfe29dd150cc461b873",
+  "binarySha256": "3e2183bf061de60a4c1a86697b2b5aa073b834d87179a7794326f5c1606a9cb4",
+  "corpusSha256": "58248ff126a578401a567f676550ca6f2b7e42d78ee11ec34abfd67e24543134",
+  "scope": "Synthetic diagnostic regression corpus with independently specified expected complete payloads. Unique request sessions except explicit multi-round case; local mock upstream. Not a held-out production precision/recall estimate. No online credential validation.",
+  "results": [
+    {
+      "id": "member",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "call",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "comparison",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "comparison-not-equal",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "typescript",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "typed-variable",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "rust",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "regex",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "dynamic",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "dynamic-template",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "dynamic-method",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "long-nonvalue-name",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "suffix-description",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "source-reference",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "type-alias",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "nested-types",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "markdown-label",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "source-path",
+      "layer": "source",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "env-reference",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "env-braces",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "env-template",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "env-command",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "env-comment",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "masked",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "document-slot",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "angle-slot",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "markdown-mask",
+      "layer": "environment/documentation",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-notapassword",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-password_policy",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-token_count",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-secretRef",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-accessTokenCount",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-tokenizer",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-tokenBucket",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "field-publicKey",
+      "layer": "json",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "cookie-preferences",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "url-public",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "url-signature",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "url-name",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "ordinary-prose",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "sha",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "uuid",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "opaque",
+      "layer": "protocol/content",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "js-double",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "js-single",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "js-backtick",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "python-literal",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "source-unicode",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "env-suffix",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "env-hyphen",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "env-export",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "env-dollar-literal",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "source-template-fixed",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "source-low-entropy",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "documentation-real",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "provider-document",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "aws-temporary",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "aws-longterm",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "github",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "bearer-short",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "bearer-spaces",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "basic",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "url-password",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "url-query",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "cookie-quoted",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "cookie-short",
+      "layer": "explicit-literal",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-dbPassword",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-DATABASE_PASSWORD",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-stripeApiKey",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-OPENAI_API_KEY",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-AWS_SECRET_ACCESS_KEY",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-X_AUTH_TOKEN",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-clientSecret",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-password",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-token",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "json-authentication",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "authorization-trim",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "cookie-attributes",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "nested",
+      "layer": "json",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacementCount": 1
+    },
+    {
+      "id": "unknown-escape",
+      "layer": "uncertain",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "unfinished",
+      "layer": "uncertain",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "jwt-unverified",
+      "layer": "uncertain",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "grammar-negative",
+      "layer": "structure",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "schema-negative",
+      "layer": "structure",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "blocked-grammar",
+      "layer": "structure",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "blocked-identifier",
+      "layer": "structure",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "blocked-schema-const",
+      "layer": "structure",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacementCount": 0
+    },
+    {
+      "id": "multi-round-unit-policy",
+      "layer": "session",
+      "label": "structural",
+      "correct": true
+    }
+  ],
+  "summary": {
+    "negative": {
+      "count": 45,
+      "correct": 45,
+      "changed": 0
+    },
+    "positive": {
+      "count": 36,
+      "correct": 36,
+      "changed": 36
+    },
+    "ambiguous": {
+      "count": 3,
+      "correct": 3,
+      "changed": 0
+    },
+    "blocked": {
+      "count": 3,
+      "correct": 3,
+      "changed": 0
+    },
+    "structural": {
+      "count": 1,
+      "correct": 1,
+      "changed": 0
+    }
+  }
+}

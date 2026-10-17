@@ -1144,7 +1144,7 @@ const SECURITY_LABELS = {
   outcome: { started: "请求已接收", streaming: "响应接收中", completed: "已完成", local_error: "本地处理失败", upstream_error: "上游返回错误", connection_error: "上游连接失败", stream_error: "响应流错误", interrupted: "请求中断", unknown: "结果未知" },
   kind: { request: "模型请求", system: "审计状态" },
   action: { "model.request": "模型请求", "tokens.count": "Token 计数", "audit.gap": "审计记录缺口" },
-  basis: { system_wide_damage_possible: "显式关闭根目录保护，可能造成系统范围的数据破坏", credential_exposure_possible: "凭据可能暴露在模型内容或联网操作中", working_data_loss_possible: "操作可能丢弃工作区数据或影响较大目录范围", broad_write_access_possible: "操作可能向所有用户开放写权限", unreviewed_remote_code_execution: "远程内容直接进入代码解释器", sensitive_goal_redirection_possible: "外部指令试图将原任务引向敏感操作", scoped_sensitive_operation: "涉及有限范围的数据修改、敏感读取或权限变更", known_credential_match: "内容与本地已知凭据匹配", credential_pattern_match: "仅匹配凭据格式，尚未验证其有效性", heuristic_keyword_combination: "命中指令覆盖与敏感动作的启发式组合", network_sensitive_file_reference: "联网命令引用敏感文件，未确认实际发送", recognized_literal_tool_arguments: "已识别的工具参数或字面量命令结构", internal_endpoint_pattern_match: "内容包含内网地址、端口或 URL 用户名", public_endpoint_pattern_match: "内容包含公网服务器地址,泄露后可被直接访问" },
+  basis: { system_wide_damage_possible: "显式关闭根目录保护，可能造成系统范围的数据破坏", credential_exposure_possible: "凭据可能暴露在模型内容或联网操作中", working_data_loss_possible: "操作可能丢弃工作区数据或影响较大目录范围", broad_write_access_possible: "操作可能向所有用户开放写权限", unreviewed_remote_code_execution: "远程内容直接进入代码解释器", sensitive_goal_redirection_possible: "外部指令试图将原任务引向敏感操作", scoped_sensitive_operation: "涉及有限范围的数据修改、敏感读取或权限变更", known_credential_match: "内容与本地已知凭据匹配", credential_pattern_match: "匹配凭据特征，尚未验证其有效性", credential_value_context: "值处于明确的认证字段或凭据字面量中，未验证其有效性", credential_format_evidence: "匹配已支持的凭据格式或私钥封装，未验证其有效性", credential_candidate_unverified: "仅发现疑似凭据，证据不足，尚未确认是凭据值", heuristic_keyword_combination: "命中指令覆盖与敏感动作的启发式组合", network_sensitive_file_reference: "联网命令引用敏感文件，未确认实际发送", recognized_literal_tool_arguments: "已识别的工具参数或字面量命令结构", internal_endpoint_pattern_match: "内容包含内网地址、端口或 URL 用户名", public_endpoint_pattern_match: "内容包含公网服务器地址,泄露后可被直接访问" },
   rule: { "SEC-SECRET-001": "内容中发现凭据特征", "SEC-READ-001": "读取敏感文件", "SEC-DELETE-001": "递归删除目录", "SEC-DELETE-002": "补丁删除文件", "SEC-VCS-001": "丢弃工作区修改", "SEC-CONFIG-001": "修改代理或安全配置", "SEC-PRIV-001": "请求提升执行权限", "SEC-PRIV-002": "授予所有用户写权限", "SEC-EXEC-001": "下载内容直接交给解释器执行", "SEC-EXEC-002": "动态代码执行", "SEC-EXPORT-001": "联网命令引用敏感文件", "SEC-INJECT-001": "外部内容要求改写目标并执行敏感操作", "SEC-INTERNAL-001": "内网地址或身份标识", "SEC-ENDPOINT-001": "公网服务器地址暴露" },
   reason: { inspection_coverage_unknown: "旧记录未保存检查覆盖依据", header_storage_or_processing_failure: "请求或响应头保存失败", invalid_json_or_structure_budget: "JSON 不完整或超出解析栈预算，仅保留已解析的前缀", evidence_storage_unavailable: "检测快照写入失败", audit_metadata_budget: "审计元数据写入有缺口", redaction_buffer_budget: "凭据检测工作区不足，或长 URL 认证区、令牌前缀无法确认", invalid_sse_event: "流式事件无法解析，仅按文本检查", shared_encrypted_spool_budget: "共享临时空间或内存不足，正文保留有缺口", shared_working_memory_budget: "共享内存不足，部分工具参数无法完整解析", shared_detection_budget: "共享检测资源不足，风险发现可能不完整", credential_redaction_budget: "凭据匹配资源不足，检测可能不完整", body_storage_or_processing_failure: "正文存储或处理失败", body_not_complete: "正文接收未完成", unstructured_content: "非结构化或无效 JSON，仅完成文本规则检查", non_text_or_reasoning_semantics: "非文本或推理内容的语义不在规则覆盖范围", inspection_worker_failed: "检测任务失败", incomplete_body_fragment: "正文末尾不完整", incomplete_stream_fragment: "流式内容未结束，部分片段无法完整检查", stream_item_metadata_missing: "流式条目缺少工具类型或名称", credential_catalog_limit: "部分本地凭据超出支持的数量或长度范围", concurrent_inspection_limit: "并发检查数量达到上限", request_inspection_limit: "请求内容检查达到上限", response_inspection_limit: "响应内容检查达到上限", sse_event_limit: "流式事件过大", tool_argument_limit: "工具参数过大", finding_limit: "单次请求风险数量达到上限", unsupported_tool: "工具语义暂不支持", unsupported_tool_arguments: "工具参数结构暂不支持", unsupported_shell_syntax: "命令包含暂不解析的展开或复合语法", unsupported_shell_wrapper: "命令包装方式暂不支持", shell_nesting_limit: "嵌套命令达到检查上限", external_script_not_inspected: "无法观察脚本文件内容", command_semantics_not_inspected: "命令语义未覆盖", dynamic_code_not_inspected: "动态代码内容未检查", non_text_content: "包含非文本内容", opaque_content: "包含不透明或加密内容", reasoning_content_not_inspected: "推理文本已做凭据检查，推理语义未覆盖", unsupported_response_event: "包含未知响应事件，部分语义未覆盖", unsupported_response_item: "包含未知响应项", invalid_response_json: "响应无法解析为 JSON", invalid_event_json: "流式事件 JSON 无效", invalid_event_encoding: "流式事件编码无效", unterminated_sse_event: "流式事件未完整结束", missing_terminal_event: "未观察到协议结束事件", incomplete_response_item: "响应项尚未完整返回", missing_tool_start: "缺少工具调用开始事件", invalid_tool_arguments: "工具参数无法解析", response_item_limit: "响应项数量达到上限", text_item_limit: "文本项达到检查上限", response_not_complete: "响应未完整接收", request_not_inspected: "请求未进入内容检查", request_interrupted: "请求在响应前中断", daemon_restarted: "上次进程未记录请求结束", historical_context_not_visible: "引用的历史上下文未经过本次请求" },
 };
@@ -1663,6 +1663,38 @@ function protectionCredentials(report) {
   return [...grouped.values()];
 }
 
+const CREDENTIAL_LABELS = {
+  source: {registered_catalog:"本地登记",trusted_catalog:"可信会话目录",json_field:"实际字段值",source_assignment:"源码字面量",environment_assignment:"环境变量赋值",authorization_field:"认证字段",authorization_header:"认证头值",authorization_scheme:"认证格式",cookie_pair:"Cookie 值",url_query:"URL 参数",url_userinfo:"URL 认证值",provider_format:"服务商格式",private_key_envelope:"私钥封装"},
+  type: {password:"密码",api_key:"API Key",access_token:"访问令牌",session_token:"会话令牌",jwt:"JWT 候选",aws_access_id:"AWS 访问标识",private_key:"私钥",registered_secret:"登记凭据",authentication_secret:"认证值"},
+  reason: {protection_disabled:"保护关闭",policy_not_selected:"当前策略未选择替换",protection_credential_in_protocol_structure:"结构中无法安全替换",protection_signed_or_opaque_content:"签名或不透明内容无法安全替换",protection_credential_in_key:"对象键中无法安全替换",protection_non_string_credential:"非字符串凭据无法安全替换",pending_execution:"尚未执行",execution_failed:"执行失败"},
+};
+function credentialStatus(candidate) {
+  if(candidate.replacementStatus === "replaced") return "已替换";
+  if(candidate.replacementStatus === "not_replaced") return `未替换 · ${CREDENTIAL_LABELS.reason[candidate.reason] || candidate.reason || "原因未记录"}`;
+  return "替换结果未记录";
+}
+function credentialConfidence(candidate) {
+  return {low:"低置信度",strong:"强证据"}[candidate.confidence] || "置信度未记录";
+}
+function credentialCandidates(record) {
+  const snapshot = (record.credentialDetection || record.protection?.detection)?.snapshotId;
+  const facts = record.protection?.decisions || (record.findings || []).flatMap(f=>f.evidence?.credentialCandidates || []).filter(c=>snapshot && c.snapshotId===snapshot);
+  return [...new Map(facts.map(c=>[c.candidateId,c])).values()];
+}
+function renderCredentialDecisions(record) {
+  const candidates=credentialCandidates(record), detection=record.credentialDetection || record.protection?.detection;
+  if(!detection && !candidates.length) return "";
+  const total=detection?.candidateCount ?? candidates.length;
+  const unmodified=candidates.filter(c=>c.replacementStatus === "not_replaced");
+  const unknown=candidates.filter(c=>!c.replacementStatus).length;
+  return `<div class="credential-decisions"><p class="trace-content-note">检测候选 ${esc(total)} 处${detection?.lowConfidenceCount!=null?` · 低置信候选 ${esc(detection.lowConfidenceCount)} 处`:""}。替换状态依据实际执行记录。</p>${candidates.length<total || unknown?'<p class="muted">部分候选的替换结果未在此处记录，完整证据见原始内容中的检测记录。</p>':""}${unmodified.length?`<details><summary>未替换候选 · ${unmodified.length} 处</summary>${unmodified.slice(0,40).map(c=>`<p class="credential-decision">${esc(CREDENTIAL_LABELS.type[c.credentialType] || "凭据候选")} · ${esc(credentialConfidence(c))} · ${esc(CREDENTIAL_LABELS.source[c.source] || c.source || "来源未记录")}<br>${esc(credentialStatus(c))}<br><span class="muted">${esc(c.location)} · 原文字节 ${esc(c.rawStart)}–${esc(c.rawEnd)}</span></p>`).join("")}${unmodified.length>40?'<p class="muted">这里只展示前 40 处，完整记录见原始内容中的检测证据。</p>':""}</details>`:""}</div>`;
+}
+function renderCredentialFinding(f) {
+  const facts=f.evidence?.credentialCandidates;
+  if(!facts?.length) return "";
+  return `<div class="credential-finding-facts">${f.auditDecision?`<p class="trace-content-note">${esc({credential_warning:"凭据告警",candidate_notice:"候选提示"}[f.auditDecision] || f.auditDecision)}</p>`:""}${facts.slice(0,8).map(c=>`<p class="trace-content-note">${esc(CREDENTIAL_LABELS.type[c.credentialType] || "凭据候选")} · ${esc(CREDENTIAL_LABELS.source[c.source] || c.source || "来源未记录")}${c.replacementStatus?` · ${esc(credentialStatus(c))}`:""}</p>`).join("")}${facts.length>8?'<p class="muted">完整候选事实见下方检测证据。</p>':""}</div>`;
+}
+
 function protectionMappingDetails(record, credential) {
   const open = record.protectionOpen?.[credential.id];
   return `<details class="protection-mapping-details" data-protection-mapping="${esc(credential.id)}" ${open ? "open" : ""}><summary>映射详情</summary>${credential.mappings.map(m => `<dl><dt>占位符 B</dt><dd><code>${esc(m.replacement)}</code></dd><dt>映射创建时间</dt><dd>${esc(securityTime(m.createdAtMs))}</dd><dt>本次续期到期时间</dt><dd>${esc(securityTime(m.expiresAtMs))}</dd></dl>`).join("")}</details>`;
@@ -1676,13 +1708,13 @@ function renderProtection(record) {
   const label = failed ? "保护失败" : unavailable ? "证据不可用" : p?.enabled ? labels[p.status] || "已启用" : "未启用";
   const empty = (title, note) => `<div class="protection-empty"><h4>${title}</h4><p>${note}</p></div>`;
   const heading = `<header class="protection-heading"><h3>${protectionKeyIcon()} 凭据保护</h3><span class="protection-state ${failed || unavailable ? "is-warning" : !p?.enabled ? "is-muted" : ""}">${label}</span></header>`;
-  if (!p?.enabled) return `<section class="credential-protection">${heading}${empty("此请求未启用凭据保护", "本次没有执行凭据替换或响应还原。")}</section>`;
+  if (!p?.enabled) return `<section class="credential-protection">${heading}${empty("此请求未启用凭据保护", "本次没有执行凭据替换或响应还原。")}${renderCredentialDecisions(record)}</section>`;
   const summary = unavailable ? '<p class="protection-counts">凭据数量不可确认 · 请求替换 ' + esc(p.requestCount ?? "未知") + ' 次 · 响应还原 ' + esc(p.responseCount ?? "未知") + ' 次</p>'
     : `<p class="protection-counts">涉及 <b>${used.length}</b> 个凭据 · 请求替换 <b>${esc(p.requestCount || 0)}</b> 次 · 响应还原 <b>${esc(p.responseCount || 0)}</b> 次</p>`;
   const historyHtml = !unavailable ? `<details class="protection-history" data-protection-history ${record.protectionHistoryOpen ? "open" : ""}><summary>会话已有映射 · ${history.length} 条 <small>本次未使用</small></summary>${history.map(m => `<article class="protection-history-item"><pre>${esc(m.original)}</pre>${protectionMappingDetails(record, m)}</article>`).join("") || '<p class="muted">没有本次未使用的会话映射。</p>'}</details>` : "";
   const failure = failed ? `<div class="protection-failure" role="alert"><strong>${p.reason === "response_restore_failed" ? "响应还原未完成" : p.reason === "request_protection_failed" ? "请求保护未完成 · 请求未发送到上游" : "保护或还原未完成"}</strong><p>请结合请求结果复核，本次操作次数不代表保护完整完成。</p>${p.reason ? `<details><summary>失败详情</summary><p>${esc(p.reason)}</p></details>` : ""}</div>` : "";
   const rows = used.map((m, i) => `<article class="security-finding protection-mapping"><header class="protection-entry-heading">${protectionKeyIcon()}<strong>凭据 ${String(i + 1).padStart(2, "0")}</strong><span class="protection-reuse ${m.reused ? "" : "is-new"}">${m.reused ? "复用" : "新建"}</span><button class="protection-copy" data-action="security-protection-copy" data-id="${esc(m.id)}" aria-label="复制凭据 ${i + 1} 的原文 A">复制 A</button></header><div class="protection-value"><span>原文 A</span><code class="security-protection-hit" title="${esc(m.original)}">${esc(m.original)}</code></div><p class="protection-entry-counts">请求替换 ${m.requestCount} 次 · 响应还原 ${m.responseCount} 次</p><div class="protection-entry-actions">${["request", "response"].map(side => m[side + "Count"] ? `<button class="security-location" data-action="security-protection-source" data-side="${side}" data-id="${esc(m.id)}">${side === "request" ? "请求" : "响应"}原文（${m[side + "Count"]} 处）</button>` : "").join("")}</div>${protectionMappingDetails(record, m)}</article>`).join("");
-  return `<section class="credential-protection">${heading}${summary}<p class="protection-note">会话闲置 ${esc((p.mappingTtlSeconds || 3600) / 3600)} 小时后过期，每次新请求重置倒计时。下方显示本次操作。</p>${historyHtml}${failure}${unavailable ? empty("保护证据不可用", "未保留完整映射证据，无法列出或确认全部 A↔B。请结合请求结果复核。") : rows || (!failed ? empty("已启用，本次没有替换或还原", "本次保护操作为 0；会话已有映射可在上方展开查看。") : "")}<p class="protection-read-note">本地审计保留原文 A。映射详情中的到期时间是本次请求续期后的证据时间。完整内容可通过原有请求、响应和原始内容页签查看。</p></section>`;
+  return `<section class="credential-protection">${heading}${summary}${renderCredentialDecisions(record)}<p class="protection-note">会话闲置 ${esc((p.mappingTtlSeconds || 3600) / 3600)} 小时后过期，每次新请求重置倒计时。下方显示本次操作。</p>${historyHtml}${failure}${unavailable ? empty("保护证据不可用", "未保留完整映射证据，无法列出或确认全部 A↔B。请结合请求结果复核。") : rows || (!failed ? empty("已启用，本次没有替换或还原", "本次保护操作为 0；会话已有映射可在上方展开查看。") : "")}<p class="protection-read-note">本地审计保留原文 A。映射详情中的到期时间是本次请求续期后的证据时间。完整内容可通过原有请求、响应和原始内容页签查看。</p></section>`;
 }
 
 function closeProtectionSource() {
@@ -1838,7 +1870,7 @@ function securitySourceAnchor(text) {
 const SECURITY_BODY_LABELS = {
   source: { observed_headers: "请求 / 响应头", tool_inspection: "检测时的工具参数", inspection_range: "检测时的正文范围", client_request: "客户端请求正文", upstream_response: "上游响应正文", client_response: "还原后客户端响应正文", gateway_response: "网关本地响应", stream_inspection: "检测时的流式内容快照", response_inspection: "检测时的响应内容快照" },
   state: { complete: "已完整保留", receiving: "分段保存中", gap: "保留存在缺口", partial: "部分内容不可复核", truncated: "旧版截断记录", interrupted: "接收中断或未观察到协议结束", not_observed: "网关未读取正文", capture_unavailable: "正文保留不可用", redaction_unavailable: "凭据脱敏超限，内容已隐藏", pending: "仍在接收或等待保存" },
-  redaction: { unsupported_stream_fragment: "无法安全重组的未知流式片段", credential_in_arguments: "工具参数中的凭据", credential_continuation: "跨段凭据续片", url_authority_uncertain: "无法确认的长 URL 认证区", credential_prefix_uncertain: "无法确认的长令牌前缀", redaction_buffer_budget: "脱敏工作区不足", cookie_header: "Cookie 头", credential_field: "凭据字段", known_credential: "已知凭据", credential_pattern: "凭据格式", credential_assignment: "凭据赋值", authorization: "认证值", private_key: "私钥", url_credentials: "URL 认证信息", url_credential_parameter: "URL 凭据参数", nested_json_credentials: "参数内嵌 JSON 凭据", incomplete_stream_fragment: "未完成的流式片段", incomplete_body_fragment: "截断文本末尾", unparsed_json_credentials: "含凭据的内嵌 JSON 无法解析", redaction_depth_limit: "脱敏深度上限", redaction_catalog_limit: "凭据字典上限", internal_host: "内网地址与端口", public_host: "公网服务器地址与端口", internal_identity: "URL 用户名" },
+  redaction: { unsupported_stream_fragment: "无法安全重组的未知流式片段", credential_in_arguments: "工具参数中的凭据", credential_continuation: "跨段凭据续片", url_authority_uncertain: "无法确认的长 URL 认证区", credential_prefix_uncertain: "无法确认的长令牌前缀", redaction_buffer_budget: "脱敏工作区不足", cookie_header: "Cookie 头", credential_field: "凭据字段", known_credential: "已知凭据", credential_pattern: "凭据格式", credential_assignment: "凭据赋值", credential_literal_unverified: "未确认的源码字面量", jwt_candidate: "无认证上下文的 JWT 候选", jwt_shape_unverified: "未确认的 JWT 外形", authorization: "认证值", private_key: "私钥", url_credentials: "URL 认证信息", url_credential_parameter: "URL 凭据参数", nested_json_credentials: "参数内嵌 JSON 凭据", incomplete_stream_fragment: "未完成的流式片段", incomplete_body_fragment: "截断文本末尾", unparsed_json_credentials: "含凭据的内嵌 JSON 无法解析", redaction_depth_limit: "脱敏深度上限", redaction_catalog_limit: "凭据字典上限", internal_host: "内网地址与端口", public_host: "公网服务器地址与端口", internal_identity: "URL 用户名" },
 };
 
 const ENDPOINT_REASONS = ["internal_host", "public_host", "internal_identity"];
@@ -1997,7 +2029,7 @@ async function loadSecurityStream(snapshotId, offset = Math.max(0, (state.securi
 function renderSecurityFindings(record) {
   const findings = record.findings || [];
   const fresh = findings.filter(finding => !finding.historical), historical = findings.filter(finding => finding.historical);
-  const row = f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div>${f.reusedFrom ? `<p class="trace-content-note">复用已有检查结果 · ${esc(securityTime(f.reusedFrom.checkedAt))}</p>` : ""}<p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${f.credentialProtection ? `<p class="trace-content-note">${f.credentialProtection.side === "request" ? "此凭据位置已在发送前替换，上游收到占位符。" : "此位置是响应中占位符还原后的原文。"}</p>` : ""}${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`;
+  const row = f => `<article class="security-finding ${state.security.bodySelection?.findingId === f.id ? "is-selected" : ""}"><div>${securityBadge(f.severity)} <button class="security-finding-link" data-action="security-finding" data-id="${esc(f.id)}" aria-pressed="${state.security.bodySelection?.findingId === f.id}">${esc(securityLabel("rule", f.ruleId))} <span>定位正文</span></button></div>${f.reusedFrom ? `<p class="trace-content-note">复用已有检查结果 · ${esc(securityTime(f.reusedFrom.checkedAt))}</p>` : ""}<p class="muted">${esc(securityLabel("category", f.category))} · ${esc(securityLabel("stage", f.evidenceStage))} · ${esc(securityLabel("confidence", f.confidence))} · 规则 ${esc(f.ruleId)} v${esc(f.ruleVersion)}</p>${renderCredentialFinding(f)}${f.credentialProtection ? `<p class="trace-content-note">${f.credentialProtection.side === "request" ? "此凭据位置已在发送前替换，上游收到占位符。" : "此位置是响应中占位符还原后的原文。"}</p>` : ""}${f.severityReason ? `<p>分级依据：${esc(securityLabel("basis", f.severityReason))}。</p>` : ""}${f.confidenceReason ? `<p>判断依据：${esc(securityLabel("basis", f.confidenceReason))}。</p>` : ""}<p>证据仅表示在此阶段观察到了对应内容或操作结构，不确认实际执行或恶意意图。</p><details><summary>检测证据与标准映射</summary><pre class="code-preview">${esc(JSON.stringify({ evidence: f.evidence, frameworkMappings: f.frameworkMappings }, null, 2))}</pre></details></article>`;
   return `<h3>关联风险 · ${findings.length}</h3>${historical.length ? `<p class="muted">新增 ${fresh.length} 项 · 历史 ${historical.length} 项</p>` : ""}
     ${fresh.map(row).join("") || (!historical.length ? `<p class="muted">没有关联风险；请结合检查状态判断覆盖范围。</p>` : "")}
     ${historical.length ? `<details class="trace-content-history" data-history-risks ${record.historyRisksOpen ? "open" : ""}><summary>历史风险 · ${historical.length} 项</summary>${historical.map(row).join("")}</details>` : ""}`;
@@ -2212,10 +2244,17 @@ function renderSettings() {
     <section class="panel" aria-labelledby="protection-settings-title">
       <div class="panel-header"><h2 id="protection-settings-title">凭据保护</h2></div>
       <form id="protection-settings-form">
-        <div class="settings-row"><label for="protection-enabled">默认启用</label><div class="settings-control"><label><input id="protection-enabled" name="enabled" type="checkbox" ${state.config.credentialProtection?.enabled ? "checked" : ""}> 替换模型上下文中的 Key、Token 和其他凭据</label></div></div>
-        <div class="settings-row"><label for="protection-ttl">会话闲置有效期</label><div class="settings-control"><div class="settings-value"><input id="protection-ttl" name="mappingTtlSeconds" type="number" min="60" max="2592000" step="1" required value="${state.config.credentialProtection?.mappingTtlSeconds || 3600}"><span>秒</span></div></div></div>
-        <p class="muted protection-settings-note">同一会话每次进入新请求后重新倒计时；闲置超时才过期。请求发送前替换，响应返回前还原；上游认证仍使用真实凭据。本地审计保留原文。</p>
-        <div class="settings-footer"><span class="muted">保存后立即生效，可在线路中单独设置</span><button class="button button-primary" type="submit">保存设置</button></div>
+        <div class="settings-row">
+          <span>全局开关</span>
+          <div class="settings-control"><label class="settings-checkbox"><input id="protection-enabled" name="enabled" type="checkbox" aria-describedby="protection-enabled-help" ${state.config.credentialProtection?.enabled ? "checked" : ""}><span>启用凭据保护</span></label></div>
+          <p class="muted settings-help" id="protection-enabled-help">勾选并保存后，发给模型的内容中识别到的 Key、Token 等凭据会替换为占位符，响应返回客户端前还原。连接上游的身份认证仍使用真实凭据，本地审计记录也保留凭据原文。</p>
+        </div>
+        <div class="settings-row">
+          <label for="protection-ttl">映射闲置有效期</label>
+          <div class="settings-control"><div class="settings-value"><input id="protection-ttl" name="mappingTtlSeconds" aria-label="映射闲置有效期（秒）" aria-describedby="protection-ttl-help" type="number" min="60" max="2592000" step="1" required value="${state.config.credentialProtection?.mappingTtlSeconds || 3600}"><span>秒</span></div></div>
+          <p class="muted settings-help" id="protection-ttl-help">同一会话每次新请求都会重新计时。连续闲置超过此时间后，凭据与占位符的对应关系过期，后续请求会生成新的占位符。默认 3600 秒（1 小时），可设为 60 秒至 30 天。</p>
+        </div>
+        <div class="settings-footer"><span class="muted">保存后立即生效；线路可单独覆盖此开关</span><button class="button button-primary" type="submit">保存设置</button></div>
       </form>
     </section>
     <section class="panel" aria-labelledby="temporary-settings-title">
@@ -2223,12 +2262,13 @@ function renderSettings() {
       <form id="temporary-settings-form">
         <div class="settings-directory">
           <label for="temporary-directory">服务器目录</label>
-          <input id="temporary-directory" name="temporaryDirectory" type="text" autocomplete="off" spellcheck="false" value="${esc(state.config.temporaryDirectory || "")}" placeholder="${esc(temporary?.defaultDirectory || "留空使用数据目录下的 tmp")}" aria-describedby="temporary-directory-help">
-          <p class="muted" id="temporary-directory-help">填写服务器上当前用户的私有目录绝对路径；留空使用数据目录下的 tmp。用于请求、响应暂存和数据库查询临时文件，按用途自动建立子目录。</p>
+          <input id="temporary-directory" name="temporaryDirectory" type="text" autocomplete="off" spellcheck="false" value="${esc(state.config.temporaryDirectory || "")}" placeholder="${esc(temporary?.defaultDirectory || "留空使用数据目录下的 tmp")}" aria-describedby="temporary-directory-help temporary-directory-requirements">
+          <p class="muted" id="temporary-directory-help">用于暂存请求、响应和数据库查询文件。留空使用默认目录（CableTidy 数据目录下的 tmp）。</p>
+          <p class="muted" id="temporary-directory-requirements">填写运行 CableTidy 的服务器上的绝对路径。目录须可写且仅运行 CableTidy 的用户可访问（Linux / macOS 权限为 0700）；不存在时会自动创建。</p>
           ${temporary?.activeDirectory ? `<p class="settings-active-directory">当前使用：<span>${esc(temporary.activeDirectory)}</span></p>` : ""}
           ${temporary?.restartRequired ? `<p class="notice warning" role="status">已保存新的临时目录，重启 CableTidy 后生效。重启前继续使用当前目录。</p>` : ""}
         </div>
-        <div class="settings-footer"><span class="muted">保存后重启生效</span><button class="button button-primary" type="submit">保存临时目录</button></div>
+        <div class="settings-footer"><span class="muted">保存后需重启 CableTidy 才会切换目录</span><button class="button button-primary" type="submit">保存临时目录</button></div>
       </form>
     </section>
   </div>`;
