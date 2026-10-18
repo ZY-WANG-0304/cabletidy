@@ -88,7 +88,7 @@ impl Paths {
 }
 pub fn defaults() -> Value {
     let audit = AuditSettings::default();
-    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"credentialProtection":{"enabled":false,"mappingTtlSeconds":3600},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}})
+    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"credentialProtection":{"enabled":false,"mappingTtlSeconds":3600},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{},"suppliers":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {
@@ -200,6 +200,7 @@ pub fn normalize(input: &Value) -> Value {
         }
     }
     normalize_identities(&mut c);
+    crate::suppliers::compile(&mut c);
     c
 }
 
@@ -479,6 +480,8 @@ fn clean_config(v: &mut Value, strip_presentation: bool) {
         Providers,
         Provider,
         Models,
+        Cables,
+        Cable,
         Fields,
     }
     fn clean(v: &mut Value, scope: Scope, strip_presentation: bool) {
@@ -492,8 +495,10 @@ fn clean_config(v: &mut Value, strip_presentation: bool) {
             }
             for (key, value) in obj {
                 let next = match (scope, key.as_str()) {
-                    (Scope::Config | Scope::Provider, "models") => Scope::Models,
-                    (Scope::Config, "virtualProviders") => Scope::Providers,
+                    (Scope::Config | Scope::Provider | Scope::Cable, "models") => Scope::Models,
+                    (Scope::Config, "cables") => Scope::Cables,
+                    (Scope::Cables, _) => Scope::Cable,
+                    (Scope::Config, "virtualProviders" | "suppliers") => Scope::Providers,
                     (Scope::Providers, _) => Scope::Provider,
                     _ => Scope::Fields,
                 };
@@ -525,6 +530,18 @@ pub fn public(c: &Value, secrets: &Value) -> Value {
                 u["secretRef"] = json!(format!("secret://upstreams/{id}"));
             }
             u["secretConfigured"] = json!(configured);
+        }
+    }
+    for supplier in out["suppliers"].as_object_mut().unwrap().values_mut() {
+        for (_, interface) in supplier
+            .get_mut("interfaces")
+            .and_then(Value::as_object_mut)
+            .into_iter()
+            .flatten()
+        {
+            if interface.is_object() {
+                interface["secretConfigured"] = json!(!secret(interface, secrets).is_empty());
+            }
         }
     }
     out

@@ -51,9 +51,18 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
         root_set(&mut doc, "model", &a["clientModelId"])?;
     }
     if !a["catalogPlan"]["catalog"].is_null() {
+        if a["managedModels"] == true {
+            if !current["model_instructions_file"].is_null() {
+                bail!(
+                    "根级 model_instructions_file 会覆盖模型提示词，请移除该设置或使用隔离启动配置"
+                );
+            }
+            root_set(&mut doc, "web_search", &json!("disabled"))?;
+            warnings.push(json!("当前 Cable 关闭 Codex 内置网页搜索，避免辅助模型请求越过显式模型选择。已有运行会话请重新启动。"));
+        }
         warnings.push(json!("模型目录覆盖作用于当前 Codex 配置，不按 provider 隔离；切换到其他 provider 前需恢复官方定义或原目录。重新启动 Codex 后读取更新。"));
         let mut catalog = a["catalogPlan"]["catalog"].clone();
-        if !previous_catalog.is_null() {
+        if !previous_catalog.is_null() && a["catalogPlan"]["explicitModels"] != true {
             let path = previous_catalog
                 .as_str()
                 .context("现有 model_catalog_json 必须为路径字符串")?;
@@ -140,6 +149,16 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
         }
     }
     let provider = text(&a["providerId"]);
+    let activation = read_json(&o.codex_home.join(ACTIVATION))
+        .await?
+        .unwrap_or(Value::Null);
+    if activation["cableId"].is_string() && activation["cableId"] != a["cableId"] {
+        warnings.push(json!(format!(
+            "应用将把当前激活的 Cable {} 切换为 {}，正在运行的旧会话继续使用原地址。",
+            text(&activation["cableId"]),
+            text(&a["cableId"])
+        )));
+    }
     let provider_doc: DocumentMut = text(&a["providerContents"]).parse()?;
     if doc.get("model_providers").is_none() {
         let mut table = Table::new();
@@ -183,6 +202,8 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     let root = o.codex_home.join("config.toml");
     let state_file = o.codex_home.join(STATE);
     let previous_state = read_optional(&state_file).await?;
+    let activation_path = o.codex_home.join(ACTIVATION);
+    let previous_activation = read_json(&activation_path).await?.unwrap_or(Value::Null);
     let mut applied = Vec::new();
     for f in array(&staged["files"]).iter().skip(1) {
         let rel = std::path::Path::new(text(&f["path"]));
@@ -201,10 +222,24 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     if read_optional(&root).await?.unwrap_or_default() != text(&staged["rootBefore"]) {
         bail!("Codex 配置在应用期间已改变，请重新预览并重试");
     }
+    let before: Value = toml_edit::de::from_str(text(&staged["rootBefore"]))?;
+    let after: Value = toml_edit::de::from_str(text(&staged["files"][0]["contents"]))?;
+    let same = previous_activation["cableId"] == staged["cableId"]
+        && previous_activation["after"] == owned_snapshot(&before);
+    let provider = text(&staged["providerId"]);
+    let activation = if same {
+        json!({"cableId":staged["cableId"],"providerId":provider,"before":previous_activation["before"],"after":owned_snapshot(&after),"rootBefore":previous_activation["rootBefore"],"providerBefore":previous_activation["providerBefore"],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_activation["catalogBefore"],"previousActivation":previous_activation["previousActivation"]})
+    } else {
+        json!({"cableId":staged["cableId"],"providerId":provider,"before":owned_snapshot(&before),"after":owned_snapshot(&after),"rootBefore":staged["rootBefore"],"providerBefore":before["model_providers"][provider],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_state.as_ref().and_then(|s|serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null),"previousActivation":previous_activation})
+    };
+    let track_activation = a["managedModels"] == true || previous_activation.is_object();
     let result = async {
         if let Some(state) = staged.get("catalogState") {
             backup(&state_file, &o.paths.backups, "codex-catalog-state.json").await?;
             write_json(&state_file, state).await?;
+        }
+        if track_activation {
+            write_json(&activation_path, &activation).await?;
         }
         backup(&root, &o.paths.backups, "codex-config.toml").await?;
         atomic_write(&root, text(&staged["files"][0]["contents"]).as_bytes()).await
@@ -212,10 +247,13 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     .await;
     if let Err(e) = result {
         if staged.get("catalogState").is_some() {
-            if let Some(previous) = previous_state {
-                atomic_write(&state_file, previous.as_bytes()).await?;
+            restore_optional(&state_file, previous_state.as_deref()).await?;
+        }
+        if track_activation {
+            if previous_activation.is_null() {
+                restore_optional(&activation_path, None).await?;
             } else {
-                let _ = tokio::fs::remove_file(&state_file).await;
+                write_json(&activation_path, &previous_activation).await?;
             }
         }
         return Err(e);
@@ -224,4 +262,112 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     Ok(
         json!({"applied":applied,"environment":staged["environment"],"mode":staged["mode"],"warnings":staged["warnings"],"catalogSummary":staged["catalogSummary"]}),
     )
+}
+
+// Preserve a complete before/after snapshot only for the fields this Cable owns.
+const ACTIVATION: &str = ".cabletidy-active-cable.json";
+const OWNED_ROOT: &[&str] = &[
+    "model_provider",
+    "model",
+    "model_catalog_json",
+    "model_context_window",
+    "web_search",
+];
+fn owned_snapshot(value: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for key in OWNED_ROOT {
+        out.insert((*key).into(), value[*key].clone());
+    }
+    Value::Object(out)
+}
+
+pub async fn activation_status(o: &Options) -> Result<Value> {
+    let Some(saved) = read_json(&o.codex_home.join(ACTIVATION)).await? else {
+        return Ok(json!({"status":"unmanaged"}));
+    };
+    let current = read_optional(&o.codex_home.join("config.toml"))
+        .await?
+        .unwrap_or_default();
+    let value: Value = toml_edit::de::from_str(&current)?;
+    let matches = owned_snapshot(&value) == saved["after"]
+        && value["model_providers"][text(&saved["providerId"])] == saved["providerAfter"];
+    Ok(json!({"cableId":saved["cableId"],"status":if matches {"active"} else {"modified"}}))
+}
+
+pub async fn restore_cable(cable_id: &str, o: &Options) -> Result<Value> {
+    let state_path = o.codex_home.join(ACTIVATION);
+    let saved = read_json(&state_path)
+        .await?
+        .context("没有可撤销的 Codex 接入记录")?;
+    if saved["cableId"] != cable_id {
+        anyhow::bail!("当前 Codex 配置由其他 Cable 激活，撤销此线路不会覆盖它");
+    }
+    let root = o.codex_home.join("config.toml");
+    let before = read_optional(&root).await?.unwrap_or_default();
+    let value: Value = toml_edit::de::from_str(&before)?;
+    if owned_snapshot(&value) != saved["after"] {
+        anyhow::bail!("Codex 管理字段已被用户修改，保留当前配置；请先核对后手动恢复");
+    }
+    let mut doc: DocumentMut = before.parse()?;
+    for key in OWNED_ROOT {
+        root_set(&mut doc, key, &saved["before"][*key])?;
+    }
+    let provider = text(&saved["providerId"]);
+    if value["model_providers"][provider] != saved["providerAfter"] {
+        anyhow::bail!("Codex provider 配置已修改，不能自动撤销");
+    }
+    if let Some(providers) = doc
+        .get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+    {
+        if saved["providerBefore"].is_null() {
+            providers.remove(provider);
+        } else {
+            let parsed: DocumentMut = text(&saved["rootBefore"]).parse()?;
+            providers.insert(provider, parsed["model_providers"][provider].clone());
+        }
+    }
+    if read_optional(&root).await?.unwrap_or_default() != before {
+        anyhow::bail!("Codex 配置已变化，请重新撤销");
+    }
+    backup(&root, &o.paths.backups, "codex-restore.toml").await?;
+    let catalog_path = o.codex_home.join(STATE);
+    let catalog_current = read_optional(&catalog_path).await?;
+    let result = async {
+        if saved["catalogBefore"].is_null() {
+            restore_optional(&catalog_path, None).await?;
+        } else {
+            write_json(&catalog_path, &saved["catalogBefore"]).await?;
+        }
+        if saved["previousActivation"].is_null() {
+            restore_optional(&state_path, None).await?;
+        } else {
+            write_json(&state_path, &saved["previousActivation"]).await?;
+        }
+        atomic_write(
+            &root,
+            format!("{}\n", doc.to_string().trim_end()).as_bytes(),
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = result {
+        restore_optional(&catalog_path, catalog_current.as_deref()).await?;
+        write_json(&state_path, &saved).await?;
+        return Err(e);
+    }
+    Ok(json!({"restored":true,"applied":[root],"mode":"restored"}))
+}
+
+async fn restore_optional(path: &std::path::Path, contents: Option<&str>) -> Result<()> {
+    if let Some(contents) = contents {
+        atomic_write(path, contents.as_bytes()).await?;
+    } else {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
 }

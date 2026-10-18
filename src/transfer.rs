@@ -33,9 +33,83 @@ fn connection_url(v: &Value) -> Result<Value> {
     url.set_fragment(None);
     Ok(json!(url.as_str()))
 }
+fn supply_facts(v: &Value) -> Value {
+    let mut out = fields(
+        v,
+        &[
+            "identity",
+            "version",
+            "identitySource",
+            "enabled",
+            "interfaces",
+            "inputModalities",
+            "capabilities",
+            "contextWindow",
+            "maxOutputTokens",
+            "history",
+            "validation",
+        ],
+    );
+    if v["capabilityStates"].is_object() {
+        out["capabilityStates"] = fields(
+            &v["capabilityStates"],
+            &[
+                "tools",
+                "streaming",
+                "reasoning",
+                "vision",
+                "parallel_tool_calls",
+            ],
+        );
+    }
+    if v["reasoning"].is_object() {
+        out["reasoning"] = fields(&v["reasoning"], &["modes", "efforts", "toggle", "default"]);
+    }
+    if v["reasoning"]["budget"].is_object() {
+        out["reasoning"]["budget"] = fields(
+            &v["reasoning"]["budget"],
+            &["unit", "min", "max", "default"],
+        );
+    }
+    out
+}
 fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
     let mut out = json!({"version":3,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}});
+    if entries(&c["suppliers"]).next().is_some() {
+        out["suppliers"] = json!({});
+    }
+    for (sid, supplier) in entries(&c["suppliers"]) {
+        let mut s = fields(supplier, &["name", "enabled"]);
+        s["interfaces"] = json!({});
+        s["models"] = json!({});
+        for (iid, interface) in entries(&supplier["interfaces"]) {
+            let mut i = fields(interface, &["protocol", "enabled"]);
+            i["baseUrl"] = if include_credentials {
+                interface["baseUrl"].clone()
+            } else {
+                connection_url(&interface["baseUrl"])?
+            };
+            if interface["auth"].is_object() {
+                i["auth"] = fields(&interface["auth"], &["header", "scheme"]);
+            }
+            s["interfaces"][iid] = i;
+        }
+        for (mid, model) in entries(&supplier["models"]) {
+            let mut m = supply_facts(model);
+            if model["interfaceCapabilities"].is_object() {
+                m["interfaceCapabilities"] = json!({});
+                for (iid, difference) in entries(&model["interfaceCapabilities"]) {
+                    m["interfaceCapabilities"][iid] = supply_facts(difference);
+                }
+            }
+            s["models"][mid] = m;
+        }
+        out["suppliers"][sid] = s;
+    }
     for (id, u) in entries(&c["upstreams"]) {
+        if u.get("managedSupplier").is_some() {
+            continue;
+        }
         let mut u2 = fields(
             u,
             &[
@@ -58,6 +132,9 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         out["upstreams"][id] = u2;
     }
     for (id, r) in entries(&c["routes"]) {
+        if r["managedModels"] == true {
+            continue;
+        }
         let mut r2 = fields(r, &["id", "name", "enabled"]);
         r2["backends"] = Value::Array(
             array(&r["backends"])
@@ -68,6 +145,9 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         out["routes"][id] = r2;
     }
     for (id, p) in entries(&c["virtualProviders"]) {
+        if p["managedModels"] == true {
+            continue;
+        }
         let mut p2 = fields(
             p,
             &[
@@ -119,8 +199,33 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                 "virtualProvider",
                 "defaultModel",
                 "enabled",
+                "managedModels",
+                "suppliers",
             ],
         );
+        if b["managedModels"] == true {
+            b2["models"] = json!({});
+            for (name, binding) in entries(&b["models"]) {
+                let mut model = fields(
+                    binding,
+                    &[
+                        "name",
+                        "aliases",
+                        "activeSource",
+                        "promptStrategy",
+                        "strategy",
+                    ],
+                );
+                model["sources"] = json!(array(&binding["sources"])
+                    .iter()
+                    .map(|s| fields(s, &["supplierId", "modelId", "interfaceId", "enabled"]))
+                    .collect::<Vec<_>>());
+                b2["models"][name] = model;
+            }
+            if b["legacyPassthrough"].is_object() {
+                b2["legacyPassthrough"] = fields(&b["legacyPassthrough"], &["upstream"]);
+            }
+        }
         if b.get("codex").is_some() {
             b2["codex"] = json!({});
         }
@@ -166,6 +271,9 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool
         subset["cables"][id] = b.clone();
         subset["virtualProviders"][pid] = p.clone();
         subset["routes"][rid] = r.clone();
+        for sid in array(&b["suppliers"]).iter().filter_map(Value::as_str) {
+            subset["suppliers"][sid] = c["suppliers"][sid].clone();
+        }
         for backend in array(&r["backends"]) {
             let uid = text(&backend["upstream"]);
             if !c["upstreams"][uid].is_object() {
@@ -173,9 +281,17 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool
             }
             subset["upstreams"][uid] = c["upstreams"][uid].clone();
         }
+        if let Some(uid) = b["legacyPassthrough"]["upstream"].as_str() {
+            subset["upstreams"][uid] = c["upstreams"][uid].clone();
+        }
     }
     let data = portable(&subset, include_credentials)?;
-    let mut bundle = json!({"format":FORMAT,"version":1,"config":data});
+    let version = if data.get("suppliers").is_some() {
+        2
+    } else {
+        1
+    };
+    let mut bundle = json!({"format":FORMAT,"version":version,"config":data});
     if include_credentials {
         let credentials: Map<String, Value> = entries(&subset["upstreams"])
             .filter_map(|(id, upstream)| {
@@ -207,6 +323,16 @@ pub fn has_credentials(bundle: &Value) -> bool {
                     || url.password().is_some()
                     || url.query().is_some()
                     || url.fragment().is_some()
+            })
+        })
+        || entries(&bundle["config"]["suppliers"]).any(|(_, supplier)| {
+            entries(&supplier["interfaces"]).any(|(_, i)| {
+                url::Url::parse(text(&i["baseUrl"])).is_ok_and(|u| {
+                    !u.username().is_empty()
+                        || u.password().is_some()
+                        || u.query().is_some()
+                        || u.fragment().is_some()
+                })
             })
         })
 }
@@ -254,8 +380,16 @@ pub fn import(
             raw["cables"] = cables;
         }
         raw["version"] = json!(3);
-    } else if bundle["format"] != FORMAT || bundle["version"] != 1 || raw["version"] != 3 {
+    } else if bundle["format"] != FORMAT
+        || ![json!(1), json!(2)].contains(&bundle["version"])
+        || raw["version"] != 3
+    {
         bail!("不支持的线路文件或版本");
+    }
+    if let Some(suppliers) = raw.get("suppliers") {
+        if !suppliers.is_object() || entries(suppliers).any(|(_, s)| !s.is_object()) {
+            bail!("供应商文件结构不合法");
+        }
     }
     let raw = &raw;
     for key in ["cables", "virtualProviders", "routes", "upstreams"] {
@@ -271,14 +405,18 @@ pub fn import(
     for key in ["cables", "virtualProviders", "routes", "upstreams"] {
         validation_input[key] = raw[key].clone();
     }
+    if let Some(suppliers) = raw.get("suppliers") {
+        validation_input["suppliers"] = suppliers.clone();
+    }
     let check = crate::validation::validate(&validation_input);
     if check["ok"] != true {
         bail!("线路校验失败: {}", check["errors"]);
     }
     if let Some(credentials) = bundle.get("upstreamSecrets") {
         if !credentials.is_object()
-            || entries(credentials)
-                .any(|(id, value)| raw["upstreams"].get(id).is_none() || !config::nonempty(value))
+            || entries(credentials).any(|(id, value)| {
+                check["config"]["upstreams"].get(id).is_none() || !config::nonempty(value)
+            })
         {
             bail!("线路文件认证凭据格式不合法");
         }
@@ -293,6 +431,13 @@ pub fn import(
         }
     }
     let mut result = current.clone();
+    if !result["suppliers"].is_object() {
+        result["suppliers"] = json!({});
+    }
+    let mut supplier_ids = HashMap::new();
+    let mut used_suppliers: HashSet<String> = entries(&result["suppliers"])
+        .map(|(id, _)| id.clone())
+        .collect();
     let mut upstream_ids: HashMap<(String, String), String> = HashMap::new();
     let mut route_ids: HashMap<(String, String), String> = HashMap::new();
     let mut used_upstreams = entries(&current["upstreams"])
@@ -313,6 +458,29 @@ pub fn import(
     let mut replaced_providers = HashSet::new();
     let mut replaced_routes = HashSet::new();
     let mut replaced_upstreams = HashSet::new();
+    // Import service instances once, with isolated credentials. Names/URLs never imply identity.
+    for (sid, supplier) in entries(&source["suppliers"]) {
+        let mut next = sid.clone();
+        let mut n = 2;
+        while used_suppliers.contains(&next) {
+            next = format!("{}-{n}", &sid[..sid.len().min(16)]);
+            n += 1;
+        }
+        used_suppliers.insert(next.clone());
+        let mut imported = supplier.clone();
+        for (iid, interface) in imported["interfaces"]
+            .as_object_mut()
+            .context("供应商接口结构不合法")?
+        {
+            interface["secretRef"] = json!(format!("secret://imports/{}", uuid::Uuid::new_v4()));
+            let secret = &bundle["upstreamSecrets"][crate::suppliers::interface_key(sid, iid)];
+            if use_credentials && config::nonempty(secret) {
+                imported_secrets[crate::suppliers::interface_key(&next, iid)] = secret.clone();
+            }
+        }
+        result["suppliers"][&next] = imported;
+        supplier_ids.insert(sid.clone(), next);
+    }
     // Share imported dependencies only when their retained credential references agree.
     for (old_id, b) in entries(&source["cables"]) {
         let base_name = b["name"]
@@ -351,6 +519,45 @@ pub fn import(
         }
         used_cables.insert(id.clone());
         let pid = format!("cabletidy_{id}");
+        if b["managedModels"] == true {
+            let mut imported = b.clone();
+            imported["id"] = json!(id);
+            imported["name"] = json!(name);
+            imported["virtualProvider"] = json!(pid);
+            for sid in imported["suppliers"]
+                .as_array_mut()
+                .context("供应商选择不合法")?
+            {
+                *sid = json!(supplier_ids.get(text(sid)).context("所选供应商不存在")?);
+            }
+            for (_, binding) in imported["models"]
+                .as_object_mut()
+                .context("模型绑定不合法")?
+            {
+                for supply in binding["sources"]
+                    .as_array_mut()
+                    .context("模型来源不合法")?
+                {
+                    supply["supplierId"] = json!(supplier_ids
+                        .get(text(&supply["supplierId"]))
+                        .context("来源供应商不存在")?);
+                }
+            }
+            if let Some(old_uid) = b["legacyPassthrough"]["upstream"].as_str() {
+                let uid = unique_id(old_uid, &mut used_upstreams);
+                let mut upstream = source["upstreams"][old_uid].clone();
+                upstream["id"] = json!(uid);
+                upstream["secretRef"] = json!(format!("secret://imports/{}", uuid::Uuid::new_v4()));
+                if use_credentials && config::nonempty(&bundle["upstreamSecrets"][old_uid]) {
+                    imported_secrets[&uid] = bundle["upstreamSecrets"][old_uid].clone();
+                }
+                result["upstreams"][&uid] = upstream;
+                imported["legacyPassthrough"]["upstream"] = json!(uid);
+            }
+            summaries.push(json!({"id":id,"name":name,"target":b["target"],"sourceId":old_id,"sourceName":base_name,"conflict":conflict,"existingName":existing.map(|b| b["name"].as_str().unwrap_or(old_id)),"action":if update {"update"} else {"create"}}));
+            result["cables"][&id] = imported;
+            continue;
+        }
         let mut p = source["virtualProviders"][text(&b["virtualProvider"])].clone();
         let old_rid = text(&p["route"]);
         // File credentials use new references so updating cannot overwrite a shared local secret.
@@ -430,7 +637,11 @@ pub fn import(
             result["upstreams"].as_object_mut().unwrap().remove(&uid);
         }
     }
-    Ok((result, json!(summaries), imported_secrets))
+    Ok((
+        config::normalize(&result),
+        json!(summaries),
+        imported_secrets,
+    ))
 }
 
 #[cfg(test)]

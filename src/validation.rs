@@ -160,7 +160,7 @@ pub fn validate(input: &Value) -> Value {
         }
         if let Some(v) = u["auth"].get("scheme") {
             check!(
-                token(v),
+                v == "" || token(v),
                 format!("{p}.auth.scheme"),
                 "认证 scheme 必须是合法的 HTTP token"
             );
@@ -171,7 +171,8 @@ pub fn validate(input: &Value) -> Value {
         check!(r.is_object(), p, "route 必须是 object");
         check!(id(key), p, "route ID 包含非法字符");
         check!(
-            r["backends"].is_array() && array(&r["backends"]).len() == 1,
+            r["backends"].is_array()
+                && (r["managedModels"] == true || array(&r["backends"]).len() == 1),
             format!("{p}.backends"),
             "每份配置必须且只能连接一个 upstream（一个 backend）"
         );
@@ -481,5 +482,6 @@ pub fn validate(input: &Value) -> Value {
             warnings.push(json!({"path":key,"message":message}));
         }
     }
+    errors.extend(crate::suppliers::validate(&c));
     json!({"ok":errors.is_empty(),"errors":errors,"warnings":warnings,"config":c})
 }

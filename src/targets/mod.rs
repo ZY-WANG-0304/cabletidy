@@ -108,21 +108,32 @@ pub fn build(input: &Value, cable_id: &str, secrets: &Value) -> Result<Value> {
     } else {
         None
     };
+    if crate::suppliers::managed(p) && default.is_none() {
+        bail!("请为 Cable 选择默认模型后应用客户端配置");
+    }
     let base = base_url(&c, id);
     if target == "codex" {
         let backends = array(&c["routes"][text(&p["route"])]["backends"]);
-        if backends.len() != 1 {
+        if backends.len() != 1 && !crate::suppliers::managed(p) {
             bail!("每份配置必须且只能连接一个 upstream");
         }
-        let u = &c["upstreams"][text(&backends[0]["upstream"])];
-        if !u.is_object() {
+        let u = backends
+            .first()
+            .map(|b| &c["upstreams"][text(&b["upstream"])])
+            .unwrap_or(&Value::Null);
+        if !u.is_object() && !crate::suppliers::managed(p) {
             bail!("找不到线路对应的 upstream");
         }
         let provider = text(&p["id"]);
         let active=format!("# >>> CABLETIDY MANAGED ACTIVE PROVIDER {provider} -->\nmodel_provider = {}\n{}# <<< CABLETIDY MANAGED ACTIVE PROVIDER {provider} <--\n",json!(provider),default.as_ref().map(|d|format!("model = {}\n",json!(d))).unwrap_or_default());
-        let provider_contents=format!("\n# >>> CABLETIDY MANAGED PROVIDER {provider} -->\n[model_providers.{provider}]\nname = {}\nbase_url = {}\nwire_api = \"responses\"\nrequires_openai_auth = false\n# <<< CABLETIDY MANAGED PROVIDER {provider} <--\n",json!(format!("CableTidy / {}",text(u.get("name").unwrap_or(&u["id"])))),json!(format!("{base}/v1")));
+        let label = if crate::suppliers::managed(p) {
+            text(&b["name"])
+        } else {
+            text(u.get("name").unwrap_or(&u["id"]))
+        };
+        let provider_contents=format!("\n# >>> CABLETIDY MANAGED PROVIDER {provider} -->\n[model_providers.{provider}]\nname = {}\nbase_url = {}\nwire_api = \"responses\"\nrequires_openai_auth = false\n# <<< CABLETIDY MANAGED PROVIDER {provider} <--\n",json!(format!("CableTidy / {label}")),json!(format!("{base}/v1")));
         return Ok(
-            json!({"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","cableId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"files":[{"path":"config.toml","contents":format!("{active}{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
+            json!({"managedModels":crate::suppliers::managed(p),"integration":"codex-native-provider","targetFormat":"codex.config.toml.v1","format":"codex.config.toml.v1","target":"codex","mode":"managed_proxy","cableId":id,"virtualProviderId":p["id"],"providerId":provider,"activeContents":active,"providerContents":provider_contents,"clientModelId":default,"files":[{"path":"config.toml","contents":format!("{active}{provider_contents}")}],"environment":{"vars":{},"shell":""},"upstream":{"id":u["id"],"baseUrl":u["baseUrl"],"secretConfigured":!secret(u,secrets).is_empty()}}),
         );
     }
     let mut vars = json!({});
@@ -190,11 +201,12 @@ pub async fn prepare(
         "codex" => {
             let normalized = normalize(c);
             let p = &normalized["virtualProviders"][text(&a["virtualProviderId"])];
-            a["catalogPlan"] = if entries(&p["models"]).next().is_none() {
-                json!({"catalog":null,"models":[],"overrides":[],"warnings":[]})
-            } else {
-                crate::catalog::plan(&normalized, p, &catalog.load(false).await?)?
-            };
+            a["catalogPlan"] =
+                if entries(&p["models"]).next().is_none() && !crate::suppliers::managed(p) {
+                    json!({"catalog":null,"models":[],"overrides":[],"warnings":[]})
+                } else {
+                    crate::catalog::plan(&normalized, p, &catalog.load(false).await?)?
+                };
             codex::stage(a, options).await
         }
         "claude-code" => claude::prepare(a, options).await,

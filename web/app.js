@@ -33,6 +33,8 @@ const SECURITY_MODELS = new Map([
 ]);
 
 const PAGE_META = {
+  suppliers: "供应商",
+  "inventory-create": "新建 Codex 线路",
   overview: "线路",
   "cable-create": "新建线路",
   "cable-import": "导入线路",
@@ -49,6 +51,9 @@ const PAGE_META = {
 const CABLE_TRANSFER_NOTICE = "仅包含 CableTidy 线路。客户端文件、运行记录和管理台设置不包含在内。默认导出不含认证凭据。";
 
 const state = {
+  supplierId: null,
+  supplierModelId: null,
+  discoveredModels: [],
   page: "overview",
   config: null,
   candidate: null,
@@ -164,13 +169,15 @@ function render(preservedForms = []) {
     : pageMeta();
   versionLabel.textContent = state.runtime?.version ? `v${state.runtime.version}` : "版本未知";
   document.querySelectorAll(".nav-item").forEach((item) => {
-    const active = item.dataset.page === (state.page.startsWith("security") ? "security" : ["diagnostics", "settings"].includes(state.page) ? state.page : "overview");
+    const active = item.dataset.page === (state.page.startsWith("security") ? "security" : ["diagnostics", "settings", "suppliers"].includes(state.page) ? state.page : "overview");
     item.classList.toggle("is-active", active);
     if (active) item.setAttribute("aria-current", "page");
     else item.removeAttribute("aria-current");
   });
 
   const renderers = {
+    suppliers: renderSuppliers,
+    "inventory-create": () => renderInventoryCable(null),
     overview: renderOverview,
     "cable-create": renderCableCreate,
     "cable-import": renderCableImport,
@@ -536,9 +543,9 @@ function cableRow(cable) {
   const providerStatus = cableProviderStatus(cable);
   return `
     <tr>
-      <th scope="row"><button class="cable-name" data-action="open-cable" data-id="${esc(cable.id)}">${esc(cable.name)}</button><span class="cable-upstream">${esc(cable.upstream?.name || cable.upstreamId || "未配置上游")}</span></th>
+      <th scope="row"><button class="cable-name" data-action="open-cable" data-id="${esc(cable.id)}">${esc(cable.name)}</button><span class="cable-upstream">${esc(cable.record.managedModels ? `${(cable.record.suppliers || []).length} 家供应商 · ${(cable.record.suppliers || []).map(id => state.config.suppliers?.[id]?.name || id).join("、") || "未选择供应商"}` : cable.upstream?.name || cable.upstreamId || "未配置上游")}</span></th>
       <td data-label="CLI">${esc(targetLabel(cable.target))}</td>
-      <td data-label="模型设置">${cable.modelIds.length ? `${cable.modelIds.length} 项设置` : "直接透传"}</td>
+      <td data-label="模型设置">${cable.modelIds.length ? `${cable.modelIds.length} 项设置` : cable.record.managedModels ? "未选择模型" : "直接透传"}</td>
       <td data-label="本地地址" class="mono">${esc(cableEndpoint(cable))}</td>
       <td data-label="本地服务"><span class="status-badge ${providerStatus.className}">${esc(providerStatus.label)}</span></td>
       <td data-label="操作"><button class="button button-danger" type="button" data-action="delete-cable" data-id="${esc(cable.id)}" aria-label="删除线路 ${esc(cable.name)}">删除</button></td>
@@ -554,7 +561,8 @@ function renderOverview() {
       <div class="cable-toolbar-actions">
         <button class="button" data-action="import-cables">导入线路</button>
         <button class="button" data-action="export-cables" ${cables.length ? "" : "disabled"}>导出线路</button>
-        <button class="button button-primary" data-action="create-cable">新建线路</button>
+        <button class="button" data-action="create-cable">旧接入 / Claude Code</button>
+        <button class="button button-primary" data-action="create-inventory-cable">新建 Codex 线路</button>
       </div>
     </div>
     ${
@@ -888,6 +896,7 @@ function renderCableDetail() {
     `;
   }
   const providerStatus = cableProviderStatus(cable);
+  if (cable.record.managedModels) return renderInventoryCable(cable);
   const upstreamId = cable.upstreamId || "";
   const upstream = upstreamId ? state.candidate.upstreams[upstreamId] : null;
   const record = cable.record;
@@ -902,6 +911,7 @@ function renderCableDetail() {
         <div class="cable-section-heading">
           <h2 id="cable-upstream-title">上游连接</h2>
           <p>此线路的所有模型共用这一上游。</p>
+          ${cable.target === "codex" ? `<button class="button" type="button" data-action="migrate-cable" data-id="${esc(cable.id)}">迁移到供应商模型目录</button>` : ""}
         </div>
         ${upstream ? `
           <form id="cable-upstream-form">
@@ -2073,6 +2083,9 @@ function renderSecurityFindings(record) {
 
 function securityRecordFacts(record) {
   const facts = [["记录 ID", record.id], ["操作", securityLabel("action", record.action)], ["配置入口", record.providerId || "本地管理"], ["发生时间", securityTime(record.at)], ["结束时间", record.finishedAt ? securityTime(record.finishedAt) : "未记录"], ["请求结果", securityLabel("outcome", record.outcome)], ["HTTP 状态", record.httpStatus ?? "未知"], ["配置修订", record.revision ?? "未知"], ["模型", securityModelMapping(record)], ["响应头耗时", record.headersMs == null ? "—" : `${record.headersMs} ms`], ["完整记录耗时", record.durationMs == null ? "—" : `${record.durationMs} ms`]];
+  if (record.supplierId) facts.push(["供应商 / 接口", `${record.supplierId} / ${record.interfaceId}`], ["实际模型", `${record.actualModelIdentity || "未知"}${record.actualModelVersion ? ` / ${record.actualModelVersion}` : ""}`], ["适配实现", record.adapterVersion], ["提示词策略", `${record.promptStrategy || "default"} / ${record.nativeDefinitionVersion || record.promptVersion || "未记录"}`], ["供给验证", record.modelValidation || "未实测"]);
+  if (record.reasoningControl) facts.push(["推理档位", `${record.reasoningControl.requestedEffort || "未设置"} → ${record.reasoningControl.appliedEffort || "未设置"}`]);
+  if (record.adaptationError || record.selectionError) facts.push(["适配 / 来源错误", record.adaptationError || record.selectionError.message]);
   if (record.responseTerminalEvent) facts.push(["响应结束依据", record.responseTerminalEvent]);
   if (record.responseTransportState) facts.push(["响应接收", { complete: "连接完整结束", interrupted: record.responseTerminalEvent ? "收到结束事件后连接关闭" : "响应接收中断", error: "连接读取出错", not_observed: "未观察到响应" }[record.responseTransportState] || record.responseTransportState]);
   return facts;
@@ -2511,12 +2524,13 @@ async function handleAction(action, element) {
   }
   if ([
     "create-cable", "import-cables", "export-cables", "open-cable", "back-overview", "select-model",
-    "new-model", "open-advanced-models",
+    "new-model", "open-advanced-models", "create-inventory-cable", "open-supplier", "new-supplier", "edit-supplier-model", "new-supplier-model",
   ].includes(action)) {
     if (!confirmPageLeave()) return;
   }
   const unlock = lockControls();
   try {
+    if (await inventoryAction(action,element)) return;
     if (["import-cables", "export-cables"].includes(action)) {
       state.transfer = { bundle: null, preview: null };
       state.page = action === "import-cables" ? "cable-import" : "cable-export";
@@ -2602,15 +2616,22 @@ async function handleAction(action, element) {
       await toggleVirtualProvider(element.dataset.id);
     } else if (action === "preview-artifacts") {
       await previewArtifacts();
+    } else if (action === "export-isolated") {
+      if (hasUnsavedChanges()) throw new Error("请先保存当前编辑，再导出配置。");
+      const result = await api("/targets/isolated", {method:"POST", body:JSON.stringify({cableId:selectedCable().id})});
+      const blob = new Blob([JSON.stringify(result.bundle, null, 2)], {type:"application/json"});
+      const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = "cabletidy-isolated-codex.json"; link.click(); URL.revokeObjectURL(link.href);
+      toast("隔离配置已导出；按文件中的说明写入独立目录后启动 Codex。");
     } else if (action === "apply-target") {
       await applyTarget();
     } else if (action === "restore-target") {
       if (hasUnsavedChanges()) throw new Error("请先保存当前编辑，再撤销接入。");
       const cable = selectedCable();
-      if (cable?.target !== "claude-code") throw new Error("请选择 Claude Code 配置");
+      if (!["codex", "claude-code"].includes(cable?.target)) throw new Error("请选择 Codex 或 Claude Code 配置");
       if (!await changeTargetSettings("restore", cable.id)) return;
+      if (cable.record.managedModels) state.runtime = await api("/runtime");
       state.artifactPreview = null;
-      toast("Claude Code 原接入配置已恢复，请重启客户端。");
+      toast(`${targetLabel(cable.target)} 原接入配置已恢复，请重启客户端。`);
       render();
     } else if (action === "open-advanced-models") {
       state.page = "models";
@@ -2718,6 +2739,9 @@ async function handleFormSubmit(event, form) {
     }
     if (submitButton) submitButton.textContent = "保存中...";
     const handlers = {
+      "supplier-form": () => saveSupplier(data, form),
+      "supplier-model-form": () => saveSupplierModel(data),
+      "inventory-cable-form": () => saveInventoryCable(data, form),
       "audit-settings-form": () => saveAuditSettings(data),
       "temporary-settings-form": () => saveTemporarySettings(data),
       "protection-settings-form": () => saveProtectionSettings(data),
@@ -2868,6 +2892,7 @@ async function applyTarget() {
   }
   const result = await changeTargetSettings("apply", cable.id);
   if (!result) return;
+  if (cable.record.managedModels) state.runtime = await api("/runtime");
   state.artifactPreview = result.report ? {
     ...result.report,
     target: result.target,
@@ -2906,6 +2931,8 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
     page: state.page,
     selected: clone(state.selected),
     artifactPreview: state.artifactPreview,
+    supplierId: state.supplierId,
+    supplierModelId: state.supplierModelId,
   };
   const preservedForms = captureEditedForms(form);
   state.candidate = clone(state.config);
@@ -2923,6 +2950,10 @@ async function saveChanges(update, form, successMessage = "配置已保存并生
     state.runtime = result.runtime;
     state.candidate = clone(state.config);
     if (operation) {
+      if (operation.type === "supplier.save") state.supplierId = operation.supplierId;
+      if (operation.type === "supplier.model.save") state.supplierModelId = operation.data.modelId;
+      if (operation.type === "supplier.delete") state.supplierId = null;
+      if (operation.type === "supplier.model.delete") state.supplierModelId = null;
       if (result.selection) {
         selectCable(result.selection.cableId);
         const name = operation.type === "model.save" ? operation.data.clientModelId : null;
@@ -2990,3 +3021,239 @@ document.querySelector("#refresh-button").addEventListener("click", () => {
 });
 
 bootstrap();
+
+// Supplier inventory: service facts are maintained independently of Cable selections.
+const COMPATIBLE_IDENTITIES = ["GLM-5.3", "GLM-5.3-Flash", "Kimi K3", "DeepSeek-V4-Pro", "DeepSeek-V4.1-Flash", "MiniMax M3"];
+const SUPPLIER_CAPABILITIES = ["streaming", "tools", "reasoning", "vision", "parallel_tool_calls"];
+function inventoryIdentities() {
+  return [...new Set([...(state.codexCatalog?.models || []).map(m => m.id), ...COMPATIBLE_IDENTITIES])];
+}
+function protocolOptions(value = "openai.responses") {
+  return ["openai.responses", "openai.chat_completions", "anthropic.messages", "gemini.generate_content"].map(p => `<option value="${p}" ${p === value ? "selected" : ""}>${p}${p !== "openai.responses" ? " · 首期不适配" : ""}</option>`).join("");
+}
+function supplierInterfaceRow(id = "", value = {}) {
+  return `<div class="subsection" data-supplier-interface>
+    <div class="form-grid">
+      ${field("接口名称 / ID", "interfaceId", id, "responses")}
+      <label class="field"><span>协议</span><select name="protocol">${protocolOptions(value.protocol)}</select></label>
+      ${field("API Base URL", "baseUrl", value.baseUrl || "", "https://api.example.com/v1", false, "url")}
+      ${field("API Key", "secret", "", value.secretConfigured ? "已配置，留空保留" : "认证凭据", false, "password")}
+      ${field("认证头", "authHeader", value.auth?.header || "authorization", "authorization")}
+      ${field("认证前缀", "authScheme", value.auth?.scheme ?? "Bearer", "Bearer；无前缀可留空")}
+    </div>
+    <button class="text-button" type="button" data-action="remove-supplier-interface">移除接口</button>
+    ${id && state.supplierId ? `<button class="button" type="button" data-action="discover-supplier-models" data-id="${esc(JSON.stringify([state.supplierId, id]))}">发现模型</button><button class="button" type="button" data-action="test-upstream" data-id="${esc(`supplier.${state.supplierId}.${id}`)}">测试连接</button>` : ""}
+  </div>`;
+}
+function supplierInterfaceFacts(iid, model) {
+  const d = model.interfaceCapabilities?.[iid] || {};
+  return `<details data-interface-facts="${esc(iid)}"><summary>${esc(iid)} · 接口能力差异（空项继承公共事实）</summary><div class="form-grid">${SUPPLIER_CAPABILITIES.map(cap => `<label class="field"><span>${esc(cap)}</span><select name="diff:${iid}:cap:${cap}">${["", "unknown", "supported", "unsupported"].map(v => `<option value="${v}" ${d.capabilityStates?.[cap] === v ? "selected" : ""}>${{ "":"继承", unknown:"未确认", supported:"支持", unsupported:"不支持" }[v]}</option>`).join("")}</select></label>`).join("")}${field("接口上下文限制", `diff:${iid}:contextWindow`, d.contextWindow ?? "", "继承公共事实", false, "number")}${field("接口输出限制", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens ?? "", "继承公共事实", false, "number")}${field("接口推理档位", `diff:${iid}:efforts`, (d.reasoning?.efforts || []).join(", "), "继承公共事实")}</div></details>`;
+}
+function renderSuppliers() {
+  const suppliers = state.config.suppliers || {};
+  const sid = state.supplierId;
+  const supplier = suppliers[sid] || {};
+  const mid = state.supplierModelId;
+  const model = supplier.models?.[mid] || {};
+  const capabilityFields = SUPPLIER_CAPABILITIES.map(cap => {
+    const value = model.capabilityStates?.[cap] || (model.capabilities?.includes(cap) ? "supported" : "unknown");
+    return `<label class="field"><span>${esc(cap)}</span><select name="cap:${cap}">${["unknown", "supported", "unsupported"].map(s => `<option value="${s}" ${s === value ? "selected" : ""}>${{unknown:"未确认",supported:"支持",unsupported:"不支持"}[s]}</option>`).join("")}</select></label>`;
+  }).join("");
+  return `<div class="cable-toolbar"><span>${Object.keys(suppliers).length} 家供应商</span><button class="button" data-action="new-supplier">新建供应商</button></div>
+    <div class="panel"><table class="cable-table"><thead><tr><th>名称</th><th>状态</th><th>接口</th><th>模型</th><th>操作</th></tr></thead><tbody>${entries(suppliers).map(([id,s]) => `<tr><th><button class="text-button" data-action="open-supplier" data-id="${esc(id)}">${esc(s.name || id)}</button></th><td>${s.enabled === false ? "停用" : "启用"}</td><td>${Object.keys(s.interfaces || {}).length}</td><td>${Object.keys(s.models || {}).length}</td><td><button class="text-button" data-action="delete-supplier" data-id="${esc(id)}">删除</button></td></tr>`).join("")}</tbody></table></div>
+    <form id="supplier-form" class="config-form panel"><h2>${sid ? "编辑供应商" : "新建供应商"}</h2>
+      <div class="form-grid">${field("供应商名称", "name", supplier.name || "", "例如 DeepSeek 官方")}${field("供应商 ID", "supplierId", sid || "", "deepseek")}</div>
+      <p class="field-hint">直接配置服务实例的接口和模型。API Base URL 为协议端点之前的根地址。</p>
+      <div id="supplier-interface-list">${entries(supplier.interfaces || {}).length ? entries(supplier.interfaces).map(([id,i]) => supplierInterfaceRow(id,i)).join("") : supplierInterfaceRow("responses")}</div>
+      <button class="button" type="button" data-action="add-supplier-interface">添加接口</button>
+      <div class="form-actions"><button class="button" type="submit">保存供应商</button></div>
+    </form>
+    ${sid ? `<div class="panel"><h2>模型</h2><button class="button" data-action="new-supplier-model">添加模型</button><table class="cable-table"><thead><tr><th>上游模型 ID</th><th>实际模型身份</th><th>可访问接口</th><th>操作</th></tr></thead><tbody>${entries(supplier.models || {}).map(([id,m]) => `<tr><th><button class="text-button" data-action="edit-supplier-model" data-id="${esc(id)}">${esc(id)}</button></th><td>${esc(m.identity || "未知")}</td><td>${esc((m.interfaces || []).join("、"))}</td><td><button class="text-button" data-action="delete-supplier-model" data-id="${esc(id)}">删除</button></td></tr>`).join("")}</tbody></table></div>
+    ${state.discoveredModels.length ? `<div class="panel"><h3>发现结果 · 选择后保存到供应商</h3><p class="field-hint">不会自动加入 Cable。实际身份和能力需要另行确认。</p>${state.discoveredModels.map(m => `<button class="button" data-action="use-discovered-model" data-id="${esc(m.id)}">${esc(m.id)}</button>`).join(" ")}</div>` : ""}
+    <form id="supplier-model-form" class="config-form panel"><h2>${mid ? "编辑模型事实" : "添加模型事实"}</h2>
+      <input type="hidden" name="oldModelId" value="${esc(mid || "")}">
+      <div class="form-grid">${field("上游模型 ID", "modelId", mid || state.discoveredSelection || "", "请求上游时使用的标识")}
+        <label class="field"><span>实际模型身份</span><input name="identity" list="inventory-identities" value="${esc(model.identity || "")}" placeholder="留空为未知"><datalist id="inventory-identities">${inventoryIdentities().map(id => `<option value="${esc(id)}">`).join("")}</datalist></label>
+        ${field("实际版本（可选）", "version", model.version || "", "")}${field("身份依据（可选）", "identitySource", model.identitySource || "", "官方文档或接口声明")}
+      </div>
+      <fieldset class="transfer-selection"><legend>可访问接口</legend>${entries(supplier.interfaces || {}).map(([id,i]) => `<label class="checkbox-field"><input type="checkbox" name="interfaces" value="${esc(id)}" ${(model.interfaces || []).includes(id) || state.discoveredInterface === id ? "checked" : ""}><span>${esc(id)} · ${esc(i.protocol)}</span></label>`).join("")}</fieldset>
+      <h3>能力与限制</h3><div class="form-grid">${capabilityFields}${field("上下文限制", "contextWindow", model.contextWindow || "", "未知可留空", false, "number")}${field("输出限制", "maxOutputTokens", model.maxOutputTokens || "", "未知可留空", false, "number")}</div>
+      <h3>推理控制事实</h3><fieldset class="transfer-selection">${["effort","toggle","budget"].map(mode => `<label class="checkbox-field"><input type="checkbox" name="reasoningModes" value="${mode}" ${(model.reasoning?.modes || []).includes(mode) ? "checked" : ""}><span>${{effort:"档位",toggle:"开关",budget:"预算"}[mode]}</span></label>`).join("")}</fieldset>
+      <div class="form-grid">${field("Responses 接受的推理档位", "efforts", (model.reasoning?.efforts || []).join(", "), "none, low, high, max")}${field("默认档位", "defaultEffort", model.reasoning?.default || "", "未知可留空")}${field("预算单位", "budgetUnit", model.reasoning?.budget?.unit || "", "tokens")}${field("最小预算", "budgetMin", model.reasoning?.budget?.min || "", "", false, "number")}${field("最大预算", "budgetMax", model.reasoning?.budget?.max || "", "", false, "number")}</div>
+      <label class="field"><span>接口历史方式</span><select name="history">${["unknown", "native", "stateless"].map(v => `<option value="${v}" ${v === (model.history || "unknown") ? "selected" : ""}>${{unknown:"未确认",native:"原生历史",stateless:"无状态完整历史"}[v]}</option>`).join("")}</select></label>
+      <div class="form-grid"><label class="field"><span>推理开关默认状态</span><select name="defaultToggle">${["unknown", "true", "false"].map(v => `<option value="${v}" ${v === String(model.reasoning?.toggle ?? "unknown") ? "selected" : ""}>${{unknown:"未确认",true:"开启",false:"关闭"}[v]}</option>`).join("")}</select></label>${field("默认预算", "budgetDefault", model.reasoning?.budget?.default ?? "", "未确认可留空", false, "number")}
+      <label class="field"><span>真实供给验证记录</span><select name="validation">${["unverified", "partial", "manual-pass"].map(v => `<option value="${v}" ${v === (model.validation || "unverified") ? "selected" : ""}>${{unverified:"未实测",partial:"部分通过", "manual-pass":"已手动验证"}[v]}</option>`).join("")}</select></label></div>
+      <p class="field-hint">这里只维护供给事实。不会根据预算声明生成转换规则；客户端仅开放代码已实现的控制方式。</p>
+      ${entries(supplier.interfaces || {}).map(([iid]) => supplierInterfaceFacts(iid, model)).join("")}
+      <div class="form-actions"><button class="button" type="submit">保存模型事实</button></div>
+    </form>` : ""}`;
+}
+function saveSupplier(data, form) {
+  const sid = String(data.get("supplierId") || "").trim();
+  if (state.supplierId && sid !== state.supplierId) throw new Error("供应商 ID 保持不变；如需新实例请新建供应商。");
+  const interfaces = {};
+  for (const row of form.querySelectorAll("[data-supplier-interface]")) {
+    const read = name => row.querySelector(`[name="${name}"]`)?.value.trim() || "";
+    const iid = read("interfaceId");
+    if (!iid || interfaces[iid]) throw new Error("接口 ID 不能为空或重复。");
+    interfaces[iid] = { ...clone(state.config.suppliers?.[sid]?.interfaces?.[iid] || {}),protocol:read("protocol"),baseUrl:read("baseUrl"),auth:{header:read("authHeader"),scheme:read("authScheme")},secret:read("secret") };
+  }
+  return { type:"supplier.save",supplierId:sid,data:{name:String(data.get("name") || "").trim(),enabled:state.config.suppliers?.[sid]?.enabled !== false,interfaces} };
+}
+function saveSupplierModel(data) {
+  const old = state.config.suppliers?.[state.supplierId]?.models?.[data.get("oldModelId")] || {};
+  const nextId = String(data.get("modelId") || "").trim();
+  if (data.get("oldModelId") && nextId !== data.get("oldModelId") && !window.confirm("修改上游模型 ID 将移除旧记录。旧 Cable 引用将报“来源不存在”，需要在 Cable 中重新配置。继续？")) throw new Error("已取消修改。");
+  const number = name => data.get(name) ? Number(data.get(name)) : null;
+  const capabilityStates = Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap,data.get(`cap:${cap}`)]));
+  const model = { ...clone(old), identity:String(data.get("identity") || "").trim() || null,version:data.get("version") || null,identitySource:data.get("identitySource") || null,interfaces:data.getAll("interfaces"),capabilityStates,contextWindow:number("contextWindow"),maxOutputTokens:number("maxOutputTokens"),inputModalities:capabilityStates.vision === "supported" ? ["text","image"] : ["text"],reasoning:{modes:data.getAll("reasoningModes"),efforts:String(data.get("efforts") || "").split(",").map(v => v.trim()).filter(Boolean),default:data.get("defaultEffort") || null,budget:{unit:data.get("budgetUnit") || null,min:number("budgetMin"),max:number("budgetMax")}},history:data.get("history") || "unknown" };
+  const differences = {};
+  model.reasoning.toggle = data.get("defaultToggle") === "unknown" ? null : data.get("defaultToggle") === "true";
+  model.reasoning.budget.default = number("budgetDefault");
+  model.validation = data.get("validation") || "unverified";
+  for (const iid of data.getAll("interfaces")) {
+    const d = clone(old.interfaceCapabilities?.[iid] || {});
+    const states = Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap, data.get(`diff:${iid}:cap:${cap}`)]).filter(([,v]) => v));
+    if (Object.keys(states).length) d.capabilityStates = states; else delete d.capabilityStates;
+    for (const key of ["contextWindow", "maxOutputTokens"]) { const v = number(`diff:${iid}:${key}`); if (v) d[key] = v; else delete d[key]; }
+    const efforts = String(data.get(`diff:${iid}:efforts`) || "").split(",").map(v => v.trim()).filter(Boolean);
+    if (efforts.length) d.reasoning = {modes:["effort"], efforts}; else delete d.reasoning;
+    if (Object.keys(d).length) differences[iid] = d;
+  }
+  model.interfaceCapabilities = differences;
+  return { type:"supplier.model.save",supplierId:state.supplierId,data:{oldModelId:data.get("oldModelId"),modelId:nextId,model} };
+}
+function inventoryBindingRow(name = "", binding = {}) {
+  const profile = selectedCable()?.virtualProvider.models?.[name];
+  const identity = state.config.suppliers?.[binding.sources?.[0]?.supplierId]?.models?.[binding.sources?.[0]?.modelId]?.identity;
+  const policies = identity?.startsWith("gpt-") ? ["default", "native"] : COMPATIBLE_IDENTITIES.includes(identity) ? ["default", "compatible", "compatible-concise"] : ["default"];
+  if (binding.promptStrategy && !policies.includes(binding.promptStrategy)) policies.push(binding.promptStrategy);
+  return `<div class="subsection" data-inventory-binding data-old-id="${esc(name)}"><div class="form-grid">
+    ${field("客户端模型 ID", "clientId", name, "例如 deepseek-pro")}${field("显示名称", "displayName", binding.name || "", "")}
+    <label class="field"><span>提示词策略</span><select name="promptStrategy">${policies.map(v => `<option value="${v}" ${v === (binding.promptStrategy || "default") ? "selected" : ""}>${{default:"默认（按实际模型身份）",native:"客户端原生",compatible:"内置兼容", "compatible-concise":"内置兼容 · 简洁"}[v]}</option>`).join("")}</select></label>
+    ${field("别名（逗号分隔）", "aliases", (binding.aliases || []).join(", "), "")}
+    <label class="field"><span>手动使用来源</span><select name="activeSource">${(binding.sources || []).map((s,i) => `<option value="${i}" ${i === (binding.activeSource || 0) ? "selected" : ""}>${esc(`${s.supplierId} / ${s.modelId} / ${s.interfaceId}`)}</option>`).join("")}</select></label>
+  </div><p class="field-hint">${esc(profile?.sourceError || profile?.adaptationError || "默认策略按实际模型身份选择；兼容模板与工具约定配套，目录需重新应用后生效。")}</p>
+  ${profile && !profile.sourceError ? `<p class="field-hint">实际身份：${esc(profile.identity || "未知")} · 访问协议：${esc(profile.interfaceProtocol)} · 上下文：${esc(profile.contextWindow || "未确认")} · 输出上限：${esc(profile.maxOutputTokens || "未确认")}<br>已确认能力：${esc((profile.capabilities || []).join("、") || "无")} · 推理控制：${esc((profile.reasoning?.modes || []).join("、") || "未确认")} · 档位：${esc((profile.reasoning?.efforts || []).join("、") || "无")}<br>适配状态：${profile.sourceEnabled === false ? "来源已停用" : profile.adaptationError ? "暂不可用" : profile.identity?.startsWith("gpt-") ? "应用时校验本机原生定义" : "内置规则已实现"} · 真实供给验证：${esc(profile.validation || "未实测")}</p>` : ""}
+  <div data-inventory-sources>${(binding.sources || []).map(s => inventorySourceRow(s)).join("")}</div>
+  <div class="form-actions"><button class="button" type="button" data-action="add-binding-source">添加来源</button><button class="text-button" type="button" data-action="remove-binding">移除模型绑定</button></div></div>`;
+}
+function inventorySourceRow(source = {}, selected = null) {
+  const allowed = selected || selectedCable()?.record.suppliers || [];
+  const sid = source.supplierId || allowed[0] || "";
+  const supplier = state.config.suppliers?.[sid];
+  const mid = source.modelId || Object.keys(supplier?.models || {})[0] || "";
+  const model = supplier?.models?.[mid];
+  return `<div class="form-grid" data-inventory-source><label class="field"><span>供应商</span><select name="sourceSupplier">${optionList([...new Set([sid,...allowed])].filter(Boolean),sid)}</select></label>
+    <label class="field"><span>上游模型 ID</span><select name="sourceModel">${optionList([...new Set([mid,...Object.keys(supplier?.models || {})])].filter(Boolean),mid)}</select></label>
+    <label class="field"><span>访问接口</span><select name="sourceInterface">${optionList([...new Set([source.interfaceId,...(model?.interfaces || [])])].filter(Boolean),source.interfaceId || model?.interfaces?.[0])}</select></label><button class="text-button" type="button" data-action="remove-binding-source">移除来源</button></div>`;
+}
+function renderInventoryCable(cable) {
+  const record = cable?.record || {};
+  const suppliers = state.config.suppliers || {};
+  const selected = new Set(record.suppliers || []);
+  const activation = state.runtime?.clientActivation?.codex;
+  const activationText = cable && activation?.cableId === cable.id ? activation.status === "active" ? "当前激活的 Codex 配置" : "Codex 受管理字段已变化，请核对配置" : activation?.cableId ? `Codex 当前激活 Cable：${activation.cableId}` : "尚未激活到 Codex 配置";
+  return `<button class="text-button" data-action="back-overview">返回列表</button>
+    <form id="inventory-cable-form" class="config-form panel" data-cable-id="${esc(cable?.id || "")}"><h2>${cable ? "供应商、模型与提示词" : "新建 Codex 线路"}</h2>
+      ${!cable ? `<div class="form-grid">${field("线路名称", "name", "", "codex-work")}<div class="field"><span>客户端</span><span>Codex · Responses</span></div></div>` : ""}
+      <p class="field-hint">同一客户端可创建多条线路。模型只在显式选择后加入；保存与应用到客户端分开。</p>
+      <fieldset class="transfer-selection"><legend>供应商</legend>${entries(suppliers).map(([sid,s]) => `<label class="checkbox-field"><input type="checkbox" name="suppliers" value="${esc(sid)}" ${selected.has(sid) ? "checked" : ""}><span>${esc(s.name || sid)}</span></label>`).join("") || `<p>请先在供应商页面配置接口与模型。</p>`}</fieldset>
+      <h3>选择模型</h3><input type="search" data-inventory-filter placeholder="搜索模型 ID 或实际身份">
+      <div class="form-actions"><button class="button" type="button" data-action="select-inventory-filter">选择当前筛选结果</button><button class="button" type="button" data-action="clear-inventory-selection">清空勾选</button><button class="button" type="button" data-action="add-selected-inventory-models">将勾选模型加入绑定</button></div>
+      <div data-inventory-candidates>${entries(suppliers).map(([sid,s]) => `<fieldset data-inventory-supplier="${esc(sid)}" ${selected.has(sid) ? "" : "hidden"}><legend>${esc(s.name || sid)}</legend>${entries(s.models || {}).map(([mid,m]) => `<label class="checkbox-field" data-inventory-candidate data-search="${esc(`${mid} ${m.identity || ""}`.toLowerCase())}"><input type="checkbox" name="candidate" value="${esc(JSON.stringify([sid,mid]))}"><span>${esc(mid)} · ${esc(m.identity || "身份未知")}</span><select data-candidate-interface>${(m.interfaces || []).map(iid => `<option value="${esc(iid)}" ${s.interfaces?.[iid]?.protocol !== "openai.responses" ? "disabled" : ""}>${esc(iid)} · ${esc(s.interfaces?.[iid]?.protocol)}</option>`).join("")}</select></label>`).join("")}</fieldset>`).join("")}</div>
+      <h3>已开放模型与来源</h3><div id="inventory-binding-list">${entries(record.models || {}).map(([name,b]) => inventoryBindingRow(name,b)).join("")}</div>
+      <label class="field"><span>默认模型</span><select name="defaultModel"><option value="">未设置</option>${optionList(Object.keys(record.models || {}),record.defaultModel)}</select></label>
+      <div class="form-actions"><button class="button button-primary" type="submit">保存 Cable</button></div>
+    </form>
+    ${cable ? `<div class="panel"><h2>客户端配置</h2><p>${esc(activationText)}</p><p class="mono">${esc(cableEndpoint(cable))}</p><p>模板按模型目录生效；更新目录后重启 Codex。多来源首期仅支持手动选择，不自动路由或切换。</p><button class="button" data-action="preview-artifacts">预览客户端配置</button><button class="button button-primary" data-action="apply-target">应用到 Codex</button><button class="button" data-action="restore-target">撤销接入</button><button class="button" data-action="export-isolated">导出隔离启动配置</button><button class="button" data-action="toggle-vp" data-id="${esc(cable.record.virtualProvider)}">${cable.virtualProvider.enabled === false ? "启动服务" : "暂停服务"}</button>${state.artifactPreview ? artifactPanel(state.artifactPreview) : ""}</div>` : ""}`;
+}
+function saveInventoryCable(data, form) {
+  const models = {};
+  for (const row of form.querySelectorAll("[data-inventory-binding]")) {
+    const read = name => row.querySelector(`[name="${name}"]`)?.value.trim() || "";
+    const name = read("clientId");
+    if (!name || models[name]) throw new Error("客户端模型 ID 不能为空或重复。");
+    const sources = [...row.querySelectorAll("[data-inventory-source]")].map(s => ({supplierId:s.querySelector('[name="sourceSupplier"]').value,modelId:s.querySelector('[name="sourceModel"]').value,interfaceId:s.querySelector('[name="sourceInterface"]').value}));
+    const old = state.config.cables?.[form.dataset.cableId]?.models?.[row.dataset.oldId] || {};
+    models[name] = {...clone(old),name:read("displayName"),sources:sources.map(s => ({...clone(old.sources?.find(previous => previous.supplierId === s.supplierId && previous.modelId === s.modelId && previous.interfaceId === s.interfaceId) || {}),...s})),aliases:read("aliases").split(",").map(s => s.trim()).filter(Boolean),promptStrategy:read("promptStrategy"),activeSource:Number(read("activeSource") || 0)};
+  }
+  return {type:form.dataset.cableId ? "cable.inventory.save" : "cable.inventory.create",cableId:form.dataset.cableId,data:{name:data.get("name"),suppliers:data.getAll("suppliers"),models,defaultModel:data.get("defaultModel")}};
+}
+function syncInventoryDefaults(form) {
+  const select = form.querySelector('[name="defaultModel"]');
+  const ids = [...form.querySelectorAll('[data-inventory-binding] [name="clientId"]')].map(n => n.value.trim()).filter(Boolean);
+  if (select) select.innerHTML = `<option value="">未设置</option>${optionList(ids,select.value)}`;
+  for (const row of form.querySelectorAll("[data-inventory-binding]")) {
+    const choice = row.querySelector('[name="activeSource"]');
+    const old = choice?.value;
+    if (choice) choice.innerHTML = [...row.querySelectorAll("[data-inventory-source]")].map((s,i) => `<option value="${i}" ${String(i) === old ? "selected" : ""}>${esc([...s.querySelectorAll("select")].map(n => n.value).join(" / "))}</option>`).join("");
+  }
+}
+pageContent.addEventListener("change", event => {
+  const form = event.target.closest("#inventory-cable-form");
+  if (!form || form.getAttribute?.("id") !== "inventory-cable-form") return;
+  if (event.target.name === "suppliers") {
+    const enabled = new Set([...form.querySelectorAll('[name="suppliers"]:checked')].map(n => n.value));
+    for (const group of form.querySelectorAll("[data-inventory-supplier]")) group.hidden = !enabled.has(group.dataset.inventorySupplier);
+  }
+  const source = event.target.closest("[data-inventory-source]");
+  if (source && ["sourceSupplier","sourceModel"].includes(event.target.name)) {
+    const sid = source.querySelector('[name="sourceSupplier"]').value;
+    const supplier = state.config.suppliers?.[sid];
+    const modelSelect = source.querySelector('[name="sourceModel"]');
+    if (event.target.name === "sourceSupplier") modelSelect.innerHTML = optionList(Object.keys(supplier?.models || {}),"");
+    source.querySelector('[name="sourceInterface"]').innerHTML = optionList(supplier?.models?.[modelSelect.value]?.interfaces || [],"");
+  }
+  syncInventoryDefaults(form);
+});
+pageContent.addEventListener("input", event => {
+  const form = event.target.closest("#inventory-cable-form");
+  if (!form || form.getAttribute?.("id") !== "inventory-cable-form") return;
+  if (event.target.matches("[data-inventory-filter]")) {
+    const search = event.target.value.toLowerCase();
+    for (const row of form.querySelectorAll("[data-inventory-candidate]")) row.hidden = !row.dataset.search.includes(search);
+  }
+  if (event.target.name === "clientId") syncInventoryDefaults(form);
+});
+async function inventoryAction(action, element) {
+  if (action === "create-inventory-cable") { state.selected.cable = null; state.page = "inventory-create"; render(); }
+  else if (action === "new-supplier" || action === "open-supplier") { state.supplierId = action === "open-supplier" ? element.dataset.id : null; state.supplierModelId = null; state.discoveredModels = []; state.page = "suppliers"; render(); }
+  else if (action === "new-supplier-model" || action === "edit-supplier-model") { state.supplierModelId = action === "edit-supplier-model" ? element.dataset.id : null; state.discoveredSelection = null; state.discoveredInterface = null; render(); }
+  else if (action === "add-supplier-interface") { const div = document.createElement("div"); div.innerHTML = supplierInterfaceRow(); pageContent.querySelector("#supplier-interface-list").append(div.firstElementChild); }
+  else if (action === "remove-supplier-interface") element.closest("[data-supplier-interface]").remove();
+  else if (action === "delete-supplier" || action === "delete-supplier-model") {
+    if (!window.confirm(action === "delete-supplier-model" ? "删除模型记录后，旧 Cable 引用会报“来源不存在”，需要在 Cable 中重新绑定。继续？" : "删除此供应商？")) return;
+    await saveChanges(() => ({type:action === "delete-supplier" ? "supplier.delete" : "supplier.model.delete",supplierId:action === "delete-supplier" ? element.dataset.id : state.supplierId,modelId:element.dataset.id}));
+  } else if (action === "migrate-cable") {
+    if (!window.confirm("迁移将分离供应商事实与客户端选择，并保留旧透传兜底。迁移后在供应商页面维护供给，在 Cable 中选择模型。继续？")) return;
+    await saveChanges(() => ({type:"cable.inventory.migrate",cableId:element.dataset.id}));
+  } else if (action === "discover-supplier-models") {
+    const [sid,iid] = JSON.parse(element.dataset.id);
+    const result = await api("/suppliers/discover",{method:"POST",body:JSON.stringify({supplierId:sid,interfaceId:iid})});
+    state.discoveredModels = result.models; state.discoveredInterface = iid; render();
+  } else if (action === "use-discovered-model") { state.supplierModelId = null; state.discoveredSelection = element.dataset.id; render(); }
+  else if (["select-inventory-filter","clear-inventory-selection"].includes(action)) {
+    for (const row of pageContent.querySelectorAll("[data-inventory-candidate]")) if (!row.hidden && !row.closest("[data-inventory-supplier]").hidden || action === "clear-inventory-selection") row.querySelector("input").checked = action !== "clear-inventory-selection";
+  } else if (action === "add-selected-inventory-models") {
+    const form = element.closest("form");
+    const list = form.querySelector("#inventory-binding-list");
+    const taken = new Set([...list.querySelectorAll('[name="clientId"]')].map(n => n.value));
+    for (const row of form.querySelectorAll("[data-inventory-candidate]")) {
+      if (!row.querySelector("input").checked || row.closest("[data-inventory-supplier]").hidden) continue;
+      const [supplierId,modelId] = JSON.parse(row.querySelector("input").value);
+      const interfaceId = row.querySelector("select").value;
+      if (!interfaceId) throw new Error("模型没有首期支持的 Responses 接口。");
+      let name = modelId, n = 2;
+      while (taken.has(name)) name = `${modelId}-${n++}`;
+      taken.add(name);
+      const wrapper = document.createElement("div"); wrapper.innerHTML = inventoryBindingRow(name,{sources:[{supplierId,modelId,interfaceId}]}); list.append(wrapper.firstElementChild);
+      row.querySelector("input").checked = false;
+    }
+    syncInventoryDefaults(form);
+  } else if (action === "remove-binding") { const form = element.closest("form"); element.closest("[data-inventory-binding]").remove(); syncInventoryDefaults(form); }
+  else if (action === "add-binding-source") { const form = element.closest("form"); const allowed = [...form.querySelectorAll('[name="suppliers"]:checked')].map(n => n.value); if (!allowed.length) throw new Error("请先为 Cable 选择供应商。"); const row = element.closest("[data-inventory-binding]"); const wrapper = document.createElement("div"); wrapper.innerHTML = inventorySourceRow({},allowed); row.querySelector("[data-inventory-sources]").append(wrapper.firstElementChild); syncInventoryDefaults(form); }
+  else if (action === "remove-binding-source") { const form = element.closest("form"); element.closest("[data-inventory-source]").remove(); syncInventoryDefaults(form); }
+  else return false;
+  return true;
+}

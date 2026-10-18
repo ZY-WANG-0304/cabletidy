@@ -252,6 +252,9 @@ pub fn public(snapshot: &Value) -> Value {
     json!({"available": true, "version": snapshot["version"], "models": models})
 }
 pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> {
+    if p["managedModel"] == true {
+        return crate::codex_adapter::catalog_entry(snapshot, name, p);
+    }
     let original=official(snapshot).find(|m|m["slug"]==name).with_context(||format!("模型 {name} 未匹配本机 Codex 官方 GPT 目录。请选择对应的官方模型；若本机目录过旧，请更新 Codex。当前不支持非对应模型。"))?;
     if !nonempty(&original["base_instructions"])
         && !nonempty(&original["model_messages"]["instructions_template"])
@@ -383,7 +386,10 @@ pub fn changed_models(c: &Value, old: &Value) -> Vec<(String, String)> {
         .collect()
 }
 pub async fn validate_changes(c: &Value, old: &Value, catalog: &Catalog) -> Vec<Value> {
-    let ids = changed_models(c, old);
+    let ids: Vec<_> = changed_models(c, old)
+        .into_iter()
+        .filter(|(pid, _)| !crate::suppliers::managed(&c["virtualProviders"][pid]))
+        .collect();
     if ids.is_empty() {
         return vec![];
     }
@@ -397,6 +403,9 @@ pub async fn validate_changes(c: &Value, old: &Value, catalog: &Catalog) -> Vec<
     }).collect()
 }
 pub fn plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
+    if crate::suppliers::managed(p) {
+        return crate::codex_adapter::catalog_plan(c, p, snapshot);
+    }
     validate(&snapshot["catalog"])?;
     let mut catalog = snapshot["catalog"].clone();
     let mut overrides = Vec::new();

@@ -62,9 +62,19 @@ Unix 控制 socket 优先使用 `$XDG_RUNTIME_DIR/cabletidy/<数据目录哈希>
 
 界面预览：[桌面](docs/screenshots/service-settings-desktop.png) · [手机](docs/screenshots/service-settings-mobile.png)。
 
+## 供应商与显式模型 Cable（本分支）
+
+供应商页面独立管理服务实例的多个协议接口、凭据和模型供给事实，不展示使用情况。新建 Codex Cable 可选择多家供应商，并显式加入部分模型；发现/刷新模型不会扩大选择。同一客户端可创建多条 Cable，每个绑定保存客户端 ID、提示词策略及明确的上游来源，首期只开放固定来源或兼容来源的手动选择。
+
+首批新增运行组合为 Codex × Responses × 原生 GPT，以及 GLM-5.3、GLM-5.3-Flash、Kimi K3、DeepSeek-V4-Pro、DeepSeek-V4.1-Flash、MiniMax M3。供给事实未知或适配缺失时可保存草稿，但不可发布；默认模型不可用时不能应用。其他协议可记录供给，协议转换、自动路由、均衡和故障切换尚未开放。内置兼容规则的存在不代表真实供给验证通过。
+
+模型上游 ID 改变视为删除旧记录、创建新记录，旧 Cable 引用保留并报“来源不存在”，需显式重新绑定。客户端配置支持预览、应用、撤销及隔离配置导出；激活另一 Cable 不迁移已运行会话，撤销遵守当前字段所有权。旧线路保留原路径，缺少实际身份依据时不自动迁移或按客户端别名猜测身份。
+
+详见[重构设计](docs/provider-cable-refactor-design.md)和[配置及逐模型验证步骤](docs/provider-cable-validation.md)。真实模型集成验收仍待用户环境验证，GitHub Actions 仅运行模拟上游测试。
+
 ## 线路导出与导入
 
-“配置套装”自 `0.4.0-rc.6` 更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到上游，当前版本每条线路只支持一个上游。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。仍发送旧字段 `bindingId` 或 `bindingIds` 的请求会返回 `422 renamed_request_field`，不会退回默认选择，避免旧脚本看似成功却接到错误上游。
+“配置套装”自 `0.4.0-rc.6` 更名为“线路”（英文 Cable）：一条线路把一个 CLI 接到上游，旧线路保留单上游路径；本分支新增的 Codex 目录线路可选择多家供应商并显式开放部分模型。随之变化的还有 `config.json` 的 `bindings` 字段（现为 `cables`，配置版本 `2` → `3`）、导出文件标识、导入导出接口路径与字段，以及 `status` 输出中的线路列表字段。旧 `config.json`、旧导出文件和升级前已应用的 Claude Code 接管记录继续可用，详见各节说明；新版导出的文件不保证能被旧版 CableTidy 读取。仍发送旧字段 `bindingId` 或 `bindingIds` 的请求会返回 `422 renamed_request_field`，不会退回默认选择，避免旧脚本看似成功却接到错误上游。
 
 在管理台的“线路”列表点击“导出线路”，勾选需要的线路后下载 JSON 文件。文件包含所选线路的客户端接入、模型映射与可选参数、路由、上游地址和认证方式；共用的路由与上游只保存一次。
 
@@ -74,20 +84,20 @@ Unix 控制 socket 优先使用 `$XDG_RUNTIME_DIR/cabletidy/<数据目录哈希>
 
 导入复用配置提交的校验、修订冲突检查和备份流程，文件无效时不会部分写入；预览后若本机配置已变更，需要重新预览。带可选模型设置的 Codex 线路会按本机官方目录校验，纯透传线路不依赖该目录。
 
-本地管理接口：`POST /api/v1/cables/export` 接收 `{ "cableIds": ["线路ID"], "includeCredentials": false }` 并返回线路文件；`POST /api/v1/cables/import` 接收 `{ "bundle": 文件内容, "preview": true }` 返回预览、`baseRevision` 和 `hasCredentials`，正式导入使用 `{ "bundle": 文件内容, "baseRevision": 预览修订号, "choices": { "同名的源线路ID": "update 或 create" }, "useImportedCredentials": true }`。预览中的每条线路提供 `sourceId` 和 `conflict`，所有同名线路都必须明确选择；`choices` 也可用于预览所选更新方案。含凭据的文件通过顶层 `upstreamSecrets` 保存所选上游 ID 与密钥的对应关系，不包含本机密钥引用。`includeCredentials` 默认 `false`，`useImportedCredentials` 默认 `true`。文件标识为 `cabletidy.cables`，文件版本为 `1`，内部配置版本为 `3`。旧的 `cabletidy.configuration-suites` 文件（内部配置版本 `2`）仍可导入，其中的 `bindings` 按 `cables` 读取；同时包含 `bindings` 和 `cables` 的文件一律拒绝，不部分导入。
+本地管理接口：`POST /api/v1/cables/export` 接收 `{ "cableIds": ["线路ID"], "includeCredentials": false }` 并返回线路文件；`POST /api/v1/cables/import` 接收 `{ "bundle": 文件内容, "preview": true }` 返回预览、`baseRevision` 和 `hasCredentials`，正式导入使用 `{ "bundle": 文件内容, "baseRevision": 预览修订号, "choices": { "同名的源线路ID": "update 或 create" }, "useImportedCredentials": true }`。预览中的每条线路提供 `sourceId` 和 `conflict`，所有同名线路都必须明确选择；`choices` 也可用于预览所选更新方案。含凭据的文件通过顶层 `upstreamSecrets` 保存所选上游 ID 与密钥的对应关系，不包含本机密钥引用。`includeCredentials` 默认 `false`，`useImportedCredentials` 默认 `true`。文件标识为 `cabletidy.cables`，旧线路文件版本为 `1`，包含供应商目录的文件版本为 `2`，内部配置版本仍为 `3`。旧的 `cabletidy.configuration-suites` 文件（内部配置版本 `2`）仍可导入，其中的 `bindings` 按 `cables` 读取；同时包含 `bindings` 和 `cables` 的文件一律拒绝，不部分导入。
 
 ## 模型透传与可选设置
 
-每条线路默认将客户端请求的 `model` 原样发送到唯一上游，无需注册模型或填写同名映射。未配置的模型、工具和输入类型由上游判断是否支持；协议兼容不代表上游支持所有模型。
+旧线路默认将客户端请求的 `model` 原样发送到唯一上游，无需注册模型或填写同名映射。未配置的模型、工具和输入类型由上游判断是否支持；协议兼容不代表上游支持所有模型。
 
 需要改名或覆盖上下文等参数时，才添加模型设置。上游模型 ID 可留空，留空时继续使用请求中的模型名。设置只在当前线路内生效，不会影响其他线路，也不会阻止未配置的模型请求。请求未携带模型且没有显式默认模型时，返回 `model_required`。
 
 Codex 的可选模型设置目前只支持与本机官方 GPT 目录明确对应的模型，允许上游使用不同的模型名称：
 
 - 客户端默认保留对应的官方模型名，例如 `gpt-5.5`；CableTidy 将它映射为上游要求的模型名，不要求用户另外设置别名。
-- 模型提示词和行为配置沿用对应的 Codex 官方模型定义，不用其他 GPT 模型冒充，也不提供自研的通用中性提示词。
+- 模型提示词和行为配置沿用对应的 Codex 官方模型定义，完整保留原生定义；新目录 Cable 的 B 模型使用单独的内置兼容模板。
 - 模型身份对应不代表上游能力完整；仍需确认实际支持的工具、输入类型和上下文限制。
-- 不对应 Codex 官方 GPT 模型的接入与适配推迟到后续版本，当前不提供相关配置向导或兼容性承诺。
+- 旧线路编辑器继续使用原生 GPT 定义；非原生首批模型通过新的供应商目录 Cable 配置。
 
 可选设置中的模型选择来自本机 `codex debug models --bundled`，不维护静态模型名白名单。新增或修改 Codex 模型设置、预览和应用含模型设置的配置时，会检查官方目录匹配；纯透传配置不依赖该目录。旧配置可继续加载和运行，不会自动改名或删除。目录匹配不等于上游模型身份认证，仍需依据上游接入说明确认，连通性测试不能证明模型身份或完整兼容性。
 
