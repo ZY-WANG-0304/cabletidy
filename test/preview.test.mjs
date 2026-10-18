@@ -21,7 +21,11 @@ test("preview identifies the commit and synchronizes isolated npm and Rust metad
   await Promise.all(files.map((file, i) => fs.writeFile(path.join(temporary, file), before[i])));
   const commit = "abc123456789".padEnd(40, "0");
   const version = previewVersion("0.5.0-rc.2", commit, new Date("2026-10-18T09:30:00Z"));
-  assert.equal(version, "0.5.0-preview.20261018093000.gabc123456789");
+  assert.equal(version, "0.5.0-preview.261018.gabc1234");
+  assert.equal(previewVersion("0.5.0-rc.2", commit, new Date("2026-10-18T23:59:59Z")), version);
+  assert.equal(previewVersion("0.5.0-rc.2", commit, new Date("2026-10-19T08:00:00+08:00")),
+    "0.5.0-preview.261019.gabc1234");
+  assert.equal(previewVersion("0.5.0-rc.2", commit, new Date("2026-10-19T00:30:00+08:00")), version);
   await setVersion(temporary, version);
   // Compare against the original manifests so unrelated dependencies cannot silently change.
   const npm = JSON.parse(before[0]);
