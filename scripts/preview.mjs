@@ -27,8 +27,8 @@ export function parseArgs(args) {
 export function previewVersion(version, commit, date = new Date()) {
   const core = version.match(/^(\d+\.\d+\.\d+)(?:[-+].*)?$/)?.[1];
   if (!core || !/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid preview version or commit");
-  const timestamp = date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
-  return `${core}-preview.${timestamp}.g${commit.slice(0, 12)}`;
+  const day = date.toISOString().slice(2, 10).replace(/-/g, "");
+  return `${core}-preview.${day}.g${commit.slice(0, 7)}`;
 }
 
 export async function setVersion(directory, version) {

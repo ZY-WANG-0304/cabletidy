@@ -191,7 +191,7 @@ cabletidy start
 npm run preview
 ```
 
-命令先执行 `git fetch origin`，在临时目录构建 `origin/main` 的 release 二进制，再打包并安装到当前 npm 的全局前缀。无需手动改版本号、打 tag 或发布 npm。快照版本例如 `0.5.0-preview.20261018093000.gabc123456789`，包含 UTC 构建时间和提交短 SHA；npm 包与 `cabletidy --version` 保持一致。当前工作区的未提交修改不会纳入快照，源码版本文件也不会被修改。
+命令先执行 `git fetch origin`，在临时目录构建 `origin/main` 的 release 二进制，再打包并安装到当前 npm 的全局前缀。无需手动改版本号、打 tag 或发布 npm。快照版本例如 `0.5.0-preview.261019.g30c3b6c`，包含 UTC 构建日期（`YYMMDD`）和 7 位提交短 SHA；同一提交在同一 UTC 日期重复构建时版本号相同，完整 SHA 保存在安装包旁的 `.tgz.json` 和包内的 `build.json` 中。npm 包与 `cabletidy --version` 保持一致。当前工作区的未提交修改不会纳入快照，源码版本文件也不会被修改。
 
 安装与 `cabletidy update` 共用确认流程：Linux/macOS 安装后询问是否立即重启，选择否则当前 daemon 继续运行，之后执行 `cabletidy restart` 使用新版。Windows 运行中的二进制会被锁定，需要先确认停止，安装完成后再确认启动。服务未运行时仅安装，不自动启动；非交互终端默认不确认，可用 `--yes` 自动确认。
 
