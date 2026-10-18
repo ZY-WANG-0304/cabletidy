@@ -1,4 +1,4 @@
-use super::pipeline::{learn_credentials, BodyWriter, Pipeline, Utf8Reader};
+use super::pipeline::{BodyWriter, Pipeline, Utf8Reader};
 use crate::{
     config::text,
     streaming::{self, Edits, EventFramer, Index, Node, Reservation, Spool, PAGE},
@@ -476,15 +476,22 @@ impl Streams {
         let mut retained_source = Spool::new()?;
         std::io::copy(&mut edits.reader(&data.payload), &mut retained_source)?;
         let retained_source = retained_source.seal()?;
-        learn_credentials(&retained_source, &mut p.redactor);
         // Fragment references link to reconstructed original content, where credentials
         // split across events can be detected and highlighted together.
         if data.fields.len > 0 {
             p.render_text(writer, data.fields, "response", true, true)?;
         }
         writer.push("data: ")?;
-        if learn_credentials(&retained_source, &mut p.redactor) {
+        let detection = super::credentials::detect_snapshot(
+            &retained_source,
+            &json!({}),
+            &p.redactor.catalog(),
+            "response",
+        );
+        if detection.complete {
+            p.body_detection = Some(detection);
             p.render_json(writer, retained_source, "response", true)?;
+            p.body_detection = None;
         } else {
             p.render_text(writer, retained_source, "response", true, true)?;
         }

@@ -1,5 +1,7 @@
 pub(crate) mod capture;
 pub(crate) mod content;
+mod credential_source;
+pub(crate) mod credentials;
 pub mod evidence;
 mod history;
 mod pipeline;
@@ -41,7 +43,7 @@ impl Security {
         }
     }
     pub fn status(&self) -> Value {
-        json!({"mode":"record_only","ruleVersion":"2","categories":rules::CATEGORIES,"storage":self.store.status(),
+        json!({"mode":"record_only","ruleVersion":"4","categories":rules::CATEGORIES,"storage":self.store.status(),
             "resources":streaming::usage(),"limits":{"bodyPageBytes":4*streaming::PAGE,"concurrentInspections":4},
             "pendingInspections":self.jobs.load(Ordering::Acquire),
             "coverage":["known_credentials","credential_patterns","structured_tool_calls","literal_shell_commands","external_instruction_heuristics"]})
@@ -71,7 +73,7 @@ impl Security {
         metadata["schemaVersion"] = json!(5);
         metadata["mode"] = json!("record_only");
         metadata["outcome"] = json!("started");
-        metadata["ruleVersion"] = json!("2");
+        metadata["ruleVersion"] = json!("4");
         metadata["requestBodyState"] = json!("pending");
         metadata["responseBodyState"] = json!("pending");
         metadata["executionStatus"] = json!("unknown");
@@ -98,6 +100,7 @@ impl Security {
                 },
                 response: BodyCapture::default(),
                 protection: None,
+                detection: None,
                 protection_memory: crate::streaming::Reservation::memory(),
             }),
         });
@@ -194,6 +197,7 @@ struct AuditState {
     request: BodyCapture,
     response: BodyCapture,
     protection: Option<Value>,
+    detection: Option<Arc<credentials::Detection>>,
     protection_memory: crate::streaming::Reservation,
 }
 pub struct Audit {
@@ -206,9 +210,6 @@ pub struct Audit {
 impl Audit {
     pub fn request_spool(&self, spool: Arc<Spool>, complete: bool) {
         let mut s = self.state.lock().unwrap();
-        if let Some(r) = &mut s.redactor {
-            pipeline::learn_credentials(&spool, r);
-        }
         s.request.observed = spool
             .len
             .max(s.record["requestObservedBytes"].as_u64().unwrap_or(0));
@@ -216,6 +217,12 @@ impl Audit {
         s.request.started = true;
         s.request.complete = complete;
         s.request.sealed = Some(spool);
+    }
+    pub(crate) fn detection(&self, detection: Arc<credentials::Detection>) {
+        let mut s = self.state.lock().unwrap();
+        detection.learn(s.redactor.as_mut().unwrap());
+        s.record["credentialDetection"] = detection.summary();
+        s.detection = Some(detection);
     }
     pub fn is_response_attached(&self) -> bool {
         self.state.lock().unwrap().response_attached
@@ -253,7 +260,7 @@ impl Audit {
                         .as_object()
                         .unwrap()
                         .iter()
-                        .filter(|(key, _)| key.as_str() != "mappings")
+                        .filter(|(key, _)| !matches!(key.as_str(), "mappings" | "decisions"))
                         .map(|(key, value)| (key.clone(), value.clone()))
                         .collect(),
                 );
@@ -264,6 +271,7 @@ impl Audit {
         let mut summary = report.clone();
         if let Some(m) = summary.as_object_mut() {
             m.remove("mappings");
+            m.remove("decisions");
         }
         state.record["protection"] = summary;
         // Full A↔B data lives in a paged body snapshot outside the audit envelope.
@@ -276,6 +284,13 @@ impl Audit {
         if let Some(report) = &mut s.protection {
             report["status"] = json!("failed");
             report["reason"] = json!(reason);
+            for decision in report["decisions"].as_array_mut().into_iter().flatten() {
+                if decision["replacementStatus"] == "not_replaced"
+                    && decision["reason"] == "pending_execution"
+                {
+                    decision["reason"] = json!("execution_failed");
+                }
+            }
         }
     }
     pub fn response(&self, status: u16, sse: bool, headers: &axum::http::HeaderMap) {
@@ -357,6 +372,7 @@ impl Audit {
         let request = std::mem::take(&mut s.request);
         let response = std::mem::take(&mut s.response);
         let protection = s.protection.take();
+        let detection = s.detection.take();
         let protection_memory = std::mem::replace(
             &mut s.protection_memory,
             crate::streaming::Reservation::memory(),
@@ -378,6 +394,7 @@ impl Audit {
                 let _protection_memory = protection_memory;
                 pipeline::run(
                     store, record, secrets, redactor, request, response, sse, upstream, protection,
+                    detection,
                 )
             })
             .await

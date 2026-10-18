@@ -1,0 +1,25 @@
+{
+  "gitleaks": {
+    "commit": "b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b",
+    "sourceDate": "2026-07-22T16:50:33Z",
+    "urls": [
+      "https://github.com/gitleaks/gitleaks/blob/b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b/README.md",
+      "https://github.com/gitleaks/gitleaks/blob/b58d3f102cf3a2c84cb7f923d05c25c9b1aed84b/config/gitleaks.toml"
+    ]
+  },
+  "detect-secrets": {
+    "commit": "5e141933554a0b74e7341841f318be21e895339c",
+    "sourceDate": "2026-04-02T17:10:40Z",
+    "urls": [
+      "https://github.com/Yelp/detect-secrets/blob/5e141933554a0b74e7341841f318be21e895339c/README.md",
+      "https://github.com/Yelp/detect-secrets/blob/5e141933554a0b74e7341841f318be21e895339c/detect_secrets/filters/heuristic.py"
+    ]
+  },
+  "trufflehog": {
+    "commit": "feea7f94e0994eca3159e1edffa943fa60271021",
+    "sourceDate": "2026-10-15T15:33:32Z",
+    "urls": [
+      "https://github.com/trufflesecurity/trufflehog/blob/feea7f94e0994eca3159e1edffa943fa60271021/README.md"
+    ]
+  }
+}

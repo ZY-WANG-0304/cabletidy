@@ -1,0 +1,408 @@
+{
+  "date": "2026-10-16T19:05:15.629Z",
+  "platform": "linux",
+  "architecture": "x64",
+  "cpu": "Intel(R) Xeon(R) Platinum 8358P CPU @ 2.60GHz",
+  "cpuCount": 128,
+  "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "build": "cargo build --locked --release --features test-support --bin cabletidy-test-daemon; thin LTO; same Cargo.lock",
+  "binarySha256": {
+    "stage2": "6a43ef93fd1136aeb19b9f8a2e8216d8d1db052117db08427f773fab4a29adfc",
+    "stage3": "d1386be0b9729fd7bfdecd607afa36e5b3d617c28bd431487495ba7d3abe3b46"
+  },
+  "scope": "Local transport and asynchronous audit, 4 warmup + 32 alternating paired batches per variant and scenario. Resource reservations sampled every 20 ms; RSS VmHWM from Linux /proc is process high water including startup and warmup. Batch audit completion includes 5 ms polling resolution. Low concurrency p99 has limited sample support. No production load or network latency claim. This run includes the bounded HTTP reader buffering change; no material protection latency improvement was observed. Recorded stage3 binary precedes later display-only changes and a test-only store fixture; detector and transport match the final implementation.",
+  "results": [
+    {
+      "scenario": {
+        "bytes": 4096,
+        "mappings": 0,
+        "concurrency": 1
+      },
+      "version": "stage2",
+      "protectionEnabled": false,
+      "wireBytes": 4026,
+      "transportMs": {
+        "n": 32,
+        "p50": 6.275508000000173,
+        "p95": 10.175748999999996,
+        "p99": 11.784740000000056
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 28.91868199999999,
+        "p95": 40.57046999999966,
+        "p99": 42.43638999999985
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 1058262,
+      "encryptedSpoolSampleMax": 4383,
+      "rssHwmBytes": 18268160,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 4096,
+        "mappings": 0,
+        "concurrency": 1
+      },
+      "version": "stage2",
+      "protectionEnabled": true,
+      "wireBytes": 4026,
+      "transportMs": {
+        "n": 32,
+        "p50": 50.62341199999992,
+        "p95": 53.020306999999775,
+        "p99": 55.01652100000001
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 58.44668600000023,
+        "p95": 60.986635999999635,
+        "p99": 61.248733999999786
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 1118556,
+      "encryptedSpoolSampleMax": 8159,
+      "rssHwmBytes": 17936384,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 4096,
+        "mappings": 0,
+        "concurrency": 1
+      },
+      "version": "stage3",
+      "protectionEnabled": false,
+      "wireBytes": 4026,
+      "transportMs": {
+        "n": 32,
+        "p50": 5.95948799999951,
+        "p95": 8.391907000000174,
+        "p99": 8.829259999999977
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 31.873567999999977,
+        "p95": 41.449626999999964,
+        "p99": 44.734747999999854
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 1056168,
+      "encryptedSpoolSampleMax": 4383,
+      "rssHwmBytes": 18530304,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 4096,
+        "mappings": 0,
+        "concurrency": 1
+      },
+      "version": "stage3",
+      "protectionEnabled": true,
+      "wireBytes": 4026,
+      "transportMs": {
+        "n": 32,
+        "p50": 50.48595599999953,
+        "p95": 54.069806999999855,
+        "p99": 58.26192399999991
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 58.37179699999979,
+        "p95": 65.73435500000005,
+        "p99": 66.71153299999969
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 1420348,
+      "encryptedSpoolSampleMax": 8206,
+      "rssHwmBytes": 17825792,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 65536,
+        "mappings": 32,
+        "concurrency": 4
+      },
+      "version": "stage2",
+      "protectionEnabled": false,
+      "wireBytes": 65466,
+      "transportMs": {
+        "n": 128,
+        "p50": 41.85627299999942,
+        "p95": 49.907170999998925,
+        "p99": 52.6528959999996
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 116.994283,
+        "p95": 133.77974600000016,
+        "p99": 163.2601340000001
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 18887512,
+      "encryptedSpoolSampleMax": 263065,
+      "rssHwmBytes": 32174080,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 65536,
+        "mappings": 32,
+        "concurrency": 4
+      },
+      "version": "stage2",
+      "protectionEnabled": true,
+      "wireBytes": 65466,
+      "transportMs": {
+        "n": 128,
+        "p50": 97.39442699999927,
+        "p95": 162.08853199999976,
+        "p99": 197.1787970000005
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 218.209922,
+        "p95": 247.08772500000123,
+        "p99": 248.86803399999917
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 11500426,
+      "encryptedSpoolSampleMax": 327907,
+      "rssHwmBytes": 32583680,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 65536,
+        "mappings": 32,
+        "concurrency": 4
+      },
+      "version": "stage3",
+      "protectionEnabled": false,
+      "wireBytes": 65466,
+      "transportMs": {
+        "n": 128,
+        "p50": 40.97456299999976,
+        "p95": 47.352084999998624,
+        "p99": 77.43024299999888
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 117.191945999999,
+        "p95": 137.30531600000177,
+        "p99": 161.66464700000142
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 18885418,
+      "encryptedSpoolSampleMax": 263360,
+      "rssHwmBytes": 31842304,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 65536,
+        "mappings": 32,
+        "concurrency": 4
+      },
+      "version": "stage3",
+      "protectionEnabled": true,
+      "wireBytes": 65466,
+      "transportMs": {
+        "n": 128,
+        "p50": 97.69794600000023,
+        "p95": 163.58176900000035,
+        "p99": 175.74604399999953
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 190.6944990000011,
+        "p95": 250.5141939999994,
+        "p99": 253.0605319999995
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 9870160,
+      "encryptedSpoolSampleMax": 327612,
+      "rssHwmBytes": 34697216,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 262144,
+        "mappings": 128,
+        "concurrency": 8
+      },
+      "version": "stage2",
+      "protectionEnabled": false,
+      "wireBytes": 262074,
+      "transportMs": {
+        "n": 256,
+        "p50": 132.22154800000135,
+        "p95": 155.70444999999017,
+        "p99": 195.9640270000018
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 411.35169099998893,
+        "p95": 476.97665199999756,
+        "p99": 479.9450139999972
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 31780026,
+      "encryptedSpoolSampleMax": 2099082,
+      "rssHwmBytes": 45203456,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 262144,
+        "mappings": 128,
+        "concurrency": 8
+      },
+      "version": "stage2",
+      "protectionEnabled": true,
+      "wireBytes": 262074,
+      "transportMs": {
+        "n": 256,
+        "p50": 493.1166840000078,
+        "p95": 903.4695100000026,
+        "p99": 941.4002760000003
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 1038.4686780000047,
+        "p95": 1121.691107999999,
+        "p99": 1138.1893049999999
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 17679100,
+      "encryptedSpoolSampleMax": 2359987,
+      "rssHwmBytes": 47116288,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 262144,
+        "mappings": 128,
+        "concurrency": 8
+      },
+      "version": "stage3",
+      "protectionEnabled": false,
+      "wireBytes": 262074,
+      "transportMs": {
+        "n": 256,
+        "p50": 134.6174459999893,
+        "p95": 157.83111099999223,
+        "p99": 176.15710000001127
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 417.59240800001135,
+        "p95": 453.2277640000102,
+        "p99": 459.0586750000075
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 30993404,
+      "encryptedSpoolSampleMax": 2099176,
+      "rssHwmBytes": 47579136,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    },
+    {
+      "scenario": {
+        "bytes": 262144,
+        "mappings": 128,
+        "concurrency": 8
+      },
+      "version": "stage3",
+      "protectionEnabled": true,
+      "wireBytes": 262074,
+      "transportMs": {
+        "n": 256,
+        "p50": 491.3444520000048,
+        "p95": 897.1881990000111,
+        "p99": 926.1844259999925
+      },
+      "auditBatchCompletionMs": {
+        "n": 32,
+        "p50": 1050.3685379999952,
+        "p95": 1112.2644940000027,
+        "p99": 1112.475471999991
+      },
+      "errors": 0,
+      "workingMemorySampleMax": 17419396,
+      "encryptedSpoolSampleMax": 2359987,
+      "rssHwmBytes": 49659904,
+      "budgets": {
+        "workingMemory": 268435456,
+        "encryptedSpool": 536870912
+      }
+    }
+  ],
+  "comparisons": [
+    {
+      "scenario": {
+        "bytes": 4096,
+        "mappings": 0,
+        "concurrency": 1
+      },
+      "stage3VsStage2ProtectionP95": 1.0197943025867444,
+      "stage3ProtectionVsDisabledP95": 6.44308939553295,
+      "budgetUnchanged": true
+    },
+    {
+      "scenario": {
+        "bytes": 65536,
+        "mappings": 32,
+        "concurrency": 4
+      },
+      "stage3VsStage2ProtectionP95": 1.0092124777834413,
+      "stage3ProtectionVsDisabledP95": 3.454584291272604,
+      "budgetUnchanged": true
+    },
+    {
+      "scenario": {
+        "bytes": 262144,
+        "mappings": 128,
+        "concurrency": 8
+      },
+      "stage3VsStage2ProtectionP95": 0.993047567261023,
+      "stage3ProtectionVsDisabledP95": 5.684482566938626,
+      "budgetUnchanged": true
+    }
+  ]
+}

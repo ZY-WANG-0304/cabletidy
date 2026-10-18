@@ -1,13 +1,6 @@
 use crate::config::{array, text};
-use regex::Regex;
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, sync::LazyLock};
-
-static CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-    r"(?:\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bAKIA[0-9A-Z]{16}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)"
-).unwrap()
-});
+use std::collections::BTreeSet;
 
 pub const CATEGORIES: &[&str] = &[
     "sensitive_data",
@@ -29,6 +22,7 @@ pub fn rank(severity: &str) -> u8 {
 
 pub struct Rules {
     pub findings: Vec<Value>,
+    pub shared_credentials: bool,
     pub reasons: BTreeSet<&'static str>,
     pub secrets: Vec<String>,
     seen: BTreeSet<(String, [u8; 32])>,
@@ -58,6 +52,7 @@ impl Rules {
         }
         Self {
             findings: Vec::new(),
+            shared_credentials: false,
             reasons,
             secrets: keys,
             seen: BTreeSet::new(),
@@ -220,7 +215,16 @@ impl Rules {
     pub fn annotations(&mut self, marks: &[Value], stage: &str, location: &str) {
         self.memoized(
             "annotations",
-            || json!(marks),
+            || {
+                json!(marks
+                    .iter()
+                    .map(|m| {
+                        let mut m = m.clone();
+                        m.as_object_mut().unwrap().remove("candidateId");
+                        m
+                    })
+                    .collect::<Vec<_>>())
+            },
             stage,
             location,
             |rules| rules.annotations_uncached(marks, stage, location),
@@ -318,7 +322,7 @@ impl Rules {
         };
         self.findings.push(json!({
             "id":uuid::Uuid::new_v4().to_string(),"at":crate::config::now(),"atMs":chrono::Utc::now().timestamp_millis(),
-            "ruleId":id,"ruleVersion":"2","category":category,"severity":severity,"confidence":confidence,
+            "ruleId":id,"ruleVersion":"4","category":category,"severity":severity,"confidence":confidence,
             "severityReason":severity_reason,"confidenceReason":confidence_reason,
             "evidenceStage":stage,"executionStatus":"unknown","mode":"record_only",
             "evidence":{"operation":operation,"targetClass":target,"location":location},"frameworkMappings":mappings
@@ -326,8 +330,13 @@ impl Rules {
     }
 
     fn content_uncached(&mut self, value: &str, stage: &str, location: &str) {
-        let known = self.known_secret(value);
-        if known || CREDENTIAL.is_match(value) {
+        let known = !self.shared_credentials && self.known_secret(value);
+        if !self.shared_credentials
+            && (known
+                || !super::capture::Redactor::new(&json!({}))
+                    .credential_spans(value, None)
+                    .is_empty())
+        {
             self.hit(
                 "SEC-SECRET-001",
                 "sensitive_data",
@@ -384,7 +393,7 @@ impl Rules {
                 "incomplete_body_fragment" => {}
                 "internal_host" | "internal_identity" => internal = true,
                 "public_host" => public = true,
-                "known_credential" | "credential_field" => {
+                "known_credential" => {
                     credential = true;
                     known = true;
                 }

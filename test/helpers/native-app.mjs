@@ -46,7 +46,7 @@ export async function createApplication(options = {}) {
     const pathKey = Object.keys(env).find(key => key.toLowerCase() === "path") || "PATH";
     env[pathKey] = `${commands}${path.delimiter}${env[pathKey] || ""}`;
   }
-  const child = spawn(executable, [], { env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(options.executable || executable, [], { env, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", chunk => { output += chunk; });
   child.stderr.on("data", chunk => { output += chunk; });

@@ -1,0 +1,1623 @@
+{
+  "date": "2026-10-16T18:59:00.125Z",
+  "phase": "third-synthetic-holdout",
+  "detectorVersion": "credentials-4",
+  "auditPolicyVersion": "audit-4",
+  "binarySha256": "2e35ce2885d36bac4635f034718233ac79fa9b029d3182ffdec0637b716cdcfe",
+  "manifestSha256": "8c12d6c740e7ae845c33e0f48e1b83416575ade53bcf8761ae7fe5bd3265e667",
+  "scope": "Local synthetic grouped diagnostic evaluation. Families contain correlated variants; Wilson intervals are descriptive specimen intervals, not independent or production inference. Original heldout split became regression after first failure informed a fix. Exact full wire payload comparison verifies noncredential bytes as well as replacement. Refusals are separate. No online credential validation.",
+  "auditSettled": true,
+  "auditCount": 112,
+  "strata": {
+    "tuning": {
+      "total": {
+        "specimens": 0,
+        "families": 0,
+        "pass": 0,
+        "precision": null,
+        "positivePayloadRecall": null,
+        "negativeChangeRate": null,
+        "blocked": {
+          "total": 0,
+          "correct": 0
+        },
+        "ambiguous": {
+          "total": 0,
+          "unchanged": 0
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "environment": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "json": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "markdown": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "protocol": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "provider": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "structure": {
+          "specimens": 0,
+          "families": 0,
+          "pass": 0,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": null,
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        }
+      }
+    },
+    "heldout": {
+      "total": {
+        "specimens": 112,
+        "families": 28,
+        "pass": 108,
+        "precision": {
+          "estimate": 1,
+          "lower": 0.9035813714055363,
+          "upper": 1,
+          "n": 36
+        },
+        "positivePayloadRecall": {
+          "estimate": 0.9,
+          "lower": 0.7694822477247771,
+          "upper": 0.9604204713173936,
+          "n": 40
+        },
+        "negativeChangeRate": {
+          "estimate": 0,
+          "lower": 0,
+          "upper": 0.08029560375848066,
+          "n": 44
+        },
+        "blocked": {
+          "total": 8,
+          "correct": 8
+        },
+        "ambiguous": {
+          "total": 20,
+          "unchanged": 20
+        }
+      },
+      "layers": {
+        "source": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "environment": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "json": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "markdown": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        },
+        "protocol": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 12,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.5101091635454027,
+            "upper": 1,
+            "n": 4
+          },
+          "positivePayloadRecall": {
+            "estimate": 0.5,
+            "lower": 0.21521606221387757,
+            "upper": 0.7847839377861224,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "provider": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "positivePayloadRecall": {
+            "estimate": 1,
+            "lower": 0.6755924351161198,
+            "upper": 1,
+            "n": 8
+          },
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.32440756488388023,
+            "n": 8
+          },
+          "blocked": {
+            "total": 0,
+            "correct": 0
+          },
+          "ambiguous": {
+            "total": 0,
+            "unchanged": 0
+          }
+        },
+        "structure": {
+          "specimens": 16,
+          "families": 4,
+          "pass": 16,
+          "precision": null,
+          "positivePayloadRecall": null,
+          "negativeChangeRate": {
+            "estimate": 0,
+            "lower": 0,
+            "upper": 0.4898908364545973,
+            "n": 4
+          },
+          "blocked": {
+            "total": 8,
+            "correct": 8
+          },
+          "ambiguous": {
+            "total": 4,
+            "unchanged": 4
+          }
+        }
+      }
+    }
+  },
+  "contractSummary": {},
+  "results": [
+    {
+      "id": "final/source/string-rust-let/0",
+      "family": "final/source/string-rust-let",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/source/string-rust-let/1",
+      "family": "final/source/string-rust-let",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/source/string-rust-let/2",
+      "family": "final/source/string-rust-let",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/source/string-rust-let/3",
+      "family": "final/source/string-rust-let",
+      "layer": "source",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/source/qualified-type-member/0",
+      "family": "final/source/qualified-type-member",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/qualified-type-member/1",
+      "family": "final/source/qualified-type-member",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/qualified-type-member/2",
+      "family": "final/source/qualified-type-member",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/qualified-type-member/3",
+      "family": "final/source/qualified-type-member",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/single-unknown-escape/0",
+      "family": "final/source/single-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/single-unknown-escape/1",
+      "family": "final/source/single-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/single-unknown-escape/2",
+      "family": "final/source/single-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/single-unknown-escape/3",
+      "family": "final/source/single-unknown-escape",
+      "layer": "source",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/typed-object-expression/0",
+      "family": "final/source/typed-object-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/typed-object-expression/1",
+      "family": "final/source/typed-object-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/typed-object-expression/2",
+      "family": "final/source/typed-object-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/source/typed-object-expression/3",
+      "family": "final/source/typed-object-expression",
+      "layer": "source",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/0",
+      "family": "final/environment/dot-env-leading-space",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/1",
+      "family": "final/environment/dot-env-leading-space",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/2",
+      "family": "final/environment/dot-env-leading-space",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/dot-env-leading-space/3",
+      "family": "final/environment/dot-env-leading-space",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/secret-suffix-single/0",
+      "family": "final/environment/secret-suffix-single",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/secret-suffix-single/1",
+      "family": "final/environment/secret-suffix-single",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/secret-suffix-single/2",
+      "family": "final/environment/secret-suffix-single",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/secret-suffix-single/3",
+      "family": "final/environment/secret-suffix-single",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/environment/placeholder-after-export/0",
+      "family": "final/environment/placeholder-after-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/placeholder-after-export/1",
+      "family": "final/environment/placeholder-after-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/placeholder-after-export/2",
+      "family": "final/environment/placeholder-after-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/placeholder-after-export/3",
+      "family": "final/environment/placeholder-after-export",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/0",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/1",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/2",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/environment/double-unsupported-newline-escape/3",
+      "family": "final/environment/double-unsupported-newline-escape",
+      "layer": "environment",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/0",
+      "family": "final/json/camel-field-multi-deep",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/1",
+      "family": "final/json/camel-field-multi-deep",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/2",
+      "family": "final/json/camel-field-multi-deep",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/camel-field-multi-deep/3",
+      "family": "final/json/camel-field-multi-deep",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/schema-example-value/0",
+      "family": "final/json/schema-example-value",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/schema-example-value/1",
+      "family": "final/json/schema-example-value",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/schema-example-value/2",
+      "family": "final/json/schema-example-value",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/schema-example-value/3",
+      "family": "final/json/schema-example-value",
+      "layer": "json",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/json/schema-password-policy/0",
+      "family": "final/json/schema-password-policy",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/schema-password-policy/1",
+      "family": "final/json/schema-password-policy",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/schema-password-policy/2",
+      "family": "final/json/schema-password-policy",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/schema-password-policy/3",
+      "family": "final/json/schema-password-policy",
+      "layer": "json",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/0",
+      "family": "final/json/unsupported-single-escape-nested",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/1",
+      "family": "final/json/unsupported-single-escape-nested",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/2",
+      "family": "final/json/unsupported-single-escape-nested",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/json/unsupported-single-escape-nested/3",
+      "family": "final/json/unsupported-single-escape-nested",
+      "layer": "json",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/heading-python-password/0",
+      "family": "final/markdown/heading-python-password",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/markdown/heading-python-password/1",
+      "family": "final/markdown/heading-python-password",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/markdown/heading-python-password/2",
+      "family": "final/markdown/heading-python-password",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/markdown/heading-python-password/3",
+      "family": "final/markdown/heading-python-password",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/0",
+      "family": "final/markdown/backtick-field-and-prose",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/1",
+      "family": "final/markdown/backtick-field-and-prose",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/2",
+      "family": "final/markdown/backtick-field-and-prose",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/backtick-field-and-prose/3",
+      "family": "final/markdown/backtick-field-and-prose",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/fenced-comparison/0",
+      "family": "final/markdown/fenced-comparison",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/fenced-comparison/1",
+      "family": "final/markdown/fenced-comparison",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/fenced-comparison/2",
+      "family": "final/markdown/fenced-comparison",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/fenced-comparison/3",
+      "family": "final/markdown/fenced-comparison",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/0",
+      "family": "final/markdown/inline-unclosed-single",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/1",
+      "family": "final/markdown/inline-unclosed-single",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/2",
+      "family": "final/markdown/inline-unclosed-single",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/markdown/inline-unclosed-single/3",
+      "family": "final/markdown/inline-unclosed-single",
+      "layer": "markdown",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/0",
+      "family": "final/protocol/mixed-basic-prose",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/1",
+      "family": "final/protocol/mixed-basic-prose",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/2",
+      "family": "final/protocol/mixed-basic-prose",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/protocol/mixed-basic-prose/3",
+      "family": "final/protocol/mixed-basic-prose",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/0",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/1",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/2",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/cookie-quoted-prefixed-name/3",
+      "family": "final/protocol/cookie-quoted-prefixed-name",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": false,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/public-route-fragment/0",
+      "family": "final/protocol/public-route-fragment",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/public-route-fragment/1",
+      "family": "final/protocol/public-route-fragment",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/public-route-fragment/2",
+      "family": "final/protocol/public-route-fragment",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/public-route-fragment/3",
+      "family": "final/protocol/public-route-fragment",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/0",
+      "family": "final/protocol/opaque-no-auth",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/1",
+      "family": "final/protocol/opaque-no-auth",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/2",
+      "family": "final/protocol/opaque-no-auth",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/protocol/opaque-no-auth/3",
+      "family": "final/protocol/opaque-no-auth",
+      "layer": "protocol",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/0",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/1",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/2",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/registered-like-format-in-metadata/3",
+      "family": "final/provider/registered-like-format-in-metadata",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/aws-format-code/0",
+      "family": "final/provider/aws-format-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/aws-format-code/1",
+      "family": "final/provider/aws-format-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/aws-format-code/2",
+      "family": "final/provider/aws-format-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/aws-format-code/3",
+      "family": "final/provider/aws-format-code",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "positive",
+      "status": 200,
+      "correct": true,
+      "changed": true,
+      "replacements": 1
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/0",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/1",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/2",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/short-gh-prefix-plus-public/3",
+      "family": "final/provider/short-gh-prefix-plus-public",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/token-look-like-word/0",
+      "family": "final/provider/token-look-like-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/token-look-like-word/1",
+      "family": "final/provider/token-look-like-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/token-look-like-word/2",
+      "family": "final/provider/token-look-like-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/provider/token-look-like-word/3",
+      "family": "final/provider/token-look-like-word",
+      "layer": "provider",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/format-regex-key-block/0",
+      "family": "final/structure/format-regex-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/format-regex-key-block/1",
+      "family": "final/structure/format-regex-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/format-regex-key-block/2",
+      "family": "final/structure/format-regex-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/format-regex-key-block/3",
+      "family": "final/structure/format-regex-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/function-name-key-block/0",
+      "family": "final/structure/function-name-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/function-name-key-block/1",
+      "family": "final/structure/function-name-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/function-name-key-block/2",
+      "family": "final/structure/function-name-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/function-name-key-block/3",
+      "family": "final/structure/function-name-key-block",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "blocked",
+      "status": 422,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/0",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/1",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/2",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/grammar-symbol-prose-negative/3",
+      "family": "final/structure/grammar-symbol-prose-negative",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "negative",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/0",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/1",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/2",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    },
+    {
+      "id": "final/structure/unknown-escape-in-schema-description/3",
+      "family": "final/structure/unknown-escape-in-schema-description",
+      "layer": "structure",
+      "split": "heldout",
+      "label": "ambiguous",
+      "status": 200,
+      "correct": true,
+      "changed": false,
+      "replacements": 0
+    }
+  ],
+  "contracts": []
+}

@@ -7,19 +7,13 @@ const MARKER: &str = "[REDACTED]";
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"
+    r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16}\b|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"
 ).unwrap()
 });
 static PRIVATE_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
     r"(?s)-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----.*?(?:-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|$)"
 ).unwrap()
-});
-static ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(
-        r#"(?i)(?:\b(?P<field>{})\b["']?\s*[:=]\s*)(?:"(?P<quoted>(?:\\.|[^"\\])*(?:\\)?)(?:"|$)|'(?P<single>[^']*)(?:'|$)|(?P<bare>[^\s,;}}\]]+))"#,
-        credential_pattern()
-    )).unwrap()
 });
 // The scheme word must be followed by a credential-shaped token. Ordinary prose such as
 // "basic instructions" or "bearer token handling" is not an authorization value.
@@ -63,14 +57,8 @@ static HOST_ADDRESS6: LazyLock<Regex> = LazyLock::new(|| {
 static HOST_ENCODED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?://|@)([0-9A-Fx.%]+)(:\d{1,5})?").unwrap());
 static URL_SECRET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(
-        r#"(?i)[?&](?P<query_field>{}|signature|sig)=(?P<value>[^&#\s"']+)"#,
-        credential_pattern()
-    ))
-    .unwrap()
+    Regex::new(r#"[?&](?P<query_field>[A-Za-z][A-Za-z0-9_-]*)=(?P<value>[^&#\s"']+)"#).unwrap()
 });
-static COOKIE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)\b(?:cookie|set-cookie)\s*:\s*([^\r\n"']+)"#).unwrap());
 static ESCAPED_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r#"(?i)\\+["'](?:{})\\+["']\s*[:=]"#,
@@ -105,7 +93,7 @@ const CREDENTIAL_FIELDS: &[&str] = &[
     "authentication",
 ];
 
-fn credential_pattern() -> String {
+pub(super) fn credential_pattern() -> String {
     CREDENTIAL_FIELDS
         .iter()
         .map(|field| {
@@ -115,17 +103,49 @@ fn credential_pattern() -> String {
                 .collect::<Vec<_>>()
                 .join("[_-]*")
         })
+        .map(|pattern| format!("(?:[A-Za-z][A-Za-z0-9]*[_-]+)*{pattern}"))
         .collect::<Vec<_>>()
         .join("|")
 }
 
 pub fn credential_field(key: &str) -> bool {
-    let key: String = key
+    let normalized: String = key
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect();
-    CREDENTIAL_FIELDS.contains(&key.as_str())
+    CREDENTIAL_FIELDS.contains(&normalized.as_str())
+        || [
+            "password",
+            "passwd",
+            "apikey",
+            "accesstoken",
+            "refreshtoken",
+            "clientsecret",
+            "secretaccesskey",
+        ]
+        .iter()
+        .any(|suffix| {
+            if !normalized.ends_with(suffix) {
+                return false;
+            }
+            let prefix = normalized.len() - suffix.len();
+            let Some((at, first)) = key
+                .char_indices()
+                .filter(|(_, c)| c.is_ascii_alphanumeric())
+                .nth(prefix)
+            else {
+                return false;
+            };
+            let previous = key[..at].chars().next_back();
+            previous.is_some_and(|c| !c.is_ascii_alphanumeric())
+                || first.is_ascii_uppercase()
+                    && (previous.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                        || key[at + 1..]
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_lowercase()))
+        })
 }
 
 fn credential_capture<'a>(captures: &regex::Captures<'a>) -> Option<regex::Match<'a>> {
@@ -139,10 +159,7 @@ fn credential_capture<'a>(captures: &regex::Captures<'a>) -> Option<regex::Match
             .find(|value| !value.is_empty());
     }
     if let Some(field) = captures.name("query_field") {
-        if !credential_field(field.as_str())
-            && !field.as_str().eq_ignore_ascii_case("sig")
-            && !field.as_str().eq_ignore_ascii_case("signature")
-        {
+        if !credential_field(field.as_str()) {
             return None;
         }
         return captures.name("value");
@@ -157,10 +174,8 @@ fn credential_capture<'a>(captures: &regex::Captures<'a>) -> Option<regex::Match
 // Explicit template syntax only. A value merely starting with `$` or `<` can be a real
 // password, so the whole value must look like a variable reference or a `<...>` slot.
 //
-// Brace forms stay tolerant of a missing closer because `ASSIGNMENT` ends its capture at
-// `}` or whitespace, so `${VAR}` really does arrive as `${VAR` and `{{ x }}` as `{{`.
-// An angle slot is never truncated that way -- `>` is not a capture terminator -- so it
-// must be closed. Otherwise `<9fK2mNvQ8xRtZ4wB7hLpY1cD` would pass as a placeholder.
+// Bare assignment/URL spans may end before a template closer. An angle slot must
+// be closed, so a literal password starting with `<` is still inspected.
 static TEMPLATE_VALUE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
     r"(?s)^(?:\$\{[^}]*\}?|\$[A-Za-z_][A-Za-z0-9_]*|\{\{[^}]*\}?\}?|\{\{?|<[^<>]*>|%[A-Za-z_][A-Za-z0-9_]*%)$"
@@ -174,8 +189,7 @@ fn placeholder_value(value: &str) -> bool {
     if v.is_empty() {
         return true;
     }
-    // The surrounding capture stops at `}` or whitespace, so a template opener often
-    // arrives truncated (`{{`, `{{vault`). Treat the opener itself as the signal.
+    // Unquoted templates may arrive truncated at a brace or whitespace.
     if TEMPLATE_VALUE.is_match(v) {
         return true;
     }
@@ -189,12 +203,11 @@ fn placeholder_value(value: &str) -> bool {
             | "false"
             | "todo"
             | "fixme"
-            | "changeme"
             | "xxx"
-            | "test"
             | "example"
             | "placeholder"
             | "redacted"
+            | "[redacted]"
             | "undefined"
     ) {
         return true;
@@ -215,6 +228,169 @@ fn placeholder_value(value: &str) -> bool {
         && v.chars()
             .next()
             .is_some_and(|c| "x*.-_#?".contains(c.to_ascii_lowercase()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MatchPolicy {
+    ContextValue,
+    CompleteValue,
+    CredentialUnit,
+    Embedded,
+}
+impl MatchPolicy {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ContextValue => "context_value",
+            Self::CompleteValue => "complete_value",
+            Self::CredentialUnit => "credential_unit",
+            Self::Embedded => "embedded",
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Credential {
+    pub value: String,
+    pub evidence: &'static str,
+    pub credential_type: &'static str,
+    pub match_policy: MatchPolicy,
+}
+pub(crate) fn credential_type(field: &str) -> &'static str {
+    let name = field.to_ascii_lowercase().replace(['_', '-'], "");
+    if name.ends_with("password") || name.ends_with("passwd") {
+        "password"
+    } else if name.ends_with("privatekey") {
+        "private_key"
+    } else if name.ends_with("apikey") || name.ends_with("secretaccesskey") {
+        "api_key"
+    } else if name.contains("cookie") {
+        "session_token"
+    } else if name.ends_with("token") {
+        "access_token"
+    } else {
+        "authentication_secret"
+    }
+}
+#[derive(Clone)]
+pub(crate) struct CredentialHit {
+    pub start: usize,
+    pub end: usize,
+    pub reason: &'static str,
+    pub source: &'static str,
+    pub credential_type: &'static str,
+    pub value_type: &'static str,
+    pub decoded: Option<String>,
+    pub match_policy: MatchPolicy,
+}
+impl CredentialHit {
+    pub fn new(
+        start: usize,
+        end: usize,
+        reason: &'static str,
+        source: &'static str,
+        kind: &'static str,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            reason,
+            source,
+            credential_type: kind,
+            value_type: "literal",
+            decoded: None,
+            match_policy: MatchPolicy::CredentialUnit,
+        }
+    }
+    pub fn strong(&self) -> bool {
+        strong_evidence(self.reason)
+    }
+}
+pub(crate) fn strong_evidence(reason: &str) -> bool {
+    !matches!(
+        reason,
+        "jwt_candidate" | "jwt_shape_unverified" | "credential_literal_unverified"
+    )
+}
+
+// Offline structural check only; no signature, expiry or network validation.
+fn jwt_structure(value: &str) -> bool {
+    fn object(segment: &str) -> Option<Value> {
+        if segment.len() > 32768 {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(segment.len());
+        let mut bits = 0u32;
+        let mut count = 0;
+        for c in segment.bytes() {
+            let n = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'-' => 62,
+                b'_' => 63,
+                _ => return None,
+            };
+            bits = (bits << 6) | n as u32;
+            count += 6;
+            if count >= 8 {
+                count -= 8;
+                bytes.push((bits >> count) as u8);
+                bits &= (1 << count) - 1;
+            }
+        }
+        let value: Value = serde_json::from_slice(&bytes).ok()?;
+        value.is_object().then_some(value)
+    }
+    let parts = value.split('.').collect::<Vec<_>>();
+    parts.len() == 3
+        && object(parts[0]).is_some_and(|v| v["alg"].is_string())
+        && object(parts[1]).is_some()
+}
+
+fn cookie_spans(value: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut base = 0;
+    for pair in value.split(';') {
+        if let Some((name, token)) = pair.split_once('=') {
+            let mut token = token.trim();
+            let mut start =
+                base + pair.find('=').unwrap() + 1 + pair.split_once('=').unwrap().1.len()
+                    - pair.split_once('=').unwrap().1.trim_start().len();
+            if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+                token = &token[1..token.len() - 1];
+                start += 1;
+            }
+            let normalized = name.trim().to_ascii_lowercase().replace(['_', '-'], "");
+            if (credential_field(name.trim())
+                || matches!(
+                    normalized.as_str(),
+                    "session" | "sessionid" | "sessiontoken" | "sid" | "auth" | "authsession"
+                ))
+                && !placeholder_value(token)
+                && !crate::protection::is_placeholder(token)
+            {
+                spans.push(Span {
+                    start,
+                    end: start + token.len(),
+                    reason: "cookie_header",
+                });
+            }
+        }
+        base += pair.len() + 1;
+    }
+    spans
+}
+pub(super) fn cookie_hits(value: &str) -> Vec<CredentialHit> {
+    cookie_spans(value)
+        .into_iter()
+        .map(|s| {
+            let mut hit =
+                CredentialHit::new(s.start, s.end, s.reason, "cookie_pair", "session_token");
+            if !substring_matchable(&value[s.start..s.end]) {
+                hit.match_policy = MatchPolicy::ContextValue;
+            }
+            hit
+        })
+        .collect()
 }
 
 fn shannon_entropy(s: &str) -> f64 {
@@ -364,9 +540,13 @@ fn host_reason(value: &str, ip_start: usize, ip: &str, port: bool) -> Option<&'s
 
 // Learned values are matched inside longer text only when they look like credentials.
 // A low entropy natural-language word would otherwise light up ordinary prose, so it
-// is demoted to whole-value or word-boundary matching instead of being dropped.
-fn substring_matchable(s: &str) -> bool {
-    s.len() >= 8 && !(word_shaped(s) && shannon_entropy(s) < 3.5)
+// requires fresh credential context instead of matching arbitrary whole values.
+pub(crate) fn substring_matchable(s: &str) -> bool {
+    s.len() >= 8
+        && (!(word_shaped(s) && shannon_entropy(s) < 3.5)
+            || s.len() >= 12
+                && s.chars().any(|c| c.is_ascii_uppercase())
+                && s.chars().any(|c| c.is_ascii_lowercase()))
 }
 
 // Overlapping ranges collapse into one, but a credential must never be reported under
@@ -379,7 +559,10 @@ fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
         if let Some(last) = merged.last_mut() {
             if span.start <= last.end {
                 last.end = last.end.max(span.end);
-                if annotation_only(last.reason) && !annotation_only(span.reason) {
+                if (annotation_only(last.reason) && !annotation_only(span.reason))
+                    || (matches!(last.reason, "jwt_candidate" | "jwt_shape_unverified")
+                        && !matches!(span.reason, "jwt_candidate" | "jwt_shape_unverified"))
+                {
                     last.reason = span.reason;
                     last.start = last.start.min(span.start);
                 }
@@ -392,98 +575,305 @@ fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
 }
 
 #[derive(Clone)]
-struct Span {
-    start: usize,
-    end: usize,
-    reason: &'static str,
+pub(crate) struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub reason: &'static str,
 }
 
 pub struct Redactor {
-    secrets: Vec<String>,
+    secrets: Vec<Credential>,
     complete: bool,
     memory: crate::streaming::Reservation,
 }
 
 impl Redactor {
-    /// Transport protection uses credential spans only; endpoint annotations must
-    /// never expand or suppress a credential replacement.
-    pub(crate) fn protection_ranges(&self, value: &str, forced: bool) -> Vec<(usize, usize)> {
-        let mut ranges = Vec::new();
+    /// Facts only: consumers choose whether a candidate should be replaced.
+    pub(crate) fn credential_hits(&self, value: &str, field: Option<&str>) -> Vec<CredentialHit> {
+        let mut hits = Vec::new();
+        let assignments = super::credential_source::assignments(value);
         for secret in &self.secrets {
-            if !secret.is_empty() {
-                ranges.extend(
-                    value
-                        .match_indices(secret)
-                        .map(|(at, s)| (at, at + s.len())),
-                );
+            // Ambiguous learned values carry mappings for restoration and reuse,
+            // but only independent evidence at this occurrence can detect them.
+            if secret.match_policy == MatchPolicy::ContextValue {
+                continue;
+            }
+            for (start, _) in value.match_indices(&secret.value) {
+                let end = start + secret.value.len();
+                if secret.evidence != "registered"
+                    && assignments
+                        .declaration_ranges
+                        .iter()
+                        .any(|range| start < range.end && end > range.start)
+                {
+                    continue;
+                }
+                let unit = |c: char| c.is_alphanumeric() || c == '_';
+                let boundary = !value[..start].chars().next_back().is_some_and(unit)
+                    && !value[end..].chars().next().is_some_and(unit);
+                if value == secret.value
+                    || match secret.match_policy {
+                        MatchPolicy::ContextValue => false,
+                        MatchPolicy::CompleteValue => false,
+                        MatchPolicy::CredentialUnit => boundary,
+                        MatchPolicy::Embedded => boundary || !word_shaped(&secret.value),
+                    }
+                {
+                    let mut hit = CredentialHit::new(
+                        start,
+                        end,
+                        "known_credential",
+                        if secret.evidence == "registered" {
+                            "registered_catalog"
+                        } else {
+                            "trusted_catalog"
+                        },
+                        secret.credential_type,
+                    );
+                    hit.match_policy = secret.match_policy;
+                    hits.push(hit);
+                }
             }
         }
-        for regex in [&*TOKEN, &*PRIVATE_KEY] {
-            ranges.extend(regex.find_iter(value).map(|m| (m.start(), m.end())));
+        for m in TOKEN.find_iter(value) {
+            let (reason, kind) = if m.as_str().starts_with("eyJ") {
+                (
+                    if jwt_structure(m.as_str()) {
+                        "jwt_candidate"
+                    } else {
+                        "jwt_shape_unverified"
+                    },
+                    "jwt",
+                )
+            } else if m.as_str().starts_with("AKIA") || m.as_str().starts_with("ASIA") {
+                ("credential_pattern", "aws_access_id")
+            } else {
+                ("credential_pattern", "api_key")
+            };
+            hits.push(CredentialHit::new(
+                m.start(),
+                m.end(),
+                reason,
+                "provider_format",
+                kind,
+            ));
         }
-        for regex in [&*ASSIGNMENT, &*AUTH, &*URL_AUTH, &*URL_SECRET, &*COOKIE] {
-            for captures in regex.captures_iter(value) {
-                if let Some(m) = credential_capture(&captures) {
-                    // Generated B values stay placeholders in assignment/auth
-                    // text too. Saved or learned real credentials matched above
-                    // still take priority, even when they have B's exact format.
+        for m in PRIVATE_KEY.find_iter(value) {
+            let mut hit = CredentialHit::new(
+                m.start(),
+                m.end(),
+                "private_key",
+                "private_key_envelope",
+                "private_key",
+            );
+            hit.match_policy = MatchPolicy::Embedded;
+            hits.push(hit);
+        }
+        for hit in assignments.hits {
+            let original = hit.decoded.as_deref().unwrap_or(&value[hit.start..hit.end]);
+            if !placeholder_value(original) && !crate::protection::is_placeholder(original) {
+                hits.push(hit);
+            }
+        }
+        for (regex, reason, source, kind) in [
+            (
+                &*AUTH,
+                "authorization",
+                "authorization_scheme",
+                "authentication_secret",
+            ),
+            (
+                &*URL_AUTH,
+                "url_credentials",
+                "url_userinfo",
+                "authentication_secret",
+            ),
+            (
+                &*URL_SECRET,
+                "url_credential_parameter",
+                "url_query",
+                "authentication_secret",
+            ),
+        ] {
+            for c in regex.captures_iter(value) {
+                if let Some(m) = credential_capture(&c) {
+                    if source == "authorization_scheme"
+                        && assignments
+                            .authorization_ranges
+                            .iter()
+                            .any(|range| m.start() < range.end && m.end() > range.start)
+                    {
+                        continue;
+                    }
                     if !placeholder_value(m.as_str())
                         && !crate::protection::is_placeholder(m.as_str())
                     {
-                        ranges.push((m.start(), m.end()));
+                        let mut hit = CredentialHit::new(m.start(), m.end(), reason, source, kind);
+                        if let Some(field) = c.name("query_field") {
+                            hit.credential_type = credential_type(field.as_str());
+                        }
+                        if !substring_matchable(m.as_str()) {
+                            hit.match_policy = MatchPolicy::ContextValue;
+                        }
+                        hits.push(hit);
                     }
                 }
             }
         }
-        if forced && !placeholder_value(value) && !crate::protection::is_placeholder(value) {
-            // Keep the authentication scheme readable; protect the token itself.
-            if let Some(c) = AUTH
-                .captures(value)
-                .filter(|c| c.get(0).is_some_and(|m| m.start() == 0))
+        if let Some(field) = field.filter(|f| credential_field(f)) {
+            let normalized = field.to_ascii_lowercase().replace(['_', '-'], "");
+            if normalized.contains("cookie") {
+                hits.extend(cookie_hits(value));
+            } else if normalized.ends_with("authorization")
+                || value.starts_with("Bearer ")
+                || value.starts_with("Basic ")
             {
-                let m = c.get(1).unwrap();
-                let known = ranges
-                    .iter()
-                    .any(|&(start, end)| start <= m.start() && end >= m.end());
-                ranges.retain(|&(a, b)| a != 0 || b != value.len());
-                if known || !crate::protection::is_placeholder(m.as_str()) {
-                    ranges.push((m.start(), m.end()));
+                let token = value.trim();
+                let (start, end) =
+                    if let Some((scheme, rest)) = token.split_once(char::is_whitespace) {
+                        if matches!(scheme.to_ascii_lowercase().as_str(), "bearer" | "basic") {
+                            let token = rest.trim();
+                            let start = value.trim_end().len() - token.len();
+                            (start, start + token.len())
+                        } else {
+                            (0, 0)
+                        }
+                    } else {
+                        (0, value.len())
+                    };
+                if start < end {
+                    let token = &value[start..end];
+                    if !placeholder_value(token) && !crate::protection::is_placeholder(token)
+                        || self
+                            .secrets
+                            .iter()
+                            .any(|s| s.value == value || s.value == token)
+                    {
+                        hits.retain(|s| s.start != 0 || s.end != value.len());
+                        let mut hit = CredentialHit::new(
+                            start,
+                            end,
+                            "authorization",
+                            "authorization_field",
+                            "authentication_secret",
+                        );
+                        if !substring_matchable(token) {
+                            hit.match_policy = MatchPolicy::ContextValue;
+                        }
+                        hits.push(hit);
+                    }
                 }
-            } else {
-                ranges.push((0, value.len()));
+            } else if (!placeholder_value(value) || matches!(value, "null" | "true" | "false"))
+                && !crate::protection::is_placeholder(value)
+            {
+                let mut hit = CredentialHit::new(
+                    0,
+                    value.len(),
+                    "credential_field",
+                    "json_field",
+                    credential_type(field),
+                );
+                if !substring_matchable(value) {
+                    hit.match_policy = MatchPolicy::ContextValue;
+                }
+                hits.push(hit);
             }
         }
-        ranges.sort_unstable();
-        let mut merged: Vec<(usize, usize)> = Vec::new();
-        for (start, end) in ranges {
-            if start == end {
-                continue;
+        // Resolve containment before merging, so a strong literal retains its decoded
+        // value and provenance rather than acquiring a catalog hit from the second pass.
+        hits.sort_by_key(|h| {
+            (
+                h.start,
+                std::cmp::Reverse(h.end),
+                !h.strong(),
+                h.reason == "known_credential",
+                matches!(h.source, "provider_format" | "authorization_scheme"),
+            )
+        });
+        let mut merged: Vec<CredentialHit> = Vec::new();
+        for hit in hits {
+            if let Some(last) = merged.last_mut() {
+                if hit.start < last.end {
+                    if !last.strong() && hit.strong() {
+                        *last = hit;
+                        continue;
+                    }
+                    if last.strong() && !hit.strong() {
+                        continue;
+                    }
+                    let start = last.start;
+                    let end = last.end.max(hit.end);
+                    if hit.end > last.end {
+                        last.end = hit.end;
+                        last.decoded = None;
+                    }
+                    if last.start != start || last.end != end {
+                        last.start = start;
+                        last.end = end;
+                        last.decoded = None;
+                    }
+                    continue;
+                }
             }
-            if let Some(last) = merged.last_mut().filter(|last| start < last.1) {
-                last.1 = last.1.max(end);
-            } else {
-                merged.push((start, end));
-            }
+            merged.push(hit);
         }
         merged
     }
+    pub(crate) fn credential_spans(&self, value: &str, field: Option<&str>) -> Vec<Span> {
+        self.credential_hits(value, field)
+            .into_iter()
+            .map(|h| Span {
+                start: h.start,
+                end: h.end,
+                reason: h.reason,
+            })
+            .collect()
+    }
+    pub(crate) fn protection_ranges(&self, value: &str, forced: bool) -> Vec<(usize, usize)> {
+        self.credential_spans(value, forced.then_some("password"))
+            .into_iter()
+            .filter(|s| strong_evidence(s.reason))
+            .map(|s| (s.start, s.end))
+            .collect()
+    }
     pub(super) fn catalog_digest(&self) -> String {
         use sha2::{Digest, Sha256};
-        let mut values: Vec<_> = self.secrets.iter().collect();
+        let mut values: Vec<_> = self
+            .secrets
+            .iter()
+            .map(|s| {
+                (
+                    &s.value,
+                    s.evidence,
+                    s.credential_type,
+                    s.match_policy.name(),
+                )
+            })
+            .collect();
         values.sort_unstable();
         format!(
             "{:x}",
-            Sha256::digest(serde_json::to_vec(&json!([self.complete, values])).unwrap())
+            Sha256::digest(
+                serde_json::to_vec(&json!([super::credentials::VERSION, self.complete, values]))
+                    .unwrap()
+            )
         )
     }
     pub fn available(&self) -> bool {
         self.complete
     }
-    pub fn unavailable(&mut self) {
-        self.complete = false;
-    }
+    #[cfg(test)]
     pub fn credential(&mut self, s: &str) {
-        self.learn(&json!(s));
+        self.trust(&Credential {
+            value: s.into(),
+            evidence: "observed",
+            credential_type: "authentication_secret",
+            match_policy: if substring_matchable(s) {
+                MatchPolicy::Embedded
+            } else {
+                MatchPolicy::CompleteValue
+            },
+        });
     }
     pub fn new(secrets: &Value) -> Self {
         let mut r = Self {
@@ -497,21 +887,39 @@ impl Redactor {
         r
     }
 
+    pub(crate) fn catalog(&self) -> Vec<Credential> {
+        self.secrets.clone()
+    }
+    pub(crate) fn trust(&mut self, entry: &Credential) {
+        if entry.value.is_empty() {
+            return;
+        }
+        if let Some(existing) = self.secrets.iter_mut().find(|v| v.value == entry.value) {
+            if entry.match_policy > existing.match_policy {
+                *existing = entry.clone();
+            }
+            return;
+        }
+        if self
+            .memory
+            .grow(entry.value.len().saturating_mul(12).saturating_add(256))
+            .is_err()
+        {
+            self.complete = false;
+        } else {
+            self.secrets.push(entry.clone());
+        }
+    }
+
     fn learn(&mut self, value: &Value) {
         match value {
             Value::String(s) if !s.is_empty() => {
-                if self.secrets.iter().any(|v| v == s) {
-                    return;
-                }
-                if self
-                    .memory
-                    .grow(s.len().saturating_mul(12).saturating_add(128))
-                    .is_err()
-                {
-                    self.complete = false;
-                } else {
-                    self.secrets.push(s.clone());
-                }
+                self.trust(&Credential {
+                    value: s.clone(),
+                    evidence: "registered",
+                    credential_type: "registered_secret",
+                    match_policy: MatchPolicy::Embedded,
+                });
             }
             Value::Object(m) => {
                 for v in m.values() {
@@ -536,21 +944,21 @@ impl Redactor {
             Value::Object(m) => {
                 for (key, v) in m {
                     if credential_field(key) {
-                        self.learn(v);
-                        for s in v
+                        for value in v
                             .as_str()
                             .into_iter()
                             .chain(array(v).iter().filter_map(Value::as_str))
                         {
-                            for c in AUTH.captures_iter(s) {
-                                self.learn(&json!(&c[1]));
-                            }
-                            if key.to_ascii_lowercase().contains("cookie") {
-                                for pair in s.split(';') {
-                                    if let Some((_, token)) = pair.trim().split_once('=') {
-                                        self.learn(&json!(token));
-                                    }
-                                }
+                            let found = self.credential_hits(value, Some(key));
+                            for hit in found.into_iter().filter(CredentialHit::strong) {
+                                self.trust(&Credential {
+                                    value: hit
+                                        .decoded
+                                        .unwrap_or_else(|| value[hit.start..hit.end].into()),
+                                    evidence: hit.reason,
+                                    credential_type: hit.credential_type,
+                                    match_policy: hit.match_policy,
+                                });
                             }
                         }
                     } else {
@@ -587,35 +995,12 @@ impl Redactor {
     }
 
     fn spans(&self, value: &str) -> Vec<Span> {
+        let mut spans = self.endpoint_spans(value);
+        spans.extend(self.credential_spans(value, None));
+        merge_spans(spans)
+    }
+    fn endpoint_spans(&self, value: &str) -> Vec<Span> {
         let mut spans = Vec::new();
-        for secret in &self.secrets {
-            // Short configured values are matched as complete values to avoid erasing ordinary prose.
-            if secret.len() < 4 && value != secret {
-                continue;
-            }
-            // Word-like low entropy values are matched as complete values only, like
-            // short values above. A natural-language word would otherwise mark prose.
-            let anywhere = substring_matchable(secret);
-            let mut push = |start: usize, len: usize| {
-                if anywhere || len == value.len() {
-                    spans.push(Span {
-                        start,
-                        end: start + len,
-                        reason: "known_credential",
-                    });
-                }
-            };
-            for (start, _) in value.match_indices(secret) {
-                push(start, secret.len());
-            }
-            let escaped = serde_json::to_string(secret).unwrap();
-            let escaped = &escaped[1..escaped.len() - 1];
-            if escaped != secret {
-                for (start, _) in value.match_indices(escaped) {
-                    push(start, escaped.len());
-                }
-            }
-        }
         for c in HOST_ADDRESS.captures_iter(value) {
             let ip = c.get(1).unwrap();
             if let Some(reason) = host_reason(value, ip.start(), ip.as_str(), c.get(2).is_some()) {
@@ -674,38 +1059,13 @@ impl Redactor {
                 },
             });
         }
-        for (regex, reason) in [
-            (&*TOKEN, "credential_pattern"),
-            (&*PRIVATE_KEY, "private_key"),
-        ] {
-            for m in regex.find_iter(value) {
+        for c in URL_USERNAME.captures_iter(value) {
+            if let Some(m) = c.get(1) {
                 spans.push(Span {
                     start: m.start(),
                     end: m.end(),
-                    reason,
+                    reason: "internal_identity",
                 });
-            }
-        }
-        for (regex, reason) in [
-            (&*ASSIGNMENT, "credential_assignment"),
-            (&*AUTH, "authorization"),
-            (&*URL_AUTH, "url_credentials"),
-            (&*URL_SECRET, "url_credential_parameter"),
-            (&*COOKIE, "cookie_header"),
-            (&*URL_USERNAME, "internal_identity"),
-        ] {
-            for c in regex.captures_iter(value) {
-                if let Some(m) = credential_capture(&c) {
-                    // A template or masked value names a credential without carrying one.
-                    if reason != "internal_identity" && placeholder_value(m.as_str()) {
-                        continue;
-                    }
-                    spans.push(Span {
-                        start: m.start(),
-                        end: m.end(),
-                        reason,
-                    });
-                }
             }
         }
         merge_spans(spans)
@@ -817,6 +1177,8 @@ pub struct StreamText {
     incomplete: bool,
     budget_gap: bool,
     open: Option<OpenCredential>,
+    shared_offset: u64,
+    shared: bool,
     _memory: crate::streaming::Reservation,
 }
 impl StreamText {
@@ -832,8 +1194,37 @@ impl StreamText {
             incomplete: false,
             budget_gap: false,
             open: None,
+            shared_offset: 0,
+            shared: false,
             _memory: memory,
         })
+    }
+    pub(crate) fn feed_detected(
+        &mut self,
+        input: &str,
+        redactor: &Redactor,
+        end: bool,
+        marks: &[Value],
+    ) -> Vec<TextPiece> {
+        self.shared = true;
+        self.forced = false;
+        let mut pieces = self.feed(input, redactor, end);
+        for piece in &mut pieces {
+            let from = self.shared_offset;
+            let to = from + piece.text.len() as u64;
+            for mark in marks {
+                let start = mark["start"].as_u64().unwrap_or(0).max(from);
+                let stop = mark["end"].as_u64().unwrap_or(0).min(to);
+                if start < stop {
+                    let mut mark = mark.clone();
+                    mark["start"] = json!(start - from);
+                    mark["end"] = json!(stop - from);
+                    piece.marks.push(mark);
+                }
+            }
+            self.shared_offset = to;
+        }
+        pieces
     }
     pub fn feed(&mut self, input: &str, redactor: &Redactor, end: bool) -> Vec<TextPiece> {
         let needed = (self.pending.len() + input.len()).saturating_mul(64) as u64;
@@ -850,7 +1241,7 @@ impl StreamText {
         let keep = redactor
             .secrets
             .iter()
-            .map(|s| s.len() * 6)
+            .map(|s| s.value.len() * 6)
             .max()
             .unwrap_or(0)
             .max(32768);
@@ -981,7 +1372,11 @@ impl StreamText {
             while !self.pending.is_char_boundary(cut) {
                 cut -= 1;
             }
-            let mut spans = redactor.spans(&self.pending);
+            let mut spans = if self.shared {
+                redactor.endpoint_spans(&self.pending)
+            } else {
+                redactor.spans(&self.pending)
+            };
             if end && self.incomplete {
                 let start = self
                     .pending
@@ -998,7 +1393,7 @@ impl StreamText {
                 }
             }
             // An arbitrarily long authority may still turn out to contain userinfo.
-            if !end {
+            if !end && !self.shared {
                 if let Some(c) = URL_AUTHORITY.captures(&self.pending) {
                     let m = c.get(1).unwrap();
                     if m.start() < cut {
@@ -1011,7 +1406,7 @@ impl StreamText {
                     }
                 }
             }
-            if !end {
+            if !end && !self.shared {
                 if let Some(m) = JWT_PENDING.find(&self.pending) {
                     if m.start() < cut {
                         spans.push(Span {
@@ -1039,7 +1434,10 @@ impl StreamText {
                             })
                         }
                         "credential_pattern" | "authorization" => Some(OpenCredential::Token),
-                        "credential_assignment" | "url_credential_parameter" | "cookie_header" => {
+                        "credential_assignment"
+                        | "credential_literal_unverified"
+                        | "url_credential_parameter"
+                        | "cookie_header" => {
                             let quote = self.pending[..span.start]
                                 .chars()
                                 .next_back()
@@ -1146,7 +1544,10 @@ mod tests {
     fn assignment_and_url_fields_share_structural_credential_names() {
         let redactor = Redactor::new(&json!({}));
         let secret = "freshPlainCredentialValue42";
-        for field in CREDENTIAL_FIELDS {
+        for field in CREDENTIAL_FIELDS
+            .iter()
+            .filter(|f| !matches!(**f, "cookie" | "cookies" | "setcookie"))
+        {
             for name in [
                 field.to_string(),
                 field.to_ascii_uppercase(),
@@ -1159,7 +1560,7 @@ mod tests {
                 assert!(credential_field(&name));
                 assert!(ESCAPED_CREDENTIAL.is_match(&format!(r#"{{\"{name}\":\"{secret}"#)));
                 for text in [
-                    format!("Tool output: {name}={secret}"),
+                    format!("{name}={secret}"),
                     format!("{name}=\"{secret}\""),
                     format!("https://example.test/?{name}={secret}"),
                 ] {
@@ -1183,7 +1584,7 @@ mod tests {
             "type=string",
             "encoding=utf8",
             "https://example.test/?id=ordinary",
-            "MY_OPENAI_API_KEY=ordinary",
+            "MY_OPENAI_API_KEY=$MY_OPENAI_API_KEY",
             "Tool output: safe",
         ] {
             assert!(redactor.protection_ranges(text, false).is_empty(), "{text}");
@@ -1192,7 +1593,8 @@ mod tests {
 
     #[test]
     fn word_shaped_learned_values_do_not_light_up_ordinary_prose() {
-        let redactor = Redactor::new(&json!({"token": "instructions"}));
+        let mut redactor = Redactor::new(&json!({}));
+        redactor.credential("instructions");
         let prose = "Usually skip visuals for basic instructions, or information already clear.";
         assert!(reasons(&redactor, prose).is_empty());
         // The value still matches when it is the complete value, which is how it
@@ -1282,9 +1684,9 @@ mod tests {
             "cookie: session=abc123",
             "password: $9fK2mNvQ8xRtZ4wB7hLpY1cD",
             "password: 11111111",
-            "password: aaaaaaaa",
+            "password=aaaaaaaa",
             // An unclosed angle bracket is not a slot, and digits are not a mask.
-            "password: <9fK2mNvQ8xRtZ4wB7hLpY1cD",
+            "password=<9fK2mNvQ8xRtZ4wB7hLpY1cD",
             "password: 00000000",
         ] {
             assert!(!reasons(&redactor, value).is_empty(), "{value}");

@@ -1,0 +1,416 @@
+{
+  "date": "2026-10-16",
+  "sourceCommit": "0c95d6dccc30fd38bc568bfe29dd150cc461b873",
+  "binarySha256": "c11bc52f8bf1c89c6693f4b8707354411aefb4c0776cc78374abc2fd0371ebb4",
+  "corpus": "48 hand-built cases: 23 negatives, 20 positives, 3 ambiguous cases, 2 structural checks; independent sessions except explicit cross-request test; mock upstream; fixture labels reflect secret-bearing intent, not active API validity",
+  "results": [
+    {
+      "id": "bare-variable",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "bare-member",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "bare-function",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "environment-member",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "rust-type",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "typescript-type",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "template-literal",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "markdown-field",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 2,
+      "blocked": false
+    },
+    {
+      "id": "object-expression",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "schema-source",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "env-reference",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "env-brace-reference",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "masked",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "instruction-slot",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "angle-slot",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "ordinary-prose",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "uuid",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "sha",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "schema-metadata",
+      "label": "negative",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "cookie-preferences",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "cookiePreferencesPreserved": false
+    },
+    {
+      "id": "regex-source",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "quoted-source-path",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "credential-comparison",
+      "label": "negative",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "provider-like-api-key",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "github-classic",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "github-fine-grained",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "aws-access-id",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "env-opaque",
+      "label": "positive",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false,
+      "originalAbsent": false
+    },
+    {
+      "id": "env-low-entropy",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "originalAbsent": true
+    },
+    {
+      "id": "quoted-source-password",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "bearer",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 2,
+      "blocked": false,
+      "schemePreserved": false
+    },
+    {
+      "id": "basic",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 2,
+      "blocked": false,
+      "schemePreserved": false
+    },
+    {
+      "id": "url-auth",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "url-query",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "cookie-session",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "cookiePreferencesPreserved": false
+    },
+    {
+      "id": "jwt",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "saved-secret",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "originalAbsent": true
+    },
+    {
+      "id": "private-key",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "originalAbsent": true
+    },
+    {
+      "id": "source-real-key",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "json-low-entropy",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false,
+      "originalAbsent": true
+    },
+    {
+      "id": "nested-json",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "aws-session-id",
+      "label": "positive",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false,
+      "originalAbsent": false
+    },
+    {
+      "id": "opaque-without-context",
+      "label": "ambiguous",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "quoted-placeholder-password",
+      "label": "ambiguous",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "json-test-password",
+      "label": "ambiguous",
+      "status": 200,
+      "changed": false,
+      "placeholderCount": 0,
+      "blocked": false
+    },
+    {
+      "id": "uuid-as-credential",
+      "label": "positive",
+      "status": 200,
+      "changed": true,
+      "placeholderCount": 1,
+      "blocked": false
+    },
+    {
+      "id": "custom-grammar-integrity",
+      "label": "structural",
+      "status": 200,
+      "preserved": false
+    },
+    {
+      "id": "cross-request-poisoning",
+      "label": "structural",
+      "status": 200,
+      "preserved": false,
+      "changedInput": true
+    }
+  ],
+  "summary": {
+    "negative": {
+      "count": 23,
+      "changed": 15,
+      "blocked": 0
+    },
+    "positive": {
+      "count": 20,
+      "changed": 18,
+      "blocked": 0
+    },
+    "ambiguous": {
+      "count": 3,
+      "changed": 0,
+      "blocked": 0
+    }
+  }
+}
