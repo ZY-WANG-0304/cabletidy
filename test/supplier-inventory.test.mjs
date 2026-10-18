@@ -212,3 +212,107 @@ test("explicit Codex aliases publish the same instructions and route to the supp
     assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_aliases,{model:alias}).upstreamModelId,"wire");
   }
 });
+
+test("supplier resource operations generate internal IDs and select protocol authentication", async () => {
+  let c = normalizeConfig({});
+  const create = {type:"supplier.create",data:{name:"Official",interface:{protocol:"openai.responses",baseUrl:"https://example.invalid/v1",authMethod:"bearer",secret:"fixture-token"}}};
+  const first = await applyConfigOperation(c, create, catalogFixture());
+  const sid = first.selection.supplierId;
+  assert.match(sid, /^s-[a-f0-9]{20}$/);
+  assert.equal(first.page, "supplier-detail");
+  assert.equal(first.selection.interfaceId, "responses");
+  c = first.config;
+  const second = await applyConfigOperation(c, create, catalogFixture());
+  assert.notEqual(second.selection.supplierId, sid);
+  assert.equal(Object.keys(second.config.suppliers).length, 2);
+  for (const [protocol, method, header, scheme] of [
+    ["openai.responses", "bearer", "authorization", "Bearer"],
+    ["openai.responses", "api-key", "api-key", ""],
+    ["openai.chat_completions", "bearer", "authorization", "Bearer"],
+    ["anthropic.messages", "api-key", "x-api-key", ""],
+    ["anthropic.messages", "bearer", "authorization", "Bearer"],
+    ["gemini.generate_content", "api-key", "x-goog-api-key", ""],
+    ["gemini.generate_content", "bearer", "authorization", "Bearer"],
+  ]) {
+    const result = await applyConfigOperation(c, {type:"supplier.interface.save",supplierId:sid,data:{interface:{protocol,baseUrl:"https://example.invalid",authMethod:method,secret:"fixture-token"}}}, catalogFixture());
+    c = result.config;
+    const value = c.suppliers[sid].interfaces[result.selection.interfaceId];
+    assert.deepEqual(value.auth, {method,header,scheme});
+    assert.equal(value.secret, undefined);
+    assert.equal(validateConfig(c).ok, true);
+  }
+  await assert.rejects(edit(c, {type:"supplier.interface.save",supplierId:sid,data:{interface:{protocol:"openai.responses",baseUrl:"https://example.invalid",authMethod:"custom"}}}), /认证方式/);
+  const invalid = structuredClone(c);
+  invalid.suppliers[sid].interfaces.responses.auth.header = "arbitrary-header";
+  assert.equal(validateConfig(invalid).ok, false);
+  c = await edit(c, supply(sid, "wire", "DeepSeek-V4-Pro"));
+  c = await edit(c, {type:"cable.inventory.create",data:{name:"Stable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
+  const oldSupplier = structuredClone(c.suppliers[sid]);
+  c = await edit(c, {type:"supplier.metadata.save",supplierId:sid,data:{name:"Renamed",enabled:true}});
+  assert.deepEqual(c.suppliers[sid], {...oldSupplier,name:"Renamed"});
+  assert.equal(c.cables.stable.models.pro.sources[0].supplierId, sid);
+  await assert.rejects(edit(c, {type:"supplier.interface.delete",supplierId:sid,interfaceId:"responses"}), /模型使用/);
+  c = await edit(c, {type:"supplier.interface.delete",supplierId:sid,interfaceId:"responses-2"});
+  assert.equal(c.suppliers[sid].interfaces["responses-2"], undefined);
+});
+
+test("supplier authentication requires credentials only for the edited interface and forwards builtin headers", async t => {
+  const received = [];
+  const upstream = http.createServer((req,res) => {
+    received.push(req.headers);
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({data:[{id:"wire"}]}));
+  });
+  await new Promise(resolve => upstream.listen(0,"127.0.0.1",resolve));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-supplier-auth-"));
+  const app = await createApplication({paths:getPaths(home),loadCodexCatalog:async()=>catalogFixture()});
+  t.after(async () => {await app.close();await new Promise(resolve=>upstream.close(resolve));await fs.rm(home,{recursive:true,force:true});});
+  const url = `http://127.0.0.1:${upstream.address().port}`;
+  const call = async (endpoint,body) => {
+    const response = await fetch(`${app.url}api/v1/${endpoint}`, body === undefined ? {} : {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    return {status:response.status,body:await response.json()};
+  };
+  let c = (await call("config")).body.config;
+  const commit = async (operation,status=200) => {
+    const result = await call("config/commit",{baseRevision:c.revision,operation});
+    assert.equal(result.status,status,JSON.stringify(result.body));
+    if (status===200) c=result.body.config;
+    return result;
+  };
+  // An imported draft without a credential must not block another supplier's edits.
+  await commit({type:"supplier.save",supplierId:"draft",data:{name:"Draft",interfaces:{responses:{protocol:"openai.responses",baseUrl:url,auth:{method:"bearer",header:"authorization",scheme:"Bearer"}}}}});
+  const create = secret => ({type:"supplier.create",data:{name:"Local",interface:{name:"Official Responses",protocol:"openai.responses",baseUrl:url,authMethod:"bearer",secret}}});
+  const missing = await commit(create(""),422);
+  assert.equal(missing.body.error.code,"credential_required");
+  const created = await commit(create("fixture-auth-token"));
+  const sid = created.body.selection.supplierId;
+  const update = (method,secret="") => ({type:"supplier.interface.save",supplierId:sid,data:{interfaceId:"responses",interface:{protocol:"openai.responses",baseUrl:url,authMethod:method,secret}}});
+  const discover = async () => {const result=await call("suppliers/discover",{supplierId:sid,interfaceId:"responses"});assert.equal(result.status,200,JSON.stringify(result.body));return received.at(-1);};
+  assert.equal((await discover()).authorization,"Bearer fixture-auth-token");
+  await commit(update("bearer"));
+  assert.equal((await discover()).authorization,"Bearer fixture-auth-token");
+  await commit(update("api-key","fixture-api-key"));
+  const keyHeaders = await discover();
+  assert.equal(keyHeaders["api-key"],"fixture-api-key");
+  assert.equal(keyHeaders.authorization,undefined);
+  await commit(update("none"));
+  const noAuth = await discover();
+  assert.equal(noAuth.authorization,undefined);
+  assert.equal(noAuth["api-key"],undefined);
+  const add = {type:"supplier.interface.save",supplierId:sid,data:{interface:{protocol:"gemini.generate_content",baseUrl:url,authMethod:"api-key"}}};
+  await commit(add,422);
+  await commit({...add,data:{interface:{...add.data.interface,authMethod:"none"}}});
+  await commit(supply(sid,"wire","DeepSeek-V4-Pro"));
+  await commit({type:"cable.inventory.create",data:{name:"Portable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
+  const exported = await call("cables/export",{cableIds:["portable"]});
+  assert.equal(exported.status,200,JSON.stringify(exported.body));
+  const portable = exported.body.config.suppliers[sid].interfaces.responses;
+  assert.equal(portable.name,"Official Responses");
+  assert.deepEqual(portable.auth,{method:"none"});
+  const imported = await call("cables/import",{bundle:exported.body,baseRevision:c.revision,useImportedCredentials:false,choices:{portable:"create"}});
+  assert.equal(imported.status,200,JSON.stringify(imported.body));
+  const importedId = imported.body.config.cables["portable-import-2"].suppliers[0];
+  assert.equal(imported.body.config.suppliers[importedId].interfaces.responses.name,"Official Responses");
+  assert.deepEqual(imported.body.config.suppliers[importedId].interfaces.responses.auth,{method:"none"});
+  assert.doesNotMatch(JSON.stringify(c), /fixture-auth-token|fixture-api-key/);
+});

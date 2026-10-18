@@ -1290,6 +1290,22 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
     let mut candidate = config::normalize(&config::strip_presentation(&payload["config"]));
     candidate["revision"] = json!(c["revision"].as_u64().unwrap_or(0) + 1);
     let mut secrets = config::apply_secrets(&mut candidate, &previous.secrets, payload);
+    if let Some(operation) = body.get("operation") {
+        if ["supplier.create", "supplier.interface.save"].contains(&text(&operation["type"])) {
+            let selected = &payload["selection"];
+            let interface = &candidate["suppliers"][text(&selected["supplierId"])]["interfaces"]
+                [text(&selected["interfaceId"])];
+            if interface["auth"]["method"] != "none"
+                && config::secret(interface, &secrets).is_empty()
+            {
+                return Ok(error(
+                    422,
+                    "credential_required",
+                    "所选认证方式需要填写认证凭据",
+                ));
+            }
+        }
+    }
     let mut check = validation::validate(&candidate);
     let diff = config::diff(c, &candidate);
     if check["ok"] == true {
@@ -1391,7 +1407,7 @@ async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Res
 fn auth(headers: &mut HeaderMap, u: &Value, protocol: &str, secret: &str) -> Result<()> {
     headers.remove("authorization");
     headers.remove("x-api-key");
-    if secret.is_empty() {
+    if secret.is_empty() || u["auth"]["method"] == "none" {
         return Ok(());
     }
     let header = u["auth"]["header"]

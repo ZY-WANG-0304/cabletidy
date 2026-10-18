@@ -22,6 +22,27 @@ pub fn compatible(identity: &str) -> bool {
 pub fn interface_key(supplier: &str, interface: &str) -> String {
     format!("supplier.{supplier}.{interface}")
 }
+
+pub fn authentication(protocol: &str, method: &str) -> Result<Value> {
+    let auth = match (protocol, method) {
+        (_, "none") if crate::validation::PROTOCOLS.contains(&protocol) => json!({"method":"none"}),
+        ("openai.responses" | "openai.chat_completions", "bearer")
+        | ("anthropic.messages" | "gemini.generate_content", "bearer") => {
+            json!({"method":"bearer","header":"authorization","scheme":"Bearer"})
+        }
+        ("openai.responses" | "openai.chat_completions", "api-key") => {
+            json!({"method":"api-key","header":"api-key","scheme":""})
+        }
+        ("anthropic.messages", "api-key") => {
+            json!({"method":"api-key","header":"x-api-key","scheme":""})
+        }
+        ("gemini.generate_content", "api-key") => {
+            json!({"method":"api-key","header":"x-goog-api-key","scheme":""})
+        }
+        _ => bail!("该协议不支持所选认证方式"),
+    };
+    Ok(auth)
+}
 pub fn managed(p: &Value) -> bool {
     p["managedModels"] == true
 }
@@ -348,6 +369,14 @@ pub fn validate(c: &Value) -> Vec<Value> {
         );
         for (iid, i) in entries(&supplier["interfaces"]) {
             let p = format!("{path}.interfaces.{iid}");
+            if let Some(method) = i["auth"].get("method") {
+                let expected = authentication(text(&i["protocol"]), text(method));
+                check(
+                    expected.is_ok_and(|expected| expected == i["auth"]),
+                    p.clone(),
+                    "认证方式必须匹配协议的内置配置",
+                );
+            }
             check(identifier(iid) && i.is_object(), p.clone(), "接口 ID 无效");
             check(
                 i.get("enabled").is_none_or(Value::is_boolean),

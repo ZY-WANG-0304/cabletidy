@@ -375,6 +375,52 @@ h3 {
   background: var(--paper);
 }
 
+.resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supplier-interface-table tbody th {
+  width: 20%;
+}
+
+.supplier-interface-table td {
+  overflow-wrap: anywhere;
+}
+
+.supplier-interface-table td[data-label="协议"] {
+  white-space: nowrap;
+}
+
+.supplier-resource-dialog {
+  width: min(820px, calc(100% - 32px));
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--panel);
+  overflow: auto;
+}
+
+.supplier-resource-dialog::backdrop {
+  background: #242a3035;
+}
+
+.supplier-modal-body {
+  padding: 20px;
+}
+
+.supplier-modal-body > .transfer-selection {
+  margin-top: 16px;
+}
+
+.supplier-modal-form .config-form-footer {
+  position: sticky;
+  bottom: 0;
+}
+
 .create-model-list {
   display: grid;
   gap: 16px;
@@ -1361,6 +1407,7 @@ button.list-row:hover,
   }
 
   .cable-table tbody th,
+  .supplier-interface-table tbody th,
   .cable-table tbody td {
     width: 100%;
     padding: 4px 0;

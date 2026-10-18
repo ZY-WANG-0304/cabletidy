@@ -83,14 +83,14 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         s["interfaces"] = json!({});
         s["models"] = json!({});
         for (iid, interface) in entries(&supplier["interfaces"]) {
-            let mut i = fields(interface, &["protocol", "enabled"]);
+            let mut i = fields(interface, &["name", "protocol", "enabled"]);
             i["baseUrl"] = if include_credentials {
                 interface["baseUrl"].clone()
             } else {
                 connection_url(&interface["baseUrl"])?
             };
             if interface["auth"].is_object() {
-                i["auth"] = fields(&interface["auth"], &["header", "scheme"]);
+                i["auth"] = fields(&interface["auth"], &["method", "header", "scheme"]);
             }
             s["interfaces"][iid] = i;
         }

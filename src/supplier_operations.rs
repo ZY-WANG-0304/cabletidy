@@ -19,15 +19,75 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
     let kind = text(&op["type"]);
     let data = &op["data"];
     let mut secrets = json!({});
-    let mut selection = Value::Null;
-    let page;
-    if kind.starts_with("supplier.") {
-        let sid = text(&op["supplierId"]);
+    let (selection, page) = if kind.starts_with("supplier.") {
+        let mut selected_interface = None;
+        let generated = format!("s-{}", &uuid::Uuid::new_v4().simple().to_string()[..20]);
+        let sid = if kind == "supplier.create" {
+            generated.as_str()
+        } else {
+            text(&op["supplierId"])
+        };
         if sid.is_empty() {
             bail!("供应商 ID 不能为空");
         }
         let old = c["suppliers"].get(sid).cloned().unwrap_or(Value::Null);
         match kind {
+            "supplier.create" => {
+                if !nonempty(&data["name"]) || !data["interface"].is_object() {
+                    bail!("请填写供应商名称和首个协议接口");
+                }
+                let iid = next_interface_id(&json!({}), text(&data["interface"]["protocol"]));
+                let interface =
+                    prepare_interface(sid, &iid, &data["interface"], &Value::Null, &mut secrets)?;
+                c["suppliers"][sid] = json!({"name":text(&data["name"]).trim(),"enabled":true,"interfaces":{iid.clone():interface},"models":{}});
+                selected_interface = Some(iid);
+            }
+            "supplier.metadata.save" => {
+                if !old.is_object() || !nonempty(&data["name"]) {
+                    bail!("请填写供应商名称");
+                }
+                c["suppliers"][sid]["name"] = json!(text(&data["name"]).trim());
+                c["suppliers"][sid]["enabled"] =
+                    data.get("enabled").cloned().unwrap_or(json!(true));
+            }
+            "supplier.interface.save" => {
+                if !old.is_object() {
+                    bail!("供应商不存在");
+                }
+                let previous_id = text(&data["interfaceId"]);
+                let iid = if previous_id.is_empty() {
+                    next_interface_id(&old["interfaces"], text(&data["interface"]["protocol"]))
+                } else {
+                    previous_id.into()
+                };
+                if !previous_id.is_empty() && old["interfaces"].get(previous_id).is_none() {
+                    bail!("接口不存在，请刷新");
+                }
+                let interface = prepare_interface(
+                    sid,
+                    &iid,
+                    &data["interface"],
+                    &old["interfaces"][&iid],
+                    &mut secrets,
+                )?;
+                c["suppliers"][sid]["interfaces"][&iid] = interface;
+                selected_interface = Some(iid);
+            }
+            "supplier.interface.delete" => {
+                if !old.is_object() {
+                    bail!("供应商不存在");
+                }
+                let iid = text(&op["interfaceId"]);
+                if entries(&old["models"])
+                    .any(|(_, m)| array(&m["interfaces"]).contains(&json!(iid)))
+                {
+                    bail!("接口仍被供应商模型使用，请先修改模型的可访问接口");
+                }
+                c["suppliers"][sid]["interfaces"]
+                    .as_object_mut()
+                    .context("接口列表无效")?
+                    .remove(iid);
+            }
             "supplier.save" => {
                 if !data.is_object() || !nonempty(&data["name"]) || !data["interfaces"].is_object()
                 {
@@ -109,7 +169,13 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
             }
             _ => bail!("未知供应商操作"),
         }
-        page = "suppliers";
+        let selection = json!({"supplierId":if kind == "supplier.delete" {Value::Null} else {json!(sid)},"interfaceId":selected_interface});
+        let page = if kind == "supplier.delete" {
+            "suppliers"
+        } else {
+            "supplier-detail"
+        };
+        (selection, page)
     } else {
         let mut id = text(&op["cableId"]).to_owned();
         if kind == "cable.inventory.migrate" {
@@ -179,9 +245,62 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                     .remove("defaultModel");
             }
         }
-        selection = json!({"cableId":id});
-        page = "cable-detail";
-    }
+        (json!({"cableId":id}), "cable-detail")
+    };
     c = config::normalize(&c);
     Ok(json!({"config":c,"upstreamSecrets":secrets,"selection":selection,"page":page}))
+}
+
+fn next_interface_id(interfaces: &Value, protocol: &str) -> String {
+    let base = match protocol {
+        "openai.responses" => "responses",
+        "openai.chat_completions" => "chat",
+        "anthropic.messages" => "messages",
+        "gemini.generate_content" => "gemini",
+        _ => "interface",
+    };
+    let mut id = base.to_owned();
+    let mut n = 2;
+    while interfaces.get(&id).is_some() {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    id
+}
+
+fn prepare_interface(
+    sid: &str,
+    iid: &str,
+    data: &Value,
+    previous: &Value,
+    secrets: &mut Value,
+) -> Result<Value> {
+    if !data.is_object() || !nonempty(&data["baseUrl"]) {
+        bail!("请填写协议和接口地址");
+    }
+    let mut interface = previous
+        .as_object()
+        .map(|_| previous.clone())
+        .unwrap_or(json!({}));
+    for key in ["name", "protocol", "baseUrl", "enabled"] {
+        if let Some(value) = data.get(key) {
+            interface[key] = value.clone();
+        }
+    }
+    let method = text(&data["authMethod"]);
+    if method == "existing" {
+        if !previous.is_object() || data["protocol"] != previous["protocol"] {
+            bail!("现有认证只能用于原接口协议");
+        }
+    } else {
+        interface["auth"] = suppliers::authentication(text(&data["protocol"]), method)?;
+    }
+    interface["secretRef"] = previous
+        .get("secretRef")
+        .cloned()
+        .unwrap_or(json!(format!("secret://suppliers/{sid}/{iid}")));
+    if nonempty(&data["secret"]) && method != "none" {
+        secrets[suppliers::interface_key(sid, iid)] = json!(text(&data["secret"]).trim());
+    }
+    Ok(interface)
 }
