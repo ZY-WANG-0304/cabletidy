@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { parseArgs, previewVersion, setVersion } from "../scripts/preview.mjs";
 import { nativeBinary } from "./helpers/native.mjs";
+import { startBackground } from "../bin/native.mjs";
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -95,6 +96,68 @@ test("preview shares update confirmations and switches the daemon only after con
   assert.match(accepted.stdout, /CableTidy stopped/);
   assert.match(accepted.stdout, /CableTidy started:/);
   await fs.access(marker);
+  const after = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
+  assert.notEqual(after.controlId, before.controlId);
+  assert.equal(after.web.url, before.web.url);
+});
+
+test("Windows preview stops an existing daemon before installing into a fresh prefix", { timeout: 90000 }, async t => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-preview-new-prefix-"));
+  const home = path.join(temporary, "data");
+  const packageRoot = path.join(temporary, "new prefix", "node_modules", "cabletidy");
+  const launcher = path.join(packageRoot, "bin", "cabletidy.mjs");
+  const env = { ...process.env, CABLETIDY_HOME: home, CABLETIDY_PREFERRED_PORT: "0" };
+  delete env.CABLETIDY_MANAGED_STDIN;
+  t.after(async () => {
+    const state = JSON.parse((await execute(nativeBinary, ["__instance"], { env })).stdout);
+    await execute(nativeBinary, ["stop"], { env });
+    if (state.process) await execute(nativeBinary, ["__instance", "--wait-exit", JSON.stringify(state.process)], { env });
+    await fs.rm(temporary, { recursive: true, force: true });
+  });
+  // The daemon starts outside the target prefix, which has never been installed.
+  const before = await startBackground({ binary: nativeBinary, env });
+  await assert.rejects(fs.access(launcher), { code: "ENOENT" });
+  const script = path.join(temporary, "install.mjs");
+  const platform = `${process.platform}-${process.arch}`;
+  const binaryName = process.platform === "win32" ? "cabletidy.exe" : "cabletidy";
+  await fs.writeFile(script, `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs/promises';
+    import path from 'node:path';
+    import { execFile } from 'node:child_process';
+    import { promisify } from 'node:util';
+    import { installPackage } from ${JSON.stringify(new URL("../bin/update.mjs", import.meta.url).href)};
+    // Exercise the Windows flow on every CI OS; native child processes keep their real platform.
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const binary = ${JSON.stringify(nativeBinary)};
+    const packageRoot = ${JSON.stringify(packageRoot)};
+    process.exitCode = await installPackage({
+      current: 'not installed', target: 'preview', prefix: ${JSON.stringify(path.dirname(path.dirname(packageRoot)))},
+      launcher: ${JSON.stringify(launcher)}, binary, yes: process.argv.includes('--yes'),
+      install: async () => {
+        await assert.rejects(fs.access(${JSON.stringify(launcher)}), { code: 'ENOENT' });
+        const state = JSON.parse((await promisify(execFile)(binary, ['__instance'])).stdout);
+        assert.equal(state.running, false, 'daemon must stop before installation');
+        await fs.cp(${JSON.stringify(path.join(root, "bin"))}, path.join(packageRoot, 'bin'), { recursive: true });
+        const directory = path.join(packageRoot, 'native', ${JSON.stringify(platform)});
+        await fs.mkdir(directory, { recursive: true });
+        await fs.copyFile(binary, path.join(directory, ${JSON.stringify(binaryName)}));
+        await fs.chmod(path.join(directory, ${JSON.stringify(binaryName)}), 0o755);
+        return 0;
+      },
+    });
+  `);
+  await assert.rejects(execute(process.execPath, [script], { env }), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stdout, /Update cancelled/);
+    return true;
+  });
+  await assert.rejects(fs.access(launcher), { code: "ENOENT" });
+  assert.equal(JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8")).controlId, before.controlId);
+  const installed = await execute(process.execPath, [script, "--yes"], { env });
+  assert.match(installed.stdout, /CableTidy stopped/);
+  assert.match(installed.stdout, /CableTidy started:/);
+  await fs.access(launcher);
   const after = JSON.parse(await fs.readFile(path.join(home, "runtime.json"), "utf8"));
   assert.notEqual(after.controlId, before.controlId);
   assert.equal(after.web.url, before.web.url);

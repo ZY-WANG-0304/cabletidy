@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { promisify } from "node:util";
-import { executable, root } from "./native.mjs";
+import { executable, launch, root } from "./native.mjs";
 
 const execFileAsync = promisify(execFile);
 const packageName = "cabletidy";
@@ -171,7 +171,8 @@ export async function installPackage({ current, target, prefix, launcher, binary
       console.log("Update cancelled");
       return 1;
     }
-    const stopped = await run(process.execPath, [launcher, "stop"]);
+    // A preview may target a fresh npm prefix whose launcher does not exist yet.
+    const stopped = await launch(["stop"], { binary }).closed;
     if (stopped !== 0) return stopped;
     // stop returns once shutdown completes; the process may still be closing other control connections.
     const exited = await run(binary, ["__instance", "--wait-exit", JSON.stringify(state.process)]);
