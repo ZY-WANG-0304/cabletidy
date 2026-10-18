@@ -32,6 +32,8 @@
     "build:debug": "node scripts/build-native.mjs --debug",
     "dev": "npm run build:debug && node scripts/dev.mjs --watch",
     "dev:status": "node scripts/dev.mjs status",
+    "preview": "node scripts/preview.mjs",
+    "perview": "node scripts/preview.mjs",
     "test": "node scripts/test.mjs",
     "test:security:browser": "node scripts/build-native.mjs --debug --test && node scripts/security-browser.mjs",
     "test:cables:browser": "node scripts/build-native.mjs --debug --test && node scripts/cable-transfer-browser.mjs",
