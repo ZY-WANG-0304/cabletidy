@@ -8,6 +8,7 @@ const toastRegion = document.querySelector("#toast-region");
 const formBaselines = new WeakMap();
 const formConflicts = new WeakSet();
 const lockedControls = new WeakMap();
+const protectionTtlUnits = new WeakMap();
 let modelHintSequence = 0;
 let renderedTraceId = null;
 let renderedTraceDetailId = null;
@@ -227,6 +228,8 @@ function render(preservedForms = []) {
   }
   const settingsForm = pageContent.querySelector("#audit-settings-form");
   if (settingsForm) syncAuditSettingsForm(settingsForm);
+  const protectionForm = pageContent.querySelector("#protection-settings-form");
+  if (protectionForm) syncProtectionSettingsForm(protectionForm);
 }
 
 function fieldSnapshot(control) {
@@ -241,6 +244,8 @@ function fieldSnapshot(control) {
 
 function formSnapshot(form) {
   const fields = [...form.querySelectorAll("input, select, textarea")].filter((control) => {
+    // Select-all reflects the line choices; it is not an independent saved value.
+    if ("protectionAll" in control.dataset) return false;
     // Official metadata is derived, not an editable configuration value.
     if ("cableModelContext" in control.dataset || "codexVision" in control.dataset) {
       const mode = control.closest("[data-cable-model]")?.querySelector("[data-codex-metadata-mode]");
@@ -299,6 +304,17 @@ function mergeAuditSettingsFields(base, local, remote) {
   return merged;
 }
 
+function mergeProtectionSettingsFields(base, local, remote) {
+  const names = ["mappingTtlValue", "mappingTtlUnit"];
+  const groups = [base, local, remote].map(fields => fields.filter(field => names.includes(field[0])));
+  const seconds = fields => protectionTtlSeconds(fields.find(field => field[0] === names[0])[4], fields.find(field => field[0] === names[1])[4]);
+  const [before, ours, theirs] = groups.map(seconds);
+  const ttl = Object.is(ours, before) ? groups[2]
+    : Object.is(theirs, before) || Object.is(ours, theirs) ? groups[1] : null;
+  const other = mergeFormFields(...[base, local, remote].map(fields => fields.filter(field => !names.includes(field[0]))));
+  return ttl && other ? [...other, ...ttl] : null;
+}
+
 function restoreFormChanges(form, replacement) {
   const baseline = formBaselines.get(form);
   const latest = formBaselines.get(replacement);
@@ -317,7 +333,8 @@ function restoreFormChanges(form, replacement) {
   const structure = (snapshot) => JSON.stringify(JSON.parse(snapshot).map(fieldKey));
   const sameStructure = baseline !== undefined && (cableModels
     || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
-  const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields : mergeFormFields;
+  const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields
+    : form.getAttribute("id") === "protection-settings-form" ? mergeProtectionSettingsFields : mergeFormFields;
   const merged = sameContext && sameStructure
     ? merge(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
   const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
@@ -764,6 +781,26 @@ pageContent.addEventListener("change", (event) => {
   if (event.target.matches('#audit-settings-form input[type="checkbox"]')) {
     syncAuditSettingsForm(event.target.closest("form"));
   }
+  if (event.target.matches('#protection-settings-form input[type="checkbox"]')) {
+    const form = event.target.closest("form");
+    const lines = [...form.querySelectorAll("[data-protection-cable]")];
+    if ("protectionAll" in event.target.dataset) {
+      lines.forEach(input => { input.checked = event.target.checked; });
+    } else if ("protectionCable" in event.target.dataset) {
+      // Multiple cables can share one provider and therefore one protection setting.
+      lines.filter(input => input.dataset.protectionProvider === event.target.dataset.protectionProvider)
+        .forEach(input => { input.checked = event.target.checked; });
+    }
+    syncProtectionSettingsForm(form);
+  }
+  if (event.target.matches('#protection-settings-form [name="mappingTtlUnit"]')) {
+    const unit = event.target;
+    const form = unit.closest("form");
+    const input = form.querySelector('[name="mappingTtlValue"]');
+    const previous = protectionTtlUnits.get(unit) || "hours";
+    if (input.value !== "") input.value = String(protectionTtlSeconds(input.value, previous) / PROTECTION_TTL_UNITS[unit.value]);
+    syncProtectionSettingsForm(form);
+  }
   if (event.target.matches('#cable-create-form [name="target"]')) {
     state.createTarget = event.target.value;
     const form = event.target.closest("form");
@@ -815,6 +852,9 @@ pageContent.addEventListener("toggle", (event) => {
 }, true);
 
 pageContent.addEventListener("input", (event) => {
+  if (event.target.matches('#protection-settings-form [name="mappingTtlValue"]')) {
+    syncProtectionTtlForm(event.target.closest("form"));
+  }
   if (event.target.matches("#audit-settings-form input")) {
     syncAuditSettingsForm(event.target.closest("form"));
   }
@@ -879,10 +919,6 @@ function renderCableDetail() {
             </div>
           </form>
         ` : `<div class="empty"><strong>未配置上游</strong></div>`}
-      </section>
-      <section class="cable-section" aria-labelledby="cable-protection-title">
-        <div class="cable-section-heading"><h2 id="cable-protection-title">凭据保护</h2><p>Key、Token 等凭据在发往模型前替换，返回客户端时还原。</p></div>
-        <form id="cable-protection-form" data-cable-context="${esc(cable.id)}"><div class="form-grid"><label class="field"><span>此线路</span><select name="enabled"><option value="inherit" ${provider.credentialProtection == null ? "selected" : ""}>沿用全局（${state.config.credentialProtection?.enabled ? "启用" : "关闭"}）</option><option value="true" ${provider.credentialProtection === true ? "selected" : ""}>启用</option><option value="false" ${provider.credentialProtection === false ? "selected" : ""}>关闭</option></select></label></div><div class="form-actions"><button class="button" type="submit">保存保护设置</button></div></form>
       </section>
       <section class="cable-section" aria-labelledby="cable-models-title">
         <div class="cable-section-heading cable-models-heading">
@@ -2214,9 +2250,26 @@ function auditStorageLabel(bytes) {
 }
 
 const MIN_AUDIT_BUDGET_MIB = 16;
+const PROTECTION_TTL_UNITS = { seconds: 1, minutes: 60, hours: 3600, days: 86400 };
+
+function protectionTtlSeconds(value, unit) {
+  const seconds = Number(value) * (PROTECTION_TTL_UNITS[unit] || NaN);
+  const rounded = Math.round(seconds);
+  return Math.abs(seconds - rounded) < 1e-7 ? rounded : seconds;
+}
+
+function protectionTtlDisplay(seconds) {
+  const unit = ["days", "hours", "minutes"].find(unit => seconds % PROTECTION_TTL_UNITS[unit] === 0) || "seconds";
+  return { value: seconds / PROTECTION_TTL_UNITS[unit], unit };
+}
 
 function renderSettings() {
   const audit = state.config.audit;
+  const cables = configurationCables(state.config);
+  const protectionEnabled = state.config.credentialProtection?.enabled === true;
+  const ttl = protectionTtlDisplay(state.config.credentialProtection?.mappingTtlSeconds || 3600);
+  const nameCounts = new Map();
+  cables.forEach(cable => nameCounts.set(cable.name, (nameCounts.get(cable.name) || 0) + 1));
   const storage = state.runtime?.security?.storage;
   const temporary = state.runtime?.temporaryStorage;
   return `<div class="settings-page">
@@ -2242,19 +2295,24 @@ function renderSettings() {
       </form>
     </section>
     <section class="panel" aria-labelledby="protection-settings-title">
-      <div class="panel-header"><h2 id="protection-settings-title">凭据保护</h2></div>
-      <form id="protection-settings-form">
-        <div class="settings-row">
-          <span>全局开关</span>
-          <div class="settings-control"><label class="settings-checkbox"><input id="protection-enabled" name="enabled" type="checkbox" aria-describedby="protection-enabled-help" ${state.config.credentialProtection?.enabled ? "checked" : ""}><span>启用凭据保护</span></label></div>
-          <p class="muted settings-help" id="protection-enabled-help">勾选并保存后，发给模型的内容中识别到的 Key、Token 等凭据会替换为占位符，响应返回客户端前还原。连接上游的身份认证仍使用真实凭据，本地审计记录也保留凭据原文。</p>
+      <form id="protection-settings-form" data-cable-context="${esc(JSON.stringify(cables.map(cable => [cable.id, cable.record.virtualProvider]).sort()))}">
+        <div class="panel-header protection-settings-heading"><h2 id="protection-settings-title">凭据保护</h2><label class="settings-checkbox"><input id="protection-enabled" name="enabled" type="checkbox" ${protectionEnabled ? "checked" : ""}><span>启用凭据保护</span></label><p class="muted">发送前替换模型上下文中的 Key、Token，响应返回时还原。</p></div>
+        <div class="protection-master">
+          <details class="protection-scope"><summary>保护范围说明</summary><p class="muted">仅替换模型上下文中识别到的凭据。连接上游的身份认证仍使用真实凭据，本地审计记录保留凭据原文。</p></details>
         </div>
         <div class="settings-row">
-          <label for="protection-ttl">映射闲置有效期</label>
-          <div class="settings-control"><div class="settings-value"><input id="protection-ttl" name="mappingTtlSeconds" aria-label="映射闲置有效期（秒）" aria-describedby="protection-ttl-help" type="number" min="60" max="2592000" step="1" required value="${state.config.credentialProtection?.mappingTtlSeconds || 3600}"><span>秒</span></div></div>
-          <p class="muted settings-help" id="protection-ttl-help">同一会话每次新请求都会重新计时。连续闲置超过此时间后，凭据与占位符的对应关系过期，后续请求会生成新的占位符。默认 3600 秒（1 小时），可设为 60 秒至 30 天。</p>
+          <fieldset class="protection-cables">
+            <legend><span>配置保护线路</span><span class="muted" data-protection-count aria-live="polite">已选 ${cables.filter(cable => cable.virtualProvider.credentialProtection !== false).length} / ${cables.length} 条</span></legend>
+            ${cables.length ? `<label class="settings-checkbox protection-select-all"><input type="checkbox" data-protection-all ${protectionEnabled ? "" : "disabled"}><span>全选线路</span></label>` : ""}
+            <div class="protection-cable-list">${cables.length ? cables.map(cable => `<label class="settings-checkbox protection-cable"><input type="checkbox" name="cableProtection:${esc(cable.id)}" data-protection-cable="${esc(cable.id)}" data-protection-provider="${esc(cable.record.virtualProvider)}" ${cable.virtualProvider.credentialProtection !== false ? "checked" : ""} ${protectionEnabled ? "" : "disabled"}><span>${esc(cable.name)}<small>${esc(targetLabel(cable.target))}${nameCounts.get(cable.name) > 1 ? ` · ${esc(cable.id)}` : ""}</small></span></label>`).join("") : '<p class="muted">暂无线路</p>'}</div>
+          </fieldset>
         </div>
-        <div class="settings-footer"><span class="muted">保存后立即生效；线路可单独覆盖此开关</span><button class="button button-primary" type="submit">保存设置</button></div>
+        <div class="settings-row protection-ttl-row">
+          <label for="protection-ttl">会话闲置有效期</label>
+          <div class="protection-ttl-controls"><div class="settings-value"><input id="protection-ttl" name="mappingTtlValue" aria-label="会话闲置有效期数值" aria-describedby="protection-ttl-help" type="number" min="${60 / PROTECTION_TTL_UNITS[ttl.unit]}" max="${2592000 / PROTECTION_TTL_UNITS[ttl.unit]}" step="any" required value="${ttl.value}"></div><select name="mappingTtlUnit" aria-label="会话闲置有效期单位">${entries({ seconds: "秒", minutes: "分钟", hours: "小时", days: "天" }).map(([unit, label]) => `<option value="${unit}" ${unit === ttl.unit ? "selected" : ""}>${label}</option>`).join("")}</select></div>
+          <p class="muted settings-help" id="protection-ttl-help">每次新请求重新计时；到期后，后续请求会建立新的凭据映射。</p>
+        </div>
+        <div class="settings-footer"><span class="muted">保存后对新请求生效。</span><button class="button button-primary" type="submit">保存设置</button></div>
       </form>
     </section>
     <section class="panel" aria-labelledby="temporary-settings-title">
@@ -2300,10 +2358,48 @@ function saveAuditSettings(data) {
   state.candidate.audit = { ...state.candidate.audit, retentionDays: days, budgetBytes: bytes };
 }
 
+function syncProtectionSettingsForm(form) {
+  const enabled = form.querySelector('[name="enabled"]').checked;
+  const lines = [...form.querySelectorAll("[data-protection-cable]")];
+  const selected = lines.filter(input => input.checked).length;
+  const count = form.querySelector("[data-protection-count]");
+  if (count) count.textContent = `已选 ${selected} / ${lines.length} 条`;
+  lines.forEach(input => setControlDisabled(input, !enabled));
+  const all = form.querySelector("[data-protection-all]");
+  if (all) {
+    all.checked = lines.length > 0 && selected === lines.length;
+    all.indeterminate = selected > 0 && selected < lines.length;
+    setControlDisabled(all, !enabled || !lines.length);
+  }
+  syncProtectionTtlForm(form);
+}
+
+function syncProtectionTtlForm(form) {
+  const input = form.querySelector('[name="mappingTtlValue"]');
+  const unit = form.querySelector('[name="mappingTtlUnit"]');
+  if (!input || !unit) return;
+  protectionTtlUnits.set(unit, unit.value);
+  input.min = 60 / PROTECTION_TTL_UNITS[unit.value];
+  input.max = 2592000 / PROTECTION_TTL_UNITS[unit.value];
+  const seconds = protectionTtlSeconds(input.value, unit.value);
+  input.setCustomValidity(Number.isInteger(seconds) && seconds >= 60 && seconds <= 2592000 ? "" : "会话闲置有效期须为 60 秒至 30 天，且换算后为整数秒。");
+}
+
 function saveProtectionSettings(data) {
-  const seconds = Number(data.get("mappingTtlSeconds"));
+  const seconds = protectionTtlSeconds(data.get("mappingTtlValue"), data.get("mappingTtlUnit"));
   if (!Number.isInteger(seconds) || seconds < 60 || seconds > 2592000) throw new Error("映射有效期须为 60 秒到 30 天之间的整数秒数。");
-  state.candidate.credentialProtection = { enabled: data.has("enabled"), mappingTtlSeconds: seconds };
+  const enabled = data.has("enabled");
+  const selections = new Map();
+  for (const cable of configurationCables(state.candidate)) {
+    const selected = data.has(`cableProtection:${cable.id}`);
+    const providerId = cable.record.virtualProvider;
+    if (selections.has(providerId) && selections.get(providerId) !== selected) throw new Error("共用同一入口的线路须选择相同的凭据保护状态。");
+    selections.set(providerId, selected);
+  }
+  for (const [providerId, selected] of selections) {
+    state.candidate.virtualProviders[providerId].credentialProtection = selected;
+  }
+  state.candidate.credentialProtection = { ...state.candidate.credentialProtection, enabled, mappingTtlSeconds: seconds };
 }
 
 function saveTemporarySettings(data) {
@@ -2583,6 +2679,12 @@ async function handleFormSubmit(event, form) {
   }
   // Read FormData before disabling controls; disabled inputs are omitted.
   const data = new FormData(form);
+  if (form.getAttribute("id") === "protection-settings-form") {
+    // Disabled lines retain their selections when the master switch is off.
+    for (const input of form.querySelectorAll("[data-protection-cable]")) {
+      if (input.checked) data.set(input.name, "on");
+    }
+  }
   const unlock = lockControls();
   const submitButton = form.querySelector('[type="submit"]');
   const buttonLabel = submitButton?.textContent;
@@ -2619,7 +2721,6 @@ async function handleFormSubmit(event, form) {
       "audit-settings-form": () => saveAuditSettings(data),
       "temporary-settings-form": () => saveTemporarySettings(data),
       "protection-settings-form": () => saveProtectionSettings(data),
-      "cable-protection-form": () => ({ type: "cable.protection", cableId: selectedCable().id, data: { enabled: data.get("enabled") === "inherit" ? null : data.get("enabled") === "true" } }),
       "cable-create-form": () => saveCableCreate(data, form),
       "cable-upstream-form": () => saveCableUpstream(data),
       "cable-models-form": () => saveCableModels(form),

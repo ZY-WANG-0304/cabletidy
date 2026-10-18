@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { createApplication } from "./helpers/native-app.mjs";
-import { getPaths } from "./helpers/native.mjs";
-import { catalogFixture } from "./helpers/codex-fixture.mjs";
+import { getPaths, normalizeConfig } from "./helpers/native.mjs";
+import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function fixture(t, options = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-settings-"));
@@ -15,6 +16,9 @@ async function fixture(t, options = {}) {
   return {
     paths,
     async get(route) { return (await fetch(`${app.url}api/v1/${route}`)).json(); },
+    request(route, body) {
+      return fetch(`${app.url}${route}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    },
     commit(config, baseRevision = config.revision) {
       return fetch(`${app.url}api/v1/config/commit`, {
         method: "POST", headers: { "content-type": "application/json" },
@@ -24,6 +28,63 @@ async function fixture(t, options = {}) {
     async restart() { await app.close(); app = await createApplication({ ...options, paths }); },
   };
 }
+
+test("credential protection saves global, cable selection and TTL atomically and applies to the next request and after restart", async t => {
+  const calls = [];
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    calls.push(body.input);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ type: "response", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: body.input }] }] }));
+  });
+  await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  t.after(async () => { upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); });
+  const f = await fixture(t, { loadCodexCatalog: async () => catalogFixture() });
+  let { config } = await f.get("config");
+  const lines = normalizeConfig(namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta" }));
+  Object.assign(config, { upstreams: lines.upstreams, routes: lines.routes, virtualProviders: lines.virtualProviders, cables: lines.cables });
+  for (const value of Object.values(config.upstreams)) value.baseUrl = `http://127.0.0.1:${upstream.address().port}/v1`;
+  config = (await (await f.commit(config)).json()).config;
+  const credential = "sk-proj-9fK2mNvQ8xRtZ4wB7hLpY1cD";
+  const checkRequests = async selected => {
+    for (const id of ["alpha", "beta"]) {
+      const response = await f.request(`${id}/v1/responses`, { model: "gpt-5.5", input: credential });
+      assert.equal(response.status, 200, id);
+      assert.equal((await response.json()).output[0].content[0].text, credential, "client receives the original credential");
+      if (selected.includes(id)) assert.match(calls.at(-1), /^CTSEC_v1_[a-f0-9]{32}$/);
+      else assert.equal(calls.at(-1), credential);
+    }
+  };
+  for (const [enabled, seconds, selected] of [[true, 60, ["alpha"]], [false, 120, ["alpha"]], [true, 120, ["alpha"]], [true, 3600, ["alpha", "beta"]], [false, 3600, ["alpha", "beta"]]]) {
+    config.credentialProtection = { enabled, mappingTtlSeconds: seconds };
+    for (const id of ["alpha", "beta"]) {
+      const provider = config.virtualProviders[`cabletidy_${id}`];
+      provider.credentialProtection = selected.includes(id);
+    }
+    const revision = config.revision;
+    const response = await f.commit(config);
+    assert.equal(response.status, 200);
+    config = (await response.json()).config;
+    assert.equal(config.revision, revision + 1);
+    const disk = JSON.parse(await fs.readFile(f.paths.config, "utf8"));
+    assert.deepEqual(disk.credentialProtection, config.credentialProtection);
+    assert.deepEqual(disk.virtualProviders, config.virtualProviders);
+    await checkRequests(enabled ? selected : []);
+    await f.restart();
+    assert.deepEqual((await f.get("config")).config, config);
+    await checkRequests(enabled ? selected : []);
+  }
+  const before = config;
+  const invalid = structuredClone(config);
+  invalid.credentialProtection = { enabled: true, mappingTtlSeconds: 59 };
+  invalid.virtualProviders.cabletidy_alpha.credentialProtection = true;
+  const failed = await f.commit(invalid);
+  assert.equal(failed.status, 422);
+  assert.deepEqual((await f.get("config")).config, before);
+  await checkRequests([]);
+});
 
 test("audit settings apply immediately, persist and survive restart in every limit combination", async t => {
   const f = await fixture(t);
