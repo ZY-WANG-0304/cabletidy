@@ -854,6 +854,130 @@ button.list-row:hover,
   line-height: 1.7;
 }
 
+.protection-cables {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.protection-cables legend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 0;
+}
+
+.protection-cables legend .muted {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.protection-settings-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  padding-inline: 20px;
+  padding-bottom: 12px;
+  border-bottom: 0;
+}
+
+.protection-settings-heading p {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.protection-master {
+  padding: 0 20px 16px;
+}
+
+.protection-cable-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.protection-select-all {
+  margin-top: 4px;
+}
+
+.protection-cables .settings-checkbox:has(input:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+.protection-cable {
+  min-width: 0;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.protection-cable + .protection-cable {
+  border-top: 1px solid var(--line);
+}
+
+.protection-cable span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.protection-cable small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.settings-row.protection-ttl-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.protection-ttl-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.protection-ttl-controls .settings-value {
+  width: 5rem;
+}
+
+.protection-ttl-controls select {
+  width: 4.5rem;
+  min-height: 38px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.protection-ttl-controls select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.protection-scope {
+  padding: 0;
+  font-size: 13px;
+}
+
+.protection-scope summary {
+  cursor: pointer;
+}
+
+.protection-scope p {
+  margin: 12px 0 0;
+  line-height: 1.7;
+}
+
 .settings-footer {
   justify-content: space-between;
   gap: 12px;
@@ -1579,5 +1703,4 @@ button.list-row:hover,
   .protection-mapping-details dl { grid-template-columns: 90px minmax(0, 1fr); }
   .protection-source-heading, .protection-source-body { padding: 14px; }
 }
-.protection-settings-note { padding: 0 24px; }
 .credential-decision { overflow-wrap: anywhere; }

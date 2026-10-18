@@ -3279,15 +3279,151 @@ test("late response pages and failures remain isolated from request pagination a
   assert.equal(app.read("state.security.responseContentError"), null);
 });
 
-test("credential protection settings save the one-hour idle timeout and per-cable overrides", async () => {
+test("credential protection settings render every cable with its effective state and replace the detail form", async () => {
+  const config = normalizeConfig(namedCodexConfigFixture({ alpha: '<Alpha> "线路"', beta: "Beta", gamma: "Gamma" }));
+  config.credentialProtection.enabled = true;
+  config.virtualProviders.cabletidy_beta.credentialProtection = false;
+  config.virtualProviders.cabletidy_gamma.credentialProtection = true;
+  config.cables.beta.target = "claude-code";
+  config.virtualProviders.cabletidy_beta.ingressProtocol = "anthropic.messages";
+  config.cables.gamma.target = "generic-env";
+  const app = await controller(config);
+  const html = app.read("renderSettings()");
+  assert.match(html, /&lt;Alpha&gt; &quot;线路&quot;/);
+  assert.match(html, /data-protection-cable="alpha"[^>]*checked/);
+  assert.doesNotMatch(html, /data-protection-cable="beta"[^>]*checked/);
+  assert.match(html, /data-protection-cable="gamma"[^>]*checked/);
+  assert.match(html, /配置保护线路/);
+  assert.match(html, /已选 2 \/ 3 条/);
+  assert.match(html, /name="mappingTtlValue"[^>]*value="1"/);
+  assert.match(html, /value="hours" selected/);
+  assert.doesNotMatch(html, /<small>[^<]* · (alpha|beta|gamma)<\/small>/);
+  assert.equal((html.match(/保存后对新请求生效/g) || []).length, 1);
+  assert.match(html, /<details class="protection-scope"><summary>保护范围说明/);
+  assert.doesNotMatch(app.read("renderCableDetail()"), /cable-protection-form|cable-protection-title/);
+});
+
+test("credential protection can save its global switch and TTL before any cables exist", async () => {
+  const app = await controller(normalizeConfig({}));
+  assert.match(app.read("renderSettings()"), /暂无线路/);
+  await app.submit(formNode("protection-settings-form", { enabled: "on", mappingTtlValue: "30", mappingTtlUnit: "days" }));
+  assert.deepEqual(app.persisted().credentialProtection, { enabled: true, mappingTtlSeconds: 2592000 });
+  assert.deepEqual(app.persisted().virtualProviders, {});
+});
+
+test("credential protection settings save the global toggle, individual exclusions and idle timeout in one commit", async () => {
+  const config = normalizeConfig(namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta" }));
+  config.virtualProviders.cabletidy_alpha.credentialProtection = false;
+  const app = await controller(config);
+  await app.submit(formNode("protection-settings-form", { enabled: "on", mappingTtlValue: "1", mappingTtlUnit: "minutes", "cableProtection:alpha": "on" }));
+  let saved = app.persisted();
+  assert.deepEqual(saved.credentialProtection, { enabled: true, mappingTtlSeconds: 60 });
+  assert.equal(saved.virtualProviders.cabletidy_alpha.credentialProtection, true);
+  assert.equal(saved.virtualProviders.cabletidy_beta.credentialProtection, false);
+  assert.equal(saved.revision, config.revision + 1);
+  assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 1);
+  await app.action("refresh");
+  assert.match(app.read("renderSettings()"), /data-protection-cable="alpha"[^>]*checked/);
+  assert.doesNotMatch(app.read("renderSettings()"), /data-protection-cable="beta"[^>]*checked/);
+  const disabledLines = [{ name: "cableProtection:alpha", checked: true }, { name: "cableProtection:beta", checked: false }];
+  await app.submit(formNode("protection-settings-form", { mappingTtlValue: "1", mappingTtlUnit: "hours" }, disabledLines));
+  saved = app.persisted();
+  assert.deepEqual(saved.credentialProtection, { enabled: false, mappingTtlSeconds: 3600 });
+  assert.equal(saved.virtualProviders.cabletidy_alpha.credentialProtection, true);
+  assert.equal(saved.virtualProviders.cabletidy_beta.credentialProtection, false);
+});
+
+test("credential protection master switch disables lines while select-all supports mixed and shared choices", async () => {
   const app = await controller();
-  await app.submit(formNode("protection-settings-form", { enabled: "on", mappingTtlSeconds: "3600" }));
-  assert.deepEqual(app.persisted().credentialProtection, { enabled: true, mappingTtlSeconds: 3600 });
-  await app.submit(formNode("cable-protection-form", { enabled: "false" }));
-  const provider = app.persisted().cables.relay.virtualProvider;
-  assert.equal(app.persisted().virtualProviders[provider].credentialProtection, false);
-  await app.submit(formNode("cable-protection-form", { enabled: "inherit" }));
-  assert.equal(app.persisted().virtualProviders[provider].credentialProtection, undefined);
+  const inputs = ["alpha", "beta", "gamma"].map((id, index) => ({
+    name: `cableProtection:${id}`, checked: index === 0,
+    dataset: { protectionCable: id, protectionProvider: index < 2 ? "shared" : "other" },
+    matches: selector => selector === '#protection-settings-form input[type="checkbox"]',
+    closest: () => form,
+  }));
+  const global = { name: "enabled", checked: true, dataset: {}, matches: inputs[0].matches, closest: () => form };
+  const all = { checked: true, dataset: { protectionAll: "" }, matches: inputs[0].matches, closest: () => form };
+  const count = { textContent: "" };
+  const form = { querySelectorAll: () => inputs, querySelector: selector => ({ '[name="enabled"]': global, '[data-protection-all]': all, '[data-protection-count]': count })[selector] || null };
+  app.change(global);
+  assert.equal(count.textContent, "已选 1 / 3 条");
+  assert.deepEqual(inputs.map(input => input.checked), [true, false, false]);
+  assert.equal(all.indeterminate, true);
+  assert.equal(all.checked, false);
+  all.checked = true;
+  app.change(all);
+  assert.deepEqual(inputs.map(input => input.checked), [true, true, true]);
+  inputs[0].checked = false;
+  app.change(inputs[0]);
+  assert.deepEqual(inputs.map(input => input.checked), [false, false, true]);
+  assert.equal(global.checked, true);
+  assert.equal(all.indeterminate, true);
+  global.checked = false;
+  app.change(global);
+  assert.deepEqual(inputs.map(input => input.checked), [false, false, true]);
+  assert.ok(inputs.every(input => input.disabled));
+  assert.equal(all.disabled, true);
+  global.checked = true;
+  app.change(global);
+  assert.ok(inputs.every(input => !input.disabled));
+  assert.deepEqual(inputs.map(input => input.checked), [false, false, true]);
+  all.checked = false;
+  app.change(all);
+  assert.deepEqual(inputs.map(input => input.checked), [false, false, false]);
+  assert.equal(all.indeterminate, false);
+});
+
+test("credential protection displays IDs only for duplicate line names", async () => {
+  const config = normalizeConfig(namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta", gamma: "Gamma" }));
+  const app = await controller(config);
+  const html = app.read('state.config.cables.beta.name = "Alpha"; renderSettings()');
+  assert.match(html, /<small>Codex · alpha<\/small>/);
+  assert.match(html, /<small>Codex · beta<\/small>/);
+  assert.match(html, /Gamma<small>Codex<\/small>/);
+});
+
+test("credential protection duration saves all units as exact integer seconds", async () => {
+  const app = await controller(normalizeConfig({}));
+  for (const [value, unit, seconds] of [["61", "seconds", 61], ["1.5", "minutes", 90], ["0.5", "hours", 1800], ["2", "days", 172800]]) {
+    await app.submit(formNode("protection-settings-form", { mappingTtlValue: value, mappingTtlUnit: unit }));
+    assert.equal(app.persisted().credentialProtection.mappingTtlSeconds, seconds);
+  }
+  for (const [value, unit] of [["0.01", "minutes"], ["31", "days"], ["1", "unknown"]]) {
+    const before = app.persisted();
+    const form = formNode("protection-settings-form", { mappingTtlValue: value, mappingTtlUnit: unit });
+    await app.submit(form);
+    assert.ok(form.feedback);
+    assert.deepEqual(app.persisted(), before);
+  }
+  assert.equal(app.read('protectionTtlSeconds(String(61 / 3600), "hours")'), 61);
+});
+
+test("credential protection merges duration values and units as one setting", async () => {
+  const app = await controller();
+  const value = (number, unit) => [
+    ["mappingTtlValue", "number", {}, "", String(number)],
+    ["mappingTtlUnit", "select-one", {}, "", unit],
+  ];
+  const merged = (base, local, remote) => app.read(`mergeProtectionSettingsFields(${JSON.stringify(base)}, ${JSON.stringify(local)}, ${JSON.stringify(remote)})`);
+  const base = value(1, "hours");
+  // Converting the local display is compatible with a remote duration change.
+  assert.deepEqual(JSON.parse(JSON.stringify(merged(base, value(60, "minutes"), value(2, "hours")))), value(2, "hours"));
+  assert.equal(merged(base, value(30, "minutes"), value(2, "hours")), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(merged(base, value(0.5, "hours"), value(30, "minutes")))), value(0.5, "hours"));
+});
+
+test("invalid or rejected credential protection saves leave all settings unchanged", async () => {
+  for (const failure of ["invalid", "conflict", "persist"]) {
+    const app = await controller(undefined, { onCommit: () => failure === "invalid" ? null : {
+      status: failure === "conflict" ? 409 : 500, body: { error: { message: "Save rejected" } },
+    } });
+    const before = app.persisted();
+    const form = formNode("protection-settings-form", { enabled: "on", mappingTtlValue: failure === "invalid" ? "59" : "60", mappingTtlUnit: "seconds", "cableProtection:relay": "on" });
+    await app.submit(form);
+    assert.deepEqual(app.persisted(), before);
+    assert.deepEqual(JSON.parse(app.read("JSON.stringify(state.candidate)")), before);
+    assert.ok(form.feedback);
+  }
 });
 
 test("protection shows escaped A/B, highlights A alongside risks and decorates only replaced trace segments", async () => {

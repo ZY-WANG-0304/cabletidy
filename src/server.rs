@@ -1501,9 +1501,8 @@ async fn proxy(
     if method != Method::POST || !supported {
         return Ok(protocol_error(protocol, 404, "not_found", "接口不存在"));
     }
-    let protect = p["credentialProtection"]
-        .as_bool()
-        .unwrap_or(c["credentialProtection"]["enabled"] == true);
+    let protect = c["credentialProtection"]["enabled"] == true
+        && p["credentialProtection"].as_bool().unwrap_or(true);
     if protect {
         let mut record = json!({"kind":"request","providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}});
         security::session::identify_headers(&mut record, &security::headers_value(headers));
