@@ -183,6 +183,36 @@ cabletidy start
 
 从本地安装包升级时，将安装目标换成新版本 `.tgz`。卸载前先执行 `cabletidy stop`，再使用 `npm uninstall -g cabletidy`，不会删除 `~/.cabletidy` 或撤销已应用的客户端配置；彻底停用前应先把客户端切换到其他接入。
 
+### 试用最新主线快照
+
+在源码目录执行：
+
+```bash
+npm run preview
+```
+
+命令先执行 `git fetch origin`，在临时目录构建 `origin/main` 的 release 二进制，再打包并安装到当前 npm 的全局前缀。无需手动改版本号、打 tag 或发布 npm。快照版本例如 `0.5.0-preview.20261018093000.gabc123456789`，包含 UTC 构建时间和提交短 SHA；npm 包与 `cabletidy --version` 保持一致。当前工作区的未提交修改不会纳入快照，源码版本文件也不会被修改。
+
+安装与 `cabletidy update` 共用确认流程：Linux/macOS 安装后询问是否立即重启，选择否则当前 daemon 继续运行，之后执行 `cabletidy restart` 使用新版。Windows 运行中的二进制会被锁定，需要先确认停止，安装完成后再确认启动。服务未运行时仅安装，不自动启动；非交互终端默认不确认，可用 `--yes` 自动确认。
+
+```bash
+# 安装后自动确认重启（Windows 自动确认停止和启动）。
+npm run preview -- --yes
+
+# 只生成当前平台安装包，不安装或操作服务。
+npm run preview -- --pack-only
+
+# 构建本地 HEAD 的已提交代码，不获取远程。
+npm run preview -- --ref HEAD
+
+# 安装到指定 npm 全局前缀。
+npm run preview -- --prefix /absolute/path/prefix
+```
+
+安装包及记录完整提交 SHA、平台和校验摘要的 `.tgz.json` 文件保存在 `dist-preview/`；该目录已忽略。快照只包含当前平台的二进制，需要 Rust 1.95 或更新版本及系统编译器。Cargo 缓存保存在 `target/preview/`，供后续构建复用。`npm run perview` 是同一命令的拼写别名。
+
+快照安装会替换对应前缀的 CableTidy，运行时沿用 `CABLETIDY_HOME` 或默认数据目录；试用前备份数据。恢复正式版时执行 `cabletidy update latest` 并确认重启；程序版本回退不代表数据回滚。
+
 ### 从源码运行与打包
 
 ```bash

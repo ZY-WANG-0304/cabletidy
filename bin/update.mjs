@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { promisify } from "node:util";
-import { executable, root } from "./native.mjs";
+import { executable, launch, root } from "./native.mjs";
 
 const execFileAsync = promisify(execFile);
 const packageName = "cabletidy";
@@ -148,9 +148,17 @@ export async function update(args) {
 
   const prefix = globalPrefix(path.resolve(root));
   if (!prefix) throw new Error(`CableTidy was not installed with npm install -g; update it the way it was installed, e.g.\n  ${manual}`);
-  const windows = process.platform === "win32";
   const launcher = path.join(root, "bin", "cabletidy.mjs");
-  const state = await instance(executable());
+  return installPackage({
+    current, target, prefix, launcher, binary: executable(), yes: options.yes,
+    install: () => run(npmCommand, [...npmArgs, "install", "-g", `--prefix=${prefix}`, registry, `${packageName}@${target}`]),
+  });
+}
+
+// Both registry updates and local previews use the same confirmation and restart flow.
+export async function installPackage({ current, target, prefix, launcher, binary, yes, install }) {
+  const windows = process.platform === "win32";
+  const state = await instance(binary);
   if (state.error) {
     // Windows cannot replace the package while the daemon may still be using its executable.
     if (windows) throw new Error(`Cannot determine whether CableTidy is running: ${state.error}\nStop it manually, then run cabletidy update again.`);
@@ -159,18 +167,19 @@ export async function update(args) {
   if (state.running && windows) {
     if (!state.process) throw new Error("Cannot verify the running CableTidy process (it may be starting or shutting down); stop it manually, then run cabletidy update again.");
     // Windows locks the running executable, so npm cannot replace the package until the daemon exits.
-    if (!await confirm("The running CableTidy daemon must be stopped before updating. Stop it now?", options.yes)) {
+    if (!await confirm("The running CableTidy daemon must be stopped before updating. Stop it now?", yes)) {
       console.log("Update cancelled");
       return 1;
     }
-    const stopped = await run(process.execPath, [launcher, "stop"]);
+    // A preview may target a fresh npm prefix whose launcher does not exist yet.
+    const stopped = await launch(["stop"], { binary }).closed;
     if (stopped !== 0) return stopped;
     // stop returns once shutdown completes; the process may still be closing other control connections.
-    const exited = await run(executable(), ["__instance", "--wait-exit", JSON.stringify(state.process)]);
+    const exited = await run(binary, ["__instance", "--wait-exit", JSON.stringify(state.process)]);
     if (exited !== 0) return exited;
   }
   console.log(`Updating CableTidy ${current} -> ${target} in ${prefix}`);
-  const installed = await run(npmCommand, [...npmArgs, "install", "-g", `--prefix=${prefix}`, registry, `${packageName}@${target}`]);
+  const installed = await install();
   if (installed !== 0) {
     console.error(`npm install failed${state.running && windows ? "; CableTidy is stopped, run cabletidy start to resume" : ""}`);
     return installed;
@@ -186,7 +195,7 @@ export async function update(args) {
   const question = windows
     ? `Start CableTidy ${target} now? (N: leave the service stopped)`
     : "Restart now?";
-  if (!await confirm(question, options.yes)) {
+  if (!await confirm(question, yes)) {
     console.log(`To use CableTidy ${target} later, run: ${switchCommand}`);
     return 0;
   }
