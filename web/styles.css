@@ -417,8 +417,12 @@ h3 {
   padding: 20px;
 }
 
-.supplier-modal-body > .transfer-selection {
-  margin-top: 16px;
+.supplier-model-interface-table td {
+  overflow-wrap: anywhere;
+}
+
+.supplier-model-interface-table td[data-label="协议类型"] {
+  white-space: nowrap;
 }
 
 .supplier-modal-form .config-form-footer {

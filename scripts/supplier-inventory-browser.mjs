@@ -164,6 +164,14 @@ try {
   await dialog.waitFor();
   assert.equal(await dialog.getByRole("heading", {name:"添加模型",exact:true}).count(), 1);
   assert.equal(await dialog.locator('[name="modelId"]').getAttribute("required"), "");
+  const interfaceTable = dialog.getByRole("table", {name:"可访问接口",exact:true});
+  assert.deepEqual(await interfaceTable.locator("thead th").allTextContents(), ["选择", "名称", "协议类型", "接口地址"]);
+  assert.equal(await interfaceTable.locator("tbody tr").count(), 3);
+  const publicInterface = interfaceTable.getByRole("row").filter({hasText:"Public Responses"});
+  assert.equal(await publicInterface.getByRole("checkbox", {name:"选择接口 Public Responses",exact:true}).count(), 1);
+  assert.match(await publicInterface.textContent(), /openai\.responses/);
+  assert.match(await publicInterface.textContent(), /http:\/\/localhost:9999\/v1/);
+  assert.equal(await dialog.locator(".supplier-modal-body > section.subsection").getByRole("heading", {name:"可访问接口",exact:true}).count(), 1);
   await dialog.locator('[name="modelId"]').fill("draft-wire");
   await dialog.locator('[name="interfaces"][value="responses"]').check();
   await dialog.locator('[name="contextWindow"]').fill("-1");
