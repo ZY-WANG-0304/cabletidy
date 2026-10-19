@@ -66,6 +66,11 @@ try {
   await createForm.getByRole("button", {name:"添加接口",exact:true}).click();
   let draftDialog = page.getByRole("dialog");
   assert.equal(await draftDialog.locator('[name="secret"]').getAttribute("required"), "");
+  await screenshot("supplier-interface-create");
+  await page.setViewportSize({width:390,height:844});
+  await noOverflow();
+  await screenshot("supplier-interface-create-mobile");
+  await page.setViewportSize({width:1280,height:900});
   await draftDialog.locator('[name="protocol"]').selectOption("anthropic.messages");
   assert.equal(await draftDialog.locator('[name="authMethod"]').inputValue(), "api-key");
   await draftDialog.locator('[name="protocol"]').selectOption("gemini.generate_content");
@@ -164,6 +169,10 @@ try {
   assert.equal(await dialog.getByRole("button",{name:"测试连接",exact:true}).count(),0);
   assert.equal(await dialog.getByRole("button",{name:"发现模型",exact:true}).count(),0);
   await screenshot("supplier-interface-form");
+  await page.setViewportSize({width:390,height:844});
+  await noOverflow();
+  await screenshot("supplier-interface-form-mobile");
+  await page.setViewportSize({width:1280,height:900});
   await page.route("**/api/v1/suppliers/discover", async route => {
     assert.deepEqual(route.request().postDataJSON(),{supplierId:sid,interfaceId:"responses-2"});
     await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:[{id:"discovered-only"}]})});
@@ -223,6 +232,8 @@ try {
   await difference.locator("summary").click();
   await difference.locator('[name="diff:responses:supportsStreaming"]').selectOption("false");
   await screenshot("supplier-model-form");
+  await dialog.getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
+  await screenshot("supplier-model-reasoning");
   await dialog.getByRole("heading",{name:"接口供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools");
   await save(dialog, "保存模型");
@@ -263,6 +274,8 @@ try {
   await noOverflow();
   assert.equal(await page.getByRole("dialog").evaluate(node => {const box=node.getBoundingClientRect();return box.top>=0 && box.bottom<=window.innerHeight && box.width<=window.innerWidth;}), true);
   await screenshot("supplier-model-form-mobile");
+  await page.getByRole("dialog").getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
+  await screenshot("supplier-model-reasoning-mobile");
   await page.getByRole("dialog").getByRole("heading",{name:"接口供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools-mobile");
   await page.keyboard.press("Escape");
@@ -278,6 +291,11 @@ try {
   await page.locator('[name="suppliers"][value="one"]').check();
   await page.locator('[name="suppliers"][value="two"]').check();
   assert.equal(await page.locator('[name="candidate"]:checked').count(), 0);
+  await screenshot("cable-create-selection");
+  await page.setViewportSize({width:390,height:844});
+  await noOverflow();
+  await screenshot("cable-create-selection-mobile");
+  await page.setViewportSize({width:1280,height:900});
   await page.getByRole("button", {name:"选择当前筛选结果",exact:true}).click();
   await page.getByRole("button", {name:"将勾选模型加入绑定",exact:true}).click();
   assert.equal(await page.locator('[data-inventory-binding]').count(), 2);
