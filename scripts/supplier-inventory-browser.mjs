@@ -144,7 +144,7 @@ try {
   assert.equal(await page.getByRole("heading", {name:"接口",exact:true}).count(), 1);
   assert.equal(await page.getByRole("heading", {name:"模型",exact:true}).count(), 1);
   assert.equal(await page.locator(".cable-table").count(), 2);
-  assert.deepEqual(await page.locator('.supplier-interface-table tbody td:last-child button').allTextContents(), ["删除", "删除"]);
+  assert.deepEqual(await page.locator('.supplier-interface-table tbody td:last-child button').allTextContents(), ["测试连接", "发现模型", "删除", "测试连接", "删除"]);
 
   await page.locator('#supplier-form [name="name"]').fill("Unsaved Name");
   await page.getByRole("button", {name:"添加接口",exact:true}).click();
@@ -161,8 +161,8 @@ try {
   dialog = page.getByRole("dialog");
   assert.equal(await dialog.locator('[name="secret"]').getAttribute("required"), null);
   assert.equal(await dialog.locator('[name="secret"]').getAttribute("placeholder"), "已配置，留空保留现有凭据");
-  assert.equal(await dialog.getByRole("button",{name:"测试连接",exact:true}).count(),1);
-  assert.equal(await dialog.getByRole("button",{name:"发现模型",exact:true}).count(),1);
+  assert.equal(await dialog.getByRole("button",{name:"测试连接",exact:true}).count(),0);
+  assert.equal(await dialog.getByRole("button",{name:"发现模型",exact:true}).count(),0);
   await screenshot("supplier-interface-form");
   await page.route("**/api/v1/suppliers/discover", async route => {
     assert.deepEqual(route.request().postDataJSON(),{supplierId:sid,interfaceId:"responses-2"});
@@ -171,18 +171,27 @@ try {
   await dialog.locator('[name="interfaceName"]').fill("Secure Responses");
   await dialog.locator('[name="supportsStreaming"]').uncheck();
   await dialog.locator('[name="supportsResponseIdContinuation"]').check();
-  await dialog.getByRole("button",{name:"发现模型",exact:true}).click();
-  await page.locator('[data-action="use-discovered-model"]').waitFor({state:"attached"});
-  assert.equal(await dialog.locator('[name="interfaceName"]').inputValue(),"Secure Responses");
-  assert.equal(await dialog.evaluate(node=>node.open),true);
   await save(dialog, "保存接口");
   await dialog.waitFor({state:"detached"});
   assert.equal((await readConfig()).suppliers[sid].interfaces["responses-2"].secretConfigured, true);
   assert.equal((await readConfig()).suppliers[sid].interfaces["responses-2"].supportsStreaming,false);
   assert.equal((await readConfig()).suppliers[sid].interfaces["responses-2"].supportsResponseIdContinuation,true);
-  assert.deepEqual(await page.locator('.supplier-interface-table tbody td:last-child button').allTextContents(),["删除","删除","删除"]);
+  assert.deepEqual(await page.locator('.supplier-interface-table tbody td:last-child button').allTextContents(),["测试连接","发现模型","删除","测试连接","删除","测试连接","发现模型","删除"]);
   assert.equal(await page.locator('#supplier-form [name="name"]').inputValue(), "Unsaved Name");
   assert.equal((await readConfig()).suppliers[sid].name, "Local Service");
+  await page.route("**/api/v1/tests/upstream", async route => {
+    assert.deepEqual(route.request().postDataJSON(),{id:`supplier.${sid}.responses-2`});
+    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,message:"模拟连接成功",latencyMs:1,secretConfigured:true})});
+  });
+  const interfaceRow=page.locator('.supplier-interface-table tbody tr').filter({hasText:"Secure Responses"});
+  await interfaceRow.getByRole("button",{name:"测试连接",exact:true}).click();
+  await page.getByText(/模拟连接成功/).waitFor();
+  assert.equal(await page.locator('#supplier-form [name="name"]').inputValue(), "Unsaved Name");
+  await interfaceRow.getByRole("button",{name:"发现模型",exact:true}).click();
+  await page.locator('[data-action="use-discovered-model"]').waitFor();
+  assert.equal(await page.getByRole("dialog").count(),0);
+  assert.equal(await page.locator('#supplier-form [name="name"]').inputValue(), "Unsaved Name");
+  assert.equal((await readConfig()).suppliers[sid].models["discovered-only"],undefined);
   await page.locator('#supplier-form [name="name"]').fill("Local Service");
 
   await page.getByRole("button", {name:"添加模型",exact:true}).click();
@@ -286,7 +295,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: interface capability defaults, explicit tool forms, streaming exceptions, discovery draft retention, delete-only interface actions, separate panels, multiple interface/model drafts, atomic creation, generated IDs, authentication, interface/model dialogs, failed-save retention, mobile layout, explicit Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: interface capability defaults, explicit tool forms, streaming exceptions, discovery preserves supplier drafts, connection/discovery table actions, separate panels, multiple interface/model drafts, atomic creation, generated IDs, authentication, interface/model dialogs, failed-save retention, mobile layout, explicit Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();
