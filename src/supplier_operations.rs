@@ -120,6 +120,13 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                     }
                     let uid = suppliers::interface_key(sid, iid);
                     let previous = &old["interfaces"][iid];
+                    for field in ["supportsStreaming", "supportsResponseIdContinuation"] {
+                        if let Some(value) =
+                            previous.get(field).filter(|_| row.get(field).is_none())
+                        {
+                            interface[field] = value.clone();
+                        }
+                    }
                     interface["secretRef"] = previous
                         .get("secretRef")
                         .cloned()
@@ -222,7 +229,8 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                 let mid = p["upstreamModelId"].as_str().unwrap_or(name);
                 let facts = json!({"identity":p["identity"],"identitySource":p["identitySource"],"interfaces":["responses"],
                     "capabilities":crate::model::capabilities(p),"inputModalities":p["codex"].get("inputModalities").cloned().unwrap_or(json!(["text"])),
-                    "contextWindow":p["contextWindow"],"reasoning":p["reasoning"],"history":p["history"]});
+                    "contextWindow":p["contextWindow"],"reasoning":p["reasoning"],
+                    "interfaceCapabilities":{"responses":{"toolForms":p.get("toolForms").cloned().unwrap_or(json!([]))}}});
                 if inventory.get(mid).is_some_and(|old| old != &facts) {
                     bail!("同一上游模型 ID 的旧能力不同，请先人工确认供给事实");
                 }
@@ -295,7 +303,14 @@ fn prepare_interface(
         .as_object()
         .map(|_| previous.clone())
         .unwrap_or(json!({}));
-    for key in ["name", "protocol", "baseUrl", "enabled"] {
+    for key in [
+        "name",
+        "protocol",
+        "baseUrl",
+        "enabled",
+        "supportsStreaming",
+        "supportsResponseIdContinuation",
+    ] {
         if let Some(value) = data.get(key) {
             interface[key] = value.clone();
         }

@@ -69,8 +69,8 @@ try {
   await commit({ type: "supplier.save", supplierId: "fixture", data: { name: "Local fixture", interfaces: { responses: { protocol: "openai.responses", baseUrl: `http://127.0.0.1:${server.address().port}` } } } });
   for (const [modelId, identity] of [["wire-native", native.slug], ["wire-compatible", "DeepSeek-V4-Pro"]]) {
     await commit({ type: "supplier.model.save", supplierId: "fixture", data: { modelId, model: {
-      identity, interfaces: ["responses"], capabilityStates: { tools: "supported", streaming: "supported", reasoning: "supported" },
-      reasoning: { modes: ["effort"], efforts: ["high"] }, contextWindow: Math.min(128000, native.context_window), history: "stateless",
+      identity, interfaces: ["responses"], capabilityStates: { reasoning: "supported" }, interfaceCapabilities: {responses:{toolForms:["function","custom"]}},
+      reasoning: { modes: ["effort"], efforts: ["high"] }, contextWindow: Math.min(128000, native.context_window),
     } } });
   }
   await commit({ type: "cable.inventory.create", data: { name: "Smoke", suppliers: ["fixture"], defaultModel: "native", models: Object.fromEntries(["native", "compatible"].map(id => [id, { sources: [{ supplierId: "fixture", modelId: `wire-${id}`, interfaceId: "responses" }], promptStrategy: "default" }])) } });

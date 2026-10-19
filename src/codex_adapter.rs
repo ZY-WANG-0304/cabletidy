@@ -8,6 +8,21 @@ use serde_json::{json, Value};
 
 const CODING_PROMPT: &str = "You are a coding assistant working with the user in their workspace. Inspect relevant files before editing. Preserve unrelated user changes. Follow the user's instructions and repository instructions. Use the tools supplied in this request to inspect files, run commands and make changes. A tool call proposes an action; wait for the matching tool result before relying on it. Use apply_patch with its declared patch syntax to edit files. Do not invent tools, tool results, files or successful checks. Complete the requested work, run appropriate checks, and clearly report the changes and any remaining limitations.";
 
+pub fn history_policy(p: &Value) -> &'static str {
+    if suppliers::compatible(text(&p["identity"])) || p["manualSourceGroup"] == true {
+        "stateless"
+    } else {
+        "native"
+    }
+}
+
+fn require_tool_form(p: &Value, form: &str) -> Result<()> {
+    if !array(&p["toolForms"]).contains(&json!(form)) {
+        bail!("该模型通过所选接口未声明支持 {form} 工具形式");
+    }
+    Ok(())
+}
+
 pub fn validate_profile(p: &Value) -> Result<()> {
     if p["interfaceProtocol"] != "openai.responses" {
         bail!("首期适配仅支持 Responses 访问协议");
@@ -18,17 +33,16 @@ pub fn validate_profile(p: &Value) -> Result<()> {
     }
     let caps = crate::model::capabilities(p);
     if !caps.contains("tools") || !caps.contains("streaming") {
-        bail!("请确认工具调用和流式能力");
+        bail!("请声明该模型的接口工具形式及流式供给能力");
     }
+    require_tool_form(p, "function")?;
     if caps.contains("reasoning") && efforts(p)?.is_empty() {
         bail!("该推理控制方式暂无内置映射，请确认 Responses 支持的档位");
     }
     if suppliers::compatible(identity) {
+        require_tool_form(p, "custom")?;
         if !p["contextWindow"].as_u64().is_some_and(|v| v > 0) {
             bail!("请确认模型上下文限制");
-        }
-        if p["history"] != "stateless" {
-            bail!("首期兼容规则只支持完整、无状态历史，请确认接口历史方式");
         }
         if p["promptStrategy"] == "native" {
             bail!("非原生模型不能选择原生提示词");
@@ -61,6 +75,10 @@ pub fn catalog_entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, 
             .context("本机 Codex 目录为空")?
     };
     let mut out = original.clone();
+    require_tool_form(p, "function")?;
+    if !use_native || original["apply_patch_tool_type"] == "freeform" {
+        require_tool_form(p, "custom")?;
+    }
     out["slug"] = json!(name);
     out["display_name"] = json!(name);
     out["upgrade"] = Value::Null;
@@ -292,7 +310,7 @@ pub fn request_edits(
     let index = streaming::index(source, None)?;
     let mut memory = streaming::Reservation::memory();
     let compatible = suppliers::compatible(text(&p["identity"]));
-    let stateless = compatible || p["history"] == "stateless" || p["manualSourceGroup"] == true;
+    let stateless = history_policy(p) == "stateless";
     for (_, field, node) in &index.nodes {
         if field == "parallel_tool_calls"
             && !crate::model::capabilities(p).contains("parallel_tool_calls")
@@ -335,6 +353,13 @@ pub fn request_edits(
         {
             bail!("兼容模型需要完整历史，不能使用远端历史引用");
         }
+        if !stateless
+            && p["supportsResponseIdContinuation"] != true
+            && ["previous_response_id", "conversation"].contains(&field.as_str())
+            && node.kind != b'n'
+        {
+            bail!("所选接口未声明支持响应 ID 续接，请发送完整历史");
+        }
         if stateless && field == "store" {
             edits.add(node.start, node.end, b"false".to_vec())?;
         }
@@ -373,7 +398,7 @@ pub fn request_edits(
                 }
             }
         }
-        if compatible && field == "tools" && node.kind == b'[' {
+        if field == "tools" && node.kind == b'[' {
             let tools = streaming::index(source, Some(node))?;
             let mut removed = Vec::new();
             for (_, _, tool) in &tools.nodes {
@@ -382,13 +407,15 @@ pub fn request_edits(
                 let name = text(&fields.values["name"]);
                 // Current Codex extensions may still emit this special tool when the model
                 // disables search. It cannot be represented by a plain function call.
-                let unavailable =
-                    kind == "tool_search" || kind == "namespace" && name == "multi_agent_v1";
+                let unavailable = compatible
+                    && (kind == "tool_search" || kind == "namespace" && name == "multi_agent_v1");
                 removed.push(unavailable);
                 if unavailable {
                     continue;
                 }
-                if kind != "function" && !(kind == "custom" && name == "apply_patch") {
+                check_tool_forms(source, p, tool)?;
+                if compatible && kind != "function" && !(kind == "custom" && name == "apply_patch")
+                {
                     bail!("兼容模型仅支持 function 工具及 apply_patch 自定义工具；不支持工具类型 {kind}");
                 }
             }
@@ -448,4 +475,25 @@ pub fn request_edits(
     }
     edits.ranges.sort_by_key(|r| r.0);
     Ok(edits)
+}
+
+fn check_tool_forms(
+    source: &std::sync::Arc<crate::streaming::Spool>,
+    p: &Value,
+    tool: &crate::streaming::Node,
+) -> Result<()> {
+    let fields = crate::streaming::index(source, Some(tool))?;
+    let kind = text(&fields.values["type"]);
+    if ["function", "custom"].contains(&kind) {
+        require_tool_form(p, kind)?;
+    }
+    if kind == "namespace" {
+        if let Some((_, _, node)) = fields.nodes.iter().find(|(_, key, _)| key == "tools") {
+            let tools = crate::streaming::index(source, Some(node))?;
+            for (_, _, tool) in &tools.nodes {
+                check_tool_forms(source, p, tool)?;
+            }
+        }
+    }
+    Ok(())
 }

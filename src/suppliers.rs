@@ -47,6 +47,87 @@ pub fn managed(p: &Value) -> bool {
     p["managedModels"] == true
 }
 
+/// Normalize the old supply fields without inventing tool formats or server state.
+fn normalize_supply(c: &mut Value) {
+    for (_, supplier) in c["suppliers"].as_object_mut().into_iter().flatten() {
+        if !supplier.is_object() {
+            continue;
+        }
+        for (_, interface) in supplier["interfaces"].as_object_mut().into_iter().flatten() {
+            if let Some(i) = interface.as_object_mut() {
+                i.entry("supportsStreaming").or_insert(json!(true));
+                i.entry("supportsResponseIdContinuation")
+                    .or_insert(json!(false));
+            }
+        }
+        for (_, model) in supplier["models"].as_object_mut().into_iter().flatten() {
+            if !model.is_object() {
+                continue;
+            }
+            let legacy_streaming = match text(&model["capabilityStates"]["streaming"]) {
+                "supported" => Some(json!(true)),
+                "unsupported" => Some(json!(false)),
+                "unknown" => Some(Value::Null),
+                _ => None,
+            };
+            let ids = array(&model["interfaces"]).to_vec();
+            for iid in ids.iter().filter_map(Value::as_str) {
+                if model["interfaceCapabilities"].is_null() {
+                    model["interfaceCapabilities"] = json!({});
+                }
+                if !model["interfaceCapabilities"].is_object() {
+                    continue;
+                }
+                if model["interfaceCapabilities"][iid].is_null() {
+                    model["interfaceCapabilities"][iid] = json!({});
+                }
+                let d = &mut model["interfaceCapabilities"][iid];
+                if !d.is_object() {
+                    continue;
+                }
+                let streaming = match text(&d["capabilityStates"]["streaming"]) {
+                    "supported" => Some(json!(true)),
+                    "unsupported" => Some(json!(false)),
+                    "unknown" => Some(Value::Null),
+                    _ => legacy_streaming.clone(),
+                };
+                if let Some(value) = streaming {
+                    d.as_object_mut()
+                        .unwrap()
+                        .entry("supportsStreaming")
+                        .or_insert(value);
+                }
+                d.as_object_mut()
+                    .unwrap()
+                    .entry("toolForms")
+                    .or_insert(json!([]));
+                remove_legacy_facts(d);
+            }
+            remove_legacy_facts(model);
+        }
+    }
+}
+
+fn remove_legacy_facts(facts: &mut Value) {
+    if facts["history"].is_null()
+        || ["native", "stateless", "unknown"].contains(&text(&facts["history"]))
+    {
+        facts.as_object_mut().unwrap().remove("history");
+    }
+    for cap in ["streaming", "tools"] {
+        if ["supported", "unsupported", "unknown"].contains(&text(&facts["capabilityStates"][cap]))
+        {
+            facts["capabilityStates"]
+                .as_object_mut()
+                .unwrap()
+                .remove(cap);
+        }
+    }
+    if let Some(caps) = facts.get_mut("capabilities").and_then(Value::as_array_mut) {
+        caps.retain(|cap| cap != "streaming" && cap != "tools");
+    }
+}
+
 pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
     let sid = text(&source["supplierId"]);
     let mid = text(&source["modelId"]);
@@ -78,6 +159,24 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
             .map(|(k, _)| k)
             .collect::<Vec<_>>());
     }
+    let mut caps = crate::model::capabilities(&facts);
+    caps.remove("streaming");
+    caps.remove("tools");
+    facts["supportsStreaming"] = model["interfaceCapabilities"][iid]
+        .get("supportsStreaming")
+        .unwrap_or(&interface["supportsStreaming"])
+        .clone();
+    if interface["supportsStreaming"] != true {
+        facts["supportsStreaming"] = json!(false);
+    }
+    facts["supportsResponseIdContinuation"] = interface["supportsResponseIdContinuation"].clone();
+    if facts["supportsStreaming"] == true {
+        caps.insert("streaming".into());
+    }
+    if !array(&facts["toolForms"]).is_empty() {
+        caps.insert("tools".into());
+    }
+    facts["capabilities"] = json!(caps);
     facts["upstreamModelId"] = json!(mid);
     facts["supplierId"] = json!(sid);
     facts["interfaceId"] = json!(iid);
@@ -117,7 +216,11 @@ pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
             facts["contextWindow"],
             facts["maxOutputTokens"],
             facts["reasoning"],
-            facts["history"]
+            array(&facts["toolForms"])
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            crate::codex_adapter::history_policy(&facts)
         ]);
         if index != 0 && contract != baseline {
             bail!("多来源的模型身份、能力及历史约定不兼容，请分别发布模型");
@@ -149,6 +252,7 @@ pub fn compile(c: &mut Value) {
     if !c["suppliers"].is_object() {
         c["suppliers"] = json!({});
     }
+    normalize_supply(c);
     c["upstreams"]
         .as_object_mut()
         .unwrap()
@@ -323,10 +427,30 @@ fn fact_errors(facts: &Value, path: &str) -> Vec<Value> {
         );
     }
     check(
-        facts["history"].is_null()
-            || ["native", "stateless", "unknown"].contains(&text(&facts["history"])),
+        facts.get("history").is_none(),
         "history",
-        "历史方式无效",
+        "历史处理策略由客户端适配代码决定",
+    );
+    check(
+        facts
+            .get("supportsStreaming")
+            .is_none_or(|v| v.is_boolean() || v.is_null()),
+        "supportsStreaming",
+        "模型接口的流式例外必须为布尔值或未知",
+    );
+    check(
+        facts.get("toolForms").is_none_or(|v| {
+            v.is_array()
+                && array(v)
+                    .iter()
+                    .all(|form| ["function", "custom"].contains(&text(form)))
+                && array(v)
+                    .iter()
+                    .enumerate()
+                    .all(|(i, form)| !array(v)[..i].contains(form))
+        }),
+        "toolForms",
+        "工具形式必须是 function、custom 的无重复数组",
     );
     errors
 }
@@ -383,6 +507,13 @@ pub fn validate(c: &Value) -> Vec<Value> {
                 p.clone(),
                 "启停状态必须为布尔值",
             );
+            for field in ["supportsStreaming", "supportsResponseIdContinuation"] {
+                check(
+                    i.get(field).is_none_or(Value::is_boolean),
+                    format!("{p}.{field}"),
+                    "接口能力必须为布尔值",
+                );
+            }
             check(
                 crate::validation::PROTOCOLS.contains(&text(&i["protocol"])),
                 p.clone(),
@@ -408,6 +539,9 @@ pub fn validate(c: &Value) -> Vec<Value> {
                     "managedModel",
                     "adapterVersion",
                     "sourceError",
+                    "toolForms",
+                    "supportsStreaming",
+                    "supportsResponseIdContinuation",
                 ]
                 .iter()
                 .all(|field| m.get(*field).is_none()),
@@ -470,7 +604,8 @@ pub fn validate(c: &Value) -> Vec<Value> {
                             "contextWindow",
                             "maxOutputTokens",
                             "reasoning",
-                            "history",
+                            "toolForms",
+                            "supportsStreaming",
                         ]
                         .contains(&key.as_str())
                     }),

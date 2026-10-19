@@ -46,20 +46,15 @@ fn supply_facts(v: &Value) -> Value {
             "capabilities",
             "contextWindow",
             "maxOutputTokens",
-            "history",
+            "toolForms",
+            "supportsStreaming",
             "validation",
         ],
     );
     if v["capabilityStates"].is_object() {
         out["capabilityStates"] = fields(
             &v["capabilityStates"],
-            &[
-                "tools",
-                "streaming",
-                "reasoning",
-                "vision",
-                "parallel_tool_calls",
-            ],
+            &["reasoning", "vision", "parallel_tool_calls"],
         );
     }
     if v["reasoning"].is_object() {
@@ -83,7 +78,16 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         s["interfaces"] = json!({});
         s["models"] = json!({});
         for (iid, interface) in entries(&supplier["interfaces"]) {
-            let mut i = fields(interface, &["name", "protocol", "enabled"]);
+            let mut i = fields(
+                interface,
+                &[
+                    "name",
+                    "protocol",
+                    "enabled",
+                    "supportsStreaming",
+                    "supportsResponseIdContinuation",
+                ],
+            );
             i["baseUrl"] = if include_credentials {
                 interface["baseUrl"].clone()
             } else {
