@@ -240,6 +240,7 @@ function render(preservedForms = []) {
       showFormError(form, new Error("配置项已在其他窗口删除。"));
     }
   }
+  pageContent.querySelectorAll("[data-token-length]").forEach(syncTokenLength);
   const settingsForm = pageContent.querySelector("#audit-settings-form");
   if (settingsForm) syncAuditSettingsForm(settingsForm);
   const protectionForm = pageContent.querySelector("#protection-settings-form");
@@ -356,7 +357,8 @@ function restoreFormChanges(form, replacement) {
   const sameStructure = baseline !== undefined && (cableModels
     || structure(baseline) === structure(current) && structure(baseline) === structure(latest));
   const merge = form.getAttribute("id") === "audit-settings-form" ? mergeAuditSettingsFields
-    : form.getAttribute("id") === "protection-settings-form" ? mergeProtectionSettingsFields : mergeFormFields;
+    : form.getAttribute("id") === "protection-settings-form" ? mergeProtectionSettingsFields
+      : form.getAttribute("id") === "supplier-model-form" ? mergeSupplierModelFields : mergeFormFields;
   const merged = sameContext && sameStructure
     ? merge(savedFields(baseline), savedFields(current), savedFields(latest)) : null;
   const controls = new Map([...replacement.querySelectorAll("input, select, textarea")]
@@ -3056,6 +3058,86 @@ bootstrap();
 const COMPATIBLE_IDENTITIES = ["GLM-5.3", "GLM-5.3-Flash", "Kimi K3", "DeepSeek-V4-Pro", "DeepSeek-V4.1-Flash", "MiniMax M3"];
 const SUPPLIER_CAPABILITIES = ["reasoning", "vision", "parallel_tool_calls"];
 const SUPPLIER_TOOL_FORMS = {function:"JSON 函数工具", custom:"custom 文本工具"};
+const TOKEN_LENGTH_UNITS = {tokens:0, K:3, M:6};
+const TOKEN_LENGTH_SHORTCUTS = {
+  contextWindow:["32K", "64K", "128K", "200K", "256K", "512K", "1M", "2M"],
+  maxOutputTokens:["4K", "8K", "16K", "32K", "64K", "128K"],
+};
+function parseTokenLength(value, unit = "tokens") {
+  const raw = String(value ?? "").trim();
+  if (!raw) return {value:"",unit,tokens:null,error:""};
+  const match = raw.length <= 64 && raw.match(/^(\d+(?:\.\d*)?|\.\d+)\s*(K|M|tokens?)?$/i);
+  if (!match) return {value:raw,unit,tokens:null,error:"请输入正数，例如 128K、1.5M 或准确的 token 数。"};
+  const suffix = match[2];
+  if (suffix) unit = /^tokens?$/i.test(suffix) ? "tokens" : suffix.toUpperCase();
+  const scale = TOKEN_LENGTH_UNITS[unit];
+  if (scale === undefined) return {value:match[1],unit,tokens:null,error:"请选择 tokens、K tokens 或 M tokens。"};
+  const [whole, fraction = ""] = match[1].split(".");
+  const amount = BigInt((whole || "0") + fraction) * 10n ** BigInt(scale);
+  const divisor = 10n ** BigInt(fraction.length);
+  if (amount % divisor !== 0n) return {value:match[1],unit,tokens:null,error:"换算结果必须为整数 token，请调整小数位；不会自动舍入。"};
+  const tokens = amount / divisor;
+  if (tokens < 1n || tokens > BigInt(Number.MAX_SAFE_INTEGER)) return {value:match[1],unit,tokens:null,error:"token 数必须为正整数，且不能超过 9,007,199,254,740,991。"};
+  return {value:match[1],unit,tokens:Number(tokens),error:""};
+}
+function tokenLengthDisplay(tokens) {
+  if (tokens == null) return {value:"",unit:"tokens"};
+  if (!Number.isSafeInteger(tokens) || tokens < 1) return {value:String(tokens),unit:"tokens"};
+  const unit = tokens >= 1000000 ? "M" : tokens >= 1000 ? "K" : "tokens";
+  const scale = TOKEN_LENGTH_UNITS[unit];
+  const amount = BigInt(tokens), divisor = 10n ** BigInt(scale);
+  const fraction = (amount % divisor).toString().padStart(scale, "0").replace(/0+$/, "");
+  return {value:`${amount / divisor}${fraction ? `.${fraction}` : ""}`,unit};
+}
+function tokenLengthField(label, name, tokens, kind, inherited = false) {
+  const {value,unit} = tokenLengthDisplay(tokens);
+  const id = `supplier-token-${name}`;
+  const empty = inherited ? "留空继承模型长度" : "留空表示未提供限制信息";
+  return `<div class="field token-length-field" data-token-length data-token-empty="${empty}"><label for="${esc(id)}">${esc(label)}</label>
+    <div class="token-length-controls"><input id="${esc(id)}" name="${esc(name)}" type="text" inputmode="decimal" value="${esc(value)}" placeholder="例如 ${kind === "contextWindow" ? "128K 或 128000" : "8K 或 8192"}" maxlength="64" aria-describedby="${esc(id)}-conversion" data-token-value><select name="${esc(name)}:unit" aria-label="${esc(label)}单位" data-token-unit>${entries(TOKEN_LENGTH_UNITS).map(([u]) => `<option value="${u}" ${u === unit ? "selected" : ""}>${u === "tokens" ? "tokens" : `${u} tokens`}</option>`).join("")}</select></div>
+    <output id="${esc(id)}-conversion" class="field-hint token-length-conversion" aria-live="polite" data-token-conversion>${empty}</output>
+    <div class="token-shortcuts" role="group" aria-label="${esc(label)}快捷值">${TOKEN_LENGTH_SHORTCUTS[kind].map(shortcut => `<button class="mini-button token-shortcut" type="button" data-action="select-token-length" data-token-shortcut="${shortcut}" aria-pressed="false">${shortcut}</button>`).join("")}</div>
+  </div>`;
+}
+function syncTokenLength(field) {
+  const input = field.querySelector("[data-token-value]");
+  const unit = field.querySelector("[data-token-unit]");
+  const result = parseTokenLength(input.value, unit.value);
+  if (result.value !== input.value) input.value = result.value;
+  if (result.unit !== unit.value) unit.value = result.unit;
+  input.setCustomValidity(field.closest("[data-interface-facts]")?.hidden ? "" : result.error);
+  input.setAttribute("aria-invalid", String(Boolean(result.error)));
+  field.querySelector("[data-token-conversion]").textContent = result.error || (result.tokens == null ? field.dataset.tokenEmpty
+    : result.unit === "tokens" ? `${result.tokens.toLocaleString("en-US")} tokens`
+      : `${result.value}${result.unit} = ${result.tokens.toLocaleString("en-US")} tokens`);
+  for (const button of field.querySelectorAll("[data-token-shortcut]")) {
+    button.setAttribute("aria-pressed", String(!result.error && result.tokens === parseTokenLength(button.dataset.tokenShortcut).tokens));
+  }
+}
+function readTokenLength(data, name, label) {
+  const result = parseTokenLength(data.get(name), data.get(`${name}:unit`) || "tokens");
+  if (result.error) throw new Error(`${label}：${result.error}`);
+  return result.tokens;
+}
+function mergeSupplierModelFields(base, local, remote) {
+  const names = new Set(base.filter(field => /^(?:diff:.*:)?(?:contextWindow|maxOutputTokens)$/.test(field[0])).map(field => field[0]));
+  const merged = [];
+  for (const name of names) {
+    const groups = [base,local,remote].map(fields => fields.filter(field => field[0] === name || field[0] === `${name}:unit`));
+    const value = fields => {
+      const raw = fields.find(field => field[0] === name)?.[4];
+      const unit = fields.find(field => field[0] === `${name}:unit`)?.[4];
+      const result = parseTokenLength(raw, unit);
+      return result.error ? JSON.stringify([raw,unit]) : result.tokens;
+    };
+    const [before,ours,theirs] = groups.map(value);
+    if (Object.is(ours,before)) merged.push(...groups[2]);
+    else if (Object.is(theirs,before) || Object.is(ours,theirs)) merged.push(...groups[1]);
+    else return null;
+  }
+  const other = mergeFormFields(...[base,local,remote].map(fields => fields.filter(field => !names.has(field[0]) && !names.has(field[0].replace(/:unit$/, "")))));
+  return other && [...other,...merged];
+}
 function inventoryIdentities() {
   return [...new Set([...(state.codexCatalog?.models || []).map(m => m.id), ...COMPATIBLE_IDENTITIES])];
 }
@@ -3116,10 +3198,10 @@ function supplierInterfaceFacts(iid, model, name) {
     <div class="subsection-header"><h4>${esc(name || iid)}</h4></div>
     <fieldset class="checkbox-group"><legend>支持的工具形式</legend><div class="form-grid">${entries(SUPPLIER_TOOL_FORMS).map(([form,label]) => `<label class="settings-checkbox"><input type="checkbox" name="toolForms:${esc(iid)}" value="${form}" ${(d.toolForms || []).includes(form) ? "checked" : ""}><span>${label}</span></label>`).join("")}</div></fieldset>
     <details><summary>能力与限制差异</summary><div class="form-grid">
-      ${field("接口上下文长度（token）", `diff:${iid}:contextWindow`, d.contextWindow ?? "", "留空继承模型", false, "number")}${field("接口最大输出长度（token）", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens ?? "", "留空继承模型", false, "number")}
+      ${tokenLengthField("接口上下文长度", `diff:${iid}:contextWindow`, d.contextWindow, "contextWindow", true)}${tokenLengthField("接口最大输出长度", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens, "maxOutputTokens", true)}
       <label class="field"><span>流式响应例外</span><select name="diff:${esc(iid)}:supportsStreaming">${["", "unknown", "true", "false"].map(v => `<option value="${v}" ${v === (Object.hasOwn(d, "supportsStreaming") ? String(d.supportsStreaming ?? "unknown") : "") ? "selected" : ""}>${{"":"继承接口",unknown:"未确认",true:"支持",false:"不支持"}[v]}</option>`).join("")}</select></label>
       ${field("接口推理档位", `diff:${iid}:efforts`, (d.reasoning?.efforts || []).join(", "), "继承模型事实")}
-    </div><fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${SUPPLIER_CAPABILITIES.map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {}, cap) ? d : model, cap))).join("")}</div></fieldset><p class="field-hint">勾选表示支持，未勾选表示不支持。与模型公共值一致时继承，不同时保存为此接口的供给差异；长度留空时继承模型。</p></details>
+    </div><p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。准确的 token 数可直接选择 tokens 填写；留空继承模型。</p><fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${SUPPLIER_CAPABILITIES.map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {}, cap) ? d : model, cap))).join("")}</div></fieldset><p class="field-hint">勾选表示支持，未勾选表示不支持。与模型公共值一致时继承，不同时保存为此接口的供给差异；长度留空时继承模型。</p></details>
   </div>`;
 }
 const SUPPLIER_CAPABILITY_LABELS = {reasoning:"推理", vision:"图片输入", parallel_tool_calls:"并行工具调用"};
@@ -3187,8 +3269,8 @@ function renderSupplierModelForm(supplier) {
       <section class="subsection" aria-labelledby="supplier-model-interfaces-title"><div class="subsection-header"><h3 id="supplier-model-interfaces-title">可访问接口</h3></div>
         ${entries(supplier.interfaces || {}).length ? `<div class="cable-list"><table class="cable-table supplier-model-interface-table" aria-labelledby="supplier-model-interfaces-title"><thead><tr><th scope="col">选择</th><th scope="col">名称</th><th scope="col">协议类型</th><th scope="col">接口地址</th></tr></thead><tbody>${entries(supplier.interfaces).map(([id,i]) => `<tr><td data-label="选择"><label class="settings-checkbox"><input type="checkbox" name="interfaces" value="${esc(id)}" aria-label="选择接口 ${esc(i.name || id)}" ${(model.interfaces || []).includes(id) || state.discoveredInterface === id ? "checked" : ""}></label></td><th scope="row">${esc(i.name || id)}</th><td data-label="协议类型">${esc(i.protocol)}</td><td data-label="接口地址" class="mono">${esc(i.baseUrl)}</td></tr>`).join("")}</tbody></table></div>` : '<p class="field-hint">尚未配置接口，请先在供应商中添加接口。</p>'}
       </section>
-      <section class="subsection"><div class="subsection-header"><h3>能力与限制</h3></div><div class="form-grid">${field("上下文长度（token）", "contextWindow", model.contextWindow ?? "", "例如 128000", false, "number")}${field("最大输出长度（token）", "maxOutputTokens", model.maxOutputTokens ?? "", "例如 8192", false, "number")}</div>
-      <p class="field-hint">单位为 token，请填写完整整数，不填写 K 或 M；留空表示未提供限制信息。</p>
+      <section class="subsection"><div class="subsection-header"><h3>能力与限制</h3></div><div class="form-grid">${tokenLengthField("上下文长度", "contextWindow", model.contextWindow, "contextWindow")}${tokenLengthField("最大输出长度", "maxOutputTokens", model.maxOutputTokens, "maxOutputTokens")}</div>
+      <p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。供应商给出准确 token 数时，可直接选择 tokens 填写。</p>
       <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${capabilityFields}</div></fieldset><p class="field-hint">勾选表示支持该能力，未勾选表示不支持。</p>
       </section><section class="subsection"><div class="subsection-header"><h3>推理控制事实</h3></div><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["effort","toggle","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="reasoningModes" value="${mode}" ${(model.reasoning?.modes || []).includes(mode) ? "checked" : ""}><span>${{effort:"档位",toggle:"开关",budget:"预算"}[mode]}</span></label>`).join("")}</div></fieldset>
       <div class="form-grid">${field("Responses 接受的推理档位", "efforts", (model.reasoning?.efforts || []).join(", "), "none, low, high, max")}${field("默认档位", "defaultEffort", model.reasoning?.default || "", "未知可留空")}${field("预算单位", "budgetUnit", model.reasoning?.budget?.unit || "", "tokens")}${field("最小预算", "budgetMin", model.reasoning?.budget?.min || "", "", false, "number")}${field("最大预算", "budgetMax", model.reasoning?.budget?.max || "", "", false, "number")}</div>
@@ -3265,7 +3347,7 @@ function saveSupplierModel(data) {
   if (state.page !== "supplier-create" && data.get("oldModelId") && nextId !== data.get("oldModelId") && !window.confirm("修改上游模型 ID 将移除旧记录。旧 Cable 引用将报“来源不存在”，需要在 Cable 中重新配置。继续？")) throw new Error("已取消修改。");
   const number = name => data.get(name) ? Number(data.get(name)) : null;
   const capabilityStates = Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap,data.has(`cap:${cap}`) ? "supported" : "unsupported"]));
-  const model = { ...clone(old), identity:String(data.get("identity") || "").trim() || null,version:data.get("version") || null,identitySource:data.get("identitySource") || null,interfaces:data.getAll("interfaces"),capabilityStates,contextWindow:number("contextWindow"),maxOutputTokens:number("maxOutputTokens"),inputModalities:capabilityStates.vision === "supported" ? ["text","image"] : ["text"],reasoning:{modes:data.getAll("reasoningModes"),efforts:String(data.get("efforts") || "").split(",").map(v => v.trim()).filter(Boolean),default:data.get("defaultEffort") || null,budget:{unit:data.get("budgetUnit") || null,min:number("budgetMin"),max:number("budgetMax")}} };
+  const model = { ...clone(old), identity:String(data.get("identity") || "").trim() || null,version:data.get("version") || null,identitySource:data.get("identitySource") || null,interfaces:data.getAll("interfaces"),capabilityStates,contextWindow:readTokenLength(data,"contextWindow","上下文长度"),maxOutputTokens:readTokenLength(data,"maxOutputTokens","最大输出长度"),inputModalities:capabilityStates.vision === "supported" ? ["text","image"] : ["text"],reasoning:{modes:data.getAll("reasoningModes"),efforts:String(data.get("efforts") || "").split(",").map(v => v.trim()).filter(Boolean),default:data.get("defaultEffort") || null,budget:{unit:data.get("budgetUnit") || null,min:number("budgetMin"),max:number("budgetMax")}} };
   delete model.history;
   delete model.capabilities;
   const differences = {};
@@ -3281,7 +3363,7 @@ function saveSupplierModel(data) {
     if (streaming) d.supportsStreaming = streaming === "unknown" ? null : streaming === "true"; else delete d.supportsStreaming;
     const states = Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap, data.has(`diff:${iid}:cap:${cap}`) ? "supported" : "unsupported"]).filter(([cap,v]) => v !== capabilityStates[cap]));
     if (Object.keys(states).length) d.capabilityStates = states; else delete d.capabilityStates;
-    for (const key of ["contextWindow", "maxOutputTokens"]) { const v = number(`diff:${iid}:${key}`); if (v) d[key] = v; else delete d[key]; }
+    for (const key of ["contextWindow", "maxOutputTokens"]) { const v = readTokenLength(data,`diff:${iid}:${key}`,key === "contextWindow" ? "接口上下文长度" : "接口最大输出长度"); if (v != null) d[key] = v; else delete d[key]; }
     const efforts = String(data.get(`diff:${iid}:efforts`) || "").split(",").map(v => v.trim()).filter(Boolean);
     if (efforts.length) d.reasoning = {...d.reasoning, modes:[...new Set([...(d.reasoning?.modes || []), "effort"])], efforts};
     else if (d.reasoning) {
@@ -3413,7 +3495,14 @@ pageContent.addEventListener("input", event => {
   if (event.target.name === "clientId") syncInventoryDefaults(form);
 });
 async function inventoryAction(action, element) {
-  if (action === "create-inventory-cable") { state.selected.cable = null; state.page = "inventory-create"; render(); }
+  if (action === "select-token-length") {
+    const field = element.closest("[data-token-length]");
+    const result = parseTokenLength(element.dataset.tokenShortcut);
+    field.querySelector("[data-token-value]").value = result.value;
+    field.querySelector("[data-token-unit]").value = result.unit;
+    syncTokenLength(field);
+  }
+  else if (action === "create-inventory-cable") { state.selected.cable = null; state.page = "inventory-create"; render(); }
   else if (action === "new-supplier" || action === "open-supplier" || action === "back-suppliers") { state.supplierId = action === "open-supplier" ? element.dataset.id : null; state.supplierModelId = null; state.supplierEditor = null; state.supplierDraft = action === "new-supplier" ? {name:"",interfaces:{},models:{}} : null; state.discoveredModels = []; state.page = action === "new-supplier" ? "supplier-create" : action === "open-supplier" ? "supplier-detail" : "suppliers"; render(); }
   else if (action === "new-supplier-model" || action === "edit-supplier-model") { state.supplierModelId = action === "edit-supplier-model" ? element.dataset.id : null; state.supplierEditor = {kind:"model",id:state.supplierModelId}; state.discoveredSelection = null; state.discoveredInterface = null; render(captureEditedForms()); }
   else if (action === "new-supplier-interface" || action === "edit-supplier-interface") { state.supplierEditor = {kind:"interface",id:action === "edit-supplier-interface" ? element.dataset.id : null}; render(captureEditedForms()); }
@@ -3460,6 +3549,11 @@ async function inventoryAction(action, element) {
   return true;
 }
 
+for (const type of ["input", "change"]) pageContent.addEventListener(type, event => {
+  const field = event.target.closest("[data-token-length]");
+  if (field && event.target.matches("[data-token-value], [data-token-unit]")) syncTokenLength(field);
+});
+
 pageContent.addEventListener("change", event => {
   const form = event.target.closest("#supplier-model-form");
   if (!form) return;
@@ -3473,6 +3567,9 @@ pageContent.addEventListener("change", event => {
   }
   if (event.target.name !== "interfaces") return;
   for (const row of form.querySelectorAll("[data-interface-facts]")) {
-    if (row.dataset.interfaceFacts === event.target.value) row.hidden = !event.target.checked;
+    if (row.dataset.interfaceFacts === event.target.value) {
+      row.hidden = !event.target.checked;
+      row.querySelectorAll("[data-token-length]").forEach(syncTokenLength);
+    }
   }
 });

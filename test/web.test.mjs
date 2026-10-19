@@ -288,6 +288,40 @@ function clone(value) {
   return structuredClone(value);
 }
 
+test("supplier token lengths convert decimal units exactly and reject rounding", async () => {
+  const app = await controller();
+  for (const [value,unit,tokens] of [
+    ["", "M", null], ["128K", "tokens", 128000], ["1.5M", "K", 1500000],
+    ["8.192", "K", 8192], ["0.000001", "M", 1], ["128001", "tokens", 128001],
+    ["1.000001m", "tokens", 1000001], ["0.001K", "tokens", 1],
+    ["9007199254740991", "tokens", Number.MAX_SAFE_INTEGER],
+  ]) {
+    const result = app.read(`parseTokenLength(${JSON.stringify(value)}, ${JSON.stringify(unit)})`);
+    assert.equal(result.error, "");
+    assert.equal(result.tokens, tokens);
+  }
+  for (const [value,unit] of [["0", "tokens"], ["-1", "K"], ["1.5", "tokens"], ["0.0001", "K"], ["0.0000001M", "tokens"], ["abc", "tokens"], ["9007199254740992", "tokens"]]) {
+    assert.ok(app.read(`parseTokenLength(${JSON.stringify(value)}, ${JSON.stringify(unit)}).error`));
+  }
+  for (const tokens of [1, 999, 1000, 8192, 128001, 1000001, 123456789, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(app.read(`(() => { const display = tokenLengthDisplay(${tokens}); return parseTokenLength(display.value, display.unit).tokens; })()`), tokens);
+  }
+});
+
+test("supplier length values and units merge together on refresh", async () => {
+  const app = await controller();
+  const field = (name,type,value) => [name,type,{},"",value];
+  const length = (value,unit) => [field("contextWindow","text",value),field("contextWindow:unit","select-one",unit)];
+  const base = length("128","K");
+  const local = length("1.5","M");
+  const remote = length("200","K");
+  assert.equal(app.read(`mergeSupplierModelFields(${JSON.stringify(base)},${JSON.stringify(local)},${JSON.stringify(remote)})`),null);
+  const equalRemote = length("1500000","tokens");
+  assert.deepEqual(clone(app.read(`mergeSupplierModelFields(${JSON.stringify(base)},${JSON.stringify(local)},${JSON.stringify(equalRemote)})`)),local);
+  const merged = app.read(`mergeSupplierModelFields(${JSON.stringify([...base,field("identity","text","old")])},${JSON.stringify([...local,field("identity","text","old")])},${JSON.stringify([...base,field("identity","text","new")])})`);
+  assert.deepEqual(clone(merged),[field("identity","text","new"),...local]);
+});
+
 test("top-level settings save finite and independently unlimited audit limits", async () => {
   const app = await controller(undefined, { url: "http://test/#settings" });
   assert.equal(app.read("state.page"), "settings");

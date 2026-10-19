@@ -1238,6 +1238,36 @@ button.list-row:hover,
   border-color: var(--accent);
 }
 
+.token-length-field {
+  align-content: start;
+}
+
+.token-length-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7rem;
+  gap: 8px;
+}
+
+.token-length-conversion {
+  min-height: 18px;
+}
+
+.token-length-field:has(input[aria-invalid="true"]) .token-length-conversion {
+  color: var(--danger);
+}
+
+.token-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.token-shortcut[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .code-preview {
   min-width: 0;
   max-height: 460px;

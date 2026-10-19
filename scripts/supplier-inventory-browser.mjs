@@ -36,6 +36,7 @@ try {
     await page.screenshot({path:path.join(screenshotDir, `${name}.png`),fullPage:await page.getByRole("dialog").count() === 0,style:"#toast-region { visibility: hidden; }"});
   };
   const noOverflow = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  const tokenField = (form, name) => form.locator(`[name="${name}"]`).locator("xpath=ancestor::*[@data-token-length][1]");
   const save = async (form, label) => {
     const response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit") && response.request().method() === "POST");
     await form.getByRole("button", {name:label,exact:true}).click();
@@ -102,9 +103,16 @@ try {
     draftDialog = page.getByRole("dialog");
     assert.equal(await draftDialog.locator('[name="history"], [name="cap:tools"], [name="cap:streaming"]').count(), 0);
     assert.equal(await draftDialog.locator('[name="toolForms:responses"]:checked').count(), 0);
+    assert.equal(await draftDialog.locator('[name="contextWindow"]').inputValue(), "");
+    assert.equal(await draftDialog.locator('[name="maxOutputTokens"]').inputValue(), "");
+    assert.equal(await draftDialog.locator('[data-token-shortcut][aria-pressed="true"]').count(), 0);
     await draftDialog.locator('[name="modelId"]').fill(modelId);
     await draftDialog.locator('[name="interfaces"][value="responses"]').check();
     if (modelId === "initial-wire") await draftDialog.locator('[name="interfaces"][value="messages"]').check();
+    else {
+      await draftDialog.locator('[name="contextWindow"]').fill("1.5M");
+      await draftDialog.locator('[name="maxOutputTokens"]').fill("16.001K");
+    }
     await saveDraft(draftDialog, "保存模型");
   }
   assert.deepEqual(await createForm.locator('.supplier-interface-table tbody td:last-child button').allTextContents(), ["删除", "删除"]);
@@ -144,6 +152,10 @@ try {
   assert.deepEqual(createdConfig.suppliers[sid].models["initial-wire"].interfaceCapabilities.responses.toolForms,[]);
   assert.deepEqual(createdConfig.suppliers[sid].models["initial-wire"].capabilityStates,{reasoning:"unsupported",vision:"unsupported",parallel_tool_calls:"unsupported"});
   assert.equal(createdConfig.suppliers[sid].models["initial-wire"].interfaceCapabilities.responses.capabilityStates,undefined);
+  assert.equal(createdConfig.suppliers[sid].models["initial-wire"].contextWindow,null);
+  assert.equal(createdConfig.suppliers[sid].models["initial-wire"].maxOutputTokens,null);
+  assert.equal(createdConfig.suppliers[sid].models["second-wire"].contextWindow,1500000);
+  assert.equal(createdConfig.suppliers[sid].models["second-wire"].maxOutputTokens,16001);
   assert.deepEqual(createdConfig.suppliers[sid].models["initial-wire"].interfaces, ["responses", "messages"]);
   assert.equal(await page.locator("#supplier-create-form").count(), 0);
   assert.equal(await page.locator("#supplier-interface-form, #supplier-model-form").count(), 0);
@@ -214,9 +226,47 @@ try {
   assert.equal(await dialog.locator('[name="modelId"]').getAttribute("required"), "");
   const capabilitySection=dialog.locator("section.subsection").filter({has:page.getByRole("heading",{name:"能力与限制",exact:true})});
   assert.deepEqual((await capabilitySection.locator("input").evaluateAll(nodes=>nodes.map(node=>node.name))).slice(0,2),["contextWindow","maxOutputTokens"]);
-  assert.equal(await capabilitySection.getByRole("spinbutton",{name:"上下文长度（token）",exact:true}).count(),1);
-  assert.equal(await capabilitySection.getByRole("spinbutton",{name:"最大输出长度（token）",exact:true}).count(),1);
-  assert.match(await capabilitySection.textContent(),/填写完整整数，不填写 K 或 M/);
+  assert.equal(await capabilitySection.getByRole("textbox",{name:"上下文长度",exact:true}).count(),1);
+  assert.equal(await capabilitySection.getByRole("textbox",{name:"最大输出长度",exact:true}).count(),1);
+  assert.match(await capabilitySection.textContent(),/K = 1,000 tokens；M = 1,000,000 tokens/);
+  const contextField=tokenField(dialog,"contextWindow");
+  const outputField=tokenField(dialog,"maxOutputTokens");
+  assert.deepEqual(await contextField.locator("[data-token-unit] option").allTextContents(),["tokens","K tokens","M tokens"]);
+  assert.deepEqual(await contextField.locator("[data-token-shortcut]").allTextContents(),["32K","64K","128K","200K","256K","512K","1M","2M"]);
+  assert.deepEqual(await outputField.locator("[data-token-shortcut]").allTextContents(),["4K","8K","16K","32K","64K","128K"]);
+  assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"留空表示未提供限制信息");
+  await contextField.getByRole("button",{name:"128K",exact:true}).click();
+  assert.equal(await contextField.locator("input").inputValue(),"128");
+  assert.equal(await contextField.locator("select").inputValue(),"K");
+  assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"128K = 128,000 tokens");
+  assert.equal(await contextField.getByRole("button",{name:"128K",exact:true}).getAttribute("aria-pressed"),"true");
+  await contextField.locator("input").fill("129");
+  assert.equal(await contextField.locator('[aria-pressed="true"]').count(),0);
+  await contextField.locator("select").selectOption("tokens");
+  assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"129 tokens");
+  // Text input and a clipboard paste both recognize suffixes and update the unit.
+  await contextField.locator("input").fill("");
+  await contextField.locator("input").pressSequentially("128K");
+  assert.equal(await contextField.locator("input").inputValue(),"128");
+  await contextField.locator("input").evaluate(input=>{
+    input.focus();input.select();
+    const clipboard=new DataTransfer();clipboard.setData("text/plain","1.5M");
+    input.dispatchEvent(new ClipboardEvent("paste",{clipboardData:clipboard,bubbles:true,cancelable:true}));
+    document.execCommand("insertText",false,clipboard.getData("text/plain"));
+  });
+  assert.equal(await contextField.locator("input").inputValue(),"1.5");
+  assert.equal(await contextField.locator("select").inputValue(),"M");
+  assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"1.5M = 1,500,000 tokens");
+  await contextField.locator("input").fill("128K");
+  assert.equal(await contextField.locator("select").inputValue(),"K");
+  assert.equal(await contextField.getByRole("button",{name:"128K",exact:true}).getAttribute("aria-pressed"),"true");
+  await outputField.locator("select").selectOption("K");
+  await outputField.locator("input").fill("8.192");
+  assert.equal(await outputField.locator("[data-token-conversion]").textContent(),"8.192K = 8,192 tokens");
+  await outputField.locator("input").fill("0.0001");
+  assert.match(await outputField.locator("[data-token-conversion]").textContent(),/必须为整数 token/);
+  assert.equal(await outputField.locator("input").evaluate(input=>input.checkValidity()),false);
+  await outputField.locator("input").fill("8.192");
   assert.equal(await dialog.locator('select[name^="cap:"], select[name*=":cap:"]').count(),0);
   for (const [cap,label] of [["reasoning","推理"],["vision","图片输入"],["parallel_tool_calls","并行工具调用"]]) {
     const checkbox=capabilitySection.getByRole("checkbox",{name:label,exact:true});
@@ -234,27 +284,58 @@ try {
   assert.equal(await dialog.locator(".supplier-modal-body > section.subsection").getByRole("heading", {name:"可访问接口",exact:true}).count(), 1);
   await dialog.locator('[name="modelId"]').fill("draft-wire");
   await dialog.locator('[name="interfaces"][value="responses"]').check();
+  await dialog.locator('[name="interfaces"][value="responses-2"]').check();
+  const unusedInterface=tokenField(dialog,"diff:responses-2:contextWindow");
+  await unusedInterface.locator("input").evaluate(input=>{
+    input.value="0.00001K";input.dispatchEvent(new Event("input",{bubbles:true}));
+  });
+  assert.equal(await unusedInterface.locator("input").evaluate(input=>input.checkValidity()),false);
+  await dialog.locator('[name="interfaces"][value="responses-2"]').uncheck();
+  assert.equal(await unusedInterface.locator("input").evaluate(input=>input.checkValidity()),true);
   await dialog.locator('[name="toolForms:responses"][value="function"]').check();
   assert.equal(await dialog.locator('[name="toolForms:responses"][value="custom"]').isChecked(), false);
   await dialog.locator('[name="contextWindow"]').fill("-1");
+  assert.equal(await dialog.locator('[name="contextWindow"]').evaluate(input=>input.checkValidity()),false);
+  assert.match(await contextField.locator("[data-token-conversion]").textContent(),/请输入正数/);
+  // Invalid values cannot be committed; drafts and other fields stay available.
+  const beforeInvalid=await readConfig();
+  await dialog.getByRole("button", {name:"保存模型",exact:true}).click();
+  assert.deepEqual(await readConfig(),beforeInvalid);
+  await dialog.locator('[name="contextWindow"]').fill("128K");
+  await dialog.locator('[name="modelId"]').fill("initial-wire");
   let response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit"));
   await dialog.getByRole("button", {name:"保存模型",exact:true}).click();
   assert.equal((await response).status(), 422);
   await dialog.locator("[data-form-feedback]").waitFor();
-  assert.equal(await dialog.locator('[name="modelId"]').inputValue(), "draft-wire");
+  assert.equal(await dialog.locator('[name="modelId"]').inputValue(), "initial-wire");
   assert.equal(await dialog.evaluate(node => node.open), true);
-  await dialog.locator('[name="contextWindow"]').fill("128000");
-  await dialog.locator('[name="maxOutputTokens"]').fill("8192");
+  assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"128K = 128,000 tokens");
+  await dialog.locator('[name="modelId"]').fill("draft-wire");
   const difference=dialog.locator('[data-interface-facts="responses"] details');
   await difference.locator("summary").click();
+  const interfaceContext=tokenField(dialog,"diff:responses:contextWindow");
+  const interfaceOutput=tokenField(dialog,"diff:responses:maxOutputTokens");
+  assert.equal(await interfaceContext.locator("input").inputValue(),"");
+  assert.equal(await interfaceContext.locator("[data-token-conversion]").textContent(),"留空继承模型长度");
+  assert.equal(await interfaceContext.locator('[aria-pressed="true"]').count(),0);
+  await interfaceContext.getByRole("button",{name:"64K",exact:true}).click();
+  assert.equal(await interfaceContext.locator("select").inputValue(),"K");
+  assert.equal(await interfaceContext.locator("[data-token-conversion]").textContent(),"64K = 64,000 tokens");
+  await interfaceContext.locator("input").fill("64.001K");
+  await interfaceOutput.locator("input").fill("4.001K");
   await difference.locator('[name="diff:responses:supportsStreaming"]').selectOption("false");
   await difference.locator('[name="diff:responses:cap:vision"]').uncheck();
   await dialog.getByRole("heading",{name:"能力与限制",exact:true}).scrollIntoViewIfNeeded();
+  const contextTop=await contextField.locator("input").evaluate(input=>input.getBoundingClientRect().top);
+  const outputTop=await outputField.locator("input").evaluate(input=>input.getBoundingClientRect().top);
+  assert.equal(contextTop,outputTop);
   await screenshot("supplier-model-form");
   await dialog.getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-reasoning");
   await dialog.getByRole("heading",{name:"接口供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools");
+  await interfaceContext.scrollIntoViewIfNeeded();
+  await screenshot("supplier-model-interface-lengths");
   await save(dialog, "保存模型");
   await dialog.waitFor({state:"detached"});
   assert.equal(await page.locator(".cable-table").count(), 2);
@@ -262,6 +343,8 @@ try {
   const savedSupply=c.suppliers[sid].models["draft-wire"];
   assert.equal(savedSupply.contextWindow,128000);
   assert.equal(savedSupply.maxOutputTokens,8192);
+  assert.equal(savedSupply.interfaceCapabilities.responses.contextWindow,64001);
+  assert.equal(savedSupply.interfaceCapabilities.responses.maxOutputTokens,4001);
   assert.deepEqual(savedSupply.capabilityStates,{reasoning:"supported",vision:"supported",parallel_tool_calls:"supported"});
   assert.deepEqual(savedSupply.inputModalities,["text","image"]);
   assert.deepEqual(savedSupply.interfaceCapabilities.responses.capabilityStates,{vision:"unsupported"});
@@ -271,6 +354,12 @@ try {
   await page.getByRole("button",{name:"刷新",exact:true}).click();
   await page.getByRole("button", {name:"draft-wire",exact:true}).click();
   dialog = page.getByRole("dialog");
+  assert.equal(await dialog.locator('[name="contextWindow"]').inputValue(),"128");
+  assert.equal(await dialog.locator('[name="contextWindow:unit"]').inputValue(),"K");
+  assert.equal(await dialog.locator('[name="maxOutputTokens"]').inputValue(),"8.192");
+  assert.equal(await dialog.locator('[name="maxOutputTokens:unit"]').inputValue(),"K");
+  assert.equal(await dialog.locator('[name="diff:responses:contextWindow"]').inputValue(),"64.001");
+  assert.equal(await dialog.locator('[name="diff:responses:maxOutputTokens"]').inputValue(),"4.001");
   assert.equal(await dialog.locator('[name="cap:vision"]').isChecked(),true);
   assert.equal(await dialog.locator('[name="diff:responses:cap:vision"]').isChecked(),false);
   assert.equal(await dialog.locator('[name="cap:parallel_tool_calls"]').isChecked(),true);
@@ -279,11 +368,21 @@ try {
   await dialog.locator('[name="cap:vision"]').uncheck();
   assert.equal(await dialog.locator('[name="diff:responses:cap:vision"]').isChecked(),false);
   await dialog.locator('[data-interface-facts="responses"] summary').click();
+  await dialog.locator('[name="diff:responses:contextWindow"]').fill("");
+  await dialog.locator('[name="diff:responses:maxOutputTokens"]').fill("");
+  // Exact provider counts round-trip without rounding in either input mode.
+  await dialog.locator('[name="contextWindow:unit"]').selectOption("tokens");
+  await dialog.locator('[name="contextWindow"]').fill("128001");
+  await dialog.locator('[name="maxOutputTokens"]').fill("8.193K");
   await dialog.locator('[name="diff:responses:efforts"]').fill("high");
   await dialog.locator('[name="identity"]').fill("Kimi K3");
   await save(dialog, "保存模型");
   await dialog.waitFor({state:"detached"});
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].identity, "Kimi K3");
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].contextWindow,128001);
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].maxOutputTokens,8193);
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].interfaceCapabilities.responses.contextWindow,undefined);
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].interfaceCapabilities.responses.maxOutputTokens,undefined);
   assert.deepEqual((await readConfig()).suppliers[sid].models["draft-wire"].capabilityStates,{reasoning:"supported",vision:"unsupported",parallel_tool_calls:"unsupported"});
   assert.deepEqual((await readConfig()).suppliers[sid].models["draft-wire"].inputModalities,["text"]);
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].interfaceCapabilities.responses.capabilityStates,undefined);
@@ -294,6 +393,16 @@ try {
   assert.equal(savedInterfaceReasoning.toggle,false);
   assert.deepEqual(savedInterfaceReasoning.budget,{unit:"tokens",min:0,max:4096,default:1024});
   assert.deepEqual(savedInterfaceReasoning.efforts,["high"]);
+  await page.getByRole("button", {name:"draft-wire",exact:true}).click();
+  dialog = page.getByRole("dialog");
+  assert.equal(await dialog.locator('[name="contextWindow"]').inputValue(),"128.001");
+  assert.equal(await dialog.locator('[name="maxOutputTokens"]').inputValue(),"8.193");
+  assert.equal(await tokenField(dialog,"contextWindow").locator("[data-token-conversion]").textContent(),"128.001K = 128,001 tokens");
+  assert.equal(await tokenField(dialog,"contextWindow").locator('[aria-pressed="true"]').count(),0);
+  await save(dialog,"保存模型");
+  await dialog.waitFor({state:"detached"});
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].contextWindow,128001);
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].maxOutputTokens,8193);
   await page.getByRole("button", {name:"draft-wire",exact:true}).click();
   dialog = page.getByRole("dialog");
   await dialog.locator('[name="identity"]').fill("unsaved");
@@ -314,6 +423,10 @@ try {
   await screenshot("supplier-model-reasoning-mobile");
   await page.getByRole("dialog").getByRole("heading",{name:"接口供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools-mobile");
+  await page.getByRole("dialog").locator('[data-interface-facts="responses"] summary').click();
+  await tokenField(page.getByRole("dialog"),"diff:responses:contextWindow").scrollIntoViewIfNeeded();
+  await noOverflow();
+  await screenshot("supplier-model-interface-lengths-mobile");
   await page.keyboard.press("Escape");
   await page.setViewportSize({width:1280,height:900});
 
@@ -349,7 +462,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: model ID editing and delete-only actions, token length fields, capability checkbox persistence and interface inheritance, interface capability defaults, explicit tool forms, streaming exceptions, discovery preserves supplier drafts, connection/discovery table actions, separate panels, multiple interface/model drafts, atomic creation, generated IDs, authentication, interface/model dialogs, failed-save retention, mobile layout, explicit Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: token units, typed/pasted suffixes, decimal precision, shortcuts and live highlights, invalid-value rejection, exact save/reopen, interface length inheritance, model ID editing and delete-only actions, capability checkbox persistence and interface inheritance, interface capability defaults, explicit tool forms, streaming exceptions, discovery preserves supplier drafts, connection/discovery table actions, separate panels, multiple interface/model drafts, atomic creation, generated IDs, authentication, interface/model dialogs, failed-save retention, mobile layout, explicit Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();
