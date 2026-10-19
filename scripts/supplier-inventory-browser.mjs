@@ -236,7 +236,7 @@ try {
   assert.match(await capabilitySection.textContent(),/K = 1,000 tokens；M = 1,000,000 tokens/);
   const contextField=tokenField(dialog,"contextWindow");
   const outputField=tokenField(dialog,"maxOutputTokens");
-  assert.deepEqual(await contextField.locator("[data-token-unit] option").allTextContents(),["tokens","K tokens","M tokens"]);
+  assert.deepEqual(await contextField.locator("[data-token-unit] option").allTextContents(),["tokens","K","M"]);
   assert.deepEqual(await contextField.locator("[data-token-shortcut]").allTextContents(),["64K","128K","256K","512K","1M"]);
   assert.deepEqual(await outputField.locator("[data-token-shortcut]").allTextContents(),["4K","8K","16K","32K","64K","128K"]);
   assert.equal(await contextField.locator("[data-token-conversion]").textContent(),"留空表示未提供限制信息");
