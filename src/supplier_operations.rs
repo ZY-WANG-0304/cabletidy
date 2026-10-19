@@ -33,14 +33,27 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
         let old = c["suppliers"].get(sid).cloned().unwrap_or(Value::Null);
         match kind {
             "supplier.create" => {
-                if !nonempty(&data["name"]) || !data["interface"].is_object() {
-                    bail!("请填写供应商名称和首个协议接口");
+                let mut interfaces = data["interfaces"].clone();
+                if interfaces.is_null() && data["interface"].is_object() {
+                    let iid = next_interface_id(&json!({}), text(&data["interface"]["protocol"]));
+                    interfaces = json!({iid:data["interface"]});
                 }
-                let iid = next_interface_id(&json!({}), text(&data["interface"]["protocol"]));
-                let interface =
-                    prepare_interface(sid, &iid, &data["interface"], &Value::Null, &mut secrets)?;
-                c["suppliers"][sid] = json!({"name":text(&data["name"]).trim(),"enabled":true,"interfaces":{iid.clone():interface},"models":{}});
-                selected_interface = Some(iid);
+                if !nonempty(&data["name"])
+                    || !interfaces.is_object()
+                    || entries(&interfaces).next().is_none()
+                {
+                    bail!("请填写供应商名称并添加至少一个协议接口");
+                }
+                let models = data.get("models").cloned().unwrap_or(json!({}));
+                if !models.is_object() {
+                    bail!("模型列表必须是 object");
+                }
+                let mut prepared = json!({});
+                for (iid, row) in entries(&interfaces) {
+                    prepared[iid] = prepare_interface(sid, iid, row, &Value::Null, &mut secrets)?;
+                }
+                selected_interface = entries(&prepared).next().map(|(iid, _)| iid.clone());
+                c["suppliers"][sid] = json!({"name":text(&data["name"]).trim(),"enabled":true,"interfaces":prepared,"models":models});
             }
             "supplier.metadata.save" => {
                 if !old.is_object() || !nonempty(&data["name"]) {

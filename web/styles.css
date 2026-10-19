@@ -375,6 +375,11 @@ h3 {
   background: var(--paper);
 }
 
+.supplier-page {
+  display: grid;
+  gap: 16px;
+}
+
 .resource-actions {
   display: flex;
   flex-wrap: wrap;

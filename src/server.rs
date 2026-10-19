@@ -1293,11 +1293,12 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
     if let Some(operation) = body.get("operation") {
         if ["supplier.create", "supplier.interface.save"].contains(&text(&operation["type"])) {
             let selected = &payload["selection"];
-            let interface = &candidate["suppliers"][text(&selected["supplierId"])]["interfaces"]
-                [text(&selected["interfaceId"])];
-            if interface["auth"]["method"] != "none"
-                && config::secret(interface, &secrets).is_empty()
-            {
+            let interfaces = &candidate["suppliers"][text(&selected["supplierId"])]["interfaces"];
+            if entries(interfaces).any(|(iid, interface)| {
+                (operation["type"] == "supplier.create" || iid == text(&selected["interfaceId"]))
+                    && interface["auth"]["method"] != "none"
+                    && config::secret(interface, &secrets).is_empty()
+            }) {
                 return Ok(error(
                     422,
                     "credential_required",

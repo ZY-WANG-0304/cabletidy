@@ -316,3 +316,45 @@ test("supplier authentication requires credentials only for the edited interface
   assert.deepEqual(imported.body.config.suppliers[importedId].interfaces.responses.auth,{method:"none"});
   assert.doesNotMatch(JSON.stringify(c), /fixture-auth-token|fixture-api-key/);
 });
+
+test("supplier creation saves multiple interfaces and model facts atomically", async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-supplier-create-"));
+  const app = await createApplication({paths:getPaths(home),loadCodexCatalog:async()=>catalogFixture()});
+  t.after(async () => {await app.close();await fs.rm(home,{recursive:true,force:true});});
+  const read = async () => (await (await fetch(`${app.url}api/v1/config`)).json()).config;
+  const initial = await read();
+  const create = {
+    type:"supplier.create",
+    data:{name:"Multi API",interfaces:{
+      responses:{name:"Responses",protocol:"openai.responses",baseUrl:"https://example.invalid/v1",authMethod:"none"},
+      messages:{name:"Messages",protocol:"anthropic.messages",baseUrl:"https://example.invalid",authMethod:"api-key",secret:"fixture-messages-key"},
+    },models:{wire:{identity:null,interfaces:["responses","messages"]},another:{identity:"Kimi K3",interfaces:["responses"]}}},
+  };
+  const commit = async (operation, status) => {
+    const response = await fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:initial.revision,operation})});
+    const body = await response.json();
+    assert.equal(response.status,status,JSON.stringify(body));
+    return body;
+  };
+  const missing = structuredClone(create);
+  delete missing.data.interfaces.messages.secret;
+  assert.equal((await commit(missing,422)).error.code,"credential_required");
+  assert.deepEqual(await read(), initial);
+  const invalid = structuredClone(create);
+  invalid.data.models.wire.interfaces = ["missing"];
+  await commit(invalid,422);
+  assert.deepEqual(await read(), initial);
+  const empty = structuredClone(create);
+  empty.data.interfaces = {};
+  await commit(empty,422);
+  assert.deepEqual(await read(), initial);
+  const result = await commit(create,200);
+  const supplier = result.config.suppliers[result.selection.supplierId];
+  assert.deepEqual(Object.keys(supplier.interfaces),["responses","messages"]);
+  assert.deepEqual(Object.keys(supplier.models),["wire","another"]);
+  assert.deepEqual(supplier.models.wire.interfaces,["responses","messages"]);
+  assert.deepEqual(supplier.interfaces.messages.auth,{method:"api-key",header:"x-api-key",scheme:""});
+  assert.equal(supplier.interfaces.messages.secretConfigured,true);
+  assert.equal(result.config.revision,initial.revision+1);
+  assert.doesNotMatch(JSON.stringify(result.config),/fixture-messages-key/);
+});
