@@ -3060,7 +3060,7 @@ const SUPPLIER_CAPABILITIES = ["reasoning", "vision", "parallel_tool_calls"];
 const SUPPLIER_TOOL_FORMS = {function:"JSON 函数工具", custom:"custom 文本工具"};
 const TOKEN_LENGTH_UNITS = {tokens:0, K:3, M:6};
 const TOKEN_LENGTH_SHORTCUTS = {
-  contextWindow:["32K", "64K", "128K", "200K", "256K", "512K", "1M", "2M"],
+  contextWindow:["64K", "128K", "256K", "512K", "1M"],
   maxOutputTokens:["4K", "8K", "16K", "32K", "64K", "128K"],
 };
 function parseTokenLength(value, unit = "tokens") {
