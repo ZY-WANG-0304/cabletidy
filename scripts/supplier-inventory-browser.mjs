@@ -37,6 +37,11 @@ try {
   };
   const noOverflow = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
   const tokenField = (form, name) => form.locator(`[name="${name}"]`).locator("xpath=ancestor::*[@data-token-length][1]");
+  const inlineConversion = async field => assert.equal(await field.evaluate(field=>{
+    const unit=field.querySelector("[data-token-unit]").getBoundingClientRect();
+    const conversion=field.querySelector("[data-token-conversion]").getBoundingClientRect();
+    return conversion.left>unit.right && Math.abs((conversion.top+conversion.bottom-unit.top-unit.bottom)/2)<1;
+  }),true);
   const save = async (form, label) => {
     const response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit") && response.request().method() === "POST");
     await form.getByRole("button", {name:label,exact:true}).click();
@@ -329,12 +334,16 @@ try {
   const contextTop=await contextField.locator("input").evaluate(input=>input.getBoundingClientRect().top);
   const outputTop=await outputField.locator("input").evaluate(input=>input.getBoundingClientRect().top);
   assert.equal(contextTop,outputTop);
+  await inlineConversion(contextField);
+  await inlineConversion(outputField);
   await screenshot("supplier-model-form");
   await dialog.getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-reasoning");
   await dialog.getByRole("heading",{name:"接口供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools");
   await interfaceContext.scrollIntoViewIfNeeded();
+  await inlineConversion(interfaceContext);
+  await inlineConversion(interfaceOutput);
   await screenshot("supplier-model-interface-lengths");
   await save(dialog, "保存模型");
   await dialog.waitFor({state:"detached"});

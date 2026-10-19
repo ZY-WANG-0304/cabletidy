@@ -1243,12 +1243,25 @@ button.list-row:hover,
 }
 
 .token-length-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 7rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
+.token-length-controls input {
+  flex: 0 1 6rem;
+  width: 6rem;
+}
+
+.token-length-controls select {
+  flex: 0 0 7rem;
+  width: 7rem;
+}
+
 .token-length-conversion {
+  flex: 1 1 9rem;
+  min-width: 0;
   min-height: 18px;
 }
 
