@@ -1263,8 +1263,9 @@ button.list-row:hover,
 }
 
 .token-length-controls input {
-  flex: 0 1 10rem;
-  width: 10rem;
+  flex: 0 0 13rem;
+  width: 13rem;
+  max-width: 100%;
 }
 
 .token-length-controls select {
@@ -1279,7 +1280,7 @@ button.list-row:hover,
 }
 
 .token-length-conversion {
-  flex: 1 1 8rem;
+  flex: 1 1 6rem;
   min-width: 0;
   min-height: 18px;
 }
