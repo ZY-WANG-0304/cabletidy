@@ -13,6 +13,7 @@ let app, browser;
 try {
   const catalog = catalogFixture();
   catalog.catalog.models[1].supports_parallel_tool_calls = false;
+  catalog.catalog.models.push({...structuredClone(catalog.catalog.models[0]),slug:"gpt-no-reasoning",supported_reasoning_levels:[]});
   app = await createApplication({ paths:getPaths(home), loadCodexCatalog:async () => catalog });
   let c = (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   const readConfig = async () => (await (await fetch(`${app.url}api/v1/config`)).json()).config;
@@ -54,6 +55,14 @@ try {
     modes:await form.locator('[name="reasoningModes"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),
     efforts:await form.locator('[name="efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),
   });
+  const reasoningFieldsVisible = async (form, prefix = "") => {
+    const efforts=form.locator(`[name="${prefix}efforts"]`);
+    assert.deepEqual(await efforts.evaluateAll(inputs=>inputs.map(input=>input.value)),["none","minimal","low","medium","high","xhigh","max"]);
+    for (const input of await efforts.all()) assert.equal(await input.isVisible(),true);
+    for (const name of ["budgetMin","budgetMax","reasoningModes"]) {
+      for (const input of await form.locator(`[name="${prefix}${name}"]`).all()) assert.equal(await input.isVisible(),true);
+    }
+  };
   const save = async (form, label) => {
     const response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit") && response.request().method() === "POST");
     await form.getByRole("button", {name:label,exact:true}).click();
@@ -119,8 +128,10 @@ try {
   await createForm.getByRole("button", {name:"添加模型",exact:true}).click();
   draftDialog = page.getByRole("dialog");
   await draftDialog.locator('[name="interfaces"][value="responses"]').check();
+  await reasoningFieldsVisible(draftDialog);
   await draftDialog.getByRole("combobox",{name:"实际/参考模型身份",exact:true}).fill("GLM-5.3");
   assert.deepEqual(await referenceFacts(draftDialog),{lengths:["1000000","128000"],modalities:["text"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
+  await reasoningFieldsVisible(draftDialog);
   await draftDialog.locator('[name="contextWindow"]').fill("64001");
   await draftDialog.locator('[name="contextWindow:unit"]').selectOption("tokens");
   await draftDialog.locator('[name="identity"]').fill("GLM-5.3-Flash");
@@ -522,6 +533,7 @@ try {
   // Official references fill supply facts without guessing interface/tool support.
   await page.getByRole("button",{name:"添加模型",exact:true}).click();
   dialog = page.getByRole("dialog");
+  await reasoningFieldsVisible(dialog);
   assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isDisabled(),true);
   await dialog.locator('[name="modelId"]').fill("reference-wire");
   await dialog.locator('[name="version"]').fill("provider-version");
@@ -538,18 +550,25 @@ try {
   for (const [identity,lengths,modalities,modes,efforts] of references) {
     await dialog.getByRole("combobox",{name:"实际/参考模型身份",exact:true}).fill(identity);
     assert.deepEqual(await referenceFacts(dialog),{lengths,modalities,reasoning:true,modes,efforts},identity);
+    await reasoningFieldsVisible(dialog);
     assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isEnabled(),true);
     assert.equal(await dialog.locator('[name="budgetMin"]').inputValue(),"");
     assert.equal(await dialog.locator('[name="budgetMax"]').inputValue(),"");
     assert.equal(await dialog.locator('[name="interfaces"]:checked').count(),0);
     assert.equal(await dialog.locator('[name^="toolForms:"][value="custom"]:checked').count(),0);
   }
+  await dialog.locator('[name="identity"]').fill("gpt-no-reasoning");
+  assert.equal(await dialog.locator('[name="cap:reasoning"]').isChecked(),false);
+  assert.equal(await dialog.locator('[name="reasoningModes"]:checked').count(),0);
+  assert.equal(await dialog.locator('[name="efforts"]:checked').count(),0);
+  await reasoningFieldsVisible(dialog);
   await dialog.locator('[name="identity"]').fill("gpt-5.6-sol");
   assert.equal(await dialog.locator('[name="cap:parallel_tool_calls"]').isChecked(),false);
   await dialog.locator('[name="identity"]').fill("Kimi K3");
   await dialog.locator('[name="interfaces"][value="responses"]').check();
   await dialog.locator('[name="toolForms:responses"][value="custom"]').check();
   await dialog.locator('[data-interface-facts="responses"] summary').click();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
   await dialog.locator('[name="diff:responses:contextWindow"]').fill("64001");
   await dialog.locator('[name="diff:responses:contextWindow:unit"]').selectOption("tokens");
   await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').uncheck();
@@ -565,6 +584,7 @@ try {
   await dialog.locator('[name="maxOutputTokens:unit"]').selectOption("tokens");
   await dialog.locator('[name="inputModalities"][value="image"]').uncheck();
   await dialog.locator('[name="cap:reasoning"]').uncheck();
+  await reasoningFieldsVisible(dialog);
   await dialog.locator('[name="cap:parallel_tool_calls"]').check();
   await dialog.locator('[name="cap:parallel_tool_calls"]').uncheck();
   await dialog.locator('[name="identity"]').fill("DeepSeek-V4.1-Flash");
@@ -573,6 +593,7 @@ try {
   assert.equal(await dialog.locator('[name="cap:parallel_tool_calls"]').isChecked(),false);
   assert.equal(await dialog.locator('[name="inputModalities"][value="image"]').isChecked(),false);
   await dialog.locator('[name="identity"]').fill("unknown-model");
+  await reasoningFieldsVisible(dialog);
   assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isDisabled(),true);
   assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
   await dialog.locator('[name="modelId"]').fill("initial-wire");
@@ -591,6 +612,7 @@ try {
   assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
   await dialog.locator('[name="identity"]').fill("Kimi K3");
   await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).click();
+  await reasoningFieldsVisible(dialog);
   assert.deepEqual(await referenceFacts(dialog),{lengths:["1048576","1048576"],modalities:["text","image"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
   assert.equal(await dialog.locator('[name="modelId"]').inputValue(),"reference-wire");
   assert.equal(await dialog.locator('[name="version"]').inputValue(),"provider-version");
@@ -669,7 +691,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: stable visible reasoning controls/efforts/budgets, known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();

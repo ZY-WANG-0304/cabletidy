@@ -3320,15 +3320,16 @@ function supplierEffortOptions(name, selected, identity, protocol) {
   const rule = supplierReasoningRule(identity,protocol);
   const reference = protocol === "openai.responses" ? supplierModelReference(identity) : null;
   const available = reference?.reasoning.efforts || rule?.efforts || [];
-  return `<div class="checkbox-options" data-effort-options data-effort-name="${esc(name)}" data-effort-protocol="${esc(protocol)}">${[...new Set([...available,...selected])].filter(e => e !== "ultra").map(e => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name)}" value="${esc(e)}" ${selected.includes(e) ? "checked" : ""}><span>${esc(rule?.effortLabels?.[e] || e)}${available.includes(e) ? "" : " · 已有声明，当前未支持"}</span></label>`).join("") || '<p class="field-hint">当前组合尚未提供档位选项，可保持未确认。</p>'}</div>`;
+  const options = [...new Set([...SUPPLY_EFFORTS,...available,...selected])].filter(e => e !== "ultra");
+  return `<div class="checkbox-options" data-effort-options data-effort-name="${esc(name)}" data-effort-protocol="${esc(protocol)}">${options.map(e => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name)}" value="${esc(e)}" ${selected.includes(e) ? "checked" : ""}><span>${esc(rule?.effortLabels?.[e] || e)}${SUPPLY_EFFORTS.includes(e) || available.includes(e) ? "" : " · 已有声明，当前未支持"}</span></label>`).join("")}</div>`;
 }
 function supplierReasoningFields(reasoning, prefix, identity, protocol, inherited = false) {
   const modes = reasoning?.modes || [];
   const budget = reasoning?.budget || {};
   const name = field => `${prefix}${field}`;
   return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["toggle","effort","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{toggle:"支持开关控制",effort:"支持档位控制",budget:"支持设置token预算"}[mode]}</span></label>`).join("")}</div></fieldset>
-    <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">未勾选时保持未确认；别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
-    <fieldset class="checkbox-group" data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}><legend>推理 Token 预算</legend>
+    <div data-reasoning-efforts><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">选项始终保留，参考值只勾选支持的档位；未勾选时保持未确认。别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
+    <fieldset class="checkbox-group" data-reasoning-budget><legend>推理 Token 预算</legend>
       <p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>
       ${budget.unit && budget.unit !== "tokens" ? `<p class="field-hint">已有预算计量单位为 ${esc(budget.unit)}，当前保留原记录，不提供编辑。</p>` : `<div class="form-grid">${tokenLengthField("最小可设预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大可设预算",name("budgetMax"),budget.max,"budget",inherited)}</div><p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>`}
     </fieldset></div>`;
@@ -3349,7 +3350,8 @@ function supplierInterfaceFacts(iid, model, name, protocol) {
     ${supplierInputFields({...effective,inputModalities:d.inputModalities || (Object.hasOwn(d.capabilityStates || {},"vision") ? (d.capabilityStates.vision === "supported" ? ["text","image"] : ["text"]) : model.inputModalities)},`diff:${iid}:`,model)}
     <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},cap) ? d : model,cap), !Object.hasOwn(d.capabilityStates || {},cap))).join("")}</div></fieldset>
     <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
-    <div data-interface-reasoning ${d.reasoning ? "" : "hidden"}>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
+    <p class="field-hint">未勾选时继承模型公共推理能力；勾选后保存下面的接口声明。</p>
+    <div data-interface-reasoning>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
     </details></td></tr>`;
 }
 const SUPPLIER_CAPABILITY_LABELS = {reasoning:"推理", vision:"图片输入", parallel_tool_calls:"并行工具调用"};
@@ -3425,9 +3427,9 @@ function renderSupplierModelForm(supplier) {
       <section class="subsection"><div class="subsection-header"><h3>能力与限制</h3><button class="mini-button" type="button" data-action="fill-model-reference" ${supplierModelReference(model.identity) ? "" : "disabled"}>按模型身份填充</button></div><p class="field-hint" data-model-reference-hint></p><div class="form-grid">${tokenLengthField("上下文长度", "contextWindow", model.contextWindow, "contextWindow")}${tokenLengthField("最大输出长度", "maxOutputTokens", model.maxOutputTokens, "maxOutputTokens")}</div>
       <p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。供应商给出准确 token 数时，可直接选择 tokens 填写。</p>
       ${supplierInputFields(model)}<fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${capabilityFields}</div></fieldset><p class="field-hint">勾选表示供给支持，默认不表示已实测。并行工具调用表示一次响应可产生多个调用，客户端执行策略由适配代码决定。</p>
-      </section><section class="subsection" data-model-reasoning ${supplierCapabilitySupported(model,"reasoning") ? "" : "hidden"}><div class="subsection-header"><h3>推理能力</h3></div>
+      </section><section class="subsection" data-model-reasoning><div class="subsection-header"><h3>推理能力</h3></div>
       ${supplierReasoningFields(model.reasoning,"",model.identity,entries(supplier.interfaces || {}).some(([id,i]) => (!model.interfaces?.length || model.interfaces.includes(id)) && i.protocol === "openai.responses") ? "openai.responses" : "")}
-      <p class="field-hint">这里只维护供给事实；客户端默认档位与默认推理 Token 预算在 Cable 模型绑定中配置。</p>
+      <p class="field-hint">这里只维护供给事实；档位和预算按勾选的控制方式生效。客户端默认档位与默认推理 Token 预算在 Cable 模型绑定中配置。</p>
       </section>${supplierModelInterfaces(supplier,model)}</div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存模型</button></div>
     </form>`;
 }
@@ -3762,18 +3764,11 @@ function syncSupplierModelForm(form) {
   if (!main) return;
   supplierReferenceState(form);
   syncSupplierReferenceHint(form);
-  main.hidden = !form.querySelector('[name="cap:reasoning"]').checked;
   for (const row of form.querySelectorAll('[data-interface-selection]')) {
     const selected = row.querySelector('[name="interfaces"]').checked;
     row.querySelectorAll('[name^="toolForms:"]').forEach(input => {input.disabled = !selected;});
     const facts = row.nextElementSibling;
     facts.hidden = !selected;
-    facts.querySelector('[data-interface-reasoning]').hidden = !facts.querySelector('[data-reasoning-override]').checked;
-  }
-  for (const group of form.querySelectorAll('[data-reasoning-fields]')) {
-    const mode = value => [...group.querySelectorAll('[data-reasoning-mode]:checked')].some(input => input.value === value);
-    group.querySelector('[data-reasoning-efforts]').hidden = !mode("effort");
-    group.querySelector('[data-reasoning-budget]').hidden = !mode("budget");
   }
   form.querySelectorAll('[data-token-length]').forEach(syncTokenLength);
 }

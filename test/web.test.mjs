@@ -305,6 +305,11 @@ test("model references use exact identities and versioned native limits without 
   assert.equal(values.budgetMax, null);
   assert.equal(Object.hasOwn(values, "cap:parallel_tool_calls"), false);
   assert.equal(Object.keys(values).some(key => /toolForms|interfaces|Streaming|Continuation/.test(key)), false);
+  for (const [identity,protocol] of [["GLM-5.3","openai.responses"],["MiniMax M3","openai.responses"],["gpt-5.5","openai.responses"],["unknown","anthropic.messages"]]) {
+    const html=app.read(`supplierEffortOptions("efforts", ["high"], ${JSON.stringify(identity)}, ${JSON.stringify(protocol)})`);
+    assert.deepEqual([...html.matchAll(/value="([^"]+)"/g)].map(match=>match[1]),["none","minimal","low","medium","high","xhigh","max"]);
+    assert.deepEqual([...html.matchAll(/value="([^"]+)" checked/g)].map(match=>match[1]),["high"]);
+  }
 });
 
 test("supplier token lengths convert decimal units exactly and reject rounding", async () => {
