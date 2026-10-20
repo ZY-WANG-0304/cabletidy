@@ -3212,13 +3212,12 @@ function supplierReasoningFields(reasoning, prefix, identity, protocol, inherite
   const modes = reasoning?.modes || [];
   const budget = reasoning?.budget || {};
   const name = field => `${prefix}${field}`;
-  return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["effort","toggle","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{effort:"档位",toggle:"开关",budget:"预算"}[mode]}</span></label>`).join("")}</div></fieldset>
+  return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["effort","toggle","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{effort:"档位",toggle:"开关",budget:"Token 预算"}[mode]}</span></label>`).join("")}</div></fieldset>
     <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">未勾选时保持未确认；别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
-    <div data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}>
-      <label class="field"><span>预算计量方式</span><select name="${esc(name("budgetUnit"))}" data-budget-unit><option value="tokens" ${!budget.unit || budget.unit === "tokens" ? "selected" : ""}>tokens</option>${budget.unit && budget.unit !== "tokens" ? `<option value="${esc(budget.unit)}" selected>${esc(budget.unit)} · 当前仅保留已有事实</option>` : ""}</select></label>
-      <div class="form-grid" data-token-budgets ${budget.unit && budget.unit !== "tokens" ? "hidden" : ""}>${tokenLengthField("最小预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大预算",name("budgetMax"),budget.max,"budget",inherited)}</div>
-      <p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>
-    </div></div>`;
+    <fieldset class="checkbox-group" data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}><legend>推理 Token 预算</legend>
+      <p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>
+      ${budget.unit && budget.unit !== "tokens" ? `<p class="field-hint">已有预算计量单位为 ${esc(budget.unit)}，当前保留原记录，不提供编辑。</p>` : `<div class="form-grid">${tokenLengthField("最小可设预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大可设预算",name("budgetMax"),budget.max,"budget",inherited)}</div><p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>`}
+    </fieldset></div>`;
 }
 function supplierInputFields(model, prefix = "", inherited = null) {
   const modalities = model.inputModalities || (supplierCapabilitySupported(model,"vision") ? ["text","image"] : ["text"]);
@@ -3314,7 +3313,7 @@ function renderSupplierModelForm(supplier) {
       ${supplierInputFields(model)}<fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${capabilityFields}</div></fieldset><p class="field-hint">勾选表示供给支持，默认不表示已实测。并行工具调用表示一次响应可产生多个调用，客户端执行策略由适配代码决定。</p>
       </section><section class="subsection" data-model-reasoning ${supplierCapabilitySupported(model,"reasoning") ? "" : "hidden"}><div class="subsection-header"><h3>推理控制事实</h3></div>
       ${supplierReasoningFields(model.reasoning,"",model.identity,entries(supplier.interfaces || {}).some(([id,i]) => (!model.interfaces?.length || model.interfaces.includes(id)) && i.protocol === "openai.responses") ? "openai.responses" : "")}
-      <p class="field-hint">这里只维护供给事实；客户端默认档位与默认预算在 Cable 模型绑定中配置。</p>
+      <p class="field-hint">这里只维护供给事实；客户端默认档位与默认推理 Token 预算在 Cable 模型绑定中配置。</p>
       </section>${supplierModelInterfaces(supplier,model)}<section class="subsection"><div class="subsection-header"><h3>供给验证</h3></div>
       <label class="field"><span>真实供给验证记录</span><select name="validation">${["unverified", "partial", "manual-pass"].map(v => `<option value="${v}" ${v === (model.validation || "unverified") ? "selected" : ""}>${{unverified:"未实测",partial:"部分通过", "manual-pass":"已手动验证"}[v]}</option>`).join("")}</select></label>
       </section></div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存模型</button></div>
@@ -3419,14 +3418,14 @@ function readSupplierReasoning(data, prefix, previous = {}, inherited = false) {
   delete result.toggle;
   if (result.budget) delete result.budget.default;
   if (modes.includes("budget")) {
-    const unit = data.get(`${prefix}budgetUnit`) || "tokens";
+    const unit = previous?.budget?.unit || "tokens";
     result.budget = {...result.budget,unit};
     if (unit === "tokens") {
       for (const [key,name] of [["min","budgetMin"],["max","budgetMax"]]) {
-        const value = readTokenLength(data,`${prefix}${name}`,key === "min" ? "最小预算" : "最大预算",true);
+        const value = readTokenLength(data,`${prefix}${name}`,key === "min" ? "最小可设预算" : "最大可设预算",true);
         if (value == null && inherited) delete result.budget[key]; else result.budget[key] = value;
       }
-      if (result.budget.min != null && result.budget.max != null && result.budget.min > result.budget.max) throw new Error("最小预算不能超过最大预算。");
+      if (result.budget.min != null && result.budget.max != null && result.budget.min > result.budget.max) throw new Error("最小可设预算不能超过最大可设预算。");
     }
   }
   return result;
@@ -3467,7 +3466,7 @@ function inventoryReasoningSettings(binding) {
     ? entries(rule?.clientEffortMap || {}).filter(([,upstream]) => supplied.includes(upstream) || native && !supplied.length).map(([client]) => client) : [];
   const current = binding.reasoning?.defaultEffort || "";
   if (!efforts.length && !current && binding.reasoning?.defaultBudget == null) return '<p class="field-hint">默认推理配置仅在供给事实与已实现映射支持时开放。</p>';
-  return `<div class="form-grid"><label class="field"><span>客户端默认推理档位</span><select name="defaultEffort"><option value="">客户端模型定义默认值</option>${[...new Set([...efforts,current])].filter(Boolean).map(e => `<option value="${esc(e)}" ${e === current ? "selected" : ""}>${esc(e)}${efforts.includes(e) ? "" : " · 当前不支持，请重新选择"}</option>`).join("")}</select></label></div><p class="field-hint">属于此 Cable 的模型绑定，按模型目录生效，更新后重启 Codex。默认预算映射与 ultra 配置尚未开放。${binding.reasoning?.defaultBudget != null ? `迁移保留的默认预算：${esc(binding.reasoning.defaultBudget)} tokens；当前不可应用。` : ""}</p>${binding.reasoning?.defaultBudget != null ? '<button class="mini-button" type="button" data-action="clear-default-budget">清除迁移的默认预算</button>' : ""}`;
+  return `<div class="form-grid"><label class="field"><span>客户端默认推理档位</span><select name="defaultEffort"><option value="">客户端模型定义默认值</option>${[...new Set([...efforts,current])].filter(Boolean).map(e => `<option value="${esc(e)}" ${e === current ? "selected" : ""}>${esc(e)}${efforts.includes(e) ? "" : " · 当前不支持，请重新选择"}</option>`).join("")}</select></label></div><p class="field-hint">属于此 Cable 的模型绑定，按模型目录生效，更新后重启 Codex。默认推理 Token 预算映射与 ultra 配置尚未开放。${binding.reasoning?.defaultBudget != null ? `迁移保留的默认推理 Token 预算：${esc(binding.reasoning.defaultBudget)} tokens；当前不可应用。` : ""}</p>${binding.reasoning?.defaultBudget != null ? '<button class="mini-button" type="button" data-action="clear-default-budget">清除迁移的默认推理 Token 预算</button>' : ""}`;
 }
 function inventorySourceRow(source = {}, selected = null) {
   const allowed = selected || selectedCable()?.record.suppliers || [];
@@ -3648,7 +3647,6 @@ function syncSupplierModelForm(form) {
     const mode = value => [...group.querySelectorAll('[data-reasoning-mode]:checked')].some(input => input.value === value);
     group.querySelector('[data-reasoning-efforts]').hidden = !mode("effort");
     group.querySelector('[data-reasoning-budget]').hidden = !mode("budget");
-    group.querySelector('[data-token-budgets]').hidden = group.querySelector('[data-budget-unit]').value !== "tokens";
   }
   form.querySelectorAll('[data-token-length]').forEach(syncTokenLength);
 }

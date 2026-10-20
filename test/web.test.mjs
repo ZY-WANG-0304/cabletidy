@@ -327,10 +327,12 @@ test("reasoning budgets share exact token conversion, accept zero and validate t
   assert.equal(app.read('parseTokenLength("0","tokens",true).tokens'),0);
   assert.equal(app.read('parseTokenLength("1.024001M","tokens",true).tokens'),1024001);
   assert.ok(app.read('parseTokenLength("0.0001K","tokens",true).error'));
-  const expression='(() => {const values={reasoningModes:["budget"],budgetUnit:"tokens",budgetMin:"0",budgetMax:"4.096001M"};return readSupplierReasoning({get:key=>values[key],getAll:key=>Array.isArray(values[key])?values[key]:[]},"");})()';
+  const expression='(() => {const values={reasoningModes:["budget"],budgetMin:"0",budgetMax:"4.096001M"};return readSupplierReasoning({get:key=>values[key],getAll:key=>Array.isArray(values[key])?values[key]:[]},"");})()';
   assert.deepEqual(clone(app.read(expression)).budget,{unit:"tokens",min:0,max:4096001});
-  assert.throws(()=>app.read(expression.replace('budgetMin:"0"','budgetMin:"8K"').replace('budgetMax:"4.096001M"','budgetMax:"4K"')),/最小预算/);
-  assert.doesNotMatch(app.read('tokenLengthField("最小预算","budgetMin",1024001,"budget")'),/data-token-shortcut/);
+  assert.throws(()=>app.read(expression.replace('budgetMin:"0"','budgetMin:"8K"').replace('budgetMax:"4.096001M"','budgetMax:"4K"')),/最小可设预算/);
+  assert.doesNotMatch(app.read('tokenLengthField("最小可设预算","budgetMin",1024001,"budget")'),/data-token-shortcut/);
+  const legacy = expression.replace('},"");','},"",{budget:{unit:"seconds",min:2,max:4}});');
+  assert.deepEqual(clone(app.read(legacy)).budget,{unit:"seconds",min:2,max:4});
 });
 
 test("top-level settings save finite and independently unlimited audit limits", async () => {

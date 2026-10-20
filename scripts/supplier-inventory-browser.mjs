@@ -293,6 +293,13 @@ try {
     assert.equal(await dialog.locator(`[name="diff:responses:cap:${cap}"]`).isChecked(),true);
   }
   await dialog.locator('[name="reasoningModes"][value="budget"]').check();
+  assert.equal(await dialog.getByRole("checkbox",{name:"Token 预算",exact:true}).count(),1);
+  assert.equal(await dialog.locator('[name="budgetUnit"], [name$=":budgetUnit"]').count(),0);
+  const budgetSection=dialog.locator('[data-reasoning-budget]').first();
+  assert.match(await budgetSection.textContent(),/推理 Token 预算/);
+  assert.match(await budgetSection.textContent(),/该接口允许设置的推理 token 数范围，不代表实际消耗。/);
+  assert.equal(await budgetSection.getByRole("textbox",{name:"最小可设预算",exact:true}).count(),1);
+  assert.equal(await budgetSection.getByRole("textbox",{name:"最大可设预算",exact:true}).count(),1);
   const minBudget=tokenField(dialog,"budgetMin"),maxBudget=tokenField(dialog,"budgetMax");
   assert.deepEqual(await minBudget.locator('[data-token-unit] option').allTextContents(),["tokens","K tokens","M tokens"]);
   assert.equal(await minBudget.locator('[data-token-shortcut]').count(),0);
