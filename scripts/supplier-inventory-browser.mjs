@@ -56,8 +56,9 @@ try {
     efforts:await form.locator('[name="efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),
   });
   const reasoningFieldsVisible = async (form, prefix = "") => {
-    const visible=prefix ? true : await form.locator('[name="cap:reasoning"]').isChecked();
+    const visible=await form.locator(`[name="${prefix ? `${prefix}reasoningOverride` : "cap:reasoning"}"]`).isChecked();
     if (!prefix) assert.equal(await form.locator('[data-model-reasoning]').isVisible(),visible);
+    else assert.equal(await form.locator(`[name="${prefix}reasoningOverride"]`).locator('xpath=ancestor::*[@data-interface-facts][1]').locator('[data-interface-reasoning]').isVisible(),visible);
     const efforts=form.locator(`[name="${prefix}efforts"]`);
     assert.deepEqual(await efforts.evaluateAll(inputs=>inputs.map(input=>input.value)),["none","minimal","low","medium","high","xhigh","max"]);
     for (const input of await efforts.all()) assert.equal(await input.isVisible(),visible);
@@ -582,12 +583,22 @@ try {
   await dialog.locator('[name="diff:responses:contextWindow:unit"]').selectOption("tokens");
   await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').uncheck();
   await dialog.locator('[name="diff:responses:reasoningOverride"]').check();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
   assert.equal(await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').isChecked(),true);
   assert.deepEqual(await dialog.locator('[name="diff:responses:efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),["high","low","max"]);
   await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').check();
   await dialog.locator('[name="diff:responses:efforts"][value="low"]').uncheck();
   await dialog.locator('[name="diff:responses:efforts"][value="max"]').uncheck();
   await dialog.locator('[name="diff:responses:efforts"][value="high"]').check();
+  const interfaceReasoningFields=dialog.locator('[data-interface-facts="responses"] [data-interface-reasoning]');
+  const interfaceReasoningValues=await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked]));
+  await dialog.locator('[name="diff:responses:reasoningOverride"]').uncheck();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  await reasoningFieldsVisible(dialog);
+  await dialog.locator('[name="diff:responses:reasoningOverride"]').check();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
   await dialog.locator('[name="contextWindow"]').fill("");
   await dialog.locator('[name="maxOutputTokens"]').fill("8193");
   await dialog.locator('[name="maxOutputTokens:unit"]').selectOption("tokens");
@@ -700,7 +711,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: reasoning checkbox controls section visibility without removing fields/values, complete effort/budget options, known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: model/interface reasoning checkboxes control their sections without removing fields/values, complete effort/budget options, known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();
