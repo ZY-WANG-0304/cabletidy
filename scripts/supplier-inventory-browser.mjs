@@ -66,11 +66,16 @@ try {
       assert.equal(await override.locator('xpath=ancestor::*[@data-interface-facts][1]').locator('[data-interface-reasoning]').isVisible(),visible);
     }
     const efforts=form.locator(`[name="${prefix}efforts"]`);
+    const effortVisible=visible && await form.locator(`[name="${prefix}reasoningModes"][value="effort"]`).isChecked();
+    const budgetVisible=visible && await form.locator(`[name="${prefix}reasoningModes"][value="budget"]`).isChecked();
     assert.deepEqual(await efforts.evaluateAll(inputs=>inputs.map(input=>input.value)),["none","minimal","low","medium","high","xhigh","max"]);
-    for (const input of await efforts.all()) assert.equal(await input.isVisible(),visible);
-    for (const name of ["budgetMin","budgetMax","reasoningModes"]) {
-      for (const input of await form.locator(`[name="${prefix}${name}"]`).all()) assert.equal(await input.isVisible(),visible);
+    assert.equal(await efforts.first().locator('xpath=ancestor::*[@data-reasoning-efforts][1]').isVisible(),effortVisible);
+    for (const input of await efforts.all()) assert.equal(await input.isVisible(),effortVisible);
+    for (const name of ["budgetMin","budgetMax"]) {
+      for (const input of await form.locator(`[name="${prefix}${name}"]`).all()) assert.equal(await input.isVisible(),budgetVisible);
     }
+    assert.equal(await form.locator(`[name="${prefix}budgetMin"]`).locator('xpath=ancestor::*[@data-reasoning-budget][1]').isVisible(),budgetVisible);
+    for (const input of await form.locator(`[name="${prefix}reasoningModes"]`).all()) assert.equal(await input.isVisible(),visible);
   };
   const save = async (form, label) => {
     const response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit") && response.request().method() === "POST");
@@ -348,6 +353,16 @@ try {
     assert.equal(await dialog.locator(`[name="diff:responses:cap:${cap}"]`).isChecked(),true);
   }
   await dialog.locator('[name="reasoningModes"][value="budget"]').check();
+  await reasoningFieldsVisible(dialog);
+  await dialog.locator('[name="reasoningModes"][value="effort"]').check();
+  await dialog.locator('[name="efforts"][value="high"]').check();
+  await reasoningFieldsVisible(dialog);
+  await dialog.locator('[name="reasoningModes"][value="effort"]').uncheck();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await dialog.locator('[name="efforts"][value="high"]').isChecked(),true);
+  await dialog.locator('[name="reasoningModes"][value="effort"]').check();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await dialog.locator('[name="efforts"][value="high"]').isChecked(),true);
   const reasoningSection=dialog.locator('[data-model-reasoning]');
   assert.equal(await reasoningSection.getByRole("heading",{name:"推理能力",exact:true}).count(),1);
   assert.deepEqual(await reasoningSection.locator('[data-reasoning-mode]').evaluateAll(inputs=>inputs.map(input=>({value:input.value,label:input.closest('label').textContent.trim()}))),[
@@ -368,8 +383,23 @@ try {
   assert.match(await maxBudget.locator('[data-token-conversion]').textContent(),/必须为整数 token/);
   // Fractional token results remain invalid instead of rounding.
   assert.equal(await maxBudget.locator('input').evaluate(input=>input.checkValidity()),false);
+  await dialog.locator('[name="reasoningModes"][value="budget"]').uncheck();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await maxBudget.locator('input').evaluate(input=>input.checkValidity()),true);
+  await dialog.locator('[name="reasoningModes"][value="budget"]').check();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await maxBudget.locator('input').evaluate(input=>input.checkValidity()),false);
   await maxBudget.locator('input').fill("4.096001M");
   assert.equal(await maxBudget.locator('[data-token-conversion]').textContent(),"4.096001M = 4,096,001 tokens");
+  await dialog.locator('[name="reasoningModes"][value="budget"]').uncheck();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await minBudget.locator('input').inputValue(),"0");
+  assert.equal(await maxBudget.locator('input').inputValue(),"4.096001");
+  await dialog.locator('[name="reasoningModes"][value="budget"]').check();
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await minBudget.locator('input').inputValue(),"0");
+  assert.equal(await maxBudget.locator('input').inputValue(),"4.096001");
+  assert.equal(await maxBudget.locator('select').inputValue(),"M");
   await capabilitySection.getByRole("checkbox",{name:"图片",exact:true}).check();
   assert.equal(await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').isChecked(),true);
   const interfaceTable = dialog.getByRole("table", {name:"可访问接口与供给能力",exact:true});
@@ -597,6 +627,25 @@ try {
   await dialog.locator('[name="diff:responses:efforts"][value="max"]').uncheck();
   await dialog.locator('[name="diff:responses:efforts"][value="high"]').check();
   const interfaceReasoningFields=dialog.locator('[data-interface-facts="responses"] [data-interface-reasoning]');
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').uncheck();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  await reasoningFieldsVisible(dialog);
+  assert.deepEqual(await dialog.locator('[name="diff:responses:efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),["high"]);
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').check();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="budget"]').check();
+  await dialog.locator('[name="diff:responses:budgetMin"]').fill("0");
+  await dialog.locator('[name="diff:responses:budgetMax"]').fill("4.096K");
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  await reasoningFieldsVisible(dialog);
+  assert.equal(await dialog.locator('[name="reasoningModes"][value="budget"]').isChecked(),false);
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="budget"]').uncheck();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.equal(await dialog.locator('[name="diff:responses:budgetMin"]').inputValue(),"0");
+  assert.equal(await dialog.locator('[name="diff:responses:budgetMax"]').inputValue(),"4.096");
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="budget"]').check();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.equal(await dialog.locator('[name="diff:responses:budgetMax:unit"]').inputValue(),"K");
   const interfaceReasoningValues=await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked]));
   await dialog.locator('[name="diff:responses:reasoningOverride"]').uncheck();
   await reasoningFieldsVisible(dialog,"diff:responses:");
@@ -687,6 +736,7 @@ try {
   assert.deepEqual(referenceSupply.interfaceCapabilities.responses.toolForms,["function","custom"]);
   assert.equal(referenceSupply.interfaceCapabilities.responses.capabilityStates.reasoning,"unsupported");
   assert.deepEqual(referenceSupply.interfaceCapabilities.responses.reasoning.efforts,["high"]);
+  assert.deepEqual(referenceSupply.interfaceCapabilities.responses.reasoning.budget,{unit:"tokens",min:0,max:4096});
   await page.getByRole("button",{name:"reference-wire",exact:true}).click();
   assert.deepEqual((await referenceFacts(dialog)).lengths,["1048576","1048576"]);
   await dialog.locator('[data-interface-facts="responses"] summary').click();

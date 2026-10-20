@@ -3328,8 +3328,8 @@ function supplierReasoningFields(reasoning, prefix, identity, protocol, inherite
   const budget = reasoning?.budget || {};
   const name = field => `${prefix}${field}`;
   return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["toggle","effort","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{toggle:"支持开关控制",effort:"支持档位控制",budget:"支持设置token预算"}[mode]}</span></label>`).join("")}</div></fieldset>
-    <div data-reasoning-efforts><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">选项始终保留，参考值只勾选支持的档位；未勾选时保持未确认。别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
-    <fieldset class="checkbox-group" data-reasoning-budget><legend>推理 Token 预算</legend>
+    <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">选项始终保留，参考值只勾选支持的档位；未勾选时保持未确认。别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
+    <fieldset class="checkbox-group" data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}><legend>推理 Token 预算</legend>
       <p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>
       ${budget.unit && budget.unit !== "tokens" ? `<p class="field-hint">已有预算计量单位为 ${esc(budget.unit)}，当前保留原记录，不提供编辑。</p>` : `<div class="form-grid">${tokenLengthField("最小可设预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大可设预算",name("budgetMax"),budget.max,"budget",inherited)}</div><p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>`}
     </fieldset></div>`;
@@ -3776,6 +3776,10 @@ function syncSupplierModelForm(form) {
     const reasoningSupported = facts.querySelector('[name$=":cap:reasoning"]').checked;
     facts.querySelector('[data-interface-reasoning-config]').hidden = !reasoningSupported;
     facts.querySelector('[data-interface-reasoning]').hidden = !reasoningSupported || !facts.querySelector('[data-reasoning-override]').checked;
+  }
+  for (const fields of form.querySelectorAll('[data-reasoning-fields]')) {
+    fields.querySelector('[data-reasoning-efforts]').hidden = !fields.querySelector('[data-reasoning-mode][value="effort"]').checked;
+    fields.querySelector('[data-reasoning-budget]').hidden = !fields.querySelector('[data-reasoning-mode][value="budget"]').checked;
   }
   form.querySelectorAll('[data-token-length]').forEach(syncTokenLength);
 }
