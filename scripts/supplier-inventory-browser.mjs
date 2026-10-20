@@ -56,11 +56,13 @@ try {
     efforts:await form.locator('[name="efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),
   });
   const reasoningFieldsVisible = async (form, prefix = "") => {
+    const visible=prefix ? true : await form.locator('[name="cap:reasoning"]').isChecked();
+    if (!prefix) assert.equal(await form.locator('[data-model-reasoning]').isVisible(),visible);
     const efforts=form.locator(`[name="${prefix}efforts"]`);
     assert.deepEqual(await efforts.evaluateAll(inputs=>inputs.map(input=>input.value)),["none","minimal","low","medium","high","xhigh","max"]);
-    for (const input of await efforts.all()) assert.equal(await input.isVisible(),true);
+    for (const input of await efforts.all()) assert.equal(await input.isVisible(),visible);
     for (const name of ["budgetMin","budgetMax","reasoningModes"]) {
-      for (const input of await form.locator(`[name="${prefix}${name}"]`).all()) assert.equal(await input.isVisible(),true);
+      for (const input of await form.locator(`[name="${prefix}${name}"]`).all()) assert.equal(await input.isVisible(),visible);
     }
   };
   const save = async (form, label) => {
@@ -132,6 +134,13 @@ try {
   await draftDialog.getByRole("combobox",{name:"实际/参考模型身份",exact:true}).fill("GLM-5.3");
   assert.deepEqual(await referenceFacts(draftDialog),{lengths:["1000000","128000"],modalities:["text"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
   await reasoningFieldsVisible(draftDialog);
+  const reasoningBefore=await referenceFacts(draftDialog);
+  await draftDialog.locator('[name="cap:reasoning"]').uncheck();
+  await reasoningFieldsVisible(draftDialog);
+  assert.deepEqual(await referenceFacts(draftDialog),{...reasoningBefore,reasoning:false});
+  await draftDialog.locator('[name="cap:reasoning"]').check();
+  await reasoningFieldsVisible(draftDialog);
+  assert.deepEqual(await referenceFacts(draftDialog),reasoningBefore);
   await draftDialog.locator('[name="contextWindow"]').fill("64001");
   await draftDialog.locator('[name="contextWindow:unit"]').selectOption("tokens");
   await draftDialog.locator('[name="identity"]').fill("GLM-5.3-Flash");
@@ -691,7 +700,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: stable visible reasoning controls/efforts/budgets, known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: reasoning checkbox controls section visibility without removing fields/values, complete effort/budget options, known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();

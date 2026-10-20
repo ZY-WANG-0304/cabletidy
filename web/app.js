@@ -3427,7 +3427,7 @@ function renderSupplierModelForm(supplier) {
       <section class="subsection"><div class="subsection-header"><h3>能力与限制</h3><button class="mini-button" type="button" data-action="fill-model-reference" ${supplierModelReference(model.identity) ? "" : "disabled"}>按模型身份填充</button></div><p class="field-hint" data-model-reference-hint></p><div class="form-grid">${tokenLengthField("上下文长度", "contextWindow", model.contextWindow, "contextWindow")}${tokenLengthField("最大输出长度", "maxOutputTokens", model.maxOutputTokens, "maxOutputTokens")}</div>
       <p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。供应商给出准确 token 数时，可直接选择 tokens 填写。</p>
       ${supplierInputFields(model)}<fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${capabilityFields}</div></fieldset><p class="field-hint">勾选表示供给支持，默认不表示已实测。并行工具调用表示一次响应可产生多个调用，客户端执行策略由适配代码决定。</p>
-      </section><section class="subsection" data-model-reasoning><div class="subsection-header"><h3>推理能力</h3></div>
+      </section><section class="subsection" data-model-reasoning ${supplierCapabilitySupported(model,"reasoning") ? "" : "hidden"}><div class="subsection-header"><h3>推理能力</h3></div>
       ${supplierReasoningFields(model.reasoning,"",model.identity,entries(supplier.interfaces || {}).some(([id,i]) => (!model.interfaces?.length || model.interfaces.includes(id)) && i.protocol === "openai.responses") ? "openai.responses" : "")}
       <p class="field-hint">这里只维护供给事实；档位和预算按勾选的控制方式生效。客户端默认档位与默认推理 Token 预算在 Cable 模型绑定中配置。</p>
       </section>${supplierModelInterfaces(supplier,model)}</div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存模型</button></div>
@@ -3764,6 +3764,7 @@ function syncSupplierModelForm(form) {
   if (!main) return;
   supplierReferenceState(form);
   syncSupplierReferenceHint(form);
+  main.hidden = !form.querySelector('[name="cap:reasoning"]').checked;
   for (const row of form.querySelectorAll('[data-interface-selection]')) {
     const selected = row.querySelector('[name="interfaces"]').checked;
     row.querySelectorAll('[name^="toolForms:"]').forEach(input => {input.disabled = !selected;});
