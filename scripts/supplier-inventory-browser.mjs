@@ -11,7 +11,9 @@ const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-inventory-browse
 const screenshotDir = process.env.CABLETIDY_BROWSER_SCREENSHOTS;
 let app, browser;
 try {
-  app = await createApplication({ paths:getPaths(home), loadCodexCatalog:async () => catalogFixture() });
+  const catalog = catalogFixture();
+  catalog.catalog.models[1].supports_parallel_tool_calls = false;
+  app = await createApplication({ paths:getPaths(home), loadCodexCatalog:async () => catalog });
   let c = (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   const readConfig = async () => (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   const commit = async operation => {
@@ -42,6 +44,16 @@ try {
     const conversion=field.querySelector("[data-token-conversion]").getBoundingClientRect();
     return conversion.left>unit.right && Math.abs((conversion.top+conversion.bottom-unit.top-unit.bottom)/2)<1;
   }),true);
+  const referenceFacts = async form => ({
+    lengths:await Promise.all(["contextWindow","maxOutputTokens"].map(async name => {
+      const text=await tokenField(form,name).locator('[data-token-conversion]').textContent();
+      return text.match(/([\d,]+) tokens$/)?.[1].replaceAll(",","") || null;
+    })),
+    modalities:await form.locator('[name="inputModalities"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),
+    reasoning:await form.locator('[name="cap:reasoning"]').isChecked(),
+    modes:await form.locator('[name="reasoningModes"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),
+    efforts:await form.locator('[name="efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),
+  });
   const save = async (form, label) => {
     const response = page.waitForResponse(response => response.url().endsWith("/api/v1/config/commit") && response.request().method() === "POST");
     await form.getByRole("button", {name:label,exact:true}).click();
@@ -103,6 +115,20 @@ try {
   draftDialog = page.getByRole("dialog");
   assert.equal(await draftDialog.locator('[name="secret"]').inputValue(), "fixture-messages-key");
   await saveDraft(draftDialog, "保存接口");
+  // Identity-based fill also works before the supplier has been created.
+  await createForm.getByRole("button", {name:"添加模型",exact:true}).click();
+  draftDialog = page.getByRole("dialog");
+  await draftDialog.locator('[name="interfaces"][value="responses"]').check();
+  await draftDialog.getByRole("combobox",{name:"实际/参考模型身份",exact:true}).fill("GLM-5.3");
+  assert.deepEqual(await referenceFacts(draftDialog),{lengths:["1000000","128000"],modalities:["text"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
+  await draftDialog.locator('[name="contextWindow"]').fill("64001");
+  await draftDialog.locator('[name="contextWindow:unit"]').selectOption("tokens");
+  await draftDialog.locator('[name="identity"]').fill("GLM-5.3-Flash");
+  assert.equal((await referenceFacts(draftDialog)).lengths[0],"64001");
+  await draftDialog.getByRole("button",{name:"按模型身份填充",exact:true}).click();
+  assert.equal((await referenceFacts(draftDialog)).lengths[0],"1000000");
+  await page.keyboard.press("Escape");
+  await draftDialog.waitFor({state:"detached"});
   for (const modelId of ["initial-wire", "second-wire"]) {
     await createForm.getByRole("button", {name:"添加模型",exact:true}).click();
     draftDialog = page.getByRole("dialog");
@@ -493,6 +519,120 @@ try {
   await page.keyboard.press("Escape");
   await page.setViewportSize({width:1280,height:900});
 
+  // Official references fill supply facts without guessing interface/tool support.
+  await page.getByRole("button",{name:"添加模型",exact:true}).click();
+  dialog = page.getByRole("dialog");
+  assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isDisabled(),true);
+  await dialog.locator('[name="modelId"]').fill("reference-wire");
+  await dialog.locator('[name="version"]').fill("provider-version");
+  await dialog.locator('[name="identitySource"]').fill("provider-declaration");
+  const references = [
+    ["GLM-5.3",["1000000","128000"],["text"],["effort"],["high","low","max"]],
+    ["GLM-5.3-Flash",["1000000","128000"],["text","image"],["effort"],["high","low","max"]],
+    ["Kimi K3",["1048576","1048576"],["text","image"],["effort"],["high","low","max"]],
+    ["DeepSeek-V4-Pro",["1000000","384000"],["text"],["toggle","effort"],["high","low","max","none"]],
+    ["DeepSeek-V4.1-Flash",["1000000","384000"],["text","image"],["toggle","effort"],["high","low","max","none"]],
+    ["MiniMax M3",["1000000",null],["text","image"],["toggle","effort"],["high","none"]],
+    ["gpt-5.5",["272000",null],["text","image"],["effort"],["high","medium"]],
+  ];
+  for (const [identity,lengths,modalities,modes,efforts] of references) {
+    await dialog.getByRole("combobox",{name:"实际/参考模型身份",exact:true}).fill(identity);
+    assert.deepEqual(await referenceFacts(dialog),{lengths,modalities,reasoning:true,modes,efforts},identity);
+    assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isEnabled(),true);
+    assert.equal(await dialog.locator('[name="budgetMin"]').inputValue(),"");
+    assert.equal(await dialog.locator('[name="budgetMax"]').inputValue(),"");
+    assert.equal(await dialog.locator('[name="interfaces"]:checked').count(),0);
+    assert.equal(await dialog.locator('[name^="toolForms:"][value="custom"]:checked').count(),0);
+  }
+  await dialog.locator('[name="identity"]').fill("gpt-5.6-sol");
+  assert.equal(await dialog.locator('[name="cap:parallel_tool_calls"]').isChecked(),false);
+  await dialog.locator('[name="identity"]').fill("Kimi K3");
+  await dialog.locator('[name="interfaces"][value="responses"]').check();
+  await dialog.locator('[name="toolForms:responses"][value="custom"]').check();
+  await dialog.locator('[data-interface-facts="responses"] summary').click();
+  await dialog.locator('[name="diff:responses:contextWindow"]').fill("64001");
+  await dialog.locator('[name="diff:responses:contextWindow:unit"]').selectOption("tokens");
+  await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').uncheck();
+  await dialog.locator('[name="diff:responses:reasoningOverride"]').check();
+  assert.equal(await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').isChecked(),true);
+  assert.deepEqual(await dialog.locator('[name="diff:responses:efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),["high","low","max"]);
+  await dialog.locator('[name="diff:responses:reasoningModes"][value="effort"]').check();
+  await dialog.locator('[name="diff:responses:efforts"][value="low"]').uncheck();
+  await dialog.locator('[name="diff:responses:efforts"][value="max"]').uncheck();
+  await dialog.locator('[name="diff:responses:efforts"][value="high"]').check();
+  await dialog.locator('[name="contextWindow"]').fill("");
+  await dialog.locator('[name="maxOutputTokens"]').fill("8193");
+  await dialog.locator('[name="maxOutputTokens:unit"]').selectOption("tokens");
+  await dialog.locator('[name="inputModalities"][value="image"]').uncheck();
+  await dialog.locator('[name="cap:reasoning"]').uncheck();
+  await dialog.locator('[name="cap:parallel_tool_calls"]').check();
+  await dialog.locator('[name="cap:parallel_tool_calls"]').uncheck();
+  await dialog.locator('[name="identity"]').fill("DeepSeek-V4.1-Flash");
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
+  assert.equal(await dialog.locator('[name="cap:reasoning"]').isChecked(),false);
+  assert.equal(await dialog.locator('[name="cap:parallel_tool_calls"]').isChecked(),false);
+  assert.equal(await dialog.locator('[name="inputModalities"][value="image"]').isChecked(),false);
+  await dialog.locator('[name="identity"]').fill("unknown-model");
+  assert.equal(await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).isDisabled(),true);
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
+  await dialog.locator('[name="modelId"]').fill("initial-wire");
+  await dialog.getByRole("button",{name:"保存模型",exact:true}).click();
+  await dialog.locator('[data-form-feedback]').waitFor();
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
+  await dialog.locator('[name="modelId"]').fill("reference-wire");
+  await dialog.locator('[name="identity"]').fill("Kimi K3");
+  // Trigger background refresh while the modal blocks pointer interaction.
+  const refreshed=page.waitForResponse(response=>response.url().endsWith("/api/v1/config"));
+  await page.locator('#refresh-button').evaluate(button=>button.click());
+  await refreshed;
+  await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).waitFor();
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
+  await dialog.locator('[name="identity"]').fill("DeepSeek-V4.1-Flash");
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,"8193"]);
+  await dialog.locator('[name="identity"]').fill("Kimi K3");
+  await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).click();
+  assert.deepEqual(await referenceFacts(dialog),{lengths:["1048576","1048576"],modalities:["text","image"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
+  assert.equal(await dialog.locator('[name="modelId"]').inputValue(),"reference-wire");
+  assert.equal(await dialog.locator('[name="version"]').inputValue(),"provider-version");
+  assert.equal(await dialog.locator('[name="identitySource"]').inputValue(),"provider-declaration");
+  assert.equal(await dialog.locator('[name="interfaces"]:checked').count(),1);
+  assert.equal(await dialog.locator('[name="toolForms:responses"][value="custom"]').isChecked(),true);
+  assert.equal(await dialog.locator('[name="diff:responses:contextWindow"]').inputValue(),"64001");
+  assert.equal(await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').isChecked(),false);
+  assert.deepEqual(await dialog.locator('[name="diff:responses:efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),["high"]);
+  await dialog.getByRole("heading",{name:"能力与限制",exact:true}).scrollIntoViewIfNeeded();
+  await screenshot("supplier-model-reference");
+  await page.setViewportSize({width:390,height:844});
+  await dialog.getByRole("heading",{name:"能力与限制",exact:true}).scrollIntoViewIfNeeded();
+  await noOverflow();
+  assert.equal(await dialog.locator('.subsection-header').filter({has:page.getByRole("heading",{name:"能力与限制",exact:true})}).evaluate(header=>header.scrollWidth<=header.clientWidth),true);
+  await screenshot("supplier-model-reference-mobile");
+  await page.setViewportSize({width:1280,height:900});
+  await save(dialog,"保存模型");
+  await dialog.waitFor({state:"detached"});
+  const referenceSupply=(await readConfig()).suppliers[sid].models["reference-wire"];
+  assert.equal(referenceSupply.contextWindow,1048576);
+  assert.equal(referenceSupply.maxOutputTokens,1048576);
+  assert.equal(referenceSupply.interfaceCapabilities.responses.contextWindow,64001);
+  assert.deepEqual(referenceSupply.interfaceCapabilities.responses.toolForms,["function","custom"]);
+  await page.getByRole("button",{name:"reference-wire",exact:true}).click();
+  assert.deepEqual((await referenceFacts(dialog)).lengths,["1048576","1048576"]);
+  await dialog.locator('[name="identity"]').fill("GLM-5.3");
+  assert.deepEqual((await referenceFacts(dialog)).lengths,["1048576","1048576"]);
+  assert.equal(await dialog.locator('[name="inputModalities"][value="image"]').isChecked(),true);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({state:"detached"});
+  await page.getByRole("button",{name:"reference-wire",exact:true}).click();
+  await dialog.locator('[name="contextWindow"]').fill("");
+  await dialog.locator('[name="maxOutputTokens"]').fill("");
+  await save(dialog,"保存模型");
+  await dialog.waitFor({state:"detached"});
+  await page.getByRole("button",{name:"reference-wire",exact:true}).click();
+  await dialog.locator('[name="identity"]').fill("GLM-5.3");
+  assert.deepEqual((await referenceFacts(dialog)).lengths,[null,null]);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({state:"detached"});
+
   await page.getByRole("button", {name:"返回列表",exact:true}).click();
   await page.getByRole("button", {name:"Supplier one",exact:true}).click();
   await page.locator('#supplier-form [name="name"]').fill("Official One");
@@ -529,7 +669,7 @@ try {
   await noOverflow();
   await screenshot("cable-detail-mobile");
   assert.deepEqual(errors, []);
-  console.log("Supplier inventory browser checks passed: token units, typed/pasted suffixes, decimal precision, shortcuts and live highlights, invalid-value rejection, exact save/reopen, interface length inheritance, model ID editing and delete-only actions, capability checkbox persistence and interface inheritance, interface capability defaults, explicit tool forms, streaming exceptions, discovery preserves supplier drafts, connection/discovery table actions, separate panels, multiple interface/model drafts, atomic creation, generated IDs, authentication, interface/model dialogs, failed-save retention, mobile layout, explicit Cable selection, preview, apply and restore.");
+  console.log("Supplier inventory browser checks passed: known/native model references, safe autofill, explicit reset, identity label, saved/manual fact preservation, exact token round-trip, interface/tool exceptions, draft/refresh/mobile flow; existing token inputs, supplier resources, discovery, authentication, Cable selection, preview, apply and restore.");
 } finally {
   await browser?.close();
   await app?.close();

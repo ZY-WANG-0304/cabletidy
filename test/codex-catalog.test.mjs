@@ -38,6 +38,14 @@ test("public official catalog omits prompts and rejects third-party entries as s
   assert.doesNotMatch(JSON.stringify(result), /instructions|Official base/);
 });
 
+test("public catalog respects an explicit native parallel-tool restriction", () => {
+  const snapshot = catalogFixture();
+  snapshot.catalog.models[0].supports_parallel_tool_calls = false;
+  const result = publicCodexCatalog(snapshot);
+  assert.equal(result.models[0].capabilities.includes("parallel_tool_calls"), false);
+  assert.equal(result.models[1].capabilities.includes("parallel_tool_calls"), true);
+});
+
 test("official mode keeps one config file without forced effort or a generated catalog", async (t) => {
   const { config, options } = await fixture(t);
   config.virtualProviders.cabletidy_relay.models["gpt-5.5"].contextWindow = 1000000;

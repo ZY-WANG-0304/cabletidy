@@ -232,7 +232,10 @@ fn official(snapshot: &Value) -> impl Iterator<Item = &Value> {
 }
 pub fn public(snapshot: &Value) -> Value {
     let models: Vec<_> = official(snapshot).map(|model| {
-        let mut capabilities = vec!["streaming", "tools", "parallel_tool_calls"];
+        let mut capabilities = vec!["streaming", "tools"];
+        if model["supports_parallel_tool_calls"] != false {
+            capabilities.push("parallel_tool_calls");
+        }
         if !array(&model["supported_reasoning_levels"]).is_empty() {
             capabilities.push("reasoning");
         }

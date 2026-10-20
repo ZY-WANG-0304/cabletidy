@@ -288,6 +288,25 @@ function clone(value) {
   return structuredClone(value);
 }
 
+test("model references use exact identities and versioned native limits without inferring tools", async () => {
+  const app = await controller();
+  for (const id of ["", "unlisted", "GLM-5.3-repack", "gpt-5.5-alias"]) {
+    assert.equal(app.read(`supplierModelReference(${JSON.stringify(id)})`), null);
+  }
+  app.read(`state.codexCatalog = ${JSON.stringify(publicCodexCatalog(catalogFixture()))}`);
+  const native = clone(app.read('supplierModelReference("gpt-5.5")'));
+  assert.equal(native.contextWindow, 272000);
+  assert.equal(native.maxOutputTokens, null);
+  assert.match(native.source, /codex-cli test/);
+  const values = clone(app.read('supplierReferenceValues(supplierModelReference("minimax m3"))'));
+  assert.deepEqual(values.efforts, ["none", "high"]);
+  assert.equal(values.maxOutputTokens, null);
+  assert.equal(values.budgetMin, null);
+  assert.equal(values.budgetMax, null);
+  assert.equal(Object.hasOwn(values, "cap:parallel_tool_calls"), false);
+  assert.equal(Object.keys(values).some(key => /toolForms|interfaces|Streaming|Continuation/.test(key)), false);
+});
+
 test("supplier token lengths convert decimal units exactly and reject rounding", async () => {
   const app = await controller();
   for (const [value,unit,tokens] of [
