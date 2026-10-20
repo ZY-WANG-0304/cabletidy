@@ -3342,6 +3342,7 @@ function supplierInputFields(model, prefix = "", inherited = null) {
 function supplierInterfaceFacts(iid, model, name, protocol) {
   const d = model.interfaceCapabilities?.[iid] || {};
   const effective = {...model,...d,reasoning:{...model.reasoning,...d.reasoning,budget:{...model.reasoning?.budget,...d.reasoning?.budget}}};
+  const reasoningSupported = supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},"reasoning") ? d : model,"reasoning");
   return `<tr data-interface-facts="${esc(iid)}" ${(model.interfaces || []).includes(iid) || state.discoveredInterface === iid ? "" : "hidden"}><td colspan="5">
     <details><summary>${esc(name || iid)} · 能力与限制差异</summary><div class="form-grid">
       ${tokenLengthField("接口上下文长度", `diff:${iid}:contextWindow`, d.contextWindow, "contextWindow", true)}${tokenLengthField("接口最大输出长度", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens, "maxOutputTokens", true)}
@@ -3349,9 +3350,11 @@ function supplierInterfaceFacts(iid, model, name, protocol) {
     </div><p class="field-hint">长度留空继承模型，其他值与模型相同时继承。K = 1,000 tokens；M = 1,000,000 tokens。</p>
     ${supplierInputFields({...effective,inputModalities:d.inputModalities || (Object.hasOwn(d.capabilityStates || {},"vision") ? (d.capabilityStates.vision === "supported" ? ["text","image"] : ["text"]) : model.inputModalities)},`diff:${iid}:`,model)}
     <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},cap) ? d : model,cap), !Object.hasOwn(d.capabilityStates || {},cap))).join("")}</div></fieldset>
-    <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
-    <p class="field-hint">未勾选时继承模型公共推理能力；勾选后显示并保存单独的接口声明。</p>
-    <div data-interface-reasoning ${d.reasoning ? "" : "hidden"}>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
+    <div data-interface-reasoning-config ${reasoningSupported ? "" : "hidden"}>
+      <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
+      <p class="field-hint">未勾选时继承模型公共推理能力；勾选后显示并保存单独的接口声明。</p>
+      <div data-interface-reasoning ${reasoningSupported && d.reasoning ? "" : "hidden"}>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
+    </div>
     </details></td></tr>`;
 }
 const SUPPLIER_CAPABILITY_LABELS = {reasoning:"推理", vision:"图片输入", parallel_tool_calls:"并行工具调用"};
@@ -3770,7 +3773,9 @@ function syncSupplierModelForm(form) {
     row.querySelectorAll('[name^="toolForms:"]').forEach(input => {input.disabled = !selected;});
     const facts = row.nextElementSibling;
     facts.hidden = !selected;
-    facts.querySelector('[data-interface-reasoning]').hidden = !facts.querySelector('[data-reasoning-override]').checked;
+    const reasoningSupported = facts.querySelector('[name$=":cap:reasoning"]').checked;
+    facts.querySelector('[data-interface-reasoning-config]').hidden = !reasoningSupported;
+    facts.querySelector('[data-interface-reasoning]').hidden = !reasoningSupported || !facts.querySelector('[data-reasoning-override]').checked;
   }
   form.querySelectorAll('[data-token-length]').forEach(syncTokenLength);
 }

@@ -56,9 +56,15 @@ try {
     efforts:await form.locator('[name="efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value).sort()),
   });
   const reasoningFieldsVisible = async (form, prefix = "") => {
-    const visible=await form.locator(`[name="${prefix ? `${prefix}reasoningOverride` : "cap:reasoning"}"]`).isChecked();
+    let visible=await form.locator(`[name="${prefix ? `${prefix}reasoningOverride` : "cap:reasoning"}"]`).isChecked();
     if (!prefix) assert.equal(await form.locator('[data-model-reasoning]').isVisible(),visible);
-    else assert.equal(await form.locator(`[name="${prefix}reasoningOverride"]`).locator('xpath=ancestor::*[@data-interface-facts][1]').locator('[data-interface-reasoning]').isVisible(),visible);
+    else {
+      const supported=await form.locator(`[name="${prefix}cap:reasoning"]`).isChecked();
+      const override=form.locator(`[name="${prefix}reasoningOverride"]`);
+      assert.equal(await override.isVisible(),supported);
+      visible=supported && visible;
+      assert.equal(await override.locator('xpath=ancestor::*[@data-interface-facts][1]').locator('[data-interface-reasoning]').isVisible(),visible);
+    }
     const efforts=form.locator(`[name="${prefix}efforts"]`);
     assert.deepEqual(await efforts.evaluateAll(inputs=>inputs.map(input=>input.value)),["none","minimal","low","medium","high","xhigh","max"]);
     for (const input of await efforts.all()) assert.equal(await input.isVisible(),visible);
@@ -599,12 +605,24 @@ try {
   await dialog.locator('[name="diff:responses:reasoningOverride"]').check();
   await reasoningFieldsVisible(dialog,"diff:responses:");
   assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  // An inherited interface follows common support without clearing its declaration.
+  await dialog.locator('[name="cap:reasoning"]').uncheck();
+  assert.equal(await dialog.locator('[name="diff:responses:cap:reasoning"]').isChecked(),false);
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.equal(await dialog.locator('[name="diff:responses:reasoningOverride"]').isChecked(),true);
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  await dialog.locator('[name="cap:reasoning"]').check();
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
   await dialog.locator('[name="contextWindow"]').fill("");
   await dialog.locator('[name="maxOutputTokens"]').fill("8193");
   await dialog.locator('[name="maxOutputTokens:unit"]').selectOption("tokens");
   await dialog.locator('[name="inputModalities"][value="image"]').uncheck();
   await dialog.locator('[name="cap:reasoning"]').uncheck();
   await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
   await dialog.locator('[name="cap:parallel_tool_calls"]').check();
   await dialog.locator('[name="cap:parallel_tool_calls"]').uncheck();
   await dialog.locator('[name="identity"]').fill("DeepSeek-V4.1-Flash");
@@ -633,6 +651,7 @@ try {
   await dialog.locator('[name="identity"]').fill("Kimi K3");
   await dialog.getByRole("button",{name:"按模型身份填充",exact:true}).click();
   await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
   assert.deepEqual(await referenceFacts(dialog),{lengths:["1048576","1048576"],modalities:["text","image"],reasoning:true,modes:["effort"],efforts:["high","low","max"]});
   assert.equal(await dialog.locator('[name="modelId"]').inputValue(),"reference-wire");
   assert.equal(await dialog.locator('[name="version"]').inputValue(),"provider-version");
@@ -642,6 +661,15 @@ try {
   assert.equal(await dialog.locator('[name="diff:responses:contextWindow"]').inputValue(),"64001");
   assert.equal(await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').isChecked(),false);
   assert.deepEqual(await dialog.locator('[name="diff:responses:efforts"]:checked').evaluateAll(inputs=>inputs.map(input=>input.value)),["high"]);
+  // Interface support can differ from the common model, and hiding preserves values.
+  await dialog.locator('[name="diff:responses:cap:reasoning"]').uncheck();
+  assert.equal(await dialog.locator('[name="cap:reasoning"]').isChecked(),true);
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  await dialog.locator('[name="diff:responses:cap:reasoning"]').check();
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  await dialog.locator('[name="diff:responses:cap:reasoning"]').uncheck();
   await dialog.getByRole("heading",{name:"能力与限制",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-reference");
   await page.setViewportSize({width:390,height:844});
@@ -657,8 +685,39 @@ try {
   assert.equal(referenceSupply.maxOutputTokens,1048576);
   assert.equal(referenceSupply.interfaceCapabilities.responses.contextWindow,64001);
   assert.deepEqual(referenceSupply.interfaceCapabilities.responses.toolForms,["function","custom"]);
+  assert.equal(referenceSupply.interfaceCapabilities.responses.capabilityStates.reasoning,"unsupported");
+  assert.deepEqual(referenceSupply.interfaceCapabilities.responses.reasoning.efforts,["high"]);
   await page.getByRole("button",{name:"reference-wire",exact:true}).click();
   assert.deepEqual((await referenceFacts(dialog)).lengths,["1048576","1048576"]);
+  await dialog.locator('[data-interface-facts="responses"] summary').click();
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.equal(await dialog.locator('[name="diff:responses:reasoningOverride"]').isChecked(),true);
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  await dialog.locator('[name="cap:reasoning"]').uncheck();
+  await dialog.locator('[name="diff:responses:cap:reasoning"]').check();
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  // An explicit interface exception remains independent of subsequent common edits.
+  await dialog.locator('[name="cap:reasoning"]').check();
+  await dialog.locator('[name="cap:reasoning"]').uncheck();
+  assert.equal(await dialog.locator('[name="diff:responses:cap:reasoning"]').isChecked(),true);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  await save(dialog,"保存模型");
+  await dialog.waitFor({state:"detached"});
+  const independentReasoning=(await readConfig()).suppliers[sid].models["reference-wire"];
+  assert.equal(independentReasoning.capabilityStates.reasoning,"unsupported");
+  assert.equal(independentReasoning.interfaceCapabilities.responses.capabilityStates.reasoning,"supported");
+  assert.deepEqual(independentReasoning.interfaceCapabilities.responses.reasoning.efforts,["high"]);
+  await page.getByRole("button",{name:"reference-wire",exact:true}).click();
+  await dialog.locator('[data-interface-facts="responses"] summary').click();
+  await reasoningFieldsVisible(dialog);
+  await reasoningFieldsVisible(dialog,"diff:responses:");
+  assert.deepEqual(await interfaceReasoningFields.locator('input, select').evaluateAll(inputs=>inputs.map(input=>[input.name,input.value,input.checked])),interfaceReasoningValues);
+  await dialog.locator('[name="cap:reasoning"]').check();
+  await save(dialog,"保存模型");
+  await dialog.waitFor({state:"detached"});
+  await page.getByRole("button",{name:"reference-wire",exact:true}).click();
   await dialog.locator('[name="identity"]').fill("GLM-5.3");
   assert.deepEqual((await referenceFacts(dialog)).lengths,["1048576","1048576"]);
   assert.equal(await dialog.locator('[name="inputModalities"][value="image"]').isChecked(),true);
