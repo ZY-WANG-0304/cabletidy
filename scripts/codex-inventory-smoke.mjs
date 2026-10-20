@@ -21,7 +21,7 @@ let app, server;
 function runCodex(codexHome, model) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, ["exec", "--skip-git-repo-check", "--json", "-m", model,
-      "-c", 'model_reasoning_effort="high"', "Reply with Local fixture verified."], {
+      "Reply with Local fixture verified."], {
       cwd: home, env: { ...process.env, CODEX_HOME: codexHome }, stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -73,7 +73,7 @@ try {
       reasoning: { modes: ["effort"], efforts: ["high"] }, contextWindow: Math.min(128000, native.context_window),
     } } });
   }
-  await commit({ type: "cable.inventory.create", data: { name: "Smoke", suppliers: ["fixture"], defaultModel: "native", models: Object.fromEntries(["native", "compatible"].map(id => [id, { sources: [{ supplierId: "fixture", modelId: `wire-${id}`, interfaceId: "responses" }], promptStrategy: "default" }])) } });
+  await commit({ type: "cable.inventory.create", data: { name: "Smoke", suppliers: ["fixture"], defaultModel: "native", models: Object.fromEntries(["native", "compatible"].map(id => [id, { sources: [{ supplierId: "fixture", modelId: `wire-${id}`, interfaceId: "responses" }], promptStrategy: "default",reasoning:{defaultEffort:"high"} }])) } });
   const bundle = (await post("targets/isolated", { cableId: "smoke" })).bundle;
   const codexHome = path.join(home, "isolated");
   await fs.mkdir(codexHome);

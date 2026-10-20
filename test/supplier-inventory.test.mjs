@@ -88,6 +88,79 @@ test("native aliases retain versioned instructions and restrict declared supply 
   assert.deepEqual(m.future_metadata,{retained:true});assert.equal(m.context_window,128000);assert.equal(m.slug,"alias");
 });
 
+test("reasoning defaults belong to each Cable, survive transfer and reject unsupported values",async()=>{
+  let c=normalizeConfig({}); c=await edit(c,supplier("vendor","https://example.invalid/v1"));
+  c=await edit(c,supply("vendor","wire","DeepSeek-V4-Pro"));
+  for (const [name,effort] of [["Low","low"],["High","high"]]) {
+    c=await edit(c,{type:"cable.inventory.create",data:{name,suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultEffort:effort}}},defaultModel:"pro"}});
+  }
+  for (const [id,effort] of [["low","low"],["high","high"]]) {
+    assert.equal(planCodexCatalog(c,c.virtualProviders[`cabletidy_${id}`],catalogFixture()).catalog.models[0].default_reasoning_level,effort);
+  }
+  assert.equal(c.suppliers.vendor.models.wire.reasoning.default,undefined);
+  const bad=await edit(c,{type:"cable.inventory.save",cableId:"low",data:{suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultEffort:"max"}}},defaultModel:"pro"}});
+  assert.throws(()=>planCodexCatalog(bad,bad.virtualProviders.cabletidy_low,catalogFixture()),/默认推理档位/);
+  const budget=await edit(c,{type:"cable.inventory.save",cableId:"low",data:{suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultBudget:4096}}},defaultModel:"pro"}});
+  assert.throws(()=>planCodexCatalog(budget,budget.virtualProviders.cabletidy_low,catalogFixture()),/预算映射/);
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-reasoning-transfer-"));
+  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,"127.0.0.1",resolve));
+  const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+  const paths=getPaths(home);await fs.writeFile(paths.config,JSON.stringify({...c,web:{...c.web,port}}));
+  const app=await createApplication({paths,loadCodexCatalog:async()=>catalogFixture()});
+  try {
+    const exported=await (await fetch(`${app.url}api/v1/cables/export`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cableIds:["low","high"]})})).json();
+    assert.equal(exported.config.cables.low.models.pro.reasoning.defaultEffort,"low");
+    assert.equal(exported.config.cables.high.models.pro.reasoning.defaultEffort,"high");
+    const revision=(await (await fetch(`${app.url}api/v1/config`)).json()).config.revision;
+    const imported=await (await fetch(`${app.url}api/v1/cables/import`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({bundle:exported,baseRevision:revision,useImportedCredentials:false,choices:{low:"create",high:"create"}})})).json();
+    assert.equal(imported.config.cables["low-import-2"].models.pro.reasoning.defaultEffort,"low");
+    assert.equal(imported.config.cables["high-import-2"].models.pro.reasoning.defaultEffort,"high");
+  } finally {await app.close();await fs.rm(home,{recursive:true,force:true});}
+});
+
+test("old client defaults migrate idempotently without overriding explicit bindings or old selections",()=>{
+  const model={...facts("DeepSeek-V4-Pro"),inputModalities:["text","audio"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},reasoning:{modes:["effort","budget"],efforts:["low","high","ultra"],default:"high",toggle:false,budget:{unit:"tokens",min:0,max:4096001,default:1024001}}};
+  const source=binding("vendor","wire");
+  const c=normalizeConfig({suppliers:{vendor:{name:"Vendor",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:model}}},cables:{one:{target:"codex",virtualProvider:"cabletidy_one",managedModels:true,suppliers:["vendor"],models:{pro:source}},two:{target:"codex",virtualProvider:"cabletidy_two",managedModels:true,suppliers:["vendor"],models:{pro:{...source,reasoning:{defaultEffort:"low",defaultBudget:null}}}}}});
+  assert.deepEqual(c.cables.one.models.pro.reasoning,{defaultEffort:"high",defaultBudget:1024001});
+  assert.deepEqual(c.cables.two.models.pro.reasoning,{defaultEffort:"low",defaultBudget:null});
+  assert.deepEqual(c.suppliers.vendor.models.wire.reasoning,{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:0,max:4096001}});
+  assert.deepEqual(c.suppliers.vendor.models.wire.migration.reasoning,{default:"high",toggle:false,budgetDefault:1024001,ultra:true});
+  assert.deepEqual(c.suppliers.vendor.models.wire.inputModalities,["text","audio"]);
+  assert.equal(c.suppliers.vendor.models.wire.capabilityStates.parallel_tool_calls,"unsupported");
+  assert.deepEqual(c.cables.one.models.pro.sources,source.sources);
+  assert.deepEqual(normalizeConfig(c),c);
+});
+
+test("interface defaults with uncertain ownership stay in migration records",()=>{
+  const model={...facts("DeepSeek-V4-Pro"),reasoning:{modes:["effort"],efforts:["low","high"]},interfaceCapabilities:{responses:{toolForms:["function","custom"],reasoning:{default:"low",budget:{unit:"tokens",default:1024}}}}};
+  const c=normalizeConfig({suppliers:{vendor:{name:"Vendor",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:model}}},cables:{work:{target:"codex",virtualProvider:"cabletidy_work",managedModels:true,suppliers:["vendor"],models:{pro:binding("vendor","wire")}}}});
+  assert.equal(c.cables.work.models.pro.reasoning,undefined);
+  assert.deepEqual(c.cables.work.models.pro.migration.sourceReasoningDefaults,[{defaultEffort:"low",defaultBudget:1024}]);
+  assert.deepEqual(c.suppliers.vendor.models.wire.interfaceCapabilities.responses.migration.reasoning,{default:"low",budgetDefault:1024});
+  assert.deepEqual(normalizeConfig(c),c);
+});
+
+test("MiniMax M3 maps enabled client efforts to one supplied on value",async t=>{
+  const received=[];
+  const server=http.createServer(async(req,res)=>{let raw="";for await(const chunk of req)raw+=chunk;received.push(JSON.parse(raw));res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"r",object:"response",output:[]}));});
+  await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-minimax-"));
+  const app=await createApplication({paths:getPaths(home),loadCodexCatalog:async()=>catalogFixture()});
+  t.after(async()=>{await app.close();await new Promise(resolve=>server.close(resolve));await fs.rm(home,{recursive:true,force:true});});
+  let c=(await (await fetch(`${app.url}api/v1/config`)).json()).config;
+  const commit=async operation=>{const response=await fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:c.revision,operation})});const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));c=result.config;};
+  await commit(supplier("vendor",`http://127.0.0.1:${server.address().port}`));
+  const model={...facts("MiniMax M3"),reasoning:{modes:["effort"],efforts:["none","high"]}};
+  await commit({type:"supplier.model.save",supplierId:"vendor",data:{modelId:"wire",model}});
+  await commit({type:"cable.inventory.create",data:{name:"Work",suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
+  for (const effort of ["none","minimal","medium","max"]) {
+    const response=await fetch(`${app.url}work/v1/responses`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:"pro",input:"test",reasoning:{effort}})});
+    assert.equal(response.status,200,await response.text());
+    assert.equal(received.at(-1).reasoning.effort,effort === "none" ? "none" : "high");
+  }
+});
+
 test("manual groups require identical contracts and a removed candidate never selects another source",async()=>{
   let c=normalizeConfig({});for(const sid of ["one","two"]){c=await edit(c,supplier(sid,"https://example.invalid"));c=await edit(c,supply(sid,"wire","DeepSeek-V4-Pro"));}
   c.suppliers.two.models.wire.interfaceCapabilities.responses.toolForms=["custom","function"];

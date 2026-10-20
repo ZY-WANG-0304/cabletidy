@@ -49,6 +49,7 @@ pub fn managed(p: &Value) -> bool {
 
 /// Normalize the old supply fields without inventing tool formats or server state.
 fn normalize_supply(c: &mut Value) {
+    migrate_reasoning_settings(c);
     for (_, supplier) in c["suppliers"].as_object_mut().into_iter().flatten() {
         if !supplier.is_object() {
             continue;
@@ -108,6 +109,122 @@ fn normalize_supply(c: &mut Value) {
     }
 }
 
+/// Earlier managed forms stored client defaults among supply facts. Move only those
+/// known fields, preserving ambiguous source defaults and obsolete toggles as evidence.
+fn migrate_reasoning_settings(c: &mut Value) {
+    let mut defaults = std::collections::HashMap::new();
+    for (sid, supplier) in c["suppliers"].as_object_mut().into_iter().flatten() {
+        for (mid, model) in supplier["models"].as_object_mut().into_iter().flatten() {
+            let common = extract_reasoning_settings(model);
+            let ids = array(&model["interfaces"]).to_vec();
+            for iid in ids.iter().filter_map(Value::as_str) {
+                let difference = model["interfaceCapabilities"]
+                    .get_mut(iid)
+                    .map(extract_reasoning_settings)
+                    .unwrap_or(json!({}));
+                let mut settings = common.clone();
+                for (key, value) in entries(&difference) {
+                    settings[key] = value.clone();
+                }
+                if entries(&settings).next().is_some() {
+                    defaults.insert((sid.clone(), mid.clone(), iid.to_owned()),
+                        json!({"settings":settings,"uncertain":entries(&difference).next().is_some()}));
+                }
+            }
+        }
+    }
+    for (_, cable) in c["cables"].as_object_mut().into_iter().flatten() {
+        if cable["managedModels"] != true {
+            continue;
+        }
+        for (_, binding) in cable["models"].as_object_mut().into_iter().flatten() {
+            let settings: Vec<_> = array(&binding["sources"])
+                .iter()
+                .map(|source| {
+                    defaults
+                        .get(&(
+                            text(&source["supplierId"]).to_owned(),
+                            text(&source["modelId"]).to_owned(),
+                            text(&source["interfaceId"]).to_owned(),
+                        ))
+                        .cloned()
+                        .unwrap_or(json!({"settings":{},"uncertain":false}))
+                })
+                .collect();
+            if settings
+                .iter()
+                .all(|value| entries(&value["settings"]).next().is_none())
+            {
+                continue;
+            }
+            if settings.iter().all(|value| value["uncertain"] == false)
+                && settings.windows(2).all(|pair| pair[0] == pair[1])
+            {
+                if let Some(settings) = settings.first() {
+                    if binding["reasoning"].is_null() {
+                        binding["reasoning"] = json!({});
+                    }
+                    if let Some(reasoning) = binding["reasoning"].as_object_mut() {
+                        for (key, value) in entries(&settings["settings"]) {
+                            reasoning.entry(key).or_insert(value.clone());
+                        }
+                    }
+                }
+            } else {
+                if binding["migration"].is_null() {
+                    binding["migration"] = json!({});
+                }
+                binding["migration"]["sourceReasoningDefaults"] =
+                    json!(settings.iter().map(|v| &v["settings"]).collect::<Vec<_>>());
+            }
+        }
+    }
+}
+
+pub fn extract_reasoning_settings(facts: &mut Value) -> Value {
+    if !facts.is_object() {
+        return json!({});
+    }
+    let mut settings = json!({});
+    let mut evidence = json!({});
+    if let Some(reasoning) = facts.get_mut("reasoning").and_then(Value::as_object_mut) {
+        for old in ["default", "toggle"] {
+            if let Some(value) = reasoning.remove(old).filter(|v| !v.is_null()) {
+                evidence[old] = value.clone();
+                if old == "default" && value != "ultra" {
+                    settings["defaultEffort"] = value;
+                }
+            }
+        }
+        if let Some(budget) = reasoning.get_mut("budget").and_then(Value::as_object_mut) {
+            if let Some(value) = budget.remove("default").filter(|v| !v.is_null()) {
+                evidence["budgetDefault"] = value.clone();
+                settings["defaultBudget"] = value;
+            }
+        }
+        if let Some(efforts) = reasoning.get_mut("efforts").and_then(Value::as_array_mut) {
+            if efforts.contains(&json!("ultra")) {
+                evidence["ultra"] = json!(true);
+                efforts.retain(|value| value != "ultra");
+            }
+        }
+    }
+    if entries(&evidence).next().is_some() {
+        if facts["migration"].is_null() {
+            facts["migration"] = json!({});
+        }
+        let mut old = facts["migration"]["reasoning"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        for (key, value) in entries(&evidence) {
+            old.insert(key.clone(), value.clone());
+        }
+        facts["migration"]["reasoning"] = json!(old);
+    }
+    settings
+}
+
 fn remove_legacy_facts(facts: &mut Value) {
     if facts["history"].is_null()
         || ["native", "stateless", "unknown"].contains(&text(&facts["history"]))
@@ -144,9 +261,15 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
     let mut facts = model.clone();
     if let Some(overrides) = model["interfaceCapabilities"].get(iid) {
         for (key, value) in entries(overrides) {
-            if key == "capabilityStates" && facts[key].is_object() {
+            if (key == "capabilityStates" || key == "reasoning") && facts[key].is_object() {
                 for (cap, state) in entries(value) {
-                    facts[key][cap] = state.clone();
+                    if key == "reasoning" && cap == "budget" && facts[key][cap].is_object() {
+                        for (k, v) in entries(state) {
+                            facts[key][cap][k] = v.clone();
+                        }
+                    } else {
+                        facts[key][cap] = state.clone();
+                    }
                 }
             } else {
                 facts[key] = value.clone();
@@ -231,6 +354,7 @@ pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
         }
     }
     selected_profile["aliases"] = binding.get("aliases").cloned().unwrap_or(json!([]));
+    selected_profile["clientReasoning"] = binding.get("reasoning").cloned().unwrap_or(json!({}));
     selected_profile["promptStrategy"] = binding
         .get("promptStrategy")
         .cloned()
@@ -369,6 +493,12 @@ fn fact_errors(facts: &Value, path: &str) -> Vec<Value> {
         );
     }
     let reasoning = &facts["reasoning"];
+    check(
+        entries(reasoning)
+            .all(|(field, _)| ["modes", "efforts", "budget"].contains(&field.as_str())),
+        "reasoning",
+        "这里只维护推理供给事实，客户端默认值属于 Cable 模型绑定",
+    );
     for field in ["modes", "efforts"] {
         check(
             reasoning
@@ -385,16 +515,6 @@ fn fact_errors(facts: &Value, path: &str) -> Vec<Value> {
             "推理控制方式无效",
         );
     }
-    check(
-        reasoning["default"].is_null() || nonempty(&reasoning["default"]),
-        "reasoning.default",
-        "默认档位必须为字符串或未知",
-    );
-    check(
-        reasoning["toggle"].is_null() || reasoning["toggle"].is_boolean(),
-        "reasoning.toggle",
-        "推理开关默认值必须为布尔值或未知",
-    );
     let budget = &reasoning["budget"];
     check(
         budget.is_null() || budget.is_object(),
@@ -406,7 +526,7 @@ fn fact_errors(facts: &Value, path: &str) -> Vec<Value> {
         "reasoning.budget.unit",
         "预算单位必须为字符串或未知",
     );
-    for field in ["min", "max", "default"] {
+    for field in ["min", "max"] {
         check(
             budget[field].is_null() || budget[field].as_u64().is_some(),
             &format!("reasoning.budget.{field}"),
@@ -418,14 +538,6 @@ fn fact_errors(facts: &Value, path: &str) -> Vec<Value> {
         "reasoning.budget",
         "最小预算不能超过最大预算",
     );
-    if let Some(default) = budget["default"].as_u64() {
-        check(
-            budget["min"].as_u64().is_none_or(|min| default >= min)
-                && budget["max"].as_u64().is_none_or(|max| default <= max),
-            "reasoning.budget.default",
-            "默认预算必须位于声明范围内",
-        );
-    }
     check(
         facts.get("history").is_none(),
         "history",
@@ -542,6 +654,7 @@ pub fn validate(c: &Value) -> Vec<Value> {
                     "toolForms",
                     "supportsStreaming",
                     "supportsResponseIdContinuation",
+                    "clientReasoning",
                 ]
                 .iter()
                 .all(|field| m.get(*field).is_none()),
@@ -606,11 +719,23 @@ pub fn validate(c: &Value) -> Vec<Value> {
                             "reasoning",
                             "toolForms",
                             "supportsStreaming",
+                            "migration",
                         ]
                         .contains(&key.as_str())
                     }),
                     p.clone(),
                     "接口差异只能覆盖能力与限制事实",
+                );
+                let min = difference["reasoning"]["budget"]["min"]
+                    .as_u64()
+                    .or(m["reasoning"]["budget"]["min"].as_u64());
+                let max = difference["reasoning"]["budget"]["max"]
+                    .as_u64()
+                    .or(m["reasoning"]["budget"]["max"].as_u64());
+                check(
+                    !matches!((min,max),(Some(min),Some(max)) if min > max),
+                    format!("{p}.interfaceCapabilities.{iid}.reasoning.budget"),
+                    "接口继承后的最小预算不能超过最大预算",
                 );
             }
         }
@@ -643,6 +768,23 @@ pub fn validate(c: &Value) -> Vec<Value> {
         }
         for (name, binding) in entries(&b["models"]) {
             let p = format!("{path}.models.{name}");
+            check(
+                binding.get("reasoning").is_none_or(|v| {
+                    v.is_object()
+                        && (v["defaultEffort"].is_null() || nonempty(&v["defaultEffort"]))
+                        && entries(v).all(|(key, _)| {
+                            ["defaultEffort", "defaultBudget"].contains(&key.as_str())
+                        })
+                }),
+                format!("{p}.reasoning"),
+                "客户端推理配置必须为 object，默认档位必须为字符串或未配置",
+            );
+            check(
+                binding["reasoning"]["defaultBudget"].is_null()
+                    || binding["reasoning"]["defaultBudget"].as_u64().is_some(),
+                format!("{p}.reasoning.defaultBudget"),
+                "默认预算必须为非负整数或未配置",
+            );
             check(
                 binding.is_object() && binding["sources"].is_array(),
                 p.clone(),

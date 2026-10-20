@@ -900,7 +900,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 Ok(v) => json_response(200, catalog::public(&v)),
                 Err(e) => json_response(
                     200,
-                    json!({"available":false,"models":[],"error":{"message":e.to_string()}}),
+                    json!({"available":false,"models":[],"reasoningRules":crate::codex_adapter::reasoning_rules(),"error":{"message":e.to_string()}}),
                 ),
             },
             "/api/v1/catalog" => json_response(
@@ -1909,10 +1909,11 @@ async fn proxy(
         if let Some((_, _, node)) = root.nodes.iter().find(|(_, key, _)| key == "reasoning") {
             let mut memory = streaming::Reservation::memory();
             let request = node.read(&spool, &mut memory)?;
-            let applied = if text(&resolution.profile["identity"]).starts_with("DeepSeek-") {
-                json!(crate::codex_adapter::deepseek_effort(text(
-                    &request["effort"]
-                )))
+            let applied = if request["effort"].is_string() {
+                json!(crate::codex_adapter::upstream_effort(
+                    text(&resolution.profile["identity"]),
+                    text(&request["effort"])
+                ))
             } else {
                 request["effort"].clone()
             };

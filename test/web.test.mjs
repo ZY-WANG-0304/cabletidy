@@ -322,6 +322,17 @@ test("supplier length values and units merge together on refresh", async () => {
   assert.deepEqual(clone(merged),[field("identity","text","new"),...local]);
 });
 
+test("reasoning budgets share exact token conversion, accept zero and validate their range",async()=>{
+  const app=await controller();
+  assert.equal(app.read('parseTokenLength("0","tokens",true).tokens'),0);
+  assert.equal(app.read('parseTokenLength("1.024001M","tokens",true).tokens'),1024001);
+  assert.ok(app.read('parseTokenLength("0.0001K","tokens",true).error'));
+  const expression='(() => {const values={reasoningModes:["budget"],budgetUnit:"tokens",budgetMin:"0",budgetMax:"4.096001M"};return readSupplierReasoning({get:key=>values[key],getAll:key=>Array.isArray(values[key])?values[key]:[]},"");})()';
+  assert.deepEqual(clone(app.read(expression)).budget,{unit:"tokens",min:0,max:4096001});
+  assert.throws(()=>app.read(expression.replace('budgetMin:"0"','budgetMin:"8K"').replace('budgetMax:"4.096001M"','budgetMax:"4K"')),/最小预算/);
+  assert.doesNotMatch(app.read('tokenLengthField("最小预算","budgetMin",1024001,"budget")'),/data-token-shortcut/);
+});
+
 test("top-level settings save finite and independently unlimited audit limits", async () => {
   const app = await controller(undefined, { url: "http://test/#settings" });
   assert.equal(app.read("state.page"), "settings");

@@ -246,10 +246,11 @@ pub fn public(snapshot: &Value) -> Value {
             "contextWindow": model["context_window"],
             "maxContextWindow": model.get("max_context_window").unwrap_or(&model["context_window"]),
             "inputModalities": model.get("input_modalities").unwrap_or(&json!(["text"])),
+            "reasoningEfforts": array(&model["supported_reasoning_levels"]).iter().filter_map(|level| level["effort"].as_str()).filter(|effort| *effort != "ultra").collect::<Vec<_>>(),
             "capabilities": capabilities
         })
     }).collect();
-    json!({"available": true, "version": snapshot["version"], "models": models})
+    json!({"available": true, "version": snapshot["version"], "models": models,"reasoningRules":crate::codex_adapter::reasoning_rules()})
 }
 pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> {
     if p["managedModel"] == true {

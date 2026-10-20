@@ -41,6 +41,8 @@ CableTidy 管理模型能力、上下文窗口和相关策略；Codex 仍需通�
 
 供应商管理接口和供给事实，Cable 管理显式模型选择和客户端 ID；`suppliers` 与 `cables.*.models` 为权威配置。`suppliers::compile` 生成标记为 `managedModels` 的旧 Route/Virtual Provider 运行视图，用户不维护这些派生结构。凭据仍通过接口 `secretRef` 引用现有密钥存储。
 
+供应商模型的 `reasoning` 仅保存 `modes`、实际 `efforts` 和 `budget.unit/min/max`；每个 Cable 模型绑定的 `reasoning.defaultEffort` 属于客户端使用配置，编译到运行视图的 `clientReasoning`，并写入生成目录的 `default_reasoning_level`。不同 Cable 可独立设置。同一来源组先检查供给契约，再应用绑定设置；推理对象及预算的接口差异按字段继承公共事实。旧表单默认值迁入已有绑定，不覆盖显式配置；来源不明的接口默认值、旧开关及 `ultra` 保留 `migration` 记录。默认预算映射和 `ultra` 配置尚未开放，不能凭能力勾选启用。
+
 `codex_adapter` 根据 Responses 协议、实际身份和能力执行内置规则。原生 GPT 按本机版本完整复制模型定义；首批 B 六个身份使用中性编码模板、函数工具/freeform 补丁与完整无状态历史。未知事实保留，未支持组合不能发布；预算/开关事实不会自动产生参数转换。目录只包含显式选择且通过检查的模型。多来源要求同一发布契约，手动选源并拒绝跨来源不透明历史，不自动重试或故障切换。
 
 应用采用本地完整模型目录，记录配置共享字段及 provider 的前后状态，支持多 Cable 激活堆栈和保守撤销；隔离配置导出不改现有客户端文件。线路导出版本 2 携带供应商事实和绑定，导入时为服务实例及凭据分配独立引用。旧线路不能确认实际身份时保留原运行路径。首期真实模型验证状态见 [验证说明](provider-cable-validation.md)。

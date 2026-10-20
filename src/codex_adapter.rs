@@ -8,6 +8,31 @@ use serde_json::{json, Value};
 
 const CODING_PROMPT: &str = "You are a coding assistant working with the user in their workspace. Inspect relevant files before editing. Preserve unrelated user changes. Follow the user's instructions and repository instructions. Use the tools supplied in this request to inspect files, run commands and make changes. A tool call proposes an action; wait for the matching tool result before relying on it. Use apply_patch with its declared patch syntax to edit files. Do not invent tools, tool results, files or successful checks. Complete the requested work, run appropriate checks, and clearly report the changes and any remaining limitations.";
 
+pub const SUPPLY_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+pub fn reasoning_rules() -> Value {
+    json!(suppliers::COMPATIBLE_MODELS.iter().map(|identity| {
+        let efforts = if identity.starts_with("DeepSeek-") {
+            vec!["none", "low", "high", "max"]
+        } else if *identity == "MiniMax M3" {
+            vec!["none", "high"]
+        } else { SUPPLY_EFFORTS.to_vec() };
+        json!({"identity":identity,"protocol":"openai.responses","efforts":efforts,
+            "effortLabels": if *identity == "MiniMax M3" { json!({"none":"none · 关闭推理","high":"high · 开启推理"}) } else { json!({}) },
+            "clientEffortMap": SUPPLY_EFFORTS.iter().map(|effort| (effort.to_string(), json!(upstream_effort(identity, effort)))).collect::<serde_json::Map<_,_>>()})
+    }).collect::<Vec<_>>())
+}
+
+pub fn upstream_effort<'a>(identity: &str, effort: &'a str) -> &'a str {
+    if identity.starts_with("DeepSeek-") {
+        deepseek_effort(effort)
+    } else if identity.eq_ignore_ascii_case("MiniMax M3") && effort != "none" {
+        "high"
+    } else {
+        effort
+    }
+}
+
 pub fn history_policy(p: &Value) -> &'static str {
     if suppliers::compatible(text(&p["identity"])) || p["manualSourceGroup"] == true {
         "stateless"
@@ -32,12 +57,42 @@ pub fn validate_profile(p: &Value) -> Result<()> {
         bail!("模型身份未知或适配尚未实现: {identity}");
     }
     let caps = crate::model::capabilities(p);
+    if p["inputModalities"].is_array() && !array(&p["inputModalities"]).contains(&json!("text")) {
+        bail!("当前 Codex 适配需要供给支持文本输入");
+    }
     if !caps.contains("tools") || !caps.contains("streaming") {
         bail!("请声明该模型的接口工具形式及流式供给能力");
     }
     require_tool_form(p, "function")?;
     if caps.contains("reasoning") && efforts(p)?.is_empty() {
         bail!("该推理控制方式暂无内置映射，请确认 Responses 支持的档位");
+    }
+    let settings = &p["clientReasoning"];
+    let budget = &p["reasoning"]["budget"];
+    if matches!((budget["min"].as_u64(),budget["max"].as_u64()),(Some(min),Some(max)) if min > max)
+    {
+        bail!("接口的有效最小预算不能超过最大预算");
+    }
+    if let Some(default) = settings["defaultBudget"].as_u64() {
+        if budget["min"].as_u64().is_some_and(|min| default < min)
+            || budget["max"].as_u64().is_some_and(|max| default > max)
+        {
+            bail!("客户端默认预算超出有效供给范围");
+        }
+    }
+    if !settings["defaultBudget"].is_null() {
+        bail!("当前 Codex × Responses 组合尚未实现默认推理预算映射");
+    }
+    let default = text(&settings["defaultEffort"]);
+    if default == "ultra" {
+        bail!("当前适配未开放 Ultra 的客户端委派配置");
+    }
+    if !default.is_empty()
+        && (!caps.contains("reasoning")
+            || (!array(&p["reasoning"]["efforts"]).is_empty()
+                && !efforts(p)?.iter().any(|e| e == default)))
+    {
+        bail!("客户端默认推理档位不在有效供给与内置映射范围内: {default}");
     }
     if suppliers::compatible(identity) {
         require_tool_form(p, "custom")?;
@@ -55,6 +110,7 @@ pub fn catalog_entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, 
     if nonempty(&p["sourceError"]) {
         bail!("{}", text(&p["sourceError"]));
     }
+    validate_profile(p)?;
     let identity = text(&p["identity"]);
     let native = array(&snapshot["catalog"]["models"])
         .iter()
@@ -191,11 +247,18 @@ pub fn catalog_entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, 
             .collect::<Vec<_>>());
         out["default_reasoning_level"] = json!(efforts
             .iter()
-            .find(|e| e.as_str() == text(&p["reasoning"]["default"]))
-            .or_else(|| efforts
-                .iter()
-                .find(|e| e.as_str() == text(&original["default_reasoning_level"])))
+            .find(|e| e.as_str() == text(&original["default_reasoning_level"]))
             .or_else(|| efforts.first()));
+    }
+    let default = text(&p["clientReasoning"]["defaultEffort"]);
+    if !default.is_empty() {
+        if !array(&out["supported_reasoning_levels"])
+            .iter()
+            .any(|level| level["effort"] == default)
+        {
+            bail!("客户端默认推理档位不在该版本模型定义与供给交集中: {default}");
+        }
+        out["default_reasoning_level"] = json!(default);
     }
     out["supports_parallel_tool_calls"] = json!(caps.contains("parallel_tool_calls"));
     Ok((original.clone(), out))
@@ -207,16 +270,8 @@ pub fn efforts(p: &Value) -> Result<Vec<String>> {
         return Ok(vec![]);
     }
     let levels = array(&r["efforts"]);
-    if levels.iter().any(|e| {
-        ![
-            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-        ]
-        .contains(&text(e))
-    }) {
+    if levels.iter().any(|e| !SUPPLY_EFFORTS.contains(&text(e))) {
         bail!("当前内置规则不支持该推理档位");
-    }
-    if suppliers::compatible(text(&p["identity"])) && levels.contains(&json!("ultra")) {
-        bail!("兼容模板未实现 Ultra 的客户端委派约定");
     }
     if levels.is_empty() {
         return Ok(vec![]);
@@ -226,10 +281,21 @@ pub fn efforts(p: &Value) -> Result<Vec<String>> {
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect();
-    if text(&p["identity"]).starts_with("DeepSeek-") {
-        Ok(["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-            .into_iter()
-            .filter(|e| levels.iter().any(|level| level == deepseek_effort(e)))
+    if text(&p["identity"]).starts_with("DeepSeek-")
+        || text(&p["identity"]).eq_ignore_ascii_case("MiniMax M3")
+    {
+        let identity = text(&p["identity"]);
+        let enabled = identity.eq_ignore_ascii_case("MiniMax M3")
+            && levels.iter().any(|level| level != "none");
+        Ok(SUPPLY_EFFORTS
+            .iter()
+            .copied()
+            .filter(|e| {
+                enabled && *e != "none"
+                    || levels
+                        .iter()
+                        .any(|level| level == upstream_effort(identity, e))
+            })
             .map(str::to_owned)
             .collect())
     } else {
@@ -330,9 +396,12 @@ pub fn request_edits(
                 bail!("该来源未声明支持推理档位 {effort}");
             }
             if compatible {
+                if reasoning.get("budget").is_some() || reasoning.get("budget_tokens").is_some() {
+                    bail!("当前组合尚未实现推理预算参数映射");
+                }
                 reasoning.as_object_mut().unwrap().remove("summary");
-                if text(&p["identity"]).starts_with("DeepSeek-") && !effort.is_empty() {
-                    let mapped = deepseek_effort(&effort).to_owned();
+                if !effort.is_empty() {
+                    let mapped = upstream_effort(text(&p["identity"]), &effort).to_owned();
                     reasoning["effort"] = json!(mapped);
                 }
             }

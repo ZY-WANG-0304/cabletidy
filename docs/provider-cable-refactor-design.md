@@ -1,6 +1,6 @@
 # CableTidy 供应商、模型与 Cable 重构设计
 
-更新日期：2026-10-20。状态：首批 A+B 范围保持已确认；本文已纳入本次确认的模型表单与配置归属调整。本次只整理目标方案，不修改代码；新增结论尚不表示现有实现已完成。真实供给验证继续按已确认分工完成。
+更新日期：2026-10-20。状态：首批 A+B 范围保持已确认；已实现本次确认的模型表单、供给事实与 Cable 默认档位分离、档位勾选、预算换算及接口组件合并。默认预算映射和 `ultra` 使用配置按客户端实际机制继续分阶段开放，当前不提供可操作入口。真实供给验证继续按已确认分工完成。
 
 ## 1. 目标与范围
 
@@ -370,7 +370,7 @@ A 的具体原生模型和 Codex 支持版本按现有环境及完整模型目�
 
 ## 8. 调研来源
 
-初始调研结论来自以下官方文档与固定版本源码，未进行真实模型调用验证。2026-10-20 新增的模型表单、默认值与推理配置归属按本次会话确认结论整理，未在本次更新中重新调研或实现。本文描述目标方案，现有实现仍以代码和当前架构文档为准。
+初始调研结论来自以下官方文档与固定版本源码，未进行真实模型调用验证。2026-10-20 新增的模型表单、默认值与推理配置归属已按本次会话确认结论实施；完整设计中的后续阶段仍以功能实际开放情况为准。通过 OpenAI Docs 核对了客户端目录定义与 `ultra` 的版本依赖，未将其作为普通供给档位或通用网关配置开放，参见[官方自定义目录说明](https://learn.chatgpt.com/docs/enterprise/bedrock-through-litellm#prepare-the-client-catalog)。
 
 1. [OpenAI：自定义模型目录与网关接入](https://learn.chatgpt.com/docs/enterprise/roll-out-a-gateway#use-a-model-catalog-for-custom-names)、[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。远程目录有版本、认证及大小约束，本地目录优先于远程。
 2. [Claude Code 网关协议](https://code.claude.com/docs/en/llm-gateway-protocol)、[模型选择配置](https://code.claude.com/docs/en/settings-reference#fields-for-modelpicker)。普通网关能力声明和提示词选择不能由模型列表推导。

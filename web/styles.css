@@ -421,8 +421,21 @@ h3 {
   overflow-wrap: anywhere;
 }
 
-.supplier-model-interface-table td[data-label="协议类型"] {
-  white-space: nowrap;
+.supplier-model-interface-table [data-interface-facts] td {
+  padding: 12px 16px;
+}
+
+.supplier-model-interface-table [data-interface-facts] details > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.supplier-model-interface-table [data-interface-facts] details[open] > summary {
+  margin-bottom: 16px;
+}
+
+.supplier-model-interface-table .checkbox-options {
+  gap: 8px 16px;
 }
 
 .supplier-modal-form .config-form-footer {
@@ -1258,6 +1271,11 @@ button.list-row:hover,
   flex: 0 0 5rem;
   width: 5rem;
   padding: 0 7px;
+}
+
+.token-budget-field .token-length-controls select {
+  flex-basis: 6.5rem;
+  width: 6.5rem;
 }
 
 .token-length-conversion {

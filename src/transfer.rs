@@ -58,13 +58,13 @@ fn supply_facts(v: &Value) -> Value {
         );
     }
     if v["reasoning"].is_object() {
-        out["reasoning"] = fields(&v["reasoning"], &["modes", "efforts", "toggle", "default"]);
+        out["reasoning"] = fields(&v["reasoning"], &["modes", "efforts"]);
     }
     if v["reasoning"]["budget"].is_object() {
-        out["reasoning"]["budget"] = fields(
-            &v["reasoning"]["budget"],
-            &["unit", "min", "max", "default"],
-        );
+        out["reasoning"]["budget"] = fields(&v["reasoning"]["budget"], &["unit", "min", "max"]);
+    }
+    if v["migration"]["reasoning"].is_object() {
+        out["migration"] = json!({"reasoning":fields(&v["migration"]["reasoning"], &["default","toggle","budgetDefault","ultra"])});
     }
     out
 }
@@ -224,6 +224,18 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                     .iter()
                     .map(|s| fields(s, &["supplierId", "modelId", "interfaceId", "enabled"]))
                     .collect::<Vec<_>>());
+                if binding["reasoning"].is_object() {
+                    model["reasoning"] =
+                        fields(&binding["reasoning"], &["defaultEffort", "defaultBudget"]);
+                }
+                if binding["migration"]["sourceReasoningDefaults"].is_array() {
+                    model["migration"] = json!({});
+                    model["migration"]["sourceReasoningDefaults"] =
+                        json!(array(&binding["migration"]["sourceReasoningDefaults"])
+                            .iter()
+                            .map(|v| fields(v, &["defaultEffort", "defaultBudget"]))
+                            .collect::<Vec<_>>());
+                }
                 b2["models"][name] = model;
             }
             if b["legacyPassthrough"].is_object() {
