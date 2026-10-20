@@ -3212,7 +3212,7 @@ function supplierReasoningFields(reasoning, prefix, identity, protocol, inherite
   const modes = reasoning?.modes || [];
   const budget = reasoning?.budget || {};
   const name = field => `${prefix}${field}`;
-  return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["effort","toggle","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{effort:"档位",toggle:"开关",budget:"Token 预算"}[mode]}</span></label>`).join("")}</div></fieldset>
+  return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["toggle","effort","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{toggle:"支持开关控制",effort:"支持档位控制",budget:"支持设置token预算"}[mode]}</span></label>`).join("")}</div></fieldset>
     <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">未勾选时保持未确认；别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
     <fieldset class="checkbox-group" data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}><legend>推理 Token 预算</legend>
       <p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>
@@ -3234,7 +3234,7 @@ function supplierInterfaceFacts(iid, model, name, protocol) {
     </div><p class="field-hint">长度留空继承模型，其他值与模型相同时继承。K = 1,000 tokens；M = 1,000,000 tokens。</p>
     ${supplierInputFields({...effective,inputModalities:d.inputModalities || (Object.hasOwn(d.capabilityStates || {},"vision") ? (d.capabilityStates.vision === "supported" ? ["text","image"] : ["text"]) : model.inputModalities)},`diff:${iid}:`,model)}
     <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},cap) ? d : model,cap), !Object.hasOwn(d.capabilityStates || {},cap))).join("")}</div></fieldset>
-    <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理控制事实</span></label>
+    <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
     <div data-interface-reasoning ${d.reasoning ? "" : "hidden"}>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
     </details></td></tr>`;
 }
@@ -3311,12 +3311,10 @@ function renderSupplierModelForm(supplier) {
       <section class="subsection"><div class="subsection-header"><h3>能力与限制</h3></div><div class="form-grid">${tokenLengthField("上下文长度", "contextWindow", model.contextWindow, "contextWindow")}${tokenLengthField("最大输出长度", "maxOutputTokens", model.maxOutputTokens, "maxOutputTokens")}</div>
       <p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。供应商给出准确 token 数时，可直接选择 tokens 填写。</p>
       ${supplierInputFields(model)}<fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${capabilityFields}</div></fieldset><p class="field-hint">勾选表示供给支持，默认不表示已实测。并行工具调用表示一次响应可产生多个调用，客户端执行策略由适配代码决定。</p>
-      </section><section class="subsection" data-model-reasoning ${supplierCapabilitySupported(model,"reasoning") ? "" : "hidden"}><div class="subsection-header"><h3>推理控制事实</h3></div>
+      </section><section class="subsection" data-model-reasoning ${supplierCapabilitySupported(model,"reasoning") ? "" : "hidden"}><div class="subsection-header"><h3>推理能力</h3></div>
       ${supplierReasoningFields(model.reasoning,"",model.identity,entries(supplier.interfaces || {}).some(([id,i]) => (!model.interfaces?.length || model.interfaces.includes(id)) && i.protocol === "openai.responses") ? "openai.responses" : "")}
       <p class="field-hint">这里只维护供给事实；客户端默认档位与默认推理 Token 预算在 Cable 模型绑定中配置。</p>
-      </section>${supplierModelInterfaces(supplier,model)}<section class="subsection"><div class="subsection-header"><h3>供给验证</h3></div>
-      <label class="field"><span>真实供给验证记录</span><select name="validation">${["unverified", "partial", "manual-pass"].map(v => `<option value="${v}" ${v === (model.validation || "unverified") ? "selected" : ""}>${{unverified:"未实测",partial:"部分通过", "manual-pass":"已手动验证"}[v]}</option>`).join("")}</select></label>
-      </section></div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存模型</button></div>
+      </section>${supplierModelInterfaces(supplier,model)}</div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存模型</button></div>
     </form>`;
 }
 function saveSupplier(data) {
@@ -3387,7 +3385,6 @@ function saveSupplierModel(data) {
   delete model.history;
   delete model.capabilities;
   const differences = {};
-  model.validation = data.get("validation") || "unverified";
   for (const iid of data.getAll("interfaces")) {
     const d = clone(old.interfaceCapabilities?.[iid] || {});
     delete d.history;
@@ -3412,7 +3409,8 @@ function saveSupplierModel(data) {
   return { type:"supplier.model.save",supplierId:state.supplierId,data:{oldModelId:data.get("oldModelId"),modelId:nextId,model} };
 }
 function readSupplierReasoning(data, prefix, previous = {}, inherited = false) {
-  const modes = data.getAll(`${prefix}reasoningModes`);
+  const selectedModes = data.getAll(`${prefix}reasoningModes`);
+  const modes = ["effort","toggle","budget"].filter(mode => selectedModes.includes(mode));
   const result = {...clone(previous || {}),modes,efforts:data.getAll(`${prefix}efforts`).filter(e => e !== "ultra")};
   delete result.default;
   delete result.toggle;

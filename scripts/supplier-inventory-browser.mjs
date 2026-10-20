@@ -240,6 +240,8 @@ try {
   dialog = page.getByRole("dialog");
   await dialog.waitFor();
   assert.equal(await dialog.getByRole("heading", {name:"添加模型",exact:true}).count(), 1);
+  assert.equal(await dialog.getByRole("heading", {name:"供给验证",exact:true}).count(), 0);
+  assert.equal(await dialog.locator('[name="validation"]').count(), 0);
   assert.equal(await dialog.locator('[name="modelId"]').getAttribute("required"), "");
   const capabilitySection=dialog.locator("section.subsection").filter({has:page.getByRole("heading",{name:"能力与限制",exact:true})});
   assert.deepEqual((await capabilitySection.locator("input").evaluateAll(nodes=>nodes.map(node=>node.name))).slice(0,2),["contextWindow","maxOutputTokens"]);
@@ -293,7 +295,11 @@ try {
     assert.equal(await dialog.locator(`[name="diff:responses:cap:${cap}"]`).isChecked(),true);
   }
   await dialog.locator('[name="reasoningModes"][value="budget"]').check();
-  assert.equal(await dialog.getByRole("checkbox",{name:"Token 预算",exact:true}).count(),1);
+  const reasoningSection=dialog.locator('[data-model-reasoning]');
+  assert.equal(await reasoningSection.getByRole("heading",{name:"推理能力",exact:true}).count(),1);
+  assert.deepEqual(await reasoningSection.locator('[data-reasoning-mode]').evaluateAll(inputs=>inputs.map(input=>({value:input.value,label:input.closest('label').textContent.trim()}))),[
+    {value:"toggle",label:"支持开关控制"},{value:"effort",label:"支持档位控制"},{value:"budget",label:"支持设置token预算"}
+  ]);
   assert.equal(await dialog.locator('[name="budgetUnit"], [name$=":budgetUnit"]').count(),0);
   const budgetSection=dialog.locator('[data-reasoning-budget]').first();
   assert.match(await budgetSection.textContent(),/推理 Token 预算/);
@@ -371,7 +377,7 @@ try {
   await inlineConversion(contextField);
   await inlineConversion(outputField);
   await screenshot("supplier-model-form");
-  await dialog.getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
+  await dialog.getByRole("heading",{name:"推理能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-reasoning");
   await dialog.getByRole("heading",{name:"可访问接口与供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools");
@@ -384,6 +390,7 @@ try {
   assert.equal(await page.locator(".cable-table").count(), 2);
   c=await readConfig();
   const savedSupply=c.suppliers[sid].models["draft-wire"];
+  assert.equal(savedSupply.validation,undefined);
   assert.deepEqual(savedSupply.reasoning.budget,{unit:"tokens",min:0,max:4096001});
   assert.equal(savedSupply.contextWindow,128000);
   assert.equal(savedSupply.maxOutputTokens,8192);
@@ -393,11 +400,13 @@ try {
   assert.deepEqual(savedSupply.inputModalities,["text","image"]);
   assert.deepEqual(savedSupply.interfaceCapabilities.responses.capabilityStates,{vision:"unsupported"});
   const modelWithInterfaceReasoning=structuredClone(c.suppliers[sid].models["draft-wire"]);
+  modelWithInterfaceReasoning.validation="manual-pass";
   modelWithInterfaceReasoning.interfaceCapabilities.responses.reasoning={modes:["toggle","budget"],toggle:false,budget:{unit:"tokens",min:0,max:4096,default:1024}};
   await commit({type:"supplier.model.save",supplierId:sid,data:{oldModelId:"draft-wire",modelId:"draft-wire",model:modelWithInterfaceReasoning}});
   await page.getByRole("button",{name:"刷新",exact:true}).click();
   await page.getByRole("button", {name:"draft-wire",exact:true}).click();
   dialog = page.getByRole("dialog");
+  assert.equal(await dialog.locator('[name="validation"]').count(),0);
   assert.equal(await dialog.locator('[name="contextWindow"]').inputValue(),"128");
   assert.equal(await dialog.locator('[name="contextWindow:unit"]').inputValue(),"K");
   assert.equal(await dialog.locator('[name="maxOutputTokens"]').inputValue(),"8.192");
@@ -414,6 +423,10 @@ try {
   await dialog.locator('[name="inputModalities"][value="image"]').uncheck();
   assert.equal(await dialog.locator('[name="diff:responses:inputModalities"][value="image"]').isChecked(),false);
   await dialog.locator('[data-interface-facts="responses"] summary').click();
+  const interfaceReasoning=dialog.locator('[data-interface-reasoning]').first();
+  assert.deepEqual(await interfaceReasoning.locator('[data-reasoning-mode]').evaluateAll(inputs=>inputs.map(input=>({value:input.value,label:input.closest('label').textContent.trim()}))),[
+    {value:"toggle",label:"支持开关控制"},{value:"effort",label:"支持档位控制"},{value:"budget",label:"支持设置token预算"}
+  ]);
   await dialog.locator('[name="diff:responses:contextWindow"]').fill("");
   await dialog.locator('[name="diff:responses:maxOutputTokens"]').fill("");
   // Exact provider counts round-trip without rounding in either input mode.
@@ -427,6 +440,7 @@ try {
   await save(dialog, "保存模型");
   await dialog.waitFor({state:"detached"});
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].identity, "Kimi K3");
+  assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].validation,"manual-pass");
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].contextWindow,128001);
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].maxOutputTokens,8193);
   assert.equal((await readConfig()).suppliers[sid].models["draft-wire"].interfaceCapabilities.responses.contextWindow,undefined);
@@ -468,7 +482,7 @@ try {
   assert.equal(await page.getByRole("dialog").evaluate(node => {const box=node.getBoundingClientRect();return box.top>=0 && box.bottom<=window.innerHeight && box.width<=window.innerWidth;}), true);
   await page.getByRole("dialog").getByRole("heading",{name:"能力与限制",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-form-mobile");
-  await page.getByRole("dialog").getByRole("heading",{name:"推理控制事实",exact:true}).scrollIntoViewIfNeeded();
+  await page.getByRole("dialog").getByRole("heading",{name:"推理能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-reasoning-mobile");
   await page.getByRole("dialog").getByRole("heading",{name:"可访问接口与供给能力",exact:true}).scrollIntoViewIfNeeded();
   await screenshot("supplier-model-tools-mobile");
