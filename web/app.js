@@ -272,6 +272,8 @@ function formSnapshot(form) {
   const fields = [...form.querySelectorAll("input, select, textarea")].filter((control) => {
     // Select-all reflects the line choices; it is not an independent saved value.
     if ("protectionAll" in control.dataset) return false;
+    // The streaming checkbox reflects an interface default or its separate override.
+    if ("interfaceStreaming" in control.dataset) return false;
     // Official metadata is derived, not an editable configuration value.
     if ("cableModelContext" in control.dataset || "codexVision" in control.dataset) {
       const mode = control.closest("[data-cable-model]")?.querySelector("[data-codex-metadata-mode]");
@@ -3339,14 +3341,22 @@ function supplierInputFields(model, prefix = "", inherited = null) {
   const common = inherited?.inputModalities || (supplierCapabilitySupported(inherited || {},"vision") ? ["text","image"] : ["text"]);
   return `<fieldset class="checkbox-group"><legend>输入类型</legend><div class="checkbox-options">${entries(SUPPLIER_INPUT_TYPES).map(([type,label]) => `<label class="settings-checkbox"><input type="checkbox" name="${esc(prefix)}inputModalities" value="${type}" ${modalities.includes(type) ? "checked" : ""} data-inherit="${Boolean(inherited) && common.includes(type) === modalities.includes(type)}"><span>${label}</span></label>`).join("")}</div>${modalities.filter(type => !Object.hasOwn(SUPPLIER_INPUT_TYPES,type)).length ? '<p class="field-hint">已记录的其他输入类型会保留，首期仅开放文本和图片配置。</p>' : ""}</fieldset>`;
 }
-function supplierInterfaceFacts(iid, model, name, protocol) {
+function supplierInterfaceFacts(iid, model, name, protocol, streamingDefault = true) {
   const d = model.interfaceCapabilities?.[iid] || {};
   const effective = {...model,...d,reasoning:{...model.reasoning,...d.reasoning,budget:{...model.reasoning?.budget,...d.reasoning?.budget}}};
   const reasoningSupported = supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},"reasoning") ? d : model,"reasoning");
+  const streamingOverride = Object.hasOwn(d,"supportsStreaming") ? d.supportsStreaming == null ? "unknown" : String(d.supportsStreaming) : "";
+  const streamingSupported = streamingOverride ? streamingOverride === "true" : streamingDefault;
   return `<tr data-interface-facts="${esc(iid)}" ${(model.interfaces || []).includes(iid) || state.discoveredInterface === iid ? "" : "hidden"}><td colspan="5">
-    <details><summary>${esc(name || iid)} · 能力与限制差异</summary><div class="form-grid">
+    <details><summary>${esc(name || iid)} · 能力与限制差异</summary>
+    <fieldset class="checkbox-group"><legend>接口响应能力</legend><div class="checkbox-options">
+      <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:supportsStreaming" data-interface-streaming ${streamingSupported ? "checked" : ""}><span>支持流式响应</span></label>
+      <input type="hidden" name="diff:${esc(iid)}:streamingOverride" data-streaming-override value="${esc(streamingOverride)}">
+      <button class="text-button" type="button" data-action="reset-interface-streaming" ${streamingOverride ? "" : "hidden"}>恢复接口默认</button>
+    </div></fieldset>
+    <p class="field-hint">未单独设置时跟随接口；与接口不同的选择保存为例外。勾选表示供给能力声明，不表示已实测。<span data-streaming-unknown ${streamingOverride === "unknown" ? "" : "hidden"}>已有未确认声明保留，修改勾选或恢复接口默认可替换。</span></p>
+    <div class="form-grid">
       ${tokenLengthField("接口上下文长度", `diff:${iid}:contextWindow`, d.contextWindow, "contextWindow", true)}${tokenLengthField("接口最大输出长度", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens, "maxOutputTokens", true)}
-      <label class="field"><span>流式响应例外</span><select name="diff:${esc(iid)}:supportsStreaming">${["", "unknown", "true", "false"].map(v => `<option value="${v}" ${v === (Object.hasOwn(d, "supportsStreaming") ? String(d.supportsStreaming ?? "unknown") : "") ? "selected" : ""}>${{"":"继承接口",unknown:"未确认",true:"支持",false:"不支持"}[v]}</option>`).join("")}</select></label>
     </div><p class="field-hint">长度留空继承模型，其他值与模型相同时继承。K = 1,000 tokens；M = 1,000,000 tokens。</p>
     ${supplierInputFields({...effective,inputModalities:d.inputModalities || (Object.hasOwn(d.capabilityStates || {},"vision") ? (d.capabilityStates.vision === "supported" ? ["text","image"] : ["text"]) : model.inputModalities)},`diff:${iid}:`,model)}
     <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},cap) ? d : model,cap), !Object.hasOwn(d.capabilityStates || {},cap))).join("")}</div></fieldset>
@@ -3370,7 +3380,7 @@ function supplierModelInterfaces(supplier, model) {
     ${entries(supplier.interfaces || {}).length ? `<div class="cable-list"><table class="cable-table supplier-model-interface-table" aria-labelledby="supplier-model-interfaces-title"><thead><tr><th>使用</th><th>名称</th><th>协议</th><th>地址</th><th>支持的工具形式</th></tr></thead><tbody>${entries(supplier.interfaces).map(([iid,i]) => {
       const selected = (model.interfaces || []).includes(iid) || state.discoveredInterface === iid;
       const forms = Object.hasOwn(model.interfaceCapabilities?.[iid] || {},"toolForms") ? model.interfaceCapabilities[iid].toolForms : (model.interfaces || []).includes(iid) ? [] : ["function"];
-      return `<tr data-interface-selection="${esc(iid)}"><td data-label="使用"><label class="settings-checkbox"><input type="checkbox" name="interfaces" value="${esc(iid)}" aria-label="选择接口 ${esc(i.name || iid)}" ${selected ? "checked" : ""}></label></td><th scope="row">${esc(i.name || iid)}</th><td data-label="协议">${esc(i.protocol)}</td><td data-label="地址" class="mono">${esc(i.baseUrl)}</td><td data-label="支持的工具形式"><div class="checkbox-options">${entries(SUPPLIER_TOOL_FORMS).map(([form,label]) => `<label class="settings-checkbox"><input type="checkbox" name="toolForms:${esc(iid)}" value="${form}" ${forms.includes(form) ? "checked" : ""} ${selected ? "" : "disabled"}><span>${label}</span></label>`).join("")}</div></td></tr>${supplierInterfaceFacts(iid,model,i.name,i.protocol)}`;
+      return `<tr data-interface-selection="${esc(iid)}"><td data-label="使用"><label class="settings-checkbox"><input type="checkbox" name="interfaces" value="${esc(iid)}" aria-label="选择接口 ${esc(i.name || iid)}" ${selected ? "checked" : ""}></label></td><th scope="row">${esc(i.name || iid)}</th><td data-label="协议">${esc(i.protocol)}</td><td data-label="地址" class="mono">${esc(i.baseUrl)}</td><td data-label="支持的工具形式"><div class="checkbox-options">${entries(SUPPLIER_TOOL_FORMS).map(([form,label]) => `<label class="settings-checkbox"><input type="checkbox" name="toolForms:${esc(iid)}" value="${form}" ${forms.includes(form) ? "checked" : ""} ${selected ? "" : "disabled"}><span>${label}</span></label>`).join("")}</div></td></tr>${supplierInterfaceFacts(iid,model,i.name,i.protocol,i.supportsStreaming !== false)}`;
     }).join("")}</tbody></table></div>` : '<p class="field-hint">尚未配置接口，请先添加接口。</p>'}</section>`;
 }
 function renderSuppliers() {
@@ -3509,7 +3519,7 @@ function saveSupplierModel(data) {
     delete d.history;
     delete d.capabilities;
     d.toolForms = data.getAll(`toolForms:${iid}`);
-    const streaming = data.get(`diff:${iid}:supportsStreaming`);
+    const streaming = data.get(`diff:${iid}:streamingOverride`);
     if (streaming) d.supportsStreaming = streaming === "unknown" ? null : streaming === "true"; else delete d.supportsStreaming;
     const states = {...Object.fromEntries((old.interfaceCapabilities?.[iid]?.capabilities || []).filter(cap => !["tools","streaming"].includes(cap)).map(cap => [cap,"supported"])),...d.capabilityStates,...Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap, data.has(`diff:${iid}:cap:${cap}`) ? "supported" : "unsupported"]))};
     const modalities = [...data.getAll(`diff:${iid}:inputModalities`),...(old.interfaceCapabilities?.[iid]?.inputModalities || old.inputModalities || []).filter(type => !Object.hasOwn(SUPPLIER_INPUT_TYPES,type))];
@@ -3690,6 +3700,10 @@ pageContent.addEventListener("input", event => {
 });
 async function inventoryAction(action, element) {
   if (action === "fill-model-reference") fillSupplierModelReference(element.closest('form'),true);
+  else if (action === "reset-interface-streaming") {
+    element.closest('[data-interface-facts]').querySelector('[data-streaming-override]').value = "";
+    syncSupplierModelForm(element.closest('form'));
+  }
   else if (action === "select-token-length") {
     const field = element.closest("[data-token-length]");
     const result = parseTokenLength(element.dataset.tokenShortcut);
@@ -3773,6 +3787,10 @@ function syncSupplierModelForm(form) {
     row.querySelectorAll('[name^="toolForms:"]').forEach(input => {input.disabled = !selected;});
     const facts = row.nextElementSibling;
     facts.hidden = !selected;
+    const streamingOverride = facts.querySelector('[data-streaming-override]').value;
+    facts.querySelector('[data-interface-streaming]').checked = streamingOverride ? streamingOverride === "true" : supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts);
+    facts.querySelector('[data-action="reset-interface-streaming"]').hidden = !streamingOverride;
+    facts.querySelector('[data-streaming-unknown]').hidden = streamingOverride !== "unknown";
     const reasoningSupported = facts.querySelector('[name$=":cap:reasoning"]').checked;
     facts.querySelector('[data-interface-reasoning-config]').hidden = !reasoningSupported;
     facts.querySelector('[data-interface-reasoning]').hidden = !reasoningSupported || !facts.querySelector('[data-reasoning-override]').checked;
@@ -3783,12 +3801,19 @@ function syncSupplierModelForm(form) {
   }
   form.querySelectorAll('[data-token-length]').forEach(syncTokenLength);
 }
+function supplierInterfaceStreamingDefault(iid) {
+  return currentSupplier()?.interfaces?.[iid]?.supportsStreaming !== false;
+}
 pageContent.addEventListener("change", event => {
   const form = event.target.closest("#supplier-model-form");
   if (!form || form.getAttribute?.("id") !== "supplier-model-form") return;
   const tracked = supplierReferenceState(form);
   const editedName = event.target.name?.replace(/:unit$/,"");
   if (tracked.values.has(editedName)) tracked.edited.add(editedName);
+  if (event.target.matches('[data-interface-streaming]')) {
+    const facts = event.target.closest('[data-interface-facts]');
+    facts.querySelector('[data-streaming-override]').value = event.target.checked === supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts) ? "" : String(event.target.checked);
+  }
   const cap = SUPPLIER_CAPABILITIES.find(cap => event.target.name === `cap:${cap}`);
   const modality = event.target.name === "inputModalities" ? event.target.value : null;
   if (cap || modality) {

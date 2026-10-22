@@ -346,6 +346,17 @@ test("supplier length values and units merge together on refresh", async () => {
   assert.deepEqual(clone(merged),[field("identity","text","new"),...local]);
 });
 
+test("supplier streaming defaults stay derived while overrides participate in draft merging", async () => {
+  const app=await controller();
+  const baseline=app.read('(() => {const controls=[{name:"diff:responses:supportsStreaming",type:"checkbox",dataset:{interfaceStreaming:""},checked:true,closest:()=>null},{name:"diff:responses:streamingOverride",type:"hidden",dataset:{streamingOverride:""},value:"",closest:()=>null}];const form={querySelectorAll:()=>controls};const before=formSnapshot(form);controls[0].checked=false;const inherited=formSnapshot(form);controls[1].value="false";return {before,inherited,override:formSnapshot(form)};})()');
+  assert.equal(baseline.before,baseline.inherited);
+  assert.notEqual(baseline.before,baseline.override);
+  const base=JSON.parse(baseline.before), local=JSON.parse(baseline.override);
+  const version=value=>["version","text",{},"",value];
+  const merged=app.read(`mergeSupplierModelFields(${JSON.stringify([...base,version("old")])},${JSON.stringify([...local,version("old")])},${JSON.stringify([...base,version("new")])})`);
+  assert.deepEqual(clone(merged),[...local,version("new")]);
+});
+
 test("reasoning budgets share exact token conversion, accept zero and validate their range",async()=>{
   const app=await controller();
   assert.equal(app.read('parseTokenLength("0","tokens",true).tokens'),0);
