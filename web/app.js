@@ -272,8 +272,8 @@ function formSnapshot(form) {
   const fields = [...form.querySelectorAll("input, select, textarea")].filter((control) => {
     // Select-all reflects the line choices; it is not an independent saved value.
     if ("protectionAll" in control.dataset) return false;
-    // The streaming checkbox reflects an interface default or its separate override.
-    if ("interfaceStreaming" in control.dataset) return false;
+    // Association controls are derived; only their separate restrictions are saved.
+    if ("interfaceStreaming" in control.dataset || control.name?.startsWith("diff:") && control.closest("[data-association-model]")) return false;
     // Official metadata is derived, not an editable configuration value.
     if ("cableModelContext" in control.dataset || "codexVision" in control.dataset) {
       const mode = control.closest("[data-cable-model]")?.querySelector("[data-codex-metadata-mode]");
@@ -3151,16 +3151,6 @@ function fillSupplierModelReference(form, force = false) {
     if (!inputs.length) continue;
     if (inputs[0].type === "checkbox") {
       inputs.forEach(input => { input.checked = value.includes(input.value); });
-      if (name === "inputModalities" || name.startsWith("cap:")) {
-        for (const row of form.querySelectorAll('[data-interface-facts]')) {
-          for (const input of row.querySelectorAll(`[name="diff:${CSS.escape(row.dataset.interfaceFacts)}:${name}"][data-inherit="true"]`)) input.checked = value.includes(input.value);
-        }
-      } else if (name === "reasoningModes" || name === "efforts") {
-        for (const row of form.querySelectorAll('[data-interface-facts]')) {
-          if (row.querySelector('[data-reasoning-override]').checked) continue;
-          for (const input of row.querySelectorAll(`[name="diff:${CSS.escape(row.dataset.interfaceFacts)}:${name}"]`)) input.checked = value.includes(input.value);
-        }
-      }
     } else {
       const display = tokenLengthDisplay(value);
       inputs[0].value = display.value;
@@ -3343,28 +3333,28 @@ function supplierInputFields(model, prefix = "", inherited = null) {
 }
 function supplierInterfaceFacts(iid, model, name, protocol, streamingDefault = true) {
   const d = model.interfaceCapabilities?.[iid] || {};
-  const effective = {...model,...d,reasoning:{...model.reasoning,...d.reasoning,budget:{...model.reasoning?.budget,...d.reasoning?.budget}}};
-  const reasoningSupported = supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},"reasoning") ? d : model,"reasoning");
+  const restrictions = Object.fromEntries(entries(d).filter(([key]) => ["capabilityStates","capabilities","inputModalities","contextWindow","maxOutputTokens","reasoning"].includes(key)));
+  const effective = {...model,...restrictions,reasoning:{...model.reasoning,...d.reasoning,budget:{...model.reasoning?.budget,...d.reasoning?.budget}}};
   const streamingOverride = Object.hasOwn(d,"supportsStreaming") ? d.supportsStreaming == null ? "unknown" : String(d.supportsStreaming) : "";
-  const streamingSupported = streamingOverride ? streamingOverride === "true" : streamingDefault;
   return `<tr data-interface-facts="${esc(iid)}" ${(model.interfaces || []).includes(iid) || state.discoveredInterface === iid ? "" : "hidden"}><td colspan="5">
     <details><summary>${esc(name || iid)} · 能力与限制差异</summary>
-    <fieldset class="checkbox-group"><legend>接口响应能力</legend><div class="checkbox-options">
-      <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:supportsStreaming" data-interface-streaming ${streamingSupported ? "checked" : ""}><span>支持流式响应</span></label>
-      <input type="hidden" name="diff:${esc(iid)}:streamingOverride" data-streaming-override value="${esc(streamingOverride)}">
-      <button class="text-button" type="button" data-action="reset-interface-streaming" ${streamingOverride ? "" : "hidden"}>恢复接口默认</button>
-    </div></fieldset>
-    <p class="field-hint">未单独设置时跟随接口；与接口不同的选择保存为例外。勾选表示供给能力声明，不表示已实测。<span data-streaming-unknown ${streamingOverride === "unknown" ? "" : "hidden"}>已有未确认声明保留，修改勾选或恢复接口默认可替换。</span></p>
-    <div class="form-grid">
-      ${tokenLengthField("接口上下文长度", `diff:${iid}:contextWindow`, d.contextWindow, "contextWindow", true)}${tokenLengthField("接口最大输出长度", `diff:${iid}:maxOutputTokens`, d.maxOutputTokens, "maxOutputTokens", true)}
-    </div><p class="field-hint">长度留空继承模型，其他值与模型相同时继承。K = 1,000 tokens；M = 1,000,000 tokens。</p>
-    ${supplierInputFields({...effective,inputModalities:d.inputModalities || (Object.hasOwn(d.capabilityStates || {},"vision") ? (d.capabilityStates.vision === "supported" ? ["text","image"] : ["text"]) : model.inputModalities)},`diff:${iid}:`,model)}
-    <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap => supplierCapabilityCheckbox(cap, `diff:${iid}:cap:${cap}`, supplierCapabilitySupported(Object.hasOwn(d.capabilityStates || {},cap) ? d : model,cap), !Object.hasOwn(d.capabilityStates || {},cap))).join("")}</div></fieldset>
-    <div data-interface-reasoning-config ${reasoningSupported ? "" : "hidden"}>
-      <label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
-      <p class="field-hint">未勾选时继承模型公共推理能力；勾选后显示并保存单独的接口声明。</p>
-      <div data-interface-reasoning ${reasoningSupported && d.reasoning ? "" : "hidden"}>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div>
+    <input type="hidden" name="diff:${esc(iid)}:modelOverride" data-model-override value="${esc(JSON.stringify(restrictions))}">
+    <input type="hidden" name="diff:${esc(iid)}:reasoningDraft" data-reasoning-draft value="">
+    <section class="subsection" data-association-model><div class="subsection-header"><h3>模型在此接口下的能力</h3><button class="text-button" type="button" data-action="reset-association-model">恢复模型默认</button></div>
+    <p class="field-hint">默认继承模型公共配置，只能选择支持的子集或收紧限制。需要补充能力时，请先修改模型公共配置。</p>
+    <div class="form-grid">${tokenLengthField("接口上下文长度",`diff:${iid}:contextWindow`,d.contextWindow ?? model.contextWindow,"contextWindow",true)}${tokenLengthField("接口最大输出长度",`diff:${iid}:maxOutputTokens`,d.maxOutputTokens ?? model.maxOutputTokens,"maxOutputTokens",true)}</div>
+    ${supplierInputFields(effective,`diff:${iid}:`,model)}
+    <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap=>supplierCapabilityCheckbox(cap,`diff:${iid}:cap:${cap}`,supplierCapabilitySupported(effective,cap))).join("")}</div></fieldset>
+    <div data-interface-reasoning-config><label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
+    <p class="field-hint">未勾选时继承模型推理能力；单独声明只能收紧控制方式、档位和预算范围。</p>
+    <div data-interface-reasoning>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div></div>
+    <p class="field-hint" data-association-errors role="alert" hidden></p></section>
+    <section class="subsection" data-association-interface><div class="subsection-header"><h3>此模型可用的接口功能</h3><button class="text-button" type="button" data-action="reset-interface-streaming">恢复接口默认</button></div>
+    <div class="checkbox-options"><label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:supportsStreaming" data-interface-streaming ${streamingDefault && streamingOverride !== "false" && streamingOverride !== "unknown" ? "checked" : ""}><span>支持流式响应</span></label>
+    <input type="hidden" name="diff:${esc(iid)}:streamingOverride" data-streaming-override value="${esc(streamingOverride)}">
     </div>
+    <p class="field-hint">默认继承接口配置，只能关闭接口已支持的功能。所有勾选均为供给声明，不表示已实测。<span data-streaming-unknown ${streamingOverride === "unknown" ? "" : "hidden"}>已有未确认声明保留，修改勾选或恢复接口默认可替换。</span></p>
+    <p class="field-hint" data-interface-errors role="alert" hidden></p></section>
     </details></td></tr>`;
 }
 const SUPPLIER_CAPABILITY_LABELS = {reasoning:"推理", vision:"图片输入", parallel_tool_calls:"并行工具调用"};
@@ -3521,17 +3511,12 @@ function saveSupplierModel(data) {
     d.toolForms = data.getAll(`toolForms:${iid}`);
     const streaming = data.get(`diff:${iid}:streamingOverride`);
     if (streaming) d.supportsStreaming = streaming === "unknown" ? null : streaming === "true"; else delete d.supportsStreaming;
-    const states = {...Object.fromEntries((old.interfaceCapabilities?.[iid]?.capabilities || []).filter(cap => !["tools","streaming"].includes(cap)).map(cap => [cap,"supported"])),...d.capabilityStates,...Object.fromEntries(SUPPLIER_CAPABILITIES.map(cap => [cap, data.has(`diff:${iid}:cap:${cap}`) ? "supported" : "unsupported"]))};
-    const modalities = [...data.getAll(`diff:${iid}:inputModalities`),...(old.interfaceCapabilities?.[iid]?.inputModalities || old.inputModalities || []).filter(type => !Object.hasOwn(SUPPLIER_INPUT_TYPES,type))];
-    const vision = modalities.includes("image") ? "supported" : "unsupported";
-    delete states.vision;
-    if (vision !== capabilityStates.vision) states.vision = vision;
-    for (const cap of ["reasoning","parallel_tool_calls"]) if (states[cap] === capabilityStates[cap]) delete states[cap];
-    if (JSON.stringify([...modalities].sort()) !== JSON.stringify([...inputModalities].sort())) d.inputModalities = modalities; else delete d.inputModalities;
-    if (Object.keys(states).length) d.capabilityStates = states; else delete d.capabilityStates;
-    for (const key of ["contextWindow", "maxOutputTokens"]) { const v = readTokenLength(data,`diff:${iid}:${key}`,key === "contextWindow" ? "接口上下文长度" : "接口最大输出长度"); if (v != null) d[key] = v; else delete d[key]; }
-    if (data.has(`diff:${iid}:reasoningOverride`)) d.reasoning = readSupplierReasoning(data,`diff:${iid}:`,{...old.reasoning,...d.reasoning,budget:{...old.reasoning?.budget,...d.reasoning?.budget}},true);
-    else delete d.reasoning;
+    for (const key of ["capabilityStates","capabilities","inputModalities","contextWindow","maxOutputTokens","reasoning"]) delete d[key];
+    Object.assign(d,JSON.parse(data.get(`diff:${iid}:modelOverride`) || "{}"));
+    const parent = {capabilityStates:model.capabilityStates,inputModalities:model.inputModalities,contextWindow:model.contextWindow,maxOutputTokens:model.maxOutputTokens,reasoning:{modes:model.reasoning.modes,efforts:model.reasoning.efforts,budget:model.reasoning.budget || {}}};
+    const errors = associationErrors(parent,d);
+    if (d.supportsStreaming === true && !supplierInterfaceStreamingDefault(iid)) errors.push("接口不支持流式响应");
+    if (errors.length) throw new Error(`关联配置越界：${errors.join("；")}`);
     if (Object.keys(d).length) differences[iid] = d;
   }
   model.interfaceCapabilities = differences;
@@ -3700,6 +3685,12 @@ pageContent.addEventListener("input", event => {
 });
 async function inventoryAction(action, element) {
   if (action === "fill-model-reference") fillSupplierModelReference(element.closest('form'),true);
+  else if (action === "reset-association-model") {
+    const facts = element.closest('[data-interface-facts]');
+    facts.querySelector('[data-model-override]').value = "{}";
+    facts.querySelector('[data-reasoning-draft]').value = "";
+    syncSupplierModelForm(element.closest('form'));
+  }
   else if (action === "reset-interface-streaming") {
     element.closest('[data-interface-facts]').querySelector('[data-streaming-override]').value = "";
     syncSupplierModelForm(element.closest('form'));
@@ -3711,7 +3702,12 @@ async function inventoryAction(action, element) {
     field.querySelector("[data-token-unit]").value = result.unit;
     syncTokenLength(field);
     const form = element.closest('#supplier-model-form');
-    if (form) supplierReferenceState(form).edited.add(field.querySelector('[data-token-value]').name);
+    if (form) {
+      supplierReferenceState(form).edited.add(field.querySelector('[data-token-value]').name);
+      const row = field.closest('[data-interface-facts]');
+      if (row) updateAssociationRestriction(form,row,field.querySelector('[data-token-value]'));
+      syncSupplierModelForm(form);
+    }
   }
   else if (action === "create-inventory-cable") { state.selected.cable = null; state.page = "inventory-create"; render(); }
   else if (action === "new-supplier" || action === "open-supplier" || action === "back-suppliers") { state.supplierId = action === "open-supplier" ? element.dataset.id : null; state.supplierModelId = null; state.supplierEditor = null; state.supplierDraft = action === "new-supplier" ? {name:"",interfaces:{},models:{}} : null; state.discoveredModels = []; state.page = action === "new-supplier" ? "supplier-create" : action === "open-supplier" ? "supplier-detail" : "suppliers"; render(); }
@@ -3773,9 +3769,146 @@ pageContent.addEventListener("input", event => {
     const tracked = supplierReferenceState(form);
     const name = event.target.name?.replace(/:unit$/,"");
     if (tracked.values.has(name)) tracked.edited.add(name);
+    const facts = event.target.closest('[data-interface-facts]');
+    if (facts && event.target.matches('[data-token-value], [data-token-unit]')) updateAssociationRestriction(form,facts,event.target);
+    if (event.target.matches('[data-token-value], [data-token-unit]')) syncSupplierModelForm(form);
   }
 });
 
+function associationModelFacts(form) {
+  // Async refresh may temporarily disable the form; declarations still apply.
+  const read = name => form.querySelector(`[name="${CSS.escape(name)}"]`)?.value;
+  const selected = name => [...form.querySelectorAll(`[name="${CSS.escape(name)}"]:checked`)].map(input=>input.value);
+  const existing = currentSupplier()?.models?.[read("oldModelId")] || {};
+  const existingBudget = existing.reasoning?.budget || {};
+  const number = name => { const parsed = parseTokenLength(read(name),read(`${name}:unit`) || "tokens",name.startsWith("budget")); return parsed.error ? read(name) : parsed.tokens; };
+  const inputModalities = [...selected("inputModalities"),...(existing.inputModalities || []).filter(type=>!Object.hasOwn(SUPPLIER_INPUT_TYPES,type))];
+  const capabilityStates = {...Object.fromEntries((existing.capabilities || []).filter(cap=>!["tools","streaming"].includes(cap)).map(cap=>[cap,"supported"])),...existing.capabilityStates,...Object.fromEntries(["reasoning","parallel_tool_calls"].map(cap=>[cap,selected(`cap:${cap}`).length ? "supported" : "unsupported"])),vision:inputModalities.includes("image") ? "supported" : "unsupported"};
+  return {capabilityStates,inputModalities,contextWindow:number("contextWindow"),maxOutputTokens:number("maxOutputTokens"),reasoning:{modes:selected("reasoningModes"),efforts:selected("efforts"),budget:existingBudget.unit && existingBudget.unit !== "tokens" ? existingBudget : {unit:"tokens",min:number("budgetMin"),max:number("budgetMax")}}};
+}
+function associationControlHint(input, text) {
+  const label = input.closest('label');
+  let hint = label.querySelector('[data-association-control-hint]');
+  if (!hint) { hint = document.createElement('span'); hint.className = "field-hint"; hint.dataset.associationControlHint = ""; hint.setAttribute("aria-hidden","true"); label.append(hint); }
+  hint.textContent = text;
+  hint.hidden = !text;
+}
+function associationErrors(parent, d) {
+  const errors = [];
+  for (const cap of d.capabilities || []) if ((d.capabilityStates?.[cap] || "supported") === "supported" && parent.capabilityStates[cap] !== "supported") errors.push(`模型未声明支持 ${SUPPLIER_CAPABILITY_LABELS[cap] || cap}`);
+  for (const [cap,value] of entries(d.capabilityStates || {})) if (value === "supported" && parent.capabilityStates[cap] !== "supported") errors.push(`模型未声明支持 ${SUPPLIER_CAPABILITY_LABELS[cap] || cap}`);
+  for (const type of d.inputModalities || []) if (!parent.inputModalities.includes(type)) errors.push(`模型未声明支持输入类型 ${SUPPLIER_INPUT_TYPES[type] || type}`);
+  for (const key of ["contextWindow","maxOutputTokens"]) if (d[key] != null && (!Number.isSafeInteger(d[key]) || d[key] <= 0 || Number.isSafeInteger(parent[key]) && d[key] > parent[key])) errors.push(`${key === "contextWindow" ? "上下文长度" : "最大输出长度"}超出模型公共限制或无效`);
+  for (const key of ["modes","efforts"]) for (const value of d.reasoning?.[key] || []) if (!parent.reasoning[key].includes(value)) errors.push(`模型未声明支持推理${key === "modes" ? "控制方式" : "档位"} ${value}`);
+  const budget = d.reasoning?.budget || {};
+  const common = parent.reasoning.budget;
+  if (budget.unit != null && common.unit != null && budget.unit !== common.unit) errors.push("预算单位必须与模型公共配置一致");
+  for (const key of ["min","max"]) if (budget[key] != null && (!Number.isSafeInteger(budget[key]) || budget[key] < 0 || Number.isSafeInteger(common[key]) && (key === "min" ? budget[key] < common[key] : budget[key] > common[key]))) errors.push(`${key === "min" ? "最小" : "最大"}预算超出模型公共范围或无效`);
+  if ((budget.min ?? common.min) != null && (budget.max ?? common.max) != null && (budget.min ?? common.min) > (budget.max ?? common.max)) errors.push("最小预算不能超过最大预算");
+  return errors;
+}
+function syncAssociationModel(form, row) {
+  const parent = associationModelFacts(form);
+  const d = JSON.parse(row.querySelector('[data-model-override]').value);
+  const draft = JSON.parse(row.querySelector('[data-reasoning-draft]').value || "null");
+  const reasoningRestriction = d.reasoning || draft;
+  const capabilityStates = {...parent.capabilityStates,...(d.capabilities ? Object.fromEntries(Object.keys(parent.capabilityStates).map(cap=>[cap,d.capabilities.includes(cap) ? "supported" : "unsupported"])) : {}),...d.capabilityStates};
+  const effective = {...parent,...d,contextWindow:d.contextWindow ?? parent.contextWindow,maxOutputTokens:d.maxOutputTokens ?? parent.maxOutputTokens,inputModalities:d.inputModalities || (capabilityStates.vision !== "supported" ? parent.inputModalities.filter(type=>type !== "image") : parent.inputModalities),capabilityStates,reasoning:{...parent.reasoning,...reasoningRestriction,budget:{...parent.reasoning.budget,...Object.fromEntries(entries(reasoningRestriction?.budget || {}).filter(([,value])=>value != null))}}};
+  const iid = row.dataset.interfaceFacts;
+  for (const cap of ["reasoning","parallel_tool_calls"]) {
+    const input = row.querySelector(`[name="diff:${CSS.escape(iid)}:cap:${cap}"]`);
+    const supported = parent.capabilityStates[cap] === "supported";
+    input.checked = supported && effective.capabilityStates[cap] === "supported";
+    setControlDisabled(input,!supported);
+    associationControlHint(input,supported ? "默认来源：模型公共配置" : "模型未声明支持");
+  }
+  for (const input of row.querySelectorAll('[name$=":inputModalities"]')) {
+    const supported = parent.inputModalities.includes(input.value);
+    input.checked = supported && effective.inputModalities.includes(input.value);
+    setControlDisabled(input,!supported);
+    associationControlHint(input,supported ? "默认来源：模型公共配置" : "模型未声明支持");
+  }
+  const override = row.querySelector('[data-reasoning-override]');
+  override.checked = Boolean(d.reasoning);
+  const reasoning = row.querySelector('[name$=":cap:reasoning"]').checked;
+  row.querySelector('[data-interface-reasoning-config]').hidden = !reasoning;
+  row.querySelector('[data-interface-reasoning]').hidden = !reasoning || !override.checked;
+  for (const [name,key] of [["reasoningModes","modes"],["efforts","efforts"]]) for (const input of row.querySelectorAll(`[name="diff:${CSS.escape(iid)}:${name}"]`)) {
+    const supported = parent.reasoning[key].includes(input.value);
+    input.checked = supported && effective.reasoning[key].includes(input.value);
+    setControlDisabled(input,!supported);
+    associationControlHint(input,supported ? "" : "模型未声明支持");
+  }
+  for (const key of ["contextWindow","maxOutputTokens","budgetMin","budgetMax"]) {
+    const control = row.querySelector(`[name="diff:${CSS.escape(iid)}:${key}"]`);
+    if (!control) continue;
+    const field = control.closest('[data-token-length]');
+    const value = key.startsWith("budget") ? effective.reasoning.budget[key === "budgetMin" ? "min" : "max"] : effective[key];
+    const common = key.startsWith("budget") ? parent.reasoning.budget[key === "budgetMin" ? "min" : "max"] : parent[key];
+    const input = field.querySelector('[data-token-value]');
+    const unit = field.querySelector('[data-token-unit]');
+    const parsed = parseTokenLength(input.value,unit.value,key.startsWith("budget"));
+    if (parsed.tokens !== value || parsed.error && input.value !== String(value ?? "")) {
+      const display = Number.isSafeInteger(value) || value == null ? tokenLengthDisplay(value) : {value:String(value),unit:"tokens"};
+      input.value = display.value; unit.value = display.unit;
+    }
+    let hint = field.querySelector('[data-association-length-hint]');
+    if (!hint) { hint = document.createElement('p'); hint.className = "field-hint"; hint.dataset.associationLengthHint = ""; field.append(hint); }
+    hint.textContent = `模型公共${key.startsWith("budget") ? "预算边界" : "上限"}：${Number.isSafeInteger(common) ? `${common.toLocaleString("en-US")} tokens` : "未知"}；留空恢复继承。`;
+  }
+  const error = row.querySelector('[data-association-errors]');
+  error.textContent = associationErrors(parent,d).join("；");
+  error.hidden = !error.textContent;
+}
+function updateAssociationRestriction(form, row, input) {
+  const parent = associationModelFacts(form);
+  const hidden = row.querySelector('[data-model-override]');
+  const d = JSON.parse(hidden.value);
+  const iid = row.dataset.interfaceFacts;
+  const prefix = `diff:${iid}:`;
+  const name = input.name.slice(prefix.length).replace(/:unit$/,"");
+  if (d.capabilities) {
+    d.capabilityStates = {...Object.fromEntries(Object.keys(parent.capabilityStates).filter(cap=>(parent.capabilityStates[cap] === "supported") !== d.capabilities.includes(cap)).map(cap=>[cap,d.capabilities.includes(cap) ? "supported" : "unsupported"])),...Object.fromEntries(d.capabilities.filter(cap=>!Object.hasOwn(parent.capabilityStates,cap)).map(cap=>[cap,"supported"])),...d.capabilityStates};
+    delete d.capabilities;
+  }
+  if (["contextWindow","maxOutputTokens"].includes(name)) {
+    const valueInput = row.querySelector(`[name="${CSS.escape(prefix+name)}"]`);
+    const parsed = parseTokenLength(valueInput.value,row.querySelector(`[name="${CSS.escape(prefix+name)}:unit"]`).value);
+    if (!parsed.error && (parsed.tokens == null || parsed.tokens === parent[name])) delete d[name];
+    else d[name] = parsed.error ? valueInput.value : parsed.tokens;
+  } else if (name.startsWith("cap:")) {
+    d.capabilityStates ||= {};
+    const cap = name.slice(4);
+    if (input.checked === (parent.capabilityStates[cap] === "supported")) delete d.capabilityStates[cap]; else d.capabilityStates[cap] = input.checked ? "supported" : "unsupported";
+    if (!Object.keys(d.capabilityStates).length) delete d.capabilityStates;
+  } else if (name === "inputModalities") {
+    const values = [...row.querySelectorAll(`[name="${CSS.escape(prefix+name)}"]:checked`)].map(control=>control.value).concat((d.inputModalities || parent.inputModalities).filter(type=>!Object.hasOwn(SUPPLIER_INPUT_TYPES,type)));
+    if (d.capabilityStates) { delete d.capabilityStates.vision; if (!Object.keys(d.capabilityStates).length) delete d.capabilityStates; }
+    if (JSON.stringify(values.slice().sort()) === JSON.stringify(parent.inputModalities.slice().sort())) delete d.inputModalities; else d.inputModalities = values;
+  } else {
+    const previous = d.reasoning || JSON.parse(row.querySelector('[data-reasoning-draft]').value || "null") || {};
+    if (name === "reasoningOverride") {
+      if (input.checked) d.reasoning = previous;
+      else { row.querySelector('[data-reasoning-draft]').value = JSON.stringify(previous); delete d.reasoning; }
+    } else if (row.querySelector('[data-reasoning-override]').checked) {
+      d.reasoning = {...previous};
+      if (name === "reasoningModes" || name === "efforts") {
+        const key = name === "reasoningModes" ? "modes" : "efforts";
+        const selected = [...row.querySelectorAll(`[name="${CSS.escape(prefix+name)}"]:checked`)].map(control=>control.value);
+        if (JSON.stringify(selected.slice().sort()) === JSON.stringify(parent.reasoning[key].slice().sort())) delete d.reasoning[key]; else d.reasoning[key] = key === "modes" ? ["effort","toggle","budget"].filter(mode=>selected.includes(mode)) : selected;
+      } else if (name === "budgetMin" || name === "budgetMax") {
+        const key = name === "budgetMin" ? "min" : "max";
+        const control = row.querySelector(`[name="${CSS.escape(prefix+name)}"]`);
+        const parsed = parseTokenLength(control.value,row.querySelector(`[name="${CSS.escape(prefix+name)}:unit"]`).value,true);
+        d.reasoning.budget = {...previous.budget};
+        if (!parsed.error && (parsed.tokens == null || parsed.tokens === parent.reasoning.budget[key])) delete d.reasoning.budget[key];
+        else d.reasoning.budget[key] = parsed.error ? control.value : parsed.tokens;
+        if (!Object.keys(d.reasoning.budget).length) delete d.reasoning.budget;
+      }
+    }
+  }
+  hidden.value = JSON.stringify(d);
+}
 function syncSupplierModelForm(form) {
   const main = form.querySelector('[data-model-reasoning]');
   if (!main) return;
@@ -3784,12 +3917,20 @@ function syncSupplierModelForm(form) {
   main.hidden = !form.querySelector('[name="cap:reasoning"]').checked;
   for (const row of form.querySelectorAll('[data-interface-selection]')) {
     const selected = row.querySelector('[name="interfaces"]').checked;
-    row.querySelectorAll('[name^="toolForms:"]').forEach(input => {input.disabled = !selected;});
+    row.querySelectorAll('[name^="toolForms:"]').forEach(input => setControlDisabled(input,!selected));
     const facts = row.nextElementSibling;
     facts.hidden = !selected;
     const streamingOverride = facts.querySelector('[data-streaming-override]').value;
-    facts.querySelector('[data-interface-streaming]').checked = streamingOverride ? streamingOverride === "true" : supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts);
-    facts.querySelector('[data-action="reset-interface-streaming"]').hidden = !streamingOverride;
+    const interfaceSupported = supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts);
+    const streamingInput = facts.querySelector('[data-interface-streaming]');
+    streamingInput.checked = interfaceSupported && (streamingOverride ? streamingOverride === "true" : true);
+    setControlDisabled(streamingInput,!interfaceSupported);
+    associationControlHint(streamingInput,interfaceSupported ? "默认来源：接口配置" : "接口不支持");
+    const interfaceError = facts.querySelector('[data-interface-errors]');
+    interfaceError.textContent = !interfaceSupported && streamingOverride === "true" ? "已有流式配置越界：接口不支持，请恢复接口默认或修改接口配置。" : "";
+    interfaceError.hidden = !interfaceError.textContent;
+    syncAssociationModel(form,facts);
+
     facts.querySelector('[data-streaming-unknown]').hidden = streamingOverride !== "unknown";
     const reasoningSupported = facts.querySelector('[name$=":cap:reasoning"]').checked;
     facts.querySelector('[data-interface-reasoning-config]').hidden = !reasoningSupported;
@@ -3810,19 +3951,10 @@ pageContent.addEventListener("change", event => {
   const tracked = supplierReferenceState(form);
   const editedName = event.target.name?.replace(/:unit$/,"");
   if (tracked.values.has(editedName)) tracked.edited.add(editedName);
+  const facts = event.target.closest('[data-interface-facts]');
   if (event.target.matches('[data-interface-streaming]')) {
-    const facts = event.target.closest('[data-interface-facts]');
     facts.querySelector('[data-streaming-override]').value = event.target.checked === supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts) ? "" : String(event.target.checked);
-  }
-  const cap = SUPPLIER_CAPABILITIES.find(cap => event.target.name === `cap:${cap}`);
-  const modality = event.target.name === "inputModalities" ? event.target.value : null;
-  if (cap || modality) {
-    for (const row of form.querySelectorAll("[data-interface-facts]")) {
-      const checkbox = row.querySelector(cap ? `[name="diff:${CSS.escape(row.dataset.interfaceFacts)}:cap:${cap}"]` : `[name="diff:${CSS.escape(row.dataset.interfaceFacts)}:inputModalities"][value="${CSS.escape(modality)}"]`);
-      if (checkbox?.dataset.inherit === "true") checkbox.checked = event.target.checked;
-    }
-  }
-  if (event.target.closest('[data-interface-facts]') && event.target.matches('[data-inherit]')) event.target.dataset.inherit = "false";
+  } else if (facts && event.target.closest('[data-association-model]')) updateAssociationRestriction(form,facts,event.target);
   if (event.target.name === "identity" || event.target.name === "interfaces") {
     if (event.target.name === "identity") fillSupplierModelReference(form);
     syncSupplierEffortOptions(form);

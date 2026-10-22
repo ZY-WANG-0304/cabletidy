@@ -239,6 +239,94 @@ test("interface differences inherit other declared capabilities and protocol dra
   const entry=planCodexCatalog(c,c.virtualProviders.cabletidy_diff,catalogFixture()).catalog.models[0];assert.equal(entry.context_window,64000);assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_diff,{model:"pro"}).upstreamModelId,"wire");
 });
 
+test("associations only narrow model and interface declarations in saving and runtime",async()=>{
+  let c=normalizeConfig({});
+  c=await edit(c,supplier("bounds","https://example.invalid"));
+  const parent={...facts("DeepSeek-V4-Pro"),inputModalities:["text"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},contextWindow:128000,maxOutputTokens:8192,reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
+  c=await edit(c,{type:"supplier.model.save",supplierId:"bounds",data:{modelId:"wire",model:parent}});
+  c=await edit(c,{type:"cable.inventory.create",data:{name:"Bounds",suppliers:["bounds"],models:{pro:binding("bounds","wire")},defaultModel:"pro"}});
+  const invalid=[{capabilityStates:{parallel_tool_calls:"supported"}},{capabilityStates:{vision:"supported"}},{capabilities:["reasoning","vision"]},{inputModalities:["text","image"]},{contextWindow:128001},{maxOutputTokens:8193},{reasoning:{modes:["toggle"]}},{reasoning:{efforts:["max"]}},{reasoning:{budget:{unit:"seconds",min:1024,max:8192}}},{reasoning:{budget:{min:1000}}},{reasoning:{budget:{max:9000}}},{reasoning:{budget:{min:9000}}},{reasoning:{budget:{max:1000}}}];
+  for (const difference of invalid) {
+    const model={...parent,interfaceCapabilities:{responses:{toolForms:["function","custom"],...difference}}};
+    await assert.rejects(edit(c,{type:"supplier.model.save",supplierId:"bounds",data:{oldModelId:"wire",modelId:"wire",model}}),/模型未声明|公共|预算/);
+    const legacy=structuredClone(c); legacy.suppliers.bounds.models.wire=model;
+    const normalized=normalizeConfig(legacy);
+    assert.equal(validateConfig(normalized).ok,false);
+    assert.match(normalized.virtualProviders.cabletidy_bounds.models.pro.sourceError,/关联配置越界/);
+    assert.throws(()=>resolveRequest(normalized,normalized.virtualProviders.cabletidy_bounds,{model:"pro"}),/关联配置越界/);
+  }
+  const valid={...parent,interfaceCapabilities:{responses:{toolForms:["function","custom"],contextWindow:64000,maxOutputTokens:4096,inputModalities:["text"],reasoning:{modes:["effort","budget"],efforts:["high"],budget:{unit:"tokens",min:2048,max:4096}}}}};
+  c=await edit(c,{type:"supplier.model.save",supplierId:"bounds",data:{oldModelId:"wire",modelId:"wire",model:valid}});
+  assert.equal(validateConfig(c).ok,true);
+  const effective=c.virtualProviders.cabletidy_bounds.models.pro;
+  assert.equal(effective.contextWindow,64000); assert.equal(effective.maxOutputTokens,4096);
+  assert.deepEqual(effective.reasoning.efforts,["high"]); assert.deepEqual(effective.reasoning.budget,{unit:"tokens",min:2048,max:4096});
+  const shrunk=structuredClone(c); shrunk.suppliers.bounds.models.wire.contextWindow=32000;
+  assert.match(normalizeConfig(shrunk).virtualProviders.cabletidy_bounds.models.pro.sourceError,/关联配置越界/);
+  const noStream=structuredClone(c); noStream.suppliers.bounds.interfaces.responses.supportsStreaming=false;
+  noStream.suppliers.bounds.models.wire.interfaceCapabilities.responses.supportsStreaming=true;
+  assert.equal(validateConfig(noStream).ok,false);
+  assert.match(normalizeConfig(noStream).virtualProviders.cabletidy_bounds.models.pro.sourceError,/接口不支持流式/);
+});
+
+test("association inheritance stays sparse and legacy restrictions narrow the effective contract",async()=>{
+  let c=normalizeConfig({});
+  c=await edit(c,supplier("inherit","https://example.invalid"));
+  const model={...facts("DeepSeek-V4-Pro"),capabilities:["reasoning","vision","parallel_tool_calls"],capabilityStates:{reasoning:"supported",vision:"supported"},inputModalities:["text","image","audio"],reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
+  c=await edit(c,{type:"supplier.model.save",supplierId:"inherit",data:{modelId:"wire",model}});
+  c=await edit(c,{type:"cable.inventory.create",data:{name:"Inherit",suppliers:["inherit"],models:{pro:binding("inherit","wire")},defaultModel:"pro"}});
+  let effective=c.virtualProviders.cabletidy_inherit.models.pro;
+  assert.deepEqual(effective.inputModalities,["text","image","audio"]);
+  assert.ok(effective.capabilities.includes("parallel_tool_calls"));
+  const changed={...model,contextWindow:256000,reasoning:{...model.reasoning,budget:{unit:"tokens",min:2048,max:16384}}};
+  c=await edit(c,{type:"supplier.model.save",supplierId:"inherit",data:{oldModelId:"wire",modelId:"wire",model:changed}});
+  assert.deepEqual(c.suppliers.inherit.models.wire.interfaceCapabilities.responses,{toolForms:["function","custom"]});
+  assert.equal(c.virtualProviders.cabletidy_inherit.models.pro.contextWindow,256000);
+  assert.deepEqual(c.virtualProviders.cabletidy_inherit.models.pro.reasoning.budget,changed.reasoning.budget);
+  const restricted={...changed,interfaceCapabilities:{responses:{toolForms:["function","custom"],capabilities:["reasoning"],contextWindow:null,reasoning:{budget:{min:null,max:8192,unit:null}}}}};
+  c=await edit(c,{type:"supplier.model.save",supplierId:"inherit",data:{oldModelId:"wire",modelId:"wire",model:restricted}});
+  effective=c.virtualProviders.cabletidy_inherit.models.pro;
+  assert.deepEqual(effective.inputModalities,["text","audio"]);
+  assert.equal(effective.capabilities.includes("vision"),false);
+  assert.equal(effective.capabilities.includes("parallel_tool_calls"),false);
+  assert.equal(effective.contextWindow,256000);
+  assert.deepEqual(effective.reasoning.budget,{unit:"tokens",min:2048,max:8192});
+  assert.equal(c.suppliers.inherit.models.wire.interfaceCapabilities.responses.contextWindow,null);
+});
+
+test("legacy association violations stay blocked but can be repaired one record at a time",async t=>{
+  let c=normalizeConfig({});
+  c=await edit(c,supplier("legacy","https://example.invalid"));
+  for (const id of ["one","two"]) c=await edit(c,supply("legacy",id,"DeepSeek-V4-Pro"));
+  c=await edit(c,{type:"cable.inventory.create",data:{name:"Legacy",suppliers:["legacy"],models:{one:binding("legacy","one"),two:binding("legacy","two")},defaultModel:"one"}});
+  for (const model of Object.values(c.suppliers.legacy.models)) model.interfaceCapabilities.responses.contextWindow=256000;
+  c=normalizeConfig(c);
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-association-repair-"));
+  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,"127.0.0.1",resolve));
+  c.web.port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+  const paths=getPaths(home);await fs.writeFile(paths.config,JSON.stringify(c));
+  const app=await createApplication({paths,loadCodexCatalog:async()=>catalogFixture()});
+  t.after(async()=>{await app.close();await fs.rm(home,{recursive:true,force:true});});
+  const request=async operation=>fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:c.revision,operation})});
+  c=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
+  assert.equal(validateConfig(c).ok,false);
+  assert.match(c.virtualProviders.cabletidy_legacy.models.one.sourceError,/关联配置越界/);
+  assert.deepEqual((await(await fetch(`${app.url}legacy/v1/models`)).json()).data,[]);
+  const rejected=await request({type:"supplier.model.save",supplierId:"legacy",data:{oldModelId:"one",modelId:"one",model:c.suppliers.legacy.models.one}});
+  assert.equal(rejected.status,422);
+  const valid={...c.suppliers.legacy.models.one,interfaceCapabilities:{responses:{toolForms:["function","custom"]}}};
+  const repair=await request({type:"supplier.model.save",supplierId:"legacy",data:{oldModelId:"one",modelId:"one",model:valid}});
+  assert.equal(repair.status,200,await repair.clone().text());c=(await repair.json()).config;
+  assert.equal(c.virtualProviders.cabletidy_legacy.models.one.sourceError,undefined);
+  assert.match(c.virtualProviders.cabletidy_legacy.models.two.sourceError,/关联配置越界/);
+  assert.deepEqual((await(await fetch(`${app.url}legacy/v1/models`)).json()).data.map(model=>model.id),["one"]);
+  const expanded={...c.suppliers.legacy.models.one,interfaceCapabilities:{responses:{toolForms:["function","custom"],contextWindow:512000}}};
+  assert.equal((await request({type:"supplier.model.save",supplierId:"legacy",data:{oldModelId:"one",modelId:"one",model:expanded}})).status,422);
+  const final=await request({type:"supplier.model.save",supplierId:"legacy",data:{oldModelId:"two",modelId:"two",model:valid}});
+  assert.equal(final.status,200,await final.clone().text());c=(await final.json()).config;
+  assert.equal(validateConfig(c).ok,true);
+});
+
 test("drafts retain unknown supply facts and empty bindings without requiring a Codex catalog",async t=>{
   const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-inventory-drafts-"));
   let catalogCalls=0;

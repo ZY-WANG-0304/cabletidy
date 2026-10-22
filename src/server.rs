@@ -156,7 +156,7 @@ pub async fn create(
         // Only test builds accept an ephemeral first listener; saved ports stay strict.
         let ephemeral = cfg!(feature = "test-support") && fresh && preferred == 0;
         if fresh && !ephemeral { config["web"]["port"] = json!(preferred); }
-        let check = validation::validate(&config);
+        let check = validation::validate_preserving_associations(&config, &config);
         if check["ok"] != true {
             bail!("配置校验失败，daemon 未启动: {}", check["errors"]);
         }
@@ -190,6 +190,9 @@ pub async fn create(
             claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
         });
+        for warning in array(&check["warnings"]).iter().filter(|warning| text(&warning["path"]).starts_with("suppliers.")) {
+            state.event("config.association_invalid", warning.clone());
+        }
         config::write_json(&paths.secrets, &secrets).await?;
         if fresh { config::write_json(&paths.config, &config).await?; }
         lifecycle::persist_runtime(&paths, &lock.identity, &config, &state.started).await?;
@@ -1307,7 +1310,7 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
             }
         }
     }
-    let mut check = validation::validate(&candidate);
+    let mut check = validation::validate_preserving_associations(&candidate, c);
     let diff = config::diff(c, &candidate);
     if check["ok"] == true {
         check["errors"]

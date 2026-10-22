@@ -258,6 +258,20 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
     if !interface.is_object() || !array(&model["interfaces"]).contains(&json!(iid)) {
         bail!("模型不可通过接口访问: {sid} / {mid} / {iid}");
     }
+    let mut boundary_errors = fact_errors(model, "模型公共配置");
+    boundary_errors.extend(association_errors(
+        model,
+        interface,
+        &model["interfaceCapabilities"][iid],
+        "关联能力",
+    ));
+    if let Some(error) = boundary_errors.first() {
+        bail!(
+            "关联配置越界: {}: {}",
+            text(&error["path"]),
+            text(&error["message"])
+        );
+    }
     let mut facts = model.clone();
     if let Some(overrides) = model["interfaceCapabilities"].get(iid) {
         for (key, value) in entries(overrides) {
@@ -265,6 +279,9 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
                 for (cap, state) in entries(value) {
                     if key == "reasoning" && cap == "budget" && facts[key][cap].is_object() {
                         for (k, v) in entries(state) {
+                            if v.is_null() && ["min", "max", "unit"].contains(&k.as_str()) {
+                                continue;
+                            }
                             facts[key][cap][k] = v.clone();
                         }
                     } else {
@@ -272,17 +289,41 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
                     }
                 }
             } else {
+                if value.is_null() && ["contextWindow", "maxOutputTokens"].contains(&key.as_str()) {
+                    continue;
+                }
                 facts[key] = value.clone();
             }
         }
     }
-    if facts["capabilityStates"].is_object() {
-        facts["capabilities"] = json!(entries(&facts["capabilityStates"])
-            .filter(|(_, v)| *v == "supported")
-            .map(|(k, _)| k)
-            .collect::<Vec<_>>());
+    let difference = &model["interfaceCapabilities"][iid];
+    let mut caps = declared_capabilities(model);
+    if difference["capabilities"].is_array() {
+        caps = array(&difference["capabilities"])
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
     }
-    let mut caps = crate::model::capabilities(&facts);
+    for (cap, state) in entries(&difference["capabilityStates"]) {
+        if state == "supported" {
+            caps.insert(cap.clone());
+        } else {
+            caps.remove(cap);
+        }
+    }
+    let mut modalities = if difference["inputModalities"].is_array() {
+        array(&difference["inputModalities"]).to_vec()
+    } else {
+        input_types(model)
+    };
+    if !caps.contains("vision") {
+        modalities.retain(|input| input != "image");
+    }
+    if !modalities.contains(&json!("image")) {
+        caps.remove("vision");
+    }
+    facts["inputModalities"] = json!(modalities);
     caps.remove("streaming");
     caps.remove("tools");
     facts["supportsStreaming"] = model["interfaceCapabilities"][iid]
@@ -313,6 +354,154 @@ pub fn source_profile(c: &Value, source: &Value) -> Result<Value> {
         }
     }
     Ok(facts)
+}
+
+fn declared_capabilities(facts: &Value) -> std::collections::BTreeSet<String> {
+    let mut caps = crate::model::capabilities(facts);
+    for (cap, state) in entries(&facts["capabilityStates"]) {
+        if state == "supported" {
+            caps.insert(cap.clone());
+        } else {
+            caps.remove(cap);
+        }
+    }
+    caps
+}
+
+fn input_types(facts: &Value) -> Vec<Value> {
+    if facts["inputModalities"].is_array() {
+        return array(&facts["inputModalities"]).to_vec();
+    }
+    if declared_capabilities(facts).contains("vision") {
+        vec![json!("text"), json!("image")]
+    } else {
+        vec![json!("text")]
+    }
+}
+
+/// A model/interface association may only narrow the two parent declarations.
+fn association_errors(
+    model: &Value,
+    interface: &Value,
+    difference: &Value,
+    path: &str,
+) -> Vec<Value> {
+    let mut errors = fact_errors(difference, path);
+    let mut check = |ok: bool, field: &str, message: &str| {
+        if !ok {
+            errors.push(json!({"path":format!("{path}.{field}"),"message":message}));
+        }
+    };
+    let caps = declared_capabilities(model);
+    for cap in declared_capabilities(difference) {
+        check(
+            caps.contains(&cap),
+            "capabilityStates",
+            &format!("模型未声明支持 {cap}，关联配置只能收紧"),
+        );
+    }
+    let modalities = input_types(model);
+    for input in array(&difference["inputModalities"]) {
+        check(
+            modalities.contains(input),
+            "inputModalities",
+            &format!("模型未声明支持输入类型 {}", text(input)),
+        );
+    }
+    for key in ["contextWindow", "maxOutputTokens"] {
+        check(
+            !matches!((model[key].as_u64(), difference[key].as_u64()), (Some(parent), Some(value)) if value > parent),
+            key,
+            "长度上限不能超过模型公共限制",
+        );
+    }
+    check(
+        difference["supportsStreaming"] != true || interface["supportsStreaming"] == true,
+        "supportsStreaming",
+        "接口不支持流式响应，关联配置不能开启",
+    );
+    let reasoning = &difference["reasoning"];
+    for key in ["modes", "efforts"] {
+        for value in array(&reasoning[key]) {
+            check(
+                array(&model["reasoning"][key]).contains(value),
+                &format!("reasoning.{key}"),
+                &format!(
+                    "模型未声明支持推理{} {}",
+                    if key == "modes" {
+                        "控制方式"
+                    } else {
+                        "档位"
+                    },
+                    text(value)
+                ),
+            );
+        }
+    }
+    let parent = &model["reasoning"]["budget"];
+    let budget = &reasoning["budget"];
+    check(
+        budget["unit"].is_null() || parent["unit"].is_null() || budget["unit"] == parent["unit"],
+        "reasoning.budget.unit",
+        "预算单位必须与模型公共配置一致",
+    );
+    check(
+        !matches!((parent["min"].as_u64(), budget["min"].as_u64()), (Some(parent), Some(value)) if value < parent),
+        "reasoning.budget.min",
+        "最小预算不能低于模型公共下限",
+    );
+    check(
+        !matches!((parent["max"].as_u64(), budget["max"].as_u64()), (Some(parent), Some(value)) if value > parent),
+        "reasoning.budget.max",
+        "最大预算不能超过模型公共上限",
+    );
+    let min = budget["min"].as_u64().or(parent["min"].as_u64());
+    let max = budget["max"].as_u64().or(parent["max"].as_u64());
+    check(
+        !matches!((min, max), (Some(min), Some(max)) if min > max),
+        "reasoning.budget",
+        "接口继承后的最小预算不能超过最大预算",
+    );
+    errors
+}
+
+pub fn validate_associations(c: &Value) -> Vec<Value> {
+    let mut errors = Vec::new();
+    for (sid, supplier) in entries(&c["suppliers"]) {
+        for (mid, model) in entries(&supplier["models"]) {
+            for (iid, difference) in entries(&model["interfaceCapabilities"]) {
+                errors.extend(association_errors(
+                    model,
+                    &supplier["interfaces"][iid],
+                    difference,
+                    &format!("suppliers.{sid}.models.{mid}.interfaceCapabilities.{iid}"),
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// Keep existing, structurally valid violations repairable without making them usable.
+pub fn unchanged_association_errors(current: &Value, candidate: &Value) -> Vec<Value> {
+    let mut errors = Vec::new();
+    for (sid, supplier) in entries(&candidate["suppliers"]) {
+        for (mid, model) in entries(&supplier["models"]) {
+            for (iid, difference) in entries(&model["interfaceCapabilities"]) {
+                let interface = &supplier["interfaces"][iid];
+                if model != &current["suppliers"][sid]["models"][mid]
+                    || interface != &current["suppliers"][sid]["interfaces"][iid]
+                {
+                    continue;
+                }
+                let path = format!("suppliers.{sid}.models.{mid}.interfaceCapabilities.{iid}");
+                if fact_errors(difference, &path).is_empty() {
+                    errors.extend(association_errors(model, interface, difference, &path));
+                }
+            }
+        }
+    }
+    errors
 }
 
 pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
@@ -696,7 +885,9 @@ pub fn validate(c: &Value) -> Vec<Value> {
                 "事实结构必须是 object",
             );
             for (iid, difference) in entries(&m["interfaceCapabilities"]) {
-                facts_errors.extend(fact_errors(
+                facts_errors.extend(association_errors(
+                    m,
+                    &supplier["interfaces"][iid],
                     difference,
                     &format!("{p}.interfaceCapabilities.{iid}"),
                 ));
@@ -725,17 +916,6 @@ pub fn validate(c: &Value) -> Vec<Value> {
                     }),
                     p.clone(),
                     "接口差异只能覆盖能力与限制事实",
-                );
-                let min = difference["reasoning"]["budget"]["min"]
-                    .as_u64()
-                    .or(m["reasoning"]["budget"]["min"].as_u64());
-                let max = difference["reasoning"]["budget"]["max"]
-                    .as_u64()
-                    .or(m["reasoning"]["budget"]["max"].as_u64());
-                check(
-                    !matches!((min,max),(Some(min),Some(max)) if min > max),
-                    format!("{p}.interfaceCapabilities.{iid}.reasoning.budget"),
-                    "接口继承后的最小预算不能超过最大预算",
                 );
             }
         }

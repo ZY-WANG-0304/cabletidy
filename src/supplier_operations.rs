@@ -16,6 +16,7 @@ pub fn applies(kind: &str) -> bool {
 }
 pub fn apply(current: &Value, op: &Value) -> Result<Value> {
     let mut c = config::normalize(&config::strip_presentation(current));
+    let previous = c.clone();
     let kind = text(&op["type"]);
     let data = &op["data"];
     let mut secrets = json!({});
@@ -269,6 +270,25 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
         (json!({"cableId":id}), "cable-detail")
     };
     c = config::normalize(&c);
+    let mut retained = suppliers::unchanged_association_errors(&previous, &c);
+    if kind == "supplier.model.save" {
+        let path = format!(
+            "suppliers.{}.models.{}.interfaceCapabilities.",
+            text(&op["supplierId"]),
+            text(&data["modelId"])
+        );
+        retained.retain(|error| !text(&error["path"]).starts_with(&path));
+    }
+    if let Some(error) = suppliers::validate_associations(&c)
+        .iter()
+        .find(|error| !retained.contains(error))
+    {
+        bail!(
+            "关联配置越界: {}: {}",
+            text(&error["path"]),
+            text(&error["message"])
+        );
+    }
     Ok(json!({"config":c,"upstreamSecrets":secrets,"selection":selection,"page":page}))
 }
 

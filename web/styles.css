@@ -438,6 +438,10 @@ h3 {
   gap: 8px 16px;
 }
 
+.supplier-model-interface-table .settings-checkbox > span:not(.field-hint) {
+  flex-shrink: 0;
+}
+
 .supplier-modal-form .config-form-footer {
   position: sticky;
   bottom: 0;
@@ -1537,6 +1541,15 @@ button.list-row:hover,
     content: attr(data-label);
     color: var(--muted);
     font: 12px/1.5 "Aptos", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  .supplier-model-interface-table [data-interface-facts] td {
+    display: block;
+    padding: 0;
+  }
+
+  .supplier-model-interface-table [data-interface-facts] td::before {
+    display: none;
   }
 
   .config-section {

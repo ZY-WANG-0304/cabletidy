@@ -485,3 +485,21 @@ pub fn validate(input: &Value) -> Value {
     errors.extend(crate::suppliers::validate(&c));
     json!({"ok":errors.is_empty(),"errors":errors,"warnings":warnings,"config":c})
 }
+
+/// Existing association violations remain invalid sources, but must be repairable in UI.
+pub fn validate_preserving_associations(input: &Value, previous: &Value) -> Value {
+    let mut check = validate(input);
+    let retained = crate::suppliers::unchanged_association_errors(previous, &check["config"]);
+    check["errors"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|error| !retained.contains(error));
+    for error in retained {
+        check["warnings"].as_array_mut().unwrap().push(json!({
+            "path":error["path"],
+            "message":format!("已有关联配置越界，来源不可使用，请修复：{}",text(&error["message"]))
+        }));
+    }
+    check["ok"] = json!(array(&check["errors"]).is_empty());
+    check
+}
