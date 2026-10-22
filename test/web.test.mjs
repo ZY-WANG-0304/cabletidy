@@ -357,6 +357,23 @@ test("supplier streaming defaults stay derived while overrides participate in dr
   assert.deepEqual(clone(merged),[...local,version("new")]);
 });
 
+test("association folding distinguishes actual restrictions from empty inherited declarations", async () => {
+  const app=await controller();
+  for (const facts of [{},{reasoning:{}},{reasoning:{budget:{unit:"tokens",min:null,max:null}}},{contextWindow:null}]) {
+    assert.equal(app.read(`associationHasRestrictions(${JSON.stringify(facts)})`),false);
+  }
+  for (const facts of [{reasoning:{efforts:[]}},{inputModalities:[]},{capabilityStates:{reasoning:"unsupported"}},{contextWindow:64001},{reasoning:{budget:{min:0}}}]) {
+    assert.equal(app.read(`associationHasRestrictions(${JSON.stringify(facts)})`),true);
+  }
+  const html=app.read('supplierInterfaceFacts("responses",{interfaces:["responses"],reasoning:{},contextWindow:128000,interfaceCapabilities:{responses:{reasoning:{}}}},"openai.responses")');
+  assert.equal((html.match(/<details /g)||[]).length,2);
+  assert.match(html,/模型在此接口下的能力/);
+  assert.match(html,/此模型支持的接口能力/);
+  assert.match(html,/继承模型本身配置，可单独收紧/);
+  assert.match(html,/继承接口配置，可单独限制/);
+  assert.doesNotMatch(html,/能力与限制差异|默认来源|留空继承|模型公共上限|模型未声明支持|不表示已实测/);
+});
+
 test("reasoning budgets share exact token conversion, accept zero and validate their range",async()=>{
   const app=await controller();
   assert.equal(app.read('parseTokenLength("0","tokens",true).tokens'),0);

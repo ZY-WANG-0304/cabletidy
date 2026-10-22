@@ -3045,7 +3045,7 @@ function toast(message, error = false) {
   const node = document.createElement("div");
   node.className = `toast ${error ? "error" : ""}`;
   node.textContent = message;
-  toastRegion.append(node);
+  (pageContent.querySelector('#supplier-resource-dialog[open] [data-dialog-toasts]') || toastRegion).append(node);
   setTimeout(() => node.remove(), 4200);
 }
 
@@ -3202,7 +3202,7 @@ function tokenLengthField(label, name, tokens, kind, inherited = false) {
   const {value,unit} = tokenLengthDisplay(tokens);
   const id = `supplier-token-${name}`;
   const budget = kind === "budget";
-  const empty = inherited ? budget ? "留空继承模型预算" : "留空继承模型长度" : budget ? "留空表示未知" : "留空表示未提供限制信息";
+  const empty = inherited ? "" : budget ? "留空表示未知" : "留空表示未提供限制信息";
   return `<div class="field token-length-field${budget ? " token-budget-field" : ""}" data-token-length data-token-zero="${budget}" data-token-empty="${empty}"><label for="${esc(id)}">${esc(label)}</label>
     <div class="token-length-controls"><input id="${esc(id)}" name="${esc(name)}" type="text" inputmode="decimal" value="${esc(value)}" placeholder="例如 ${kind === "contextWindow" ? "128K 或 128000" : budget ? "4K 或 4096" : "8K 或 8192"}" maxlength="64" aria-describedby="${esc(id)}-conversion" data-token-value><select name="${esc(name)}:unit" aria-label="${esc(label)}单位" data-token-unit>${entries(TOKEN_LENGTH_UNITS).map(([u]) => `<option value="${u}" ${u === unit ? "selected" : ""}>${budget && u !== "tokens" ? `${u} tokens` : u}</option>`).join("")}</select><output id="${esc(id)}-conversion" class="field-hint token-length-conversion" aria-live="polite" data-token-conversion>${empty}</output></div>
     ${budget ? "" : `<div class="token-shortcuts" role="group" aria-label="${esc(label)}快捷值">${TOKEN_LENGTH_SHORTCUTS[kind].map(shortcut => `<button class="mini-button token-shortcut" type="button" data-action="select-token-length" data-token-shortcut="${shortcut}" aria-pressed="false">${shortcut}</button>`).join("")}</div>`}
@@ -3320,41 +3320,39 @@ function supplierReasoningFields(reasoning, prefix, identity, protocol, inherite
   const budget = reasoning?.budget || {};
   const name = field => `${prefix}${field}`;
   return `<div data-reasoning-fields><fieldset class="checkbox-group"><legend>支持的控制方式</legend><div class="checkbox-options">${["toggle","effort","budget"].map(mode => `<label class="settings-checkbox"><input type="checkbox" name="${esc(name("reasoningModes"))}" data-reasoning-mode value="${mode}" ${modes.includes(mode) ? "checked" : ""}><span>${{toggle:"支持开关控制",effort:"支持档位控制",budget:"支持设置token预算"}[mode]}</span></label>`).join("")}</div></fieldset>
-    <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset><p class="field-hint">选项始终保留，参考值只勾选支持的档位；未勾选时保持未确认。别名和参数映射由代码维护，ultra 不属于供给档位。</p></div>
+    <div data-reasoning-efforts ${modes.includes("effort") ? "" : "hidden"}><fieldset class="checkbox-group"><legend>实际支持的推理档位</legend>${supplierEffortOptions(name("efforts"),reasoning?.efforts || [],identity,protocol)}</fieldset>${inherited ? "" : '<p class="field-hint">选项始终保留，参考值只勾选支持的档位；未勾选时保持未确认。别名和参数映射由代码维护，ultra 不属于供给档位。</p>'}</div>
     <fieldset class="checkbox-group" data-reasoning-budget ${modes.includes("budget") ? "" : "hidden"}><legend>推理 Token 预算</legend>
-      <p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>
-      ${budget.unit && budget.unit !== "tokens" ? `<p class="field-hint">已有预算计量单位为 ${esc(budget.unit)}，当前保留原记录，不提供编辑。</p>` : `<div class="form-grid">${tokenLengthField("最小可设预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大可设预算",name("budgetMax"),budget.max,"budget",inherited)}</div><p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>`}
+      ${inherited ? "" : '<p class="field-hint">该接口允许设置的推理 token 数范围，不代表实际消耗。</p>'}
+      ${budget.unit && budget.unit !== "tokens" ? `<p class="field-hint">已有预算计量单位为 ${esc(budget.unit)}，当前保留原记录，不提供编辑。</p>` : `<div class="form-grid">${tokenLengthField("最小可设预算",name("budgetMin"),budget.min,"budget",inherited)}${tokenLengthField("最大可设预算",name("budgetMax"),budget.max,"budget",inherited)}</div>${inherited ? "" : '<p class="field-hint">K = 1,000 tokens；M = 1,000,000 tokens。预算供给声明不会启用尚未实现的客户端映射。</p>'}`}
     </fieldset></div>`;
 }
 function supplierInputFields(model, prefix = "", inherited = null) {
   const modalities = model.inputModalities || (supplierCapabilitySupported(model,"vision") ? ["text","image"] : ["text"]);
   const common = inherited?.inputModalities || (supplierCapabilitySupported(inherited || {},"vision") ? ["text","image"] : ["text"]);
-  return `<fieldset class="checkbox-group"><legend>输入类型</legend><div class="checkbox-options">${entries(SUPPLIER_INPUT_TYPES).map(([type,label]) => `<label class="settings-checkbox"><input type="checkbox" name="${esc(prefix)}inputModalities" value="${type}" ${modalities.includes(type) ? "checked" : ""} data-inherit="${Boolean(inherited) && common.includes(type) === modalities.includes(type)}"><span>${label}</span></label>`).join("")}</div>${modalities.filter(type => !Object.hasOwn(SUPPLIER_INPUT_TYPES,type)).length ? '<p class="field-hint">已记录的其他输入类型会保留，首期仅开放文本和图片配置。</p>' : ""}</fieldset>`;
+  return `<fieldset class="checkbox-group"><legend>输入类型</legend><div class="checkbox-options">${entries(SUPPLIER_INPUT_TYPES).map(([type,label]) => `<label class="settings-checkbox"><input type="checkbox" name="${esc(prefix)}inputModalities" value="${type}" ${modalities.includes(type) ? "checked" : ""} data-inherit="${Boolean(inherited) && common.includes(type) === modalities.includes(type)}"><span>${label}</span></label>`).join("")}</div>${!inherited && modalities.filter(type => !Object.hasOwn(SUPPLIER_INPUT_TYPES,type)).length ? '<p class="field-hint">已记录的其他输入类型会保留，首期仅开放文本和图片配置。</p>' : ""}</fieldset>`;
 }
-function supplierInterfaceFacts(iid, model, name, protocol, streamingDefault = true) {
+function associationHasRestrictions(facts) {
+  return entries(facts).some(([key,value]) => key !== "unit" && value != null && (Array.isArray(value) || typeof value !== "object" || associationHasRestrictions(value)));
+}
+function supplierInterfaceFacts(iid, model, protocol, streamingDefault = true) {
   const d = model.interfaceCapabilities?.[iid] || {};
   const restrictions = Object.fromEntries(entries(d).filter(([key]) => ["capabilityStates","capabilities","inputModalities","contextWindow","maxOutputTokens","reasoning"].includes(key)));
   const effective = {...model,...restrictions,reasoning:{...model.reasoning,...d.reasoning,budget:{...model.reasoning?.budget,...d.reasoning?.budget}}};
   const streamingOverride = Object.hasOwn(d,"supportsStreaming") ? d.supportsStreaming == null ? "unknown" : String(d.supportsStreaming) : "";
   return `<tr data-interface-facts="${esc(iid)}" ${(model.interfaces || []).includes(iid) || state.discoveredInterface === iid ? "" : "hidden"}><td colspan="5">
-    <details><summary>${esc(name || iid)} · 能力与限制差异</summary>
     <input type="hidden" name="diff:${esc(iid)}:modelOverride" data-model-override value="${esc(JSON.stringify(restrictions))}">
     <input type="hidden" name="diff:${esc(iid)}:reasoningDraft" data-reasoning-draft value="">
-    <section class="subsection" data-association-model><div class="subsection-header"><h3>模型在此接口下的能力</h3><button class="text-button" type="button" data-action="reset-association-model">恢复模型默认</button></div>
-    <p class="field-hint">默认继承模型公共配置，只能选择支持的子集或收紧限制。需要补充能力时，请先修改模型公共配置。</p>
+    <details class="subsection supplier-association" data-association-model><summary><span>模型在此接口下的能力</span><span class="field-hint" data-association-summary>${associationHasRestrictions(restrictions) ? "已单独收紧模型能力" : "继承模型本身配置，可单独收紧"}</span></summary><div class="subsection-header"><button class="text-button" type="button" data-action="reset-association-model">恢复模型默认</button></div>
     <div class="form-grid">${tokenLengthField("接口上下文长度",`diff:${iid}:contextWindow`,d.contextWindow ?? model.contextWindow,"contextWindow",true)}${tokenLengthField("接口最大输出长度",`diff:${iid}:maxOutputTokens`,d.maxOutputTokens ?? model.maxOutputTokens,"maxOutputTokens",true)}</div>
     ${supplierInputFields(effective,`diff:${iid}:`,model)}
     <fieldset class="checkbox-group"><legend>能力确认</legend><div class="checkbox-options">${["reasoning","parallel_tool_calls"].map(cap=>supplierCapabilityCheckbox(cap,`diff:${iid}:cap:${cap}`,supplierCapabilitySupported(effective,cap))).join("")}</div></fieldset>
     <div data-interface-reasoning-config><label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:reasoningOverride" data-reasoning-override ${d.reasoning ? "checked" : ""}><span>单独声明此接口的推理能力</span></label>
-    <p class="field-hint">未勾选时继承模型推理能力；单独声明只能收紧控制方式、档位和预算范围。</p>
     <div data-interface-reasoning>${supplierReasoningFields(effective.reasoning,`diff:${iid}:`,model.identity,protocol,true)}</div></div>
-    <p class="field-hint" data-association-errors role="alert" hidden></p></section>
-    <section class="subsection" data-association-interface><div class="subsection-header"><h3>此模型可用的接口功能</h3><button class="text-button" type="button" data-action="reset-interface-streaming">恢复接口默认</button></div>
+    </details>
+    <details class="subsection supplier-association" data-association-interface><summary><span>此模型支持的接口能力</span><span class="field-hint" data-association-summary>${streamingOverride ? "已单独限制接口功能" : "继承接口配置，可单独限制"}</span></summary><div class="subsection-header"><button class="text-button" type="button" data-action="reset-interface-streaming">恢复接口默认</button></div>
     <div class="checkbox-options"><label class="settings-checkbox"><input type="checkbox" name="diff:${esc(iid)}:supportsStreaming" data-interface-streaming ${streamingDefault && streamingOverride !== "false" && streamingOverride !== "unknown" ? "checked" : ""}><span>支持流式响应</span></label>
     <input type="hidden" name="diff:${esc(iid)}:streamingOverride" data-streaming-override value="${esc(streamingOverride)}">
     </div>
-    <p class="field-hint">默认继承接口配置，只能关闭接口已支持的功能。所有勾选均为供给声明，不表示已实测。<span data-streaming-unknown ${streamingOverride === "unknown" ? "" : "hidden"}>已有未确认声明保留，修改勾选或恢复接口默认可替换。</span></p>
-    <p class="field-hint" data-interface-errors role="alert" hidden></p></section>
     </details></td></tr>`;
 }
 const SUPPLIER_CAPABILITY_LABELS = {reasoning:"推理", vision:"图片输入", parallel_tool_calls:"并行工具调用"};
@@ -3370,7 +3368,7 @@ function supplierModelInterfaces(supplier, model) {
     ${entries(supplier.interfaces || {}).length ? `<div class="cable-list"><table class="cable-table supplier-model-interface-table" aria-labelledby="supplier-model-interfaces-title"><thead><tr><th>使用</th><th>名称</th><th>协议</th><th>地址</th><th>支持的工具形式</th></tr></thead><tbody>${entries(supplier.interfaces).map(([iid,i]) => {
       const selected = (model.interfaces || []).includes(iid) || state.discoveredInterface === iid;
       const forms = Object.hasOwn(model.interfaceCapabilities?.[iid] || {},"toolForms") ? model.interfaceCapabilities[iid].toolForms : (model.interfaces || []).includes(iid) ? [] : ["function"];
-      return `<tr data-interface-selection="${esc(iid)}"><td data-label="使用"><label class="settings-checkbox"><input type="checkbox" name="interfaces" value="${esc(iid)}" aria-label="选择接口 ${esc(i.name || iid)}" ${selected ? "checked" : ""}></label></td><th scope="row">${esc(i.name || iid)}</th><td data-label="协议">${esc(i.protocol)}</td><td data-label="地址" class="mono">${esc(i.baseUrl)}</td><td data-label="支持的工具形式"><div class="checkbox-options">${entries(SUPPLIER_TOOL_FORMS).map(([form,label]) => `<label class="settings-checkbox"><input type="checkbox" name="toolForms:${esc(iid)}" value="${form}" ${forms.includes(form) ? "checked" : ""} ${selected ? "" : "disabled"}><span>${label}</span></label>`).join("")}</div></td></tr>${supplierInterfaceFacts(iid,model,i.name,i.protocol,i.supportsStreaming !== false)}`;
+      return `<tr data-interface-selection="${esc(iid)}"><td data-label="使用"><label class="settings-checkbox"><input type="checkbox" name="interfaces" value="${esc(iid)}" aria-label="选择接口 ${esc(i.name || iid)}" ${selected ? "checked" : ""}></label></td><th scope="row">${esc(i.name || iid)}</th><td data-label="协议">${esc(i.protocol)}</td><td data-label="地址" class="mono">${esc(i.baseUrl)}</td><td data-label="支持的工具形式"><div class="checkbox-options">${entries(SUPPLIER_TOOL_FORMS).map(([form,label]) => `<label class="settings-checkbox"><input type="checkbox" name="toolForms:${esc(iid)}" value="${form}" ${forms.includes(form) ? "checked" : ""} ${selected ? "" : "disabled"}><span>${label}</span></label>`).join("")}</div></td></tr>${supplierInterfaceFacts(iid,model,i.protocol,i.supportsStreaming !== false)}`;
     }).join("")}</tbody></table></div>` : '<p class="field-hint">尚未配置接口，请先添加接口。</p>'}</section>`;
 }
 function renderSuppliers() {
@@ -3415,7 +3413,7 @@ function renderSupplierModelsPanel(supplier, creating = false) {
 function renderSupplierEditor(supplier) {
   const editor = state.supplierEditor;
   const contents = editor.kind === "model" ? renderSupplierModelForm(supplier) : `<form id="supplier-interface-form" class="config-form supplier-modal-form"><div class="panel-header"><h2 id="supplier-resource-title">${editor.id ? "编辑接口" : "添加接口"}</h2><button class="mini-button" type="button" data-action="close-supplier-editor" aria-label="关闭表单">关闭</button></div><div class="supplier-modal-body"><input type="hidden" name="interfaceId" value="${esc(editor.id || "")}">${supplierInterfaceFields(supplier.interfaces[editor.id] || {}, Boolean(editor.id))}</div><div class="config-form-footer"><button class="button" type="button" data-action="close-supplier-editor">取消</button><button class="button button-primary" type="submit">保存接口</button></div></form>`;
-  return `<dialog id="supplier-resource-dialog" class="supplier-resource-dialog" aria-labelledby="supplier-resource-title">${contents}</dialog>`;
+  return `<dialog id="supplier-resource-dialog" class="supplier-resource-dialog" aria-labelledby="supplier-resource-title">${contents}<div class="toast-region" data-dialog-toasts aria-live="polite"></div></dialog>`;
 }
 function renderSupplierModelForm(supplier) {
   const mid = state.supplierEditor.id;
@@ -3786,13 +3784,20 @@ function associationModelFacts(form) {
   const capabilityStates = {...Object.fromEntries((existing.capabilities || []).filter(cap=>!["tools","streaming"].includes(cap)).map(cap=>[cap,"supported"])),...existing.capabilityStates,...Object.fromEntries(["reasoning","parallel_tool_calls"].map(cap=>[cap,selected(`cap:${cap}`).length ? "supported" : "unsupported"])),vision:inputModalities.includes("image") ? "supported" : "unsupported"};
   return {capabilityStates,inputModalities,contextWindow:number("contextWindow"),maxOutputTokens:number("maxOutputTokens"),reasoning:{modes:selected("reasoningModes"),efforts:selected("efforts"),budget:existingBudget.unit && existingBudget.unit !== "tokens" ? existingBudget : {unit:"tokens",min:number("budgetMin"),max:number("budgetMax")}}};
 }
-function associationControlHint(input, text) {
-  const label = input.closest('label');
-  let hint = label.querySelector('[data-association-control-hint]');
-  if (!hint) { hint = document.createElement('span'); hint.className = "field-hint"; hint.dataset.associationControlHint = ""; hint.setAttribute("aria-hidden","true"); label.append(hint); }
-  hint.textContent = text;
-  hint.hidden = !text;
+function associationControlSupport(input, supported, reason) {
+  input.setAttribute("aria-disabled",String(!supported));
+  input.dataset.unsupportedReason = supported ? "" : reason;
+  // Remain focusable so pointer and keyboard attempts can explain the limitation.
+  setControlDisabled(input,false);
 }
+pageContent.addEventListener("click", event => {
+  const label = event.target.closest('[data-interface-facts] label.settings-checkbox');
+  const input = label?.querySelector('[data-unsupported-reason]');
+  if (!input?.dataset.unsupportedReason || state.busy) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  toast(input.dataset.unsupportedReason,true);
+},true);
 function associationErrors(parent, d) {
   const errors = [];
   for (const cap of d.capabilities || []) if ((d.capabilityStates?.[cap] || "supported") === "supported" && parent.capabilityStates[cap] !== "supported") errors.push(`模型未声明支持 ${SUPPLIER_CAPABILITY_LABELS[cap] || cap}`);
@@ -3819,14 +3824,12 @@ function syncAssociationModel(form, row) {
     const input = row.querySelector(`[name="diff:${CSS.escape(iid)}:cap:${cap}"]`);
     const supported = parent.capabilityStates[cap] === "supported";
     input.checked = supported && effective.capabilityStates[cap] === "supported";
-    setControlDisabled(input,!supported);
-    associationControlHint(input,supported ? "默认来源：模型公共配置" : "模型未声明支持");
+    associationControlSupport(input,supported,`模型本身未声明支持${SUPPLIER_CAPABILITY_LABELS[cap]}，未设置。请先修改模型能力。`);
   }
   for (const input of row.querySelectorAll('[name$=":inputModalities"]')) {
     const supported = parent.inputModalities.includes(input.value);
     input.checked = supported && effective.inputModalities.includes(input.value);
-    setControlDisabled(input,!supported);
-    associationControlHint(input,supported ? "默认来源：模型公共配置" : "模型未声明支持");
+    associationControlSupport(input,supported,`模型本身未声明支持${SUPPLIER_INPUT_TYPES[input.value]}输入，未设置。请先修改模型输入类型。`);
   }
   const override = row.querySelector('[data-reasoning-override]');
   override.checked = Boolean(d.reasoning);
@@ -3836,15 +3839,13 @@ function syncAssociationModel(form, row) {
   for (const [name,key] of [["reasoningModes","modes"],["efforts","efforts"]]) for (const input of row.querySelectorAll(`[name="diff:${CSS.escape(iid)}:${name}"]`)) {
     const supported = parent.reasoning[key].includes(input.value);
     input.checked = supported && effective.reasoning[key].includes(input.value);
-    setControlDisabled(input,!supported);
-    associationControlHint(input,supported ? "" : "模型未声明支持");
+    associationControlSupport(input,supported,`模型本身未声明支持${key === "modes" ? {toggle:"开关控制",effort:"档位控制",budget:"设置 Token 预算"}[input.value] : `推理档位 ${input.value}`}，未设置。请先修改模型推理能力。`);
   }
   for (const key of ["contextWindow","maxOutputTokens","budgetMin","budgetMax"]) {
     const control = row.querySelector(`[name="diff:${CSS.escape(iid)}:${key}"]`);
     if (!control) continue;
     const field = control.closest('[data-token-length]');
     const value = key.startsWith("budget") ? effective.reasoning.budget[key === "budgetMin" ? "min" : "max"] : effective[key];
-    const common = key.startsWith("budget") ? parent.reasoning.budget[key === "budgetMin" ? "min" : "max"] : parent[key];
     const input = field.querySelector('[data-token-value]');
     const unit = field.querySelector('[data-token-unit]');
     const parsed = parseTokenLength(input.value,unit.value,key.startsWith("budget"));
@@ -3852,13 +3853,8 @@ function syncAssociationModel(form, row) {
       const display = Number.isSafeInteger(value) || value == null ? tokenLengthDisplay(value) : {value:String(value),unit:"tokens"};
       input.value = display.value; unit.value = display.unit;
     }
-    let hint = field.querySelector('[data-association-length-hint]');
-    if (!hint) { hint = document.createElement('p'); hint.className = "field-hint"; hint.dataset.associationLengthHint = ""; field.append(hint); }
-    hint.textContent = `模型公共${key.startsWith("budget") ? "预算边界" : "上限"}：${Number.isSafeInteger(common) ? `${common.toLocaleString("en-US")} tokens` : "未知"}；留空恢复继承。`;
   }
-  const error = row.querySelector('[data-association-errors]');
-  error.textContent = associationErrors(parent,d).join("；");
-  error.hidden = !error.textContent;
+  row.querySelector('[data-association-model] [data-association-summary]').textContent = associationHasRestrictions(d) ? "已单独收紧模型能力" : "继承模型本身配置，可单独收紧";
 }
 function updateAssociationRestriction(form, row, input) {
   const parent = associationModelFacts(form);
@@ -3867,6 +3863,15 @@ function updateAssociationRestriction(form, row, input) {
   const iid = row.dataset.interfaceFacts;
   const prefix = `diff:${iid}:`;
   const name = input.name.slice(prefix.length).replace(/:unit$/,"");
+  if (input.dataset.unsupportedReason) { toast(input.dataset.unsupportedReason,true); return; }
+  if (["contextWindow","maxOutputTokens"].includes(name)) {
+    const control = row.querySelector(`[name="${CSS.escape(prefix+name)}"]`);
+    const parsed = parseTokenLength(control.value,row.querySelector(`[name="${CSS.escape(prefix+name)}:unit"]`).value);
+    if (!parsed.error && Number.isSafeInteger(parent[name]) && parsed.tokens > parent[name]) {
+      toast(`接口${name === "contextWindow" ? "上下文长度" : "最大输出长度"}不能超过模型本身的 ${parent[name].toLocaleString("en-US")} tokens，未设置，已保留原值。`,true);
+      return;
+    }
+  }
   if (d.capabilities) {
     d.capabilityStates = {...Object.fromEntries(Object.keys(parent.capabilityStates).filter(cap=>(parent.capabilityStates[cap] === "supported") !== d.capabilities.includes(cap)).map(cap=>[cap,d.capabilities.includes(cap) ? "supported" : "unsupported"])),...Object.fromEntries(d.capabilities.filter(cap=>!Object.hasOwn(parent.capabilityStates,cap)).map(cap=>[cap,"supported"])),...d.capabilityStates};
     delete d.capabilities;
@@ -3924,14 +3929,10 @@ function syncSupplierModelForm(form) {
     const interfaceSupported = supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts);
     const streamingInput = facts.querySelector('[data-interface-streaming]');
     streamingInput.checked = interfaceSupported && (streamingOverride ? streamingOverride === "true" : true);
-    setControlDisabled(streamingInput,!interfaceSupported);
-    associationControlHint(streamingInput,interfaceSupported ? "默认来源：接口配置" : "接口不支持");
-    const interfaceError = facts.querySelector('[data-interface-errors]');
-    interfaceError.textContent = !interfaceSupported && streamingOverride === "true" ? "已有流式配置越界：接口不支持，请恢复接口默认或修改接口配置。" : "";
-    interfaceError.hidden = !interfaceError.textContent;
+    associationControlSupport(streamingInput,interfaceSupported,"接口本身不支持流式响应，未设置。请先修改接口能力。");
+    facts.querySelector('[data-association-interface] [data-association-summary]').textContent = streamingOverride ? "已单独限制接口功能" : "继承接口配置，可单独限制";
     syncAssociationModel(form,facts);
 
-    facts.querySelector('[data-streaming-unknown]').hidden = streamingOverride !== "unknown";
     const reasoningSupported = facts.querySelector('[name$=":cap:reasoning"]').checked;
     facts.querySelector('[data-interface-reasoning-config]').hidden = !reasoningSupported;
     facts.querySelector('[data-interface-reasoning]').hidden = !reasoningSupported || !facts.querySelector('[data-reasoning-override]').checked;
@@ -3953,7 +3954,8 @@ pageContent.addEventListener("change", event => {
   if (tracked.values.has(editedName)) tracked.edited.add(editedName);
   const facts = event.target.closest('[data-interface-facts]');
   if (event.target.matches('[data-interface-streaming]')) {
-    facts.querySelector('[data-streaming-override]').value = event.target.checked === supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts) ? "" : String(event.target.checked);
+    if (event.target.dataset.unsupportedReason) toast(event.target.dataset.unsupportedReason,true);
+    else facts.querySelector('[data-streaming-override]').value = event.target.checked === supplierInterfaceStreamingDefault(facts.dataset.interfaceFacts) ? "" : String(event.target.checked);
   } else if (facts && event.target.closest('[data-association-model]')) updateAssociationRestriction(form,facts,event.target);
   if (event.target.name === "identity" || event.target.name === "interfaces") {
     if (event.target.name === "identity") fillSupplierModelReference(form);

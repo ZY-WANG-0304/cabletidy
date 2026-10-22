@@ -430,6 +430,26 @@ h3 {
   color: var(--muted);
 }
 
+.supplier-association > summary > .field-hint {
+  margin-left: 12px;
+}
+
+.supplier-association[open] > summary {
+  color: var(--ink);
+}
+
+.supplier-association[open] > summary > .field-hint {
+  display: none;
+}
+
+.supplier-association .subsection-header {
+  justify-content: flex-end;
+}
+
+.supplier-association .settings-checkbox:has([aria-disabled="true"]) {
+  color: var(--muted);
+}
+
 .supplier-model-interface-table [data-interface-facts] details[open] > summary {
   margin-bottom: 16px;
 }
