@@ -92,10 +92,8 @@ try {
   assert.equal(await idEditor.count(),0);
   assert.deepEqual(await config(),beforeCancel);
   await add('second');
-  await editor.locator('[data-inventory-tools]').waitFor();
-  assert.equal(await editor.locator('[data-inventory-tools]').getAttribute('open'),null);
-  await editor.locator('[data-inventory-tools] > summary').click();
-  await editor.locator('[data-inventory-tools]').getByText('unified_exec',{exact:true}).waitFor();
+  await editor.locator('[data-inventory-effective]').getByText('Codex 使用窗口',{exact:true}).waitFor();
+  assert.equal(await editor.locator('[data-inventory-tools]').count(),0);
   await changed(()=>editor.getByRole('button',{name:'添加到线路',exact:true}).click());
   assert.ok((await config()).cables[activeId].models.second);
   assert.equal(confirmations.length,0);
