@@ -332,12 +332,28 @@ pub fn validate(input: &Value) -> Value {
     let mut owners = HashMap::new();
     for (key, b) in entries(&c["cables"]) {
         let p = format!("cables.{key}");
-        let name = configuration_id(text(&b["name"]), key);
+        let name = if b["managedModels"] == true {
+            key.clone()
+        } else {
+            configuration_id(text(&b["name"]), key)
+        };
         let provider = text(&b["virtualProvider"]);
         check!(b.is_object(), p, "线路必须是 object");
         check!(id(key), p, "线路 ID 包含非法字符");
         check!(
-            name != "api",
+            b["managedModels"] != true
+                || b["webSearch"].is_null()
+                || crate::config::CODEX_WEB_SEARCH_MODES.contains(&text(&b["webSearch"])),
+            format!("{p}.webSearch"),
+            "网页搜索方式须为 cached、indexed、live、disabled，或不配置以继承 Codex"
+        );
+        check!(
+            b["managedModels"] != true || crate::config::valid_inventory_id(key),
+            format!("{p}.id"),
+            "线路ID须为 1–54 位小写字母、数字、- 或 _，以字母或数字开头，且不能为 api"
+        );
+        check!(
+            name != "api" && key != "api",
             format!("{p}.name"),
             "配置 ID api 是管理接口保留路径"
         );
@@ -348,7 +364,7 @@ pub fn validate(input: &Value) -> Value {
         );
         names.insert(name.clone(), key);
         check!(
-            key == &name,
+            b["managedModels"] == true || key == &name,
             format!("{p}.id"),
             format!("配置 ID 应为 {name}，请检查名称或 ID 冲突")
         );

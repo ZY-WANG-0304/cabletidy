@@ -225,9 +225,17 @@ pub fn validate(v: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn official(snapshot: &Value) -> impl Iterator<Item = &Value> {
+pub(crate) fn is_daybreak(id: &str) -> bool {
+    ["gpt-daybreak-blue-latest", "gpt-daybreak-red-latest"]
+        .iter()
+        .any(|model| id.eq_ignore_ascii_case(model))
+}
+
+pub(crate) fn official(snapshot: &Value) -> impl Iterator<Item = &Value> {
     array(&snapshot["catalog"]["models"]).iter().filter(|m| {
-        text(&m["slug"]).to_ascii_lowercase().starts_with("gpt-") && m["supported_in_api"] == true
+        text(&m["slug"]).to_ascii_lowercase().starts_with("gpt-")
+            && m["supported_in_api"] == true
+            && !is_daybreak(text(&m["slug"]))
     })
 }
 pub fn public(snapshot: &Value) -> Value {
@@ -250,6 +258,9 @@ pub fn public(snapshot: &Value) -> Value {
             "maxContextWindow": model.get("max_context_window").unwrap_or(&model["context_window"]),
             "inputModalities": model.get("input_modalities").unwrap_or(&json!(["text"])),
             "reasoningEfforts": array(&model["supported_reasoning_levels"]).iter().filter_map(|level| level["effort"].as_str()).filter(|effort| *effort != "ultra").collect::<Vec<_>>(),
+            "defaultEffort": model["default_reasoning_level"],
+            "supportsSearchTool": model["supports_search_tool"].as_bool().unwrap_or(true),
+            "prompt": crate::codex_adapter::prompt_metadata(snapshot, model),
             "capabilities": capabilities
         })
     }).collect();
@@ -412,6 +423,10 @@ pub fn plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
     }
     validate(&snapshot["catalog"])?;
     let mut catalog = snapshot["catalog"].clone();
+    catalog["models"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|model| !is_daybreak(text(&model["slug"])));
     let mut overrides = Vec::new();
     let mut warnings = Vec::new();
     let mut models = Vec::new();

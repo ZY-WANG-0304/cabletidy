@@ -413,6 +413,76 @@ h3 {
   background: #242a3035;
 }
 
+.inventory-cable-form {
+  display: grid;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.inventory-save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.inventory-basics-facts dd { overflow-wrap: anywhere; }
+.inventory-cable-form .form-grid,
+.inventory-id-body .form-grid { align-items: start; }
+.inventory-id-body { display: grid; gap: 16px; }
+.inventory-id-body .cable-connection-facts { grid-template-columns: minmax(0, 1fr); }
+.inventory-id-body dd { overflow-wrap: anywhere; }
+
+.inventory-model-body {
+  display: grid;
+  gap: 24px;
+}
+
+.inventory-model-body section + section {
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.inventory-model-body h3 { margin: 0 0 14px; }
+.inventory-model-body .subsection-header h3 { margin: 0; }
+.inventory-model-picker { position: relative; min-width: 0; }
+.inventory-model-picker input[role="combobox"] { padding-right: 36px; }
+.inventory-model-toggle { position: absolute; right: 1px; top: 1px; width: 34px; height: 34px; border: 0; background: transparent; color: var(--muted); }
+.inventory-model-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.inventory-model-menu [role="listbox"] { max-height: 220px; overflow-y: auto; overscroll-behavior: contain; }
+.inventory-model-menu [role="option"] { padding: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.inventory-model-menu [role="option"] small { display: block; color: var(--muted); }
+.inventory-model-menu [role="option"][aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.inventory-model-menu [role="option"]:hover, .inventory-model-menu .is-active { background: var(--accent-soft); }
+.inventory-model-menu > p { margin: 8px; }
+.inventory-model-table { table-layout: fixed; }
+.inventory-model-table th, .inventory-model-table td { overflow-wrap: anywhere; }
+.inventory-model-table .settings-checkbox { white-space: nowrap; }
+.inventory-model-issue { display: block; color: #9b4e22; margin-top: 6px; }
+.inventory-effective-config { margin: 0 0 12px; display: grid; gap: 10px; }
+.inventory-effective-config > div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr); gap: 16px; }
+.inventory-effective-config dt { color: var(--muted); }
+.inventory-effective-config dd { margin: 0; overflow-wrap: anywhere; }
+[data-inventory-tools] > summary { margin-bottom: 12px; color: var(--muted); cursor: pointer; }
+.inventory-blocking-issues { margin: 0 0 16px; padding: 12px 14px; border-left: 3px solid var(--warning); background: #fff5e5; color: var(--warning); }
+.inventory-blocking-issues h4 { margin: 0 0 8px; font-size: 13px; }
+.inventory-blocking-issues ul { margin: 0; padding-left: 20px; }
+.inventory-blocking-issues li + li { margin-top: 6px; }
+
+.inventory-prompt-controls { display: flex; align-items: flex-end; gap: 12px; }
+.inventory-prompt-controls .field { flex: 1; min-width: 0; }
+.inventory-prompt-controls > button { flex-shrink: 0; min-height: 36px; }
+.inventory-prompt-preview { margin-top: 14px; }
+.inventory-prompt-preview summary { cursor: pointer; color: var(--muted); }
+.inventory-prompt-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .supplier-modal-body {
   padding: 20px;
 }

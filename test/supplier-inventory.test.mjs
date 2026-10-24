@@ -11,35 +11,35 @@ import { catalogFixture } from "./helpers/codex-fixture.mjs";
 const facts = identity => ({ identity, interfaces:["responses"],capabilityStates:{reasoning:"supported"},interfaceCapabilities:{responses:{toolForms:["function","custom"]}},contextWindow:128000,reasoning:{modes:["effort"],efforts:["low","high"]} });
 const supplier = (id,url) => ({type:"supplier.save",supplierId:id,data:{name:id,interfaces:{responses:{protocol:"openai.responses",baseUrl:url,secret:"supplier-fixture-key",auth:{header:"authorization",scheme:"Bearer"}}}}});
 const supply = (id,mid,identity,oldModelId="") => ({type:"supplier.model.save",supplierId:id,data:{modelId:mid,oldModelId,model:facts(identity)}});
-const binding = (sid,mid) => ({sources:[{supplierId:sid,modelId:mid,interfaceId:"responses"}],promptStrategy:"default"});
+const binding = (sid,mid) => ({sources:[{supplierId:sid,modelId:mid,interfaceId:"responses"}],promptStrategy:"selected",promptModel:"gpt-5.5"});
 async function edit(c,op) { return (await applyConfigOperation(c,op,catalogFixture())).config; }
 
 test("supplier keys remain separate from client aliases and rename invalidates old references",async () => {
   let c=normalizeConfig({});
   c=await edit(c,supplier("official","https://example.invalid"));
-  c=await edit(c,supply("official","wire-pro","DeepSeek-V4-Pro"));
-  c=await edit(c,supply("official","another-id","DeepSeek-V4-Pro"));
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Work",suppliers:["official"],models:{pro:binding("official","wire-pro")},defaultModel:"pro"}});
+  c=await edit(c,supply("official","wire-pro","deepseek-v4-pro"));
+  c=await edit(c,supply("official","another-id","deepseek-v4-pro"));
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"work",suppliers:["official"],models:{pro:binding("official","wire-pro")},defaultModel:"pro"}});
   assert.deepEqual(Object.keys(c.suppliers.official.models),["wire-pro","another-id"]);
   assert.deepEqual(Object.keys(c.virtualProviders.cabletidy_work.models),["pro"]);
   assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_work,{model:"pro"}).upstreamModelId,"wire-pro");
   assert.throws(() => resolveRequest(c,c.virtualProviders.cabletidy_work,{model:"another-id"}),/未在当前 Cable 中开放/);
-  c=await edit(c,supply("official","wire-new","DeepSeek-V4-Pro","wire-pro"));
+  c=await edit(c,supply("official","wire-new","deepseek-v4-pro","wire-pro"));
   assert.equal(c.cables.work.models.pro.sources[0].modelId,"wire-pro");
   assert.throws(() => resolveRequest(c,c.virtualProviders.cabletidy_work,{model:"pro"}),/来源不存在/);
   c=await edit(c,{type:"cable.inventory.save",cableId:"work",data:{suppliers:["official"],models:{pro:binding("official","wire-new")},defaultModel:"pro"}});
   assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_work,{model:"pro"}).upstreamModelId,"wire-new");
 });
 
-test("all six compatible identities get neutral complete Codex entries and selected catalog only",async () => {
+test("all six compatible identities use selected native instructions and preserve adapter settings",async () => {
   let c=normalizeConfig({}); c=await edit(c,supplier("vendor","https://example.invalid/v1"));
-  const identities=["GLM-5.3","GLM-5.3-Flash","Kimi K3","DeepSeek-V4-Pro","DeepSeek-V4.1-Flash","MiniMax M3"];
+  const identities=["glm-5.3","glm-5.3-flash","kimi-k3","deepseek-v4-pro","deepseek-flash","MiniMax-M3"];
   const models={};
   for (const [i,identity] of identities.entries()) { c=await edit(c,supply("vendor",`wire-${i}`,identity));models[`client-${i}`]=binding("vendor",`wire-${i}`); }
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Models",suppliers:["vendor"],models,defaultModel:"client-0"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"models",suppliers:["vendor"],models,defaultModel:"client-0"}});
   const plan=planCodexCatalog(c,c.virtualProviders.cabletidy_models,catalogFixture());
   assert.equal(plan.catalog.models.length,6);
-  for(const m of plan.catalog.models) { assert.match(m.base_instructions,/coding assistant/);assert.equal(m.model_messages,null);assert.equal(m.apply_patch_tool_type,"freeform");assert.deepEqual(m.input_modalities,["text"]);assert.ok(m.supported_reasoning_levels.some(r=>r.effort === "high"));assert.equal(m.upgrade,null); }
+  for(const m of plan.catalog.models) { assert.equal(m.base_instructions,"Official base for gpt-5.5");assert.deepEqual(m.model_messages,catalogFixture().catalog.models[0].model_messages);assert.equal(m.apply_patch_tool_type,"freeform");assert.deepEqual(m.input_modalities,["text"]);assert.ok(m.supported_reasoning_levels.some(r=>r.effort === "high"));assert.equal(m.upgrade,null); }
 });
 
 test("multi-supplier Responses forwarding, discovery, history guard and deletion preserve inventory",async t => {
@@ -60,8 +60,8 @@ test("multi-supplier Responses forwarding, discovery, history guard and deletion
   const url=`http://127.0.0.1:${upstream.address().port}`;
   const withContinuation = id => {const op=supplier(id,url);op.data.interfaces.responses.supportsResponseIdContinuation=true;return op;};
   await commit(withContinuation("first"));await commit(withContinuation("second"));
-  await commit(supply("first","wire-a","DeepSeek-V4-Pro"));await commit(supply("second","wire-b","MiniMax M3"));
-  await commit({type:"cable.inventory.create",data:{name:"Work",suppliers:["first","second"],models:{a:binding("first","wire-a"),b:binding("second","wire-b")},defaultModel:"a"}});
+  await commit(supply("first","wire-a","deepseek-v4-pro"));await commit(supply("second","wire-b","MiniMax-M3"));
+  await commit({type:"cable.inventory.create",data:{id:"work",suppliers:["first","second"],models:{a:binding("first","wire-a"),b:binding("second","wire-b")},defaultModel:"a"}});
   const discovered=await call("api/v1/suppliers/discover",{supplierId:"first",interfaceId:"responses"});assert.equal(discovered.status,200);assert.equal(discovered.body.models.length,2);
   await call("api/v1/virtual-providers/cabletidy_work/pause",{});assert.equal((await call("work/v1/models")).status,503);
   await call("api/v1/virtual-providers/cabletidy_work/start",{});
@@ -72,6 +72,24 @@ test("multi-supplier Responses forwarding, discovery, history guard and deletion
   assert.equal(received[0].url,"/responses");assert.equal(received[0].body.model,"wire-b");assert.equal(received[0].body.store,false);assert.deepEqual(received[0].body.reasoning,{effort:"high"});assert.equal(received[0].auth,"Bearer supplier-fixture-key");
   const history=await call("work/v1/responses",{model:"b",previous_response_id:"remote",input:"next"});assert.equal(history.status,422);assert.equal(received.length,1);
   const encrypted=await call("work/v1/responses",{model:"b",input:[{type:"reasoning",encrypted_content:"proof"}]});assert.equal(encrypted.status,422);
+  // A saved compatible binding must revalidate the chosen prompt before forwarding.
+  const changedCatalog=catalogFixture();
+  changedCatalog.catalog.models.shift();
+  app.state.loadCodexCatalog=async()=>changedCatalog;
+  await call("api/v1/codex/models?refresh=1");
+  const missingPrompt=await call("work/v1/responses",{model:"b",input:"next"});
+  assert.equal(missingPrompt.status,422);
+  assert.match(missingPrompt.body.error.message,/所选提示词不在本机/);
+  const incompatibleCatalog=catalogFixture();
+  incompatibleCatalog.catalog.models[0].tool_mode="code_mode_only";
+  app.state.loadCodexCatalog=async()=>incompatibleCatalog;
+  await call("api/v1/codex/models?refresh=1");
+  const incompatiblePrompt=await call("work/v1/responses",{model:"b",input:"next"});
+  assert.equal(incompatiblePrompt.status,422);
+  assert.match(incompatiblePrompt.body.error.message,/tool_mode.*不兼容/);
+  assert.equal(received.length,1,'invalid prompts never reach the upstream');
+  app.state.loadCodexCatalog=async()=>catalogFixture();
+  await call("api/v1/codex/models?refresh=1");
   await commit({type:"supplier.model.delete",supplierId:"second",modelId:"wire-b"});
   const missing=await call("work/v1/responses",{model:"b",input:"next"});assert.equal(missing.status,503);assert.match(missing.body.error.message,/来源不存在/);
   await commit({type:"cable.delete",cableId:"work"});assert.ok(c.suppliers.first);assert.ok(c.suppliers.second);
@@ -81,25 +99,27 @@ test("native aliases retain versioned instructions and restrict declared supply 
   let c=normalizeConfig({});c=await edit(c,supplier("native","https://example.invalid"));
   const model={...facts("gpt-5.5"),reasoning:{modes:["effort"],efforts:["high"]}};
   c=await edit(c,{type:"supplier.model.save",supplierId:"native",data:{modelId:"wire-gpt",model}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Native",suppliers:["native"],models:{alias:binding("native","wire-gpt")},defaultModel:"alias"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"native",suppliers:["native"],models:{alias:binding("native","wire-gpt")},defaultModel:"alias"}});
   const m=planCodexCatalog(c,c.virtualProviders.cabletidy_native,catalogFixture()).catalog.models[0];
   assert.equal(m.base_instructions,"Official base for gpt-5.5");assert.equal(m.model_messages.instructions_template,"Official template for gpt-5.5");
   assert.deepEqual(m.supported_reasoning_levels.map(r=>r.effort),["high"]);assert.equal(m.default_reasoning_level,"high");
   assert.deepEqual(m.future_metadata,{retained:true});assert.equal(m.context_window,128000);assert.equal(m.slug,"alias");
 });
 
-test("reasoning defaults belong to each Cable, survive transfer and reject unsupported values",async()=>{
+test("supported reasoning levels come from supply; Cable default overrides do not change the catalog",async()=>{
   let c=normalizeConfig({}); c=await edit(c,supplier("vendor","https://example.invalid/v1"));
-  c=await edit(c,supply("vendor","wire","DeepSeek-V4-Pro"));
+  c=await edit(c,supply("vendor","wire","deepseek-v4-pro"));
   for (const [name,effort] of [["Low","low"],["High","high"]]) {
-    c=await edit(c,{type:"cable.inventory.create",data:{name,suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultEffort:effort}}},defaultModel:"pro"}});
+    c=await edit(c,{type:"cable.inventory.create",data:{id:name.toLowerCase(),suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultEffort:effort}}},defaultModel:"pro"}});
   }
-  for (const [id,effort] of [["low","low"],["high","high"]]) {
-    assert.equal(planCodexCatalog(c,c.virtualProviders[`cabletidy_${id}`],catalogFixture()).catalog.models[0].default_reasoning_level,effort);
+  for (const id of ["low","high"]) {
+    const entry=planCodexCatalog(c,c.virtualProviders[`cabletidy_${id}`],catalogFixture()).catalog.models[0];
+    assert.equal(entry.default_reasoning_level,"medium");
+    assert.ok(entry.supported_reasoning_levels.some(level=>level.effort === "high"));
   }
   assert.equal(c.suppliers.vendor.models.wire.reasoning.default,undefined);
   const bad=await edit(c,{type:"cable.inventory.save",cableId:"low",data:{suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultEffort:"max"}}},defaultModel:"pro"}});
-  assert.throws(()=>planCodexCatalog(bad,bad.virtualProviders.cabletidy_low,catalogFixture()),/默认推理档位/);
+  assert.equal(planCodexCatalog(bad,bad.virtualProviders.cabletidy_low,catalogFixture()).catalog.models[0].default_reasoning_level,"medium");
   const budget=await edit(c,{type:"cable.inventory.save",cableId:"low",data:{suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultBudget:4096}}},defaultModel:"pro"}});
   assert.throws(()=>planCodexCatalog(budget,budget.virtualProviders.cabletidy_low,catalogFixture()),/预算映射/);
   const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-reasoning-transfer-"));
@@ -119,7 +139,7 @@ test("reasoning defaults belong to each Cable, survive transfer and reject unsup
 });
 
 test("old client defaults migrate idempotently without overriding explicit bindings or old selections",()=>{
-  const model={...facts("DeepSeek-V4-Pro"),inputModalities:["text","audio"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},reasoning:{modes:["effort","budget"],efforts:["low","high","ultra"],default:"high",toggle:false,budget:{unit:"tokens",min:0,max:4096001,default:1024001}}};
+  const model={...facts("deepseek-v4-pro"),inputModalities:["text","audio"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},reasoning:{modes:["effort","budget"],efforts:["low","high","ultra"],default:"high",toggle:false,budget:{unit:"tokens",min:0,max:4096001,default:1024001}}};
   const source=binding("vendor","wire");
   const c=normalizeConfig({suppliers:{vendor:{name:"Vendor",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:model}}},cables:{one:{target:"codex",virtualProvider:"cabletidy_one",managedModels:true,suppliers:["vendor"],models:{pro:source}},two:{target:"codex",virtualProvider:"cabletidy_two",managedModels:true,suppliers:["vendor"],models:{pro:{...source,reasoning:{defaultEffort:"low",defaultBudget:null}}}}}});
   assert.deepEqual(c.cables.one.models.pro.reasoning,{defaultEffort:"high",defaultBudget:1024001});
@@ -133,7 +153,7 @@ test("old client defaults migrate idempotently without overriding explicit bindi
 });
 
 test("interface defaults with uncertain ownership stay in migration records",()=>{
-  const model={...facts("DeepSeek-V4-Pro"),reasoning:{modes:["effort"],efforts:["low","high"]},interfaceCapabilities:{responses:{toolForms:["function","custom"],reasoning:{default:"low",budget:{unit:"tokens",default:1024}}}}};
+  const model={...facts("deepseek-v4-pro"),reasoning:{modes:["effort"],efforts:["low","high"]},interfaceCapabilities:{responses:{toolForms:["function","custom"],reasoning:{default:"low",budget:{unit:"tokens",default:1024}}}}};
   const c=normalizeConfig({suppliers:{vendor:{name:"Vendor",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:model}}},cables:{work:{target:"codex",virtualProvider:"cabletidy_work",managedModels:true,suppliers:["vendor"],models:{pro:binding("vendor","wire")}}}});
   assert.equal(c.cables.work.models.pro.reasoning,undefined);
   assert.deepEqual(c.cables.work.models.pro.migration.sourceReasoningDefaults,[{defaultEffort:"low",defaultBudget:1024}]);
@@ -141,7 +161,7 @@ test("interface defaults with uncertain ownership stay in migration records",()=
   assert.deepEqual(normalizeConfig(c),c);
 });
 
-test("MiniMax M3 maps enabled client efforts to one supplied on value",async t=>{
+test("MiniMax-M3 maps enabled client efforts to one supplied on value",async t=>{
   const received=[];
   const server=http.createServer(async(req,res)=>{let raw="";for await(const chunk of req)raw+=chunk;received.push(JSON.parse(raw));res.setHeader("content-type","application/json");res.end(JSON.stringify({id:"r",object:"response",output:[]}));});
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
@@ -151,9 +171,9 @@ test("MiniMax M3 maps enabled client efforts to one supplied on value",async t=>
   let c=(await (await fetch(`${app.url}api/v1/config`)).json()).config;
   const commit=async operation=>{const response=await fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:c.revision,operation})});const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));c=result.config;};
   await commit(supplier("vendor",`http://127.0.0.1:${server.address().port}`));
-  const model={...facts("MiniMax M3"),reasoning:{modes:["effort"],efforts:["none","high"]}};
+  const model={...facts("MiniMax-M3"),reasoning:{modes:["effort"],efforts:["none","high"]}};
   await commit({type:"supplier.model.save",supplierId:"vendor",data:{modelId:"wire",model}});
-  await commit({type:"cable.inventory.create",data:{name:"Work",suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
+  await commit({type:"cable.inventory.create",data:{id:"work",suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
   for (const effort of ["none","minimal","medium","max"]) {
     const response=await fetch(`${app.url}work/v1/responses`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:"pro",input:"test",reasoning:{effort}})});
     assert.equal(response.status,200,await response.text());
@@ -161,11 +181,14 @@ test("MiniMax M3 maps enabled client efforts to one supplied on value",async t=>
   }
 });
 
-test("manual groups require identical contracts and a removed candidate never selects another source",async()=>{
-  let c=normalizeConfig({});for(const sid of ["one","two"]){c=await edit(c,supplier(sid,"https://example.invalid"));c=await edit(c,supply(sid,"wire","DeepSeek-V4-Pro"));}
+test("legacy manual groups retain their current source but new groups are rejected",async()=>{
+  let c=normalizeConfig({});for(const sid of ["one","two"]){c=await edit(c,supplier(sid,"https://example.invalid"));c=await edit(c,supply(sid,"wire","deepseek-v4-pro"));}
   c.suppliers.two.models.wire.interfaceCapabilities.responses.toolForms=["custom","function"];
-  const group={sources:[binding("one","wire").sources[0],binding("two","wire").sources[0]],activeSource:1,promptStrategy:"default"};
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Group",suppliers:["one","two"],models:{pro:group},defaultModel:"pro"}});
+  const group={sources:[binding("one","wire").sources[0],binding("two","wire").sources[0]],activeSource:1,promptStrategy:"selected",promptModel:"gpt-5.5"};
+  await assert.rejects(edit(c,{type:"cable.inventory.create",data:{id:"group",suppliers:["one","two"],models:{pro:group},defaultModel:"pro"}}),/只能绑定一个/);
+  c=normalizeConfig({...c,cables:{group:{id:"group",name:"Group",target:"codex",virtualProvider:"cabletidy_group",managedModels:true,suppliers:["one","two"],models:{pro:group},defaultModel:"pro"}}});
+  c=await edit(c,{type:"cable.inventory.save",cableId:"group",data:{suppliers:["one","two"],models:{pro:group},defaultModel:"pro"}});
+  await assert.rejects(edit(c,{type:"cable.inventory.save",cableId:"group",data:{suppliers:["one","two"],models:{pro:{...group,activeSource:0}}}}),/只能绑定一个/);
   assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_group,{model:"pro"}).upstream.id,"supplier.two.responses");
   c=await edit(c,{type:"supplier.model.delete",supplierId:"one",modelId:"wire"});
   assert.throws(()=>resolveRequest(c,c.virtualProviders.cabletidy_group,{model:"pro"}),/来源不存在/);
@@ -178,9 +201,11 @@ test("inventory export/import roundtrip isolates supplier collisions and credent
   const call=async(endpoint,body)=>{const r=await fetch(`${app.url}api/v1/${endpoint}`,body===undefined?{}:{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});return {status:r.status,body:await r.json()};};
   let c=(await call("config")).body.config;
   const commit=async operation=>{const r=await call("config/commit",{baseRevision:c.revision,operation});assert.equal(r.status,200,JSON.stringify(r.body));c=r.body.config;};
-  await commit(supplier("vendor","https://example.invalid/v1?credential=private"));await commit(supply("vendor","wire","DeepSeek-V4-Pro"));
-  await commit({type:"cable.inventory.create",data:{name:"Work",suppliers:["vendor"],models:{alias:binding("vendor","wire")},defaultModel:"alias"}});
+  await commit(supplier("vendor","https://example.invalid/v1?credential=private"));await commit(supply("vendor","wire","deepseek-v4-pro"));
+  await commit({type:"cable.inventory.create",data:{id:"work",suppliers:["vendor"],models:{alias:{...binding("vendor","wire"),codex:{contextWindow:64000,maxContextWindow:96000}}},defaultModel:"alias"}});
   const bundle=(await call("cables/export",{cableIds:["work"]})).body;
+  assert.deepEqual(bundle.config.cables.work.models.alias.codex,{contextWindow:64000,maxContextWindow:96000});
+  assert.equal(bundle.config.suppliers.vendor.models.wire.contextWindow,128000);
   assert.equal(bundle.version,2);assert.equal(bundle.config.suppliers.vendor.interfaces.responses.baseUrl,"https://example.invalid/v1");
   assert.equal(bundle.config.suppliers.vendor.interfaces.responses.secretRef,undefined);
   assert.equal(bundle.config.suppliers.vendor.interfaces.responses.supportsStreaming,true);
@@ -188,7 +213,7 @@ test("inventory export/import roundtrip isolates supplier collisions and credent
   assert.deepEqual(bundle.config.suppliers.vendor.models.wire.interfaceCapabilities.responses.toolForms,["function","custom"]);assert.deepEqual(bundle.config.cables.work.models.alias.sources,binding("vendor","wire").sources);
   assert.doesNotMatch(JSON.stringify(bundle),/supplier-fixture-key|private/);
   let r=await call("cables/import",{bundle,baseRevision:c.revision,useImportedCredentials:false,choices:{work:"create"}});assert.equal(r.status,200,JSON.stringify(r.body));c=r.body.config;
-  const imported=c.cables["work-import-2"];assert.equal(imported.models.alias.sources[0].supplierId,"vendor-2");assert.equal(c.suppliers["vendor-2"].interfaces.responses.secretConfigured,false);
+  const imported=c.cables["work-import-2"];assert.deepEqual(imported.models.alias.codex,{contextWindow:64000,maxContextWindow:96000});assert.equal(imported.models.alias.sources[0].supplierId,"vendor-2");assert.equal(c.suppliers["vendor-2"].interfaces.responses.secretConfigured,false);
   assert.deepEqual(c.suppliers["vendor-2"].models.wire.interfaceCapabilities.responses.toolForms,["function","custom"]);
   assert.equal(c.suppliers["vendor-2"].models.wire.history,undefined);assert.equal(c.suppliers.vendor.interfaces.responses.secretConfigured,true);
   const withKeys=(await call("cables/export",{cableIds:["work"],includeCredentials:true})).body;
@@ -202,8 +227,8 @@ test("Codex Cable activation restores the previous Cable and protects user edits
   const options={paths:getPaths(path.join(home,"gateway")),codexHome:path.join(home,"codex"),loadCatalog:async()=>catalogFixture()};
   await fs.mkdir(options.codexHome,{recursive:true});const root=path.join(options.codexHome,"config.toml");
   await fs.writeFile(root,'model_provider = "original"\nmodel = "old"\nweb_search = "cached"\n');
-  let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));c=await edit(c,supply("vendor","wire","DeepSeek-V4-Pro"));
-  for(const name of ["A","B"])c=await edit(c,{type:"cable.inventory.create",data:{name,suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
+  let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));c=await edit(c,supply("vendor","wire","deepseek-v4-pro"));
+  for(const name of ["A","B"])c=await edit(c,{type:"cable.inventory.create",data:{id:name.toLowerCase(),suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
   for(const cableId of ["a","b"])await applyCodexArtifacts(await prepareTargetArtifacts(c,{...options,cableId}),options);
   const afterB=await fs.readFile(root,"utf8");await assert.rejects(nativeAsync("codex.restore","a",options),/其他 Cable/);assert.equal(await fs.readFile(root,"utf8"),afterB);
   await nativeAsync("codex.restore","b",options);assert.equal(readCodexConfig(await fs.readFile(root,"utf8")).model_provider,"cabletidy_a");
@@ -221,7 +246,7 @@ test("Responses streaming tools, cleartext reasoning history and DeepSeek effort
   const post=async(endpoint,body)=>fetch(`${app.url}${endpoint}`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
   let c=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
   const commit=async operation=>{const r=await post("api/v1/config/commit",{baseRevision:c.revision,operation});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));c=v.config;};
-  await commit(supplier("deepseek",`http://127.0.0.1:${upstream.address().port}`));await commit(supply("deepseek","deepseek-v4-pro","DeepSeek-V4-Pro"));await commit({type:"cable.inventory.create",data:{name:"Stream",suppliers:["deepseek"],models:{pro:binding("deepseek","deepseek-v4-pro")},defaultModel:"pro"}});
+  await commit(supplier("deepseek",`http://127.0.0.1:${upstream.address().port}`));await commit(supply("deepseek","deepseek-v4-pro","deepseek-v4-pro"));await commit({type:"cable.inventory.create",data:{id:"stream",suppliers:["deepseek"],models:{pro:binding("deepseek","deepseek-v4-pro")},defaultModel:"pro"}});
   const tools=[{type:"function",name:"exec_command",parameters:{type:"object"}},{type:"custom",name:"apply_patch",format:{type:"text"}}];
   const r=await post("stream/v1/responses",{model:"pro",stream:true,input:"test",reasoning:{effort:"medium",summary:"auto"},include:["reasoning.encrypted_content"],parallel_tool_calls:true,tools:[{type:"tool_search",execution:"client"},...tools,{type:"namespace",name:"multi_agent_v1",tools:[]},{type:"tool_search",execution:"client"}]});assert.equal(r.status,200);const events=await r.text();assert.match(events,/"model":"pro"/);assert.ok(events.includes("custom_tool_call"));assert.equal(received[0].reasoning.effort,"high");assert.deepEqual(received[0].include,[]);assert.equal(received[0].store,false);assert.deepEqual(received[0].tools,tools);assert.equal(received[0].parallel_tool_calls,false);
   const history=[{role:"user",content:"test"},...output,{type:"function_call_output",call_id:"exec",output:"/tmp"},{type:"custom_tool_call_output",call_id:"patch-call",output:"success"},{role:"user",content:"continue"}];
@@ -233,18 +258,18 @@ test("Responses streaming tools, cleartext reasoning history and DeepSeek effort
 
 test("interface differences inherit other declared capabilities and protocol drafts stay unavailable",async()=>{
   let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));
-  const model={...facts("DeepSeek-V4-Pro"),interfaceCapabilities:{responses:{toolForms:["function","custom"],capabilityStates:{vision:"unsupported"},contextWindow:64000}}};
+  const model={...facts("deepseek-v4-pro"),interfaceCapabilities:{responses:{toolForms:["function","custom"],capabilityStates:{vision:"unsupported"},contextWindow:64000}}};
   c=await edit(c,{type:"supplier.model.save",supplierId:"vendor",data:{modelId:"wire",model}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Diff",suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"diff",suppliers:["vendor"],models:{pro:binding("vendor","wire")},defaultModel:"pro"}});
   const entry=planCodexCatalog(c,c.virtualProviders.cabletidy_diff,catalogFixture()).catalog.models[0];assert.equal(entry.context_window,64000);assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_diff,{model:"pro"}).upstreamModelId,"wire");
 });
 
 test("associations only narrow model and interface declarations in saving and runtime",async()=>{
   let c=normalizeConfig({});
   c=await edit(c,supplier("bounds","https://example.invalid"));
-  const parent={...facts("DeepSeek-V4-Pro"),inputModalities:["text"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},contextWindow:128000,maxOutputTokens:8192,reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
+  const parent={...facts("deepseek-v4-pro"),inputModalities:["text"],capabilityStates:{reasoning:"supported",parallel_tool_calls:"unsupported"},contextWindow:128000,maxOutputTokens:8192,reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
   c=await edit(c,{type:"supplier.model.save",supplierId:"bounds",data:{modelId:"wire",model:parent}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Bounds",suppliers:["bounds"],models:{pro:binding("bounds","wire")},defaultModel:"pro"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"bounds",suppliers:["bounds"],models:{pro:binding("bounds","wire")},defaultModel:"pro"}});
   const invalid=[{capabilityStates:{parallel_tool_calls:"supported"}},{capabilityStates:{vision:"supported"}},{capabilities:["reasoning","vision"]},{inputModalities:["text","image"]},{contextWindow:128001},{maxOutputTokens:8193},{reasoning:{modes:["toggle"]}},{reasoning:{efforts:["max"]}},{reasoning:{budget:{unit:"seconds",min:1024,max:8192}}},{reasoning:{budget:{min:1000}}},{reasoning:{budget:{max:9000}}},{reasoning:{budget:{min:9000}}},{reasoning:{budget:{max:1000}}}];
   for (const difference of invalid) {
     const model={...parent,interfaceCapabilities:{responses:{toolForms:["function","custom"],...difference}}};
@@ -272,9 +297,9 @@ test("associations only narrow model and interface declarations in saving and ru
 test("association inheritance stays sparse and legacy restrictions narrow the effective contract",async()=>{
   let c=normalizeConfig({});
   c=await edit(c,supplier("inherit","https://example.invalid"));
-  const model={...facts("DeepSeek-V4-Pro"),capabilities:["reasoning","vision","parallel_tool_calls"],capabilityStates:{reasoning:"supported",vision:"supported"},inputModalities:["text","image","audio"],reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
+  const model={...facts("deepseek-v4-pro"),capabilities:["reasoning","vision","parallel_tool_calls"],capabilityStates:{reasoning:"supported",vision:"supported"},inputModalities:["text","image","audio"],reasoning:{modes:["effort","budget"],efforts:["low","high"],budget:{unit:"tokens",min:1024,max:8192}}};
   c=await edit(c,{type:"supplier.model.save",supplierId:"inherit",data:{modelId:"wire",model}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Inherit",suppliers:["inherit"],models:{pro:binding("inherit","wire")},defaultModel:"pro"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"inherit",suppliers:["inherit"],models:{pro:binding("inherit","wire")},defaultModel:"pro"}});
   let effective=c.virtualProviders.cabletidy_inherit.models.pro;
   assert.deepEqual(effective.inputModalities,["text","image","audio"]);
   assert.ok(effective.capabilities.includes("parallel_tool_calls"));
@@ -297,8 +322,8 @@ test("association inheritance stays sparse and legacy restrictions narrow the ef
 test("legacy association violations stay blocked but can be repaired one record at a time",async t=>{
   let c=normalizeConfig({});
   c=await edit(c,supplier("legacy","https://example.invalid"));
-  for (const id of ["one","two"]) c=await edit(c,supply("legacy",id,"DeepSeek-V4-Pro"));
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Legacy",suppliers:["legacy"],models:{one:binding("legacy","one"),two:binding("legacy","two")},defaultModel:"one"}});
+  for (const id of ["one","two"]) c=await edit(c,supply("legacy",id,"deepseek-v4-pro"));
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"legacy",suppliers:["legacy"],models:{one:binding("legacy","one"),two:binding("legacy","two")},defaultModel:"one"}});
   for (const model of Object.values(c.suppliers.legacy.models)) model.interfaceCapabilities.responses.contextWindow=256000;
   c=normalizeConfig(c);
   const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-association-repair-"));
@@ -336,7 +361,7 @@ test("drafts retain unknown supply facts and empty bindings without requiring a 
   const commit=async operation=>{const r=await fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:c.revision,operation})});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));c=v.config;};
   await commit(supplier("draft","https://example.invalid"));
   await commit({type:"supplier.model.save",supplierId:"draft",data:{modelId:"token",model:{identity:null,interfaces:["responses"],capabilityStates:{reasoning:"unknown"},contextWindow:null,maxOutputTokens:null}}});
-  await commit({type:"cable.inventory.create",data:{name:"Draft",suppliers:["draft"],models:{token:binding("draft","token"),pending:{sources:[],activeSource:0}},defaultModel:"token"}});
+  await commit({type:"cable.inventory.create",data:{id:"draft",suppliers:["draft"],models:{token:binding("draft","token"),pending:{sources:[],activeSource:0}},defaultModel:"token"}});
   assert.equal(catalogCalls,0);
   assert.equal(c.suppliers.draft.models.token.contextWindow,null);assert.ok(c.cables.draft.models.token);
   assert.match(c.virtualProviders.cabletidy_draft.models.pending.sourceError,/来源不存在/);
@@ -344,11 +369,11 @@ test("drafts retain unknown supply facts and empty bindings without requiring a 
   assert.throws(()=>resolveRequest(c,c.virtualProviders.cabletidy_draft,{model:"token"}),/身份未知/);
 });
 
-test("apply requires an explicit default and native capabilities stay inside the installed definition",async()=>{
+test("apply permits no default and native capabilities stay inside the installed definition",async()=>{
   let c=normalizeConfig({});c=await edit(c,supplier("native","https://example.invalid"));
   c=await edit(c,{type:"supplier.model.save",supplierId:"native",data:{modelId:"wire",model:{...facts("gpt-5.5"),capabilityStates:{...facts("gpt-5.5").capabilityStates,vision:"supported"},inputModalities:["text","image"]}}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Native",suppliers:["native"],models:{alias:binding("native","wire")}}});
-  assert.throws(()=>buildTargetArtifacts(c,{cableId:"native"}),/选择默认模型/);
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"native",suppliers:["native"],models:{alias:binding("native","wire")}}});
+  assert.equal(buildTargetArtifacts(c,{cableId:"native"}).clientModelId,null);
   const snapshot=catalogFixture();snapshot.catalog.models[0].input_modalities=["text"];
   assert.deepEqual(planCodexCatalog(c,c.virtualProviders.cabletidy_native,snapshot).catalog.models[0].input_modalities,["text"]);
   const malformed=normalizeConfig({suppliers:{broken:{name:"Broken",interfaces:{responses:null},models:{}}}});
@@ -359,19 +384,19 @@ test("interface facts and reasoning budgets are validated without enabling user-
   let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));
   const check=model=>validateConfig(normalizeConfig({...c,suppliers:{vendor:{...c.suppliers.vendor,models:{wire:model}}}}));
   for(const difference of [{contextWindow:-1},{toolForms:["freeform"]},{reasoning:{modes:["script"]}},{reasoning:{budget:{unit:"tokens",min:100,max:50}}},{identity:"gpt-5.5"}]) {
-    assert.equal(check({...facts("DeepSeek-V4-Pro"),interfaceCapabilities:{responses:difference}}).ok,false,JSON.stringify(difference));
+    assert.equal(check({...facts("deepseek-v4-pro"),interfaceCapabilities:{responses:difference}}).ok,false,JSON.stringify(difference));
   }
-  assert.equal(check({...facts("DeepSeek-V4-Pro"),codex:{metadataMode:"override"}}).ok,false);
-  const budgetModel={...facts("DeepSeek-V4-Pro"),reasoning:{modes:["budget","toggle"],toggle:false,budget:{unit:"tokens",min:0,max:4096,default:1024}}};
+  assert.equal(check({...facts("deepseek-v4-pro"),codex:{metadataMode:"override"}}).ok,false);
+  const budgetModel={...facts("deepseek-v4-pro"),reasoning:{modes:["budget","toggle"],toggle:false,budget:{unit:"tokens",min:0,max:4096,default:1024}}};
   assert.equal(check(budgetModel).ok,true);
   c=await edit(c,{type:"supplier.model.save",supplierId:"vendor",data:{modelId:"budget",model:budgetModel}});
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Budget",suppliers:["vendor"],models:{pro:binding("vendor","budget")},defaultModel:"pro"}});
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"budget",suppliers:["vendor"],models:{pro:binding("vendor","budget")},defaultModel:"pro"}});
   assert.throws(()=>resolveRequest(c,c.virtualProviders.cabletidy_budget,{model:"pro"}),/暂无内置映射/);
 });
 
 test("explicit Codex aliases publish the same instructions and route to the supplier model ID",async()=>{
-  let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));c=await edit(c,supply("vendor","wire","DeepSeek-V4-Pro"));
-  c=await edit(c,{type:"cable.inventory.create",data:{name:"Aliases",suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),aliases:["quick","token"]}},defaultModel:"pro"}});
+  let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));c=await edit(c,supply("vendor","wire","deepseek-v4-pro"));
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"aliases",suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),aliases:["quick","token"]}},defaultModel:"pro"}});
   const plan=planCodexCatalog(c,c.virtualProviders.cabletidy_aliases,catalogFixture());
   assert.deepEqual(new Set(plan.catalog.models.map(model=>model.slug)),new Set(["pro","quick","token"]));
   const prompt=plan.catalog.models.find(model=>model.slug==="pro").base_instructions;
@@ -415,8 +440,8 @@ test("supplier resource operations generate internal IDs and select protocol aut
   const invalid = structuredClone(c);
   invalid.suppliers[sid].interfaces.responses.auth.header = "arbitrary-header";
   assert.equal(validateConfig(invalid).ok, false);
-  c = await edit(c, supply(sid, "wire", "DeepSeek-V4-Pro"));
-  c = await edit(c, {type:"cable.inventory.create",data:{name:"Stable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
+  c = await edit(c, supply(sid, "wire", "deepseek-v4-pro"));
+  c = await edit(c, {type:"cable.inventory.create",data:{id:"stable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
   const oldSupplier = structuredClone(c.suppliers[sid]);
   c = await edit(c, {type:"supplier.metadata.save",supplierId:sid,data:{name:"Renamed",enabled:true}});
   assert.deepEqual(c.suppliers[sid], {...oldSupplier,name:"Renamed"});
@@ -472,8 +497,8 @@ test("supplier authentication requires credentials only for the edited interface
   const add = {type:"supplier.interface.save",supplierId:sid,data:{interface:{protocol:"gemini.generate_content",baseUrl:url,authMethod:"api-key"}}};
   await commit(add,422);
   await commit({...add,data:{interface:{...add.data.interface,authMethod:"none"}}});
-  await commit(supply(sid,"wire","DeepSeek-V4-Pro"));
-  await commit({type:"cable.inventory.create",data:{name:"Portable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
+  await commit(supply(sid,"wire","deepseek-v4-pro"));
+  await commit({type:"cable.inventory.create",data:{id:"portable",suppliers:[sid],models:{pro:binding(sid,"wire")},defaultModel:"pro"}});
   const exported = await call("cables/export",{cableIds:["portable"]});
   assert.equal(exported.status,200,JSON.stringify(exported.body));
   const portable = exported.body.config.suppliers[sid].interfaces.responses;
@@ -498,7 +523,7 @@ test("supplier creation saves multiple interfaces and model facts atomically", a
     data:{name:"Multi API",interfaces:{
       responses:{name:"Responses",protocol:"openai.responses",baseUrl:"https://example.invalid/v1",authMethod:"none"},
       messages:{name:"Messages",protocol:"anthropic.messages",baseUrl:"https://example.invalid",authMethod:"api-key",secret:"fixture-messages-key"},
-    },models:{wire:{identity:null,interfaces:["responses","messages"]},another:{identity:"Kimi K3",interfaces:["responses"]}}},
+    },models:{wire:{identity:null,interfaces:["responses","messages"]},another:{identity:"kimi-k3",interfaces:["responses"]}}},
   };
   const commit = async (operation, status) => {
     const response = await fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:initial.revision,operation})});
@@ -532,8 +557,8 @@ test("supplier creation saves multiple interfaces and model facts atomically", a
 test("interface streaming and model-interface tool forms constrain the published contract", async () => {
   let c = normalizeConfig({});
   c = await edit(c, supplier("vendor", "https://example.invalid"));
-  c = await edit(c, supply("vendor", "wire", "DeepSeek-V4-Pro"));
-  c = await edit(c, {type:"cable.inventory.create", data:{name:"Contract", suppliers:["vendor"], models:{pro:binding("vendor","wire")}, defaultModel:"pro"}});
+  c = await edit(c, supply("vendor", "wire", "deepseek-v4-pro"));
+  c = await edit(c, {type:"cable.inventory.create", data:{id:"contract", suppliers:["vendor"], models:{pro:binding("vendor","wire")}, defaultModel:"pro"}});
   const changed = (interfaceFacts, modelFacts = {}) => normalizeConfig({...c,suppliers:{vendor:{...c.suppliers.vendor,interfaces:{responses:{...c.suppliers.vendor.interfaces.responses,...interfaceFacts}},models:{wire:{...c.suppliers.vendor.models.wire,interfaceCapabilities:{responses:{toolForms:["function","custom"],...modelFacts}}}}}}});
   for (const unavailable of [changed({supportsStreaming:false},{supportsStreaming:true}), changed({}, {supportsStreaming:false}), changed({}, {supportsStreaming:null})]) {
     assert.throws(() => resolveRequest(unavailable, unavailable.virtualProviders.cabletidy_contract,{model:"pro"}), /流式/);
@@ -548,7 +573,7 @@ test("interface streaming and model-interface tool forms constrain the published
   another.suppliers.vendor.interfaces.alternate = {...another.suppliers.vendor.interfaces.responses};
   another.suppliers.vendor.models.wire.interfaces.push("alternate");
   another.suppliers.vendor.models.wire.interfaceCapabilities.alternate = {toolForms:["function","custom"]};
-  another.cables.contract.models.other = {sources:[{supplierId:"vendor",modelId:"wire",interfaceId:"alternate"}]};
+  another.cables.contract.models.other = {...binding("vendor","wire"),sources:[{supplierId:"vendor",modelId:"wire",interfaceId:"alternate"}]};
   const multi = normalizeConfig(another);
   assert.throws(() => planCodexCatalog(multi,multi.virtualProviders.cabletidy_contract,catalogFixture()), /custom 工具形式/);
   multi.cables.contract.defaultModel = "other";
@@ -558,7 +583,7 @@ test("interface streaming and model-interface tool forms constrain the published
 });
 
 test("old supply migration preserves streaming restrictions without inferring custom tools or history policy", () => {
-  const c = normalizeConfig({suppliers:{old:{name:"Old",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:{identity:"DeepSeek-V4-Pro",interfaces:["responses"],capabilityStates:{tools:"supported",streaming:"unsupported"},history:"native"}}}}});
+  const c = normalizeConfig({suppliers:{old:{name:"Old",interfaces:{responses:{protocol:"openai.responses",baseUrl:"https://example.invalid"}},models:{wire:{identity:"deepseek-v4-pro",interfaces:["responses"],capabilityStates:{tools:"supported",streaming:"unsupported"},history:"native"}}}}});
   const m = c.suppliers.old.models.wire;
   assert.equal(c.suppliers.old.interfaces.responses.supportsStreaming,true);
   assert.equal(c.suppliers.old.interfaces.responses.supportsResponseIdContinuation,false);
@@ -594,7 +619,7 @@ test("native remote history requires declared continuation and undeclared custom
   const commit=async operation=>{const result=await call("api/v1/config/commit",{baseRevision:c.revision,operation});const v=await result.json();assert.equal(result.status,200,JSON.stringify(v));c=v.config;};
   await commit(supplier("native",`http://127.0.0.1:${upstream.address().port}`));
   await commit(supply("native","wire","gpt-5.5"));
-  await commit({type:"cable.inventory.create",data:{name:"Native State",suppliers:["native"],models:{gpt:binding("native","wire")},defaultModel:"gpt"}});
+  await commit({type:"cable.inventory.create",data:{id:"native-state",suppliers:["native"],models:{gpt:binding("native","wire")},defaultModel:"gpt"}});
   const remote={model:"gpt",previous_response_id:"r",input:"next"};
   assert.equal((await call("native-state/v1/responses",remote)).status,422);
   assert.equal(received.length,0);

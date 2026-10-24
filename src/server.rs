@@ -102,7 +102,7 @@ impl AppState {
                 .map(|(_, p)| entries(&p["models"]).count())
                 .sum::<usize>()),
         );
-        let codex_activation = targets::codex::activation_status(&self.targets)
+        let codex_activation = targets::codex::activation_status(&self.targets, config)
             .await
             .unwrap_or(json!({"status":"unreadable"}));
         json!({
@@ -930,6 +930,24 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             ));
         }
     }
+    if path == "/api/v1/codex/model-preview" {
+        let catalog = state.catalog.load(false).await;
+        let mut result = crate::codex_adapter::preview_binding(
+            c,
+            catalog.as_ref().unwrap_or(&Value::Null),
+            text(&body["clientModelId"]),
+            &body["binding"],
+        );
+        if let Err(error) = catalog {
+            result["available"] = json!(false);
+            result["issues"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("无法读取 Codex 模型目录：{error:#}")));
+        }
+        return Ok(json_response(200, result));
+    }
+
     if path == "/api/v1/config/validate" {
         let candidate =
             config::normalize(&config::strip_presentation(body.get("config").unwrap_or(c)));
@@ -1130,7 +1148,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
         };
         let files = json!([
             {"path":"model-catalog.json","contents":format!("{}\n", serde_json::to_string_pretty(&plan["catalog"])? )},
-            {"path":"config.toml","contents":format!("{}model_catalog_json = \"model-catalog.json\"\nweb_search = \"disabled\"\n{}",text(&a["activeContents"]),text(&a["providerContents"]))}
+            {"path":"config.toml","contents":format!("{}model_catalog_json = \"model-catalog.json\"\n{}",text(&a["activeContents"]),text(&a["providerContents"]))}
         ]);
         return Ok(json_response(
             200,
@@ -1228,7 +1246,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     }
     Ok(error(404, "not_found", "API endpoint 不存在"))
 }
-async fn save_snapshot(state: &AppState, previous: &Snapshot, next: &Snapshot) -> Result<()> {
+async fn save_snapshot(
+    state: &AppState,
+    previous: &Snapshot,
+    next: &Snapshot,
+    rename: Option<(&str, &str)>,
+) -> Result<()> {
     if !tokio::fs::metadata(&state.paths.backups).await?.is_dir() {
         bail!("The backup directory is unavailable");
     }
@@ -1245,11 +1268,37 @@ async fn save_snapshot(state: &AppState, previous: &Snapshot, next: &Snapshot) -
         &format!("secrets-{revision}.json"),
     )
     .await?;
-    config::write_json(&state.paths.config, &next.config).await?;
-    if let Err(e) = config::write_json(&state.paths.secrets, &next.secrets).await {
+    let activation = match rename {
+        Some((old, new)) if old != new => {
+            targets::codex::renamed_activation(&state.targets, old, new).await?
+        }
+        _ => None,
+    };
+    let activation_path = state.targets.codex_home.join(targets::codex::ACTIVATION);
+    if activation.is_some() {
+        config::backup(
+            &activation_path,
+            &state.paths.backups,
+            "codex-activation-rename.json",
+        )
+        .await?;
+    }
+    let result: Result<()> = async {
+        config::write_json(&state.paths.config, &next.config).await?;
+        config::write_json(&state.paths.secrets, &next.secrets).await?;
+        if let Some(activation) = activation {
+            config::write_json(&activation_path, &activation).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = result {
         config::write_json(&state.paths.config, &previous.config)
             .await
             .context("Failed to restore previous configuration")?;
+        config::write_json(&state.paths.secrets, &previous.secrets)
+            .await
+            .context("Failed to restore previous credentials")?;
         return Err(e);
     }
     *state.snapshot.write().unwrap() = Arc::new(next.clone());
@@ -1356,7 +1405,13 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
         config: candidate,
         secrets,
     };
-    if let Err(e) = save_snapshot(state, &previous, &next).await {
+    let rename = (body["operation"]["type"] == "cable.inventory.rename").then(|| {
+        (
+            text(&body["operation"]["cableId"]),
+            text(&body["operation"]["data"]["id"]),
+        )
+    });
+    if let Err(e) = save_snapshot(state, &previous, &next, rename).await {
         return Ok(error(500, "config_reload_failed", &e.to_string()));
     }
     state.event("config.commit",json!({"revision":next.config["revision"],"virtualProviders":entries(&next.config["virtualProviders"]).map(|(k,_)|k).collect::<Vec<_>>(),"upstreams":entries(&next.config["upstreams"]).map(|(k,_)|k).collect::<Vec<_>>()}));
@@ -1392,7 +1447,7 @@ async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Res
             json!({"error":{"code":"config_invalid","message":"配置校验失败"},"errors":check["errors"],"warnings":check["warnings"]}),
         ));
     }
-    if let Err(e) = save_snapshot(state, &previous, &next).await {
+    if let Err(e) = save_snapshot(state, &previous, &next, None).await {
         return Ok(error(500, "virtual_provider_state_failed", &e.to_string()));
     }
     state.event(
@@ -1718,9 +1773,7 @@ async fn proxy(
             return Ok(protocol_error(protocol, 503, e.code, &e.message));
         }
     };
-    if resolution.profile["managedModel"] == true
-        && text(&resolution.profile["identity"]).starts_with("gpt-")
-    {
+    if resolution.profile["managedModel"] == true {
         let index = streaming::index(&spool, None)?;
         let mut memory = streaming::Reservation::memory();
         let reasoning = index
@@ -1743,15 +1796,31 @@ async fn proxy(
                         .iter()
                         .any(|r| text(&r["effort"]) == effort)
                 {
-                    anyhow::bail!("请求推理档位不在该模型的原生定义与供给交集中: {effort}");
+                    anyhow::bail!("请求推理档位不在该模型的生效定义与供给交集中: {effort}");
                 }
                 if body["images"] == true
                     && !array(&entry["input_modalities"]).contains(&json!("image"))
                 {
-                    anyhow::bail!("图片输入不在该模型的原生定义与供给交集中");
+                    anyhow::bail!("图片输入不在该模型的生效定义与供给交集中");
                 }
                 if let Some(a) = &audit {
-                    a.set("nativeDefinitionVersion", snapshot["version"].clone());
+                    if text(&resolution.profile["identity"]).starts_with("gpt-") {
+                        a.set("nativeDefinitionVersion", snapshot["version"].clone());
+                    }
+                    let prompt_id = resolution
+                        .profile
+                        .get("promptModel")
+                        .filter(|value| crate::config::nonempty(value))
+                        .unwrap_or(&resolution.profile["identity"]);
+                    if let Some(prompt) = array(&snapshot["catalog"]["models"])
+                        .iter()
+                        .find(|model| model["slug"] == *prompt_id)
+                    {
+                        let metadata = crate::codex_adapter::prompt_metadata(&snapshot, prompt);
+                        a.set("promptModel", prompt_id.clone());
+                        a.set("promptVersion", metadata["version"].clone());
+                        a.set("promptHash", metadata["hash"].clone());
+                    }
                 }
                 Ok(())
             }),
@@ -1782,9 +1851,6 @@ async fn proxy(
                 "promptStrategy",
                 resolution.profile["promptStrategy"].clone(),
             );
-            if crate::suppliers::compatible(text(&resolution.profile["identity"])) {
-                audit.set("promptVersion", json!(crate::suppliers::PROMPT_VERSION));
-            }
             audit.set("capabilityRevision", c["revision"].clone());
             audit.set("actualModelVersion", resolution.profile["version"].clone());
             audit.set("modelValidation", resolution.profile["validation"].clone());

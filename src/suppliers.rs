@@ -4,15 +4,14 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 pub const COMPATIBLE_MODELS: &[&str] = &[
-    "GLM-5.3",
-    "GLM-5.3-Flash",
-    "Kimi K3",
-    "DeepSeek-V4-Pro",
-    "DeepSeek-V4.1-Flash",
-    "MiniMax M3",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "kimi-k3",
+    "deepseek-v4-pro",
+    "deepseek-flash",
+    "MiniMax-M3",
 ];
 pub const ADAPTER_VERSION: &str = "codex-responses-v1";
-pub const PROMPT_VERSION: &str = "coding-tools-v1";
 
 pub fn compatible(identity: &str) -> bool {
     COMPATIBLE_MODELS
@@ -521,7 +520,6 @@ pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
         // First delivery allows manual groups with an identical published contract only.
         let contract = json!([
             facts["identity"],
-            facts["version"],
             facts["interfaceProtocol"],
             crate::model::capabilities(&facts),
             facts["inputModalities"],
@@ -544,15 +542,26 @@ pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
     }
     selected_profile["aliases"] = binding.get("aliases").cloned().unwrap_or(json!([]));
     selected_profile["clientReasoning"] = binding.get("reasoning").cloned().unwrap_or(json!({}));
+    selected_profile["clientContext"] = binding.get("codex").cloned().unwrap_or(json!({}));
     selected_profile["promptStrategy"] = binding
         .get("promptStrategy")
         .cloned()
         .unwrap_or(json!("default"));
     selected_profile["description"] = binding.get("name").cloned().unwrap_or(Value::Null);
+    for key in [
+        "promptModel",
+        "promptVersion",
+        "promptHash",
+        "supportsSearchTool",
+    ] {
+        if let Some(value) = binding.get(key) {
+            selected_profile[key] = value.clone();
+        }
+    }
     selected_profile["managedModel"] = json!(true);
     selected_profile["manualSourceGroup"] = json!(sources.len() > 1);
     selected_profile["adapterVersion"] = json!(ADAPTER_VERSION);
-    if !["", "default", "native"].contains(&text(&selected_profile["promptStrategy"]))
+    if !["", "default", "native", "selected"].contains(&text(&selected_profile["promptStrategy"]))
         && text(&selected_profile["identity"]).starts_with("gpt-")
     {
         bail!("原生模型使用对应原生定义和提示词");
@@ -628,7 +637,7 @@ pub fn compile(c: &mut Value) {
         }
         c["routes"][&rid] = json!({"id":rid,"managedModels":true,"backends":backends});
         let protection = protections.get(&pid).cloned().unwrap_or(Value::Null);
-        c["virtualProviders"][&pid] = json!({"id":pid,"name":cable["name"],"managedModels":true,
+        c["virtualProviders"][&pid] = json!({"id":pid,"name":cid,"managedModels":true,
             "ingressProtocol":"openai.responses","route":rid,"models":models,"enabled":enabled(&cable)});
         if !protection.is_null() {
             c["virtualProviders"][&pid]["credentialProtection"] = protection;
@@ -836,6 +845,9 @@ pub fn validate(c: &Value) -> Vec<Value> {
                     "targetOverrides",
                     "capabilityOverrides",
                     "promptStrategy",
+                    "promptModel",
+                    "promptVersion",
+                    "promptHash",
                     "upstream",
                     "managedModel",
                     "adapterVersion",
@@ -844,6 +856,7 @@ pub fn validate(c: &Value) -> Vec<Value> {
                     "supportsStreaming",
                     "supportsResponseIdContinuation",
                     "clientReasoning",
+                    "clientContext",
                 ]
                 .iter()
                 .all(|field| m.get(*field).is_none()),
@@ -869,6 +882,16 @@ pub fn validate(c: &Value) -> Vec<Value> {
                 m["identity"].is_null() || m["identity"].is_string(),
                 p.clone(),
                 "实际身份必须为字符串或 null（未知）",
+            );
+            check(
+                m["name"].is_null() || m["name"].is_string(),
+                format!("{p}.name"),
+                "上游模型名称必须为字符串或 null",
+            );
+            check(
+                m.get("version").is_none(),
+                format!("{p}.version"),
+                "模型版本请使用不同的实际/参考模型身份 ID 区分",
             );
             check(
                 m["interfaces"].is_array()
@@ -948,6 +971,28 @@ pub fn validate(c: &Value) -> Vec<Value> {
         }
         for (name, binding) in entries(&b["models"]) {
             let p = format!("{path}.models.{name}");
+            for issue in crate::codex_adapter::context_settings_issues(&binding["codex"]) {
+                check(false, format!("{p}.codex"), &issue);
+            }
+            check(
+                binding
+                    .get("supportsSearchTool")
+                    .is_none_or(Value::is_boolean),
+                format!("{p}.supportsSearchTool"),
+                "supports_search_tool 必须为布尔值",
+            );
+            check(
+                binding["name"].is_null() || binding["name"].is_string(),
+                format!("{p}.name"),
+                "客户端显示名称必须为字符串或 null",
+            );
+            check(
+                binding
+                    .get("nameMode")
+                    .is_none_or(|v| v == "auto" || v == "manual"),
+                format!("{p}.nameMode"),
+                "显示名称生成方式必须为 auto 或 manual",
+            );
             check(
                 binding.get("reasoning").is_none_or(|v| {
                     v.is_object()
@@ -978,12 +1023,30 @@ pub fn validate(c: &Value) -> Vec<Value> {
                 p.clone(),
                 "手动来源索引无效",
             );
+            // Keep legacy strategy tags readable so users can repair saved bindings.
+            // Publication and request validation require a selected native prompt for compatible models.
             check(
-                ["", "default", "native", "compatible", "compatible-concise"]
-                    .contains(&text(&binding["promptStrategy"])),
+                [
+                    "",
+                    "default",
+                    "native",
+                    "compatible",
+                    "compatible-concise",
+                    "selected",
+                ]
+                .contains(&text(&binding["promptStrategy"])),
                 p.clone(),
-                "请选择内置提示词策略",
+                "提示词策略无效，请选择 Codex 原生模型提示词",
             );
+            for key in ["promptModel", "promptVersion", "promptHash"] {
+                check(
+                    binding
+                        .get(key)
+                        .is_none_or(|v| v.is_null() || v.is_string()),
+                    format!("{p}.{key}"),
+                    "提示词来源与版本必须为字符串",
+                );
+            }
             check(
                 binding
                     .get("strategy")

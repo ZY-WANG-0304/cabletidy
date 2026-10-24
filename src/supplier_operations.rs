@@ -10,6 +10,7 @@ pub fn applies(kind: &str) -> bool {
         || [
             "cable.inventory.create",
             "cable.inventory.save",
+            "cable.inventory.rename",
             "cable.inventory.migrate",
         ]
         .contains(&kind)
@@ -61,8 +62,15 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                     bail!("请填写供应商名称");
                 }
                 c["suppliers"][sid]["name"] = json!(text(&data["name"]).trim());
-                c["suppliers"][sid]["enabled"] =
-                    data.get("enabled").cloned().unwrap_or(json!(true));
+                if let Some(enabled) = data.get("enabled") {
+                    c["suppliers"][sid]["enabled"] = enabled.clone();
+                }
+            }
+            "supplier.enabled.set" => {
+                if !old.is_object() || !data["enabled"].is_boolean() {
+                    bail!("供应商不存在或启用状态无效");
+                }
+                c["suppliers"][sid]["enabled"] = data["enabled"].clone();
             }
             "supplier.interface.save" => {
                 if !old.is_object() {
@@ -199,7 +207,40 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
         (selection, page)
     } else {
         let mut id = text(&op["cableId"]).to_owned();
-        if kind == "cable.inventory.migrate" {
+        if matches!(kind, "cable.inventory.rename" | "cable.inventory.create")
+            && data.get("target").is_some_and(|target| target != "codex")
+        {
+            bail!("供应商模型目录版线路当前仅支持 Codex 客户端");
+        }
+        if kind == "cable.inventory.rename" {
+            let mut cable = c["cables"]
+                .get(&id)
+                .filter(|b| b["managedModels"] == true)
+                .context("请选择供应商模型目录版线路")?
+                .clone();
+            if let Some(target) = data.get("target") {
+                cable["target"] = target.clone();
+            }
+            set_inventory_web_search(&mut cable, data)?;
+            let next_id = text(&data["id"]);
+            check_cable_id(&c, next_id, Some(&id))?;
+            if next_id != id {
+                let old_provider = text(&cable["virtualProvider"]).to_owned();
+                let next_provider = format!("cabletidy_{next_id}");
+                let mut provider = c["virtualProviders"][&old_provider].clone();
+                provider["id"] = json!(next_provider);
+                c["virtualProviders"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(&old_provider);
+                c["virtualProviders"][&next_provider] = provider;
+                cable["id"] = json!(next_id);
+                cable["virtualProvider"] = json!(next_provider);
+                c["cables"].as_object_mut().unwrap().remove(&id);
+                id = next_id.to_owned();
+            }
+            c["cables"][&id] = cable;
+        } else if kind == "cable.inventory.migrate" {
             let cable = c["cables"].get(&id).context("线路不存在")?.clone();
             if cable["target"] != "codex" {
                 bail!("首期迁移仅支持 Codex 线路");
@@ -230,13 +271,17 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                 let mid = p["upstreamModelId"].as_str().unwrap_or(name);
                 let facts = json!({"identity":p["identity"],"identitySource":p["identitySource"],"interfaces":["responses"],
                     "capabilities":crate::model::capabilities(p),"inputModalities":p["codex"].get("inputModalities").cloned().unwrap_or(json!(["text"])),
-                    "contextWindow":p["contextWindow"],"reasoning":p["reasoning"],
+                    "contextWindow":null,"maxOutputTokens":p["maxOutputTokens"],"reasoning":p["reasoning"],
                     "interfaceCapabilities":{"responses":{"toolForms":p.get("toolForms").cloned().unwrap_or(json!([]))}}});
                 if inventory.get(mid).is_some_and(|old| old != &facts) {
                     bail!("同一上游模型 ID 的旧能力不同，请先人工确认供给事实");
                 }
                 inventory[mid] = facts;
                 bindings[name] = json!({"sources":[{"supplierId":uid,"modelId":mid,"interfaceId":"responses"}],"aliases":p.get("aliases").cloned().unwrap_or(json!([])),"promptStrategy":"default"});
+                if p["contextWindow"].as_u64().is_some_and(|n| n > 0) {
+                    // Legacy windows described client policy, not verified supplier capacity.
+                    bindings[name]["codex"] = json!({"contextWindow":p["contextWindow"],"maxContextWindow":p["contextWindow"]});
+                }
             }
             c["suppliers"][&uid] = json!({"name":upstream["name"],"interfaces":{"responses":upstream},"models":inventory});
             c["cables"][&id]["suppliers"] = json!([uid]);
@@ -245,16 +290,37 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
             c["cables"][&id]["legacyPassthrough"] = json!({"upstream":uid});
         } else {
             if !data.is_object() || !data["models"].is_object() || !data["suppliers"].is_array() {
-                bail!("请填写 Cable 名称、供应商选择及模型绑定");
+                bail!("请填写 线路ID、供应商选择及模型绑定");
+            }
+            for (name, binding) in entries(&data["models"]) {
+                if binding
+                    .get("supportsSearchTool")
+                    .is_some_and(|value| !value.is_boolean())
+                {
+                    bail!("supports_search_tool 必须为布尔值");
+                }
+                if name.trim().is_empty() || name.chars().any(char::is_whitespace) {
+                    bail!("客户端模型 ID 不能为空或包含空白字符");
+                }
+                if array(&binding["sources"]).len() > 1
+                    && (kind == "cable.inventory.create"
+                        || binding["sources"] != previous["cables"][&id]["models"][name]["sources"]
+                        || binding["activeSource"]
+                            != previous["cables"][&id]["models"][name]["activeSource"])
+                {
+                    bail!("每个客户端模型只能绑定一个上游来源，请分别添加模型");
+                }
             }
             if kind == "cable.inventory.create" {
-                id = config::configuration_id(text(&data["name"]), "codex-main");
-                if c["cables"].get(&id).is_some() {
-                    bail!("线路名称已存在");
-                }
-                c["cables"][&id] = json!({"id":id,"name":data["name"],"target":"codex","targetFormat":"codex.config.toml.v1","virtualProvider":format!("cabletidy_{id}"),"codex":{},"managedModels":true});
+                id = text(&data["id"]).to_owned();
+                check_cable_id(&c, &id, None)?;
+                c["cables"][&id] = json!({"id":id,"target":"codex","targetFormat":"codex.config.toml.v1","virtualProvider":format!("cabletidy_{id}"),"codex":{},"managedModels":true});
+                set_inventory_web_search(&mut c["cables"][&id], data)?;
             } else if c["cables"][&id]["managedModels"] != true {
                 bail!("请先迁移该线路到供应商模型目录");
+            }
+            if data.get("id").is_some_and(|next| next != &id) {
+                bail!("修改线路ID请使用基本信息修改操作");
             }
             c["cables"][&id]["suppliers"] = data["suppliers"].clone();
             c["cables"][&id]["models"] = data["models"].clone();
@@ -290,6 +356,35 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
         );
     }
     Ok(json!({"config":c,"upstreamSecrets":secrets,"selection":selection,"page":page}))
+}
+
+fn set_inventory_web_search(cable: &mut Value, data: &Value) -> Result<()> {
+    if let Some(mode) = data.get("webSearch") {
+        if mode.is_null() {
+            cable.as_object_mut().unwrap().remove("webSearch");
+        } else if config::CODEX_WEB_SEARCH_MODES.contains(&text(mode)) {
+            cable["webSearch"] = mode.clone();
+        } else {
+            bail!("网页搜索方式须为 cached、indexed、live、disabled，或不配置以继承 Codex");
+        }
+    }
+    Ok(())
+}
+
+fn check_cable_id(config: &Value, id: &str, current: Option<&str>) -> Result<()> {
+    if !config::valid_inventory_id(id) {
+        bail!("线路ID须为 1–54 位小写字母、数字、- 或 _，以字母或数字开头，且不能为 api");
+    }
+    if current != Some(id)
+        && (config["cables"].get(id).is_some()
+            || config["virtualProviders"]
+                .get(format!("cabletidy_{id}"))
+                .is_some()
+            || config["routes"].get(format!("{id}-sources")).is_some())
+    {
+        bail!("线路ID已存在或其服务标识已被占用");
+    }
+    Ok(())
 }
 
 fn next_interface_id(interfaces: &Value, protocol: &str) -> String {

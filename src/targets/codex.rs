@@ -49,6 +49,9 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
     root_set(&mut doc, "model_provider", &a["providerId"])?;
     if !a["clientModelId"].is_null() {
         root_set(&mut doc, "model", &a["clientModelId"])?;
+    } else if a["managedModels"] == true {
+        doc.remove("model");
+        warnings.push(json!("线路未指定默认模型，请在 Codex 中选择已开放的模型。"));
     }
     if !a["catalogPlan"]["catalog"].is_null() {
         if a["managedModels"] == true {
@@ -57,8 +60,15 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
                     "根级 model_instructions_file 会覆盖模型提示词，请移除该设置或使用隔离启动配置"
                 );
             }
-            root_set(&mut doc, "web_search", &json!("disabled"))?;
-            warnings.push(json!("当前 Cable 关闭 Codex 内置网页搜索，避免辅助模型请求越过显式模型选择。已有运行会话请重新启动。"));
+            if !current["model_reasoning_effort"].is_null() {
+                warnings.push(json!("现有 model_reasoning_effort 会覆盖逐模型默认推理档位；需要沿用模型设置时请清除该全局配置。"));
+            }
+            if !a["webSearch"].is_null() {
+                if !crate::config::CODEX_WEB_SEARCH_MODES.contains(&text(&a["webSearch"])) {
+                    bail!("不支持的 Codex 网页搜索方式");
+                }
+                root_set(&mut doc, "web_search", &a["webSearch"])?;
+            }
         }
         warnings.push(json!("模型目录覆盖作用于当前 Codex 配置，不按 provider 隔离；切换到其他 provider 前需恢复官方定义或原目录。重新启动 Codex 后读取更新。"));
         let mut catalog = a["catalogPlan"]["catalog"].clone();
@@ -168,6 +178,24 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
     let providers = doc["model_providers"]
         .as_table_like_mut()
         .context("model_providers must be a table")?;
+    let old_provider = text(&activation["providerId"]);
+    if activation["cableId"] == a["cableId"]
+        && !old_provider.is_empty()
+        && old_provider != provider
+        && owned_snapshot(&current, activation["after"].get("web_search").is_some())
+            == activation["after"]
+        && current["model_providers"][old_provider] == activation["providerAfter"]
+    {
+        if activation["providerBefore"].is_null() {
+            providers.remove(old_provider);
+        } else {
+            let original: DocumentMut = text(&activation["rootBefore"]).parse()?;
+            providers.insert(
+                old_provider,
+                original["model_providers"][old_provider].clone(),
+            );
+        }
+    }
     providers.insert(provider, provider_doc["model_providers"][provider].clone());
     let root = format!("{}\n", doc.to_string().trim_end());
     let _: DocumentMut = root.parse()?;
@@ -225,13 +253,30 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
     let before: Value = toml_edit::de::from_str(text(&staged["rootBefore"]))?;
     let after: Value = toml_edit::de::from_str(text(&staged["files"][0]["contents"]))?;
     let same = previous_activation["cableId"] == staged["cableId"]
-        && previous_activation["after"] == owned_snapshot(&before);
+        && previous_activation["after"]
+            == owned_snapshot(
+                &before,
+                previous_activation["after"].get("web_search").is_some(),
+            );
     let provider = text(&staged["providerId"]);
-    let activation = if same {
-        json!({"cableId":staged["cableId"],"providerId":provider,"before":previous_activation["before"],"after":owned_snapshot(&after),"rootBefore":previous_activation["rootBefore"],"providerBefore":previous_activation["providerBefore"],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_activation["catalogBefore"],"previousActivation":previous_activation["previousActivation"]})
+    let mut activation = if same {
+        json!({"cableId":staged["cableId"],"providerId":provider,"before":previous_activation["before"],"after":owned_snapshot(&after, !staged["webSearch"].is_null()),"rootBefore":previous_activation["rootBefore"],"providerBefore":previous_activation["providerBefore"],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_activation["catalogBefore"],"previousActivation":previous_activation["previousActivation"]})
     } else {
-        json!({"cableId":staged["cableId"],"providerId":provider,"before":owned_snapshot(&before),"after":owned_snapshot(&after),"rootBefore":staged["rootBefore"],"providerBefore":before["model_providers"][provider],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_state.as_ref().and_then(|s|serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null),"previousActivation":previous_activation})
+        json!({"cableId":staged["cableId"],"providerId":provider,"before":owned_snapshot(&before, !staged["webSearch"].is_null()),"after":owned_snapshot(&after, !staged["webSearch"].is_null()),"rootBefore":staged["rootBefore"],"providerBefore":before["model_providers"][provider],"providerAfter":after["model_providers"][provider],"catalogBefore":previous_state.as_ref().and_then(|s|serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Null),"previousActivation":previous_activation})
     };
+    if staged["webSearch"].is_null() {
+        activation["before"]
+            .as_object_mut()
+            .unwrap()
+            .remove("web_search");
+    } else if activation["before"].get("web_search").is_none() {
+        activation["before"]["web_search"] = before["web_search"].clone();
+    }
+    activation["sourceConfigHash"] = staged["sourceConfigHash"].clone();
+    if same && previous_activation["providerId"] != provider {
+        activation["providerBefore"] = before["model_providers"][provider].clone();
+        activation["rootBefore"] = staged["rootBefore"].clone();
+    }
     let track_activation = a["managedModels"] == true || previous_activation.is_object();
     let result = async {
         if let Some(state) = staged.get("catalogState") {
@@ -265,7 +310,27 @@ pub async fn apply(a: &Value, o: &Options) -> Result<Value> {
 }
 
 // Preserve a complete before/after snapshot only for the fields this Cable owns.
-const ACTIVATION: &str = ".cabletidy-active-cable.json";
+pub(crate) const ACTIVATION: &str = ".cabletidy-active-cable.json";
+
+// Rename tracking only. The client config and its recorded provider remain unchanged until apply.
+pub async fn renamed_activation(o: &Options, old_id: &str, new_id: &str) -> Result<Option<Value>> {
+    let Some(mut saved) = read_json(&o.codex_home.join(ACTIVATION)).await? else {
+        return Ok(None);
+    };
+    let mut changed = false;
+    let mut cursor = &mut saved;
+    while cursor.is_object() {
+        if cursor["cableId"] == old_id {
+            cursor["cableId"] = json!(new_id);
+            changed = true;
+        }
+        let Some(previous) = cursor.get_mut("previousActivation") else {
+            break;
+        };
+        cursor = previous;
+    }
+    Ok(changed.then_some(saved))
+}
 const OWNED_ROOT: &[&str] = &[
     "model_provider",
     "model",
@@ -273,15 +338,26 @@ const OWNED_ROOT: &[&str] = &[
     "model_context_window",
     "web_search",
 ];
-fn owned_snapshot(value: &Value) -> Value {
+fn owned_snapshot(value: &Value, owns_search: bool) -> Value {
     let mut out = serde_json::Map::new();
     for key in OWNED_ROOT {
+        if *key == "web_search" && !owns_search {
+            continue;
+        }
         out.insert((*key).into(), value[*key].clone());
     }
     Value::Object(out)
 }
 
-pub async fn activation_status(o: &Options) -> Result<Value> {
+// Track the applied line and its resolved model facts, without persisting credentials.
+pub fn source_config_hash(config: &Value, cable_id: &str) -> String {
+    let cable = &config["cables"][cable_id];
+    let provider = &config["virtualProviders"][text(&cable["virtualProvider"])];
+    let snapshot = json!({"cable":cable,"models":provider["models"],"baseUrl":crate::config::base_url(config, cable_id)});
+    digest(snapshot.to_string().as_bytes())
+}
+
+pub async fn activation_status(o: &Options, config: &Value) -> Result<Value> {
     let Some(saved) = read_json(&o.codex_home.join(ACTIVATION)).await? else {
         return Ok(json!({"status":"unmanaged"}));
     };
@@ -289,9 +365,15 @@ pub async fn activation_status(o: &Options) -> Result<Value> {
         .await?
         .unwrap_or_default();
     let value: Value = toml_edit::de::from_str(&current)?;
-    let matches = owned_snapshot(&value) == saved["after"]
+    let matches = owned_snapshot(&value, saved["after"].get("web_search").is_some())
+        == saved["after"]
         && value["model_providers"][text(&saved["providerId"])] == saved["providerAfter"];
-    Ok(json!({"cableId":saved["cableId"],"status":if matches {"active"} else {"modified"}}))
+    let needs_update =
+        saved["sourceConfigHash"] != source_config_hash(config, text(&saved["cableId"]));
+    Ok(
+        json!({"cableId":saved["cableId"],"providerId":saved["providerId"],"status":if matches {"active"} else {"modified"},
+        "usingCable":value["model_provider"] == saved["providerId"],"needsUpdate":needs_update}),
+    )
 }
 
 pub async fn restore_cable(cable_id: &str, o: &Options) -> Result<Value> {
@@ -305,11 +387,14 @@ pub async fn restore_cable(cable_id: &str, o: &Options) -> Result<Value> {
     let root = o.codex_home.join("config.toml");
     let before = read_optional(&root).await?.unwrap_or_default();
     let value: Value = toml_edit::de::from_str(&before)?;
-    if owned_snapshot(&value) != saved["after"] {
+    if owned_snapshot(&value, saved["after"].get("web_search").is_some()) != saved["after"] {
         anyhow::bail!("Codex 管理字段已被用户修改，保留当前配置；请先核对后手动恢复");
     }
     let mut doc: DocumentMut = before.parse()?;
     for key in OWNED_ROOT {
+        if *key == "web_search" && saved["before"].get("web_search").is_none() {
+            continue;
+        }
         root_set(&mut doc, key, &saved["before"][*key])?;
     }
     let provider = text(&saved["providerId"]);

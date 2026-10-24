@@ -182,6 +182,9 @@ pub fn normalize(input: &Value) -> Value {
         remove(p, &["localAuth", "listenHost", "listenPort"]);
     }
     for b in c["cables"].as_object_mut().unwrap().values_mut() {
+        if b["managedModels"] == true {
+            remove(b, &["name"]);
+        }
         remove(b, &["providerFormat", "legacyCodex"]);
         if let Some(v) = b.get_mut("codex") {
             remove(
@@ -371,6 +374,17 @@ pub fn configuration_id(name: &str, fallback: &str) -> String {
         b
     }
 }
+pub const CODEX_WEB_SEARCH_MODES: &[&str] = &["cached", "indexed", "live", "disabled"];
+
+pub fn valid_inventory_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 54
+        && id != "api"
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
 fn unique_renames(ids: HashMap<String, String>) -> HashMap<String, String> {
     let mut counts = HashMap::new();
     for id in ids.values() {
@@ -403,7 +417,7 @@ fn normalize_identities(c: &mut Value) {
         .map(|(id, b)| {
             (
                 id.clone(),
-                if b.is_object() {
+                if b.is_object() && b["managedModels"] != true {
                     configuration_id(text(&b["name"]), id)
                 } else {
                     id.clone()

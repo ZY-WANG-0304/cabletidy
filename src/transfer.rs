@@ -38,7 +38,6 @@ fn supply_facts(v: &Value) -> Value {
         v,
         &[
             "identity",
-            "version",
             "identitySource",
             "enabled",
             "interfaces",
@@ -100,6 +99,9 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
         }
         for (mid, model) in entries(&supplier["models"]) {
             let mut m = supply_facts(model);
+            if let Some(name) = model.get("name") {
+                m["name"] = name.clone();
+            }
             if model["interfaceCapabilities"].is_object() {
                 m["interfaceCapabilities"] = json!({});
                 for (iid, difference) in entries(&model["interfaceCapabilities"]) {
@@ -205,6 +207,7 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                 "enabled",
                 "managedModels",
                 "suppliers",
+                "webSearch",
             ],
         );
         if b["managedModels"] == true {
@@ -214,9 +217,14 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                     binding,
                     &[
                         "name",
+                        "nameMode",
                         "aliases",
                         "activeSource",
                         "promptStrategy",
+                        "promptModel",
+                        "promptVersion",
+                        "promptHash",
+                        "supportsSearchTool",
                         "strategy",
                     ],
                 );
@@ -227,6 +235,10 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                 if binding["reasoning"].is_object() {
                     model["reasoning"] =
                         fields(&binding["reasoning"], &["defaultEffort", "defaultBudget"]);
+                }
+                if binding["codex"].is_object() {
+                    model["codex"] =
+                        fields(&binding["codex"], &["contextWindow", "maxContextWindow"]);
                 }
                 if binding["migration"]["sourceReasoningDefaults"].is_array() {
                     model["migration"] = json!({});
@@ -499,12 +511,20 @@ pub fn import(
     }
     // Share imported dependencies only when their retained credential references agree.
     for (old_id, b) in entries(&source["cables"]) {
-        let base_name = b["name"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(old_id);
+        let base_name = if b["managedModels"] == true {
+            old_id.as_str()
+        } else {
+            b["name"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(old_id)
+        };
         let mut name = base_name.to_owned();
-        let mut id = config::configuration_id(&name, old_id);
+        let mut id = if b["managedModels"] == true {
+            old_id.clone()
+        } else {
+            config::configuration_id(&name, old_id)
+        };
         let existing = current["cables"].get(&id);
         let conflict = existing.is_some();
         let choice = text(&choices[old_id]);
@@ -538,7 +558,8 @@ pub fn import(
         if b["managedModels"] == true {
             let mut imported = b.clone();
             imported["id"] = json!(id);
-            imported["name"] = json!(name);
+            imported.as_object_mut().unwrap().remove("name");
+            name = id.clone();
             imported["virtualProvider"] = json!(pid);
             for sid in imported["suppliers"]
                 .as_array_mut()

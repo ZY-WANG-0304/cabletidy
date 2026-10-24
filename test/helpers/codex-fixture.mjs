@@ -18,6 +18,19 @@ export function catalogFixture() {
   };
 }
 
+export function daybreakCatalogFixture() {
+  const snapshot = catalogFixture();
+  const base = snapshot.catalog.models[0];
+  snapshot.catalog.models.unshift(...["blue", "red"].map(color => ({
+    ...structuredClone(base), slug: `gpt-daybreak-${color}-latest`,
+    display_name: `Daybreak ${color}`, visibility: "hide",
+    base_instructions: `Daybreak ${color} instructions`,
+    model_messages: { instructions_template: `Daybreak ${color} template` },
+  })));
+  snapshot.catalog.models.push({ ...structuredClone(base), slug: "gpt-hidden-general", visibility: "hide" });
+  return snapshot;
+}
+
 export function codexConfigFixture() {
   return {
     version: 3,
