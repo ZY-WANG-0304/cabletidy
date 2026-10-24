@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createApplication } from "./helpers/native-app.mjs";
@@ -9,24 +8,15 @@ import { getPaths, normalizeConfig, saveConfig } from "./helpers/native.mjs";
 import { readCodexConfig } from "./helpers/native.mjs";
 import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
-async function freePort() {
-  const server = http.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 test("config API allows renaming saved legacy models and still validates actual model changes", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-legacy-rename-"));
   const paths = getPaths(home);
   const initial = normalizeConfig(codexConfigFixture());
-  initial.web.port = await freePort();
   initial.virtualProviders.cabletidy_relay.models = { "legacy-alias": { upstreamModelId: "vendor-model" } };
   initial.virtualProviders.cabletidy_relay.defaultModel = "legacy-alias";
   initial.cables.relay.defaultModel = "legacy-alias";
   await saveConfig(initial, paths);
-  const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture() });
+  const app = await createApplication({ paths, ephemeralPort: true, loadCodexCatalog: async () => catalogFixture() });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
   const call = async (endpoint, config) => {
     const response = await fetch(`${app.url}api/v1/config${endpoint}`, config ? {
@@ -70,10 +60,10 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-management-test-"));
   const paths = getPaths(home);
   const client = path.join(home, "client");
-  const initial = normalizeConfig({ web: { port: await freePort() } });
+  const initial = normalizeConfig({});
   await saveConfig(initial, paths);
   let unavailable = false;
-  const app = await createApplication({ paths, codexHome: client, loadCodexCatalog: async () => {
+  const app = await createApplication({ paths, ephemeralPort: true, codexHome: client, loadCodexCatalog: async () => {
     if (unavailable) throw new Error("Codex directory unavailable");
     return catalogFixture();
   } });
@@ -87,7 +77,7 @@ test("Web model discovery, dynamic validation, preview and apply share official 
   const catalog = await call("/codex/models");
   assert.equal(catalog.body.models.length, 2);
   assert.doesNotMatch(JSON.stringify(catalog.body), /base_instructions/);
-  const candidate = normalizeConfig({ ...codexConfigFixture(), web: initial.web });
+  const candidate = normalizeConfig({ ...codexConfigFixture(), web: app.state.config.web });
   candidate.virtualProviders.cabletidy_relay.enabled = false;
   const profile = candidate.virtualProviders.cabletidy_relay.models["gpt-5.5"];
   candidate.virtualProviders.cabletidy_relay.models = { "unknown-model": profile };
@@ -134,11 +124,10 @@ test("target APIs select cables consistently and retired aliases return 404", as
   const paths = getPaths(home);
   const client = path.join(home, "client");
   const config = normalizeConfig(namedCodexConfigFixture({ generic: "generic", relay: "relay" }));
-  config.web.port = await freePort();
   config.cables.generic.target = "generic-env";
   config.cables.relay.enabled = false;
   await saveConfig(config, paths);
-  const app = await createApplication({ paths, codexHome: client, loadCodexCatalog: async () => catalogFixture() });
+  const app = await createApplication({ paths, ephemeralPort: true, codexHome: client, loadCodexCatalog: async () => catalogFixture() });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
   const call = async (url, body = {}) => {
     const response = await fetch(`${app.url}api/v1${url}`, {

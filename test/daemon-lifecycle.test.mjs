@@ -54,18 +54,13 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
     await fs.rm(directory, { recursive: true, force: true });
   });
   await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
-  const probe = net.createServer();
-  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
-  const port = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
   const config = defaultConfig();
-  config.web.port = port;
   config.upstreams.relay = { id: "relay", protocol: "openai.responses", baseUrl: `http://127.0.0.1:${upstream.address().port}/v1` };
   config.routes.relay = { id: "relay", backends: [{ upstream: "relay" }] };
   config.virtualProviders.cabletidy_relay = { id: "cabletidy_relay", ingressProtocol: "openai.responses", route: "relay" };
   config.cables.relay = { id: "relay", target: "codex", virtualProvider: "cabletidy_relay" };
   await fs.writeFile(path.join(directory, "config.json"), JSON.stringify(config));
-  let env = fixtureEnvironment({ CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client") });
+  let env = fixtureEnvironment({ CABLETIDY_HOME: directory, CODEX_HOME: path.join(directory, "client"), CABLETIDY_TEST_EPHEMERAL_PORT: "1" });
   const releaseCatalog = path.join(directory, "release-catalog");
   if (mockCatalog) {
     monitor = net.createServer(socket => {
@@ -125,7 +120,7 @@ async function fixture(t, { direct = false, mockCatalog = false } = {}) {
   });
   return {
     child, closed, calls, directory, signal: signalChild,
-    url: `http://127.0.0.1:${port}/`,
+    url: JSON.parse(await fs.readFile(path.join(directory, "runtime.json"), "utf8")).web.url,
     runtime: path.join(directory, "runtime.json"),
     catalogConnections,
     releaseCatalog: () => fs.writeFile(releaseCatalog, "ready"),

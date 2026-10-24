@@ -9,17 +9,7 @@ import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig, saveConfig, saveSecrets } from "./helpers/native.mjs";
 import { catalogFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
-async function freePort() {
-  const server = http.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 test("web control API and Codex Responses proxy form one working MVP slice", async () => {
-  const upstreamPort = await freePort();
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-server-"));
   const paths = getPaths(home);
   let receivedBody;
@@ -49,12 +39,12 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       output: [],
     }));
   });
-  await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
+  await new Promise((resolve) => fakeUpstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = fakeUpstream.address().port;
 
   const config = normalizeConfig({
     ...namedCodexConfigFixture({ codex: "codex" }),
     revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
   });
   config.upstreams.codex.baseUrl = `http://127.0.0.1:${upstreamPort}/v1`;
   config.upstreams.codex.secretRef = "secret://upstreams/codex";
@@ -64,13 +54,14 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
   await saveConfig(config, paths);
   await saveSecrets({ "secret://upstreams/codex": "upstream-key" }, paths);
 
-  const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture(), codexHome: path.join(home, "client") });
+  const app = await createApplication({ paths, ephemeralPort: true, loadCodexCatalog: async () => catalogFixture(), codexHome: path.join(home, "client") });
+  config.web = app.state.config.web;
   try {
     assert.equal(new URL(app.url).search, "");
     const runtimeInfo = JSON.parse(await fs.readFile(paths.runtime, "utf8"));
     assert.equal(runtimeInfo.web.url, app.url);
     assert.equal(runtimeInfo.bootstrapUrl, undefined);
-    const catalogResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/catalog`, {
+    const catalogResponse = await fetch(`${app.url}api/v1/catalog`, {
       headers: {},
     });
     const catalog = await catalogResponse.json();
@@ -79,7 +70,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       catalog.requiredEndpoints["codex-native-provider"].map(({ method, path }) => `${method} ${path}`),
       ["GET /v1/models", "POST /v1/responses"],
     );
-    const integrationsResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/integrations`, {
+    const integrationsResponse = await fetch(`${app.url}api/v1/integrations`, {
       headers: {},
     });
     const integrations = await integrationsResponse.json();
@@ -87,16 +78,16 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       integrations.integrations[0].requiredEndpoints.map(({ method, path }) => `${method} ${path}`),
       ["GET /v1/models", "POST /v1/responses"],
     );
-    const runtimeResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/runtime`, {
+    const runtimeResponse = await fetch(`${app.url}api/v1/runtime`, {
       headers: {},
     });
     const runtime = await runtimeResponse.json();
     assert.equal(runtime.counts.models, 1);
     assert.equal(runtime.virtualProviders[0].id, "cabletidy_codex");
-    assert.equal(runtime.virtualProviders[0].baseUrl, `http://127.0.0.1:${webPort}/codex/v1`);
+    assert.equal(runtime.virtualProviders[0].baseUrl, `${app.url}codex/v1`);
 
     const artifactResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
+      `${app.url}api/v1/config/preview-target-artifacts`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -110,11 +101,11 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(artifactPreview.artifacts.virtualProviderId, runtime.virtualProviders[0].id);
     assert.doesNotMatch(JSON.stringify(artifactPreview), /upstream-key/);
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/models`);
+    const modelsResponse = await fetch(`${app.url}codex/v1/models`);
     assert.equal(modelsResponse.status, 200);
     assert.deepEqual((await modelsResponse.json()).data.map((model) => model.id), ["gpt-5.6-sol"]);
 
-    const validateResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/validate`, {
+    const validateResponse = await fetch(`${app.url}api/v1/config/validate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -128,7 +119,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(validation.ok, true);
     assert.equal(validation.diff.total, 0);
 
-    const commitResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
+    const commitResponse = await fetch(`${app.url}api/v1/config/commit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -151,7 +142,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     multipleUpstreams.routes.codex.backends.push({
       ...multipleUpstreams.routes.codex.backends[0], enabled: false,
     });
-    const rejectedCommit = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
+    const rejectedCommit = await fetch(`${app.url}api/v1/config/commit`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ baseRevision: 2, config: multipleUpstreams }),
     });
@@ -160,7 +151,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(app.state.config.revision, 2);
 
     const pauseResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/cabletidy_codex/pause`,
+      `${app.url}api/v1/virtual-providers/cabletidy_codex/pause`,
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
     const paused = await pauseResponse.json();
@@ -169,7 +160,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(paused.runtime.virtualProviders[0].status, "paused");
 
     const startResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/virtual-providers/cabletidy_codex/start`,
+      `${app.url}api/v1/virtual-providers/cabletidy_codex/start`,
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
     const started = await startResponse.json();
@@ -177,7 +168,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(started.enabled, true);
     assert.equal(started.runtime.virtualProviders[0].status, "listening");
 
-    const resolveResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/tests/model-resolve`, {
+    const resolveResponse = await fetch(`${app.url}api/v1/tests/model-resolve`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ virtualProviderId: "cabletidy_codex", model: "sol", stream: true }),
@@ -185,7 +176,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     const resolved = await resolveResponse.json();
     assert.equal(resolved.upstreamModelId, "vendor-sol");
 
-    const proxyResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
+    const proxyResponse = await fetch(`${app.url}codex/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -198,7 +189,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     assert.equal(receivedAuthorization, "Bearer upstream-key");
     assert.equal(proxied.model, "sol");
 
-    const streamResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
+    const streamResponse = await fetch(`${app.url}codex/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -211,7 +202,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
       'data: {"model":"sol","output":[]}\n\ndata: [DONE]\n\n',
     );
     assert.equal(receivedAuthorization, "Bearer upstream-key");
-    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
+    const ignoredKeyResponse = await fetch(`${app.url}codex/v1/responses`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer ignored-client-key" },
       body: JSON.stringify({ model: "sol", input: "hello" }),
@@ -220,7 +211,7 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
     await ignoredKeyResponse.json();
     assert.equal(receivedAuthorization, "Bearer upstream-key");
 
-    const legacySessionResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/session`, {
+    const legacySessionResponse = await fetch(`${app.url}api/v1/session`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token: "not-used" }),
@@ -233,8 +224,6 @@ test("web control API and Codex Responses proxy form one working MVP slice", asy
 });
 
 test("upstream connectivity test can use an API key from the unsaved draft", async () => {
-  const upstreamPort = await freePort();
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-draft-secret-"));
   const paths = getPaths(home);
   let receivedAuthorization;
@@ -243,13 +232,14 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
     response.writeHead(200, { "content-type": "application/json" });
     response.end("{}");
   });
-  await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
+  await new Promise((resolve) => fakeUpstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = fakeUpstream.address().port;
 
-  await saveConfig(normalizeConfig({ web: { port: webPort } }), paths);
-  const app = await createApplication({ paths });
+  await saveConfig(normalizeConfig({}), paths);
+  const app = await createApplication({ paths, ephemeralPort: true });
 
   try {
-    const response = await fetch(`http://127.0.0.1:${webPort}/api/v1/tests/upstream`, {
+    const response = await fetch(`${app.url}api/v1/tests/upstream`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -279,8 +269,6 @@ test("upstream connectivity test can use an API key from the unsaved draft", asy
 });
 
 test("Anthropic Messages Virtual Provider keeps native wire format and maps models", async () => {
-  const upstreamPort = await freePort();
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-anthropic-"));
   const paths = getPaths(home);
   let receivedBody;
@@ -313,12 +301,12 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
       stop_reason: "end_turn",
     }));
   });
-  await new Promise((resolve) => fakeUpstream.listen(upstreamPort, "127.0.0.1", resolve));
+  await new Promise((resolve) => fakeUpstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = fakeUpstream.address().port;
 
   const config = {
     version: 1,
     revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
     upstreams: {
       anthropic: {
         id: "anthropic",
@@ -369,10 +357,10 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
   await saveConfig(config, paths);
   await saveSecrets({ "secret://upstreams/anthropic": "upstream-key" }, paths);
 
-  const app = await createApplication({ paths, claudeHome: path.join(home, "claude") });
+  const app = await createApplication({ paths, ephemeralPort: true, claudeHome: path.join(home, "claude") });
   try {
     const previewResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/config/preview-target-artifacts`,
+      `${app.url}api/v1/config/preview-target-artifacts`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -385,7 +373,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.doesNotMatch(JSON.stringify(preview), /upstream-key/);
 
     const applyResponse = await fetch(
-      `http://127.0.0.1:${webPort}/api/v1/targets/apply`,
+      `${app.url}api/v1/targets/apply`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -398,7 +386,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     const settings = JSON.parse(await fs.readFile(path.join(home, "claude", "settings.json"), "utf8"));
     assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, "cabletidy-local");
 
-    const response = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
+    const response = await fetch(`${app.url}claude-main/v1/messages`, {
       method: "POST",
       headers: {
         "anthropic-version": "2023-06-01",
@@ -417,7 +405,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.equal(receivedHeaders["anthropic-version"], "2023-06-01");
     assert.equal(body.model, "sonnet");
 
-    const streamResponse = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
+    const streamResponse = await fetch(`${app.url}claude-main/v1/messages`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -434,7 +422,7 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
     assert.match(streamText, /"model":"sonnet"/g);
     assert.doesNotMatch(streamText, /vendor-sonnet/);
 
-    const ignoredKeyResponse = await fetch(`http://127.0.0.1:${webPort}/claude-main/v1/messages`, {
+    const ignoredKeyResponse = await fetch(`${app.url}claude-main/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": "ignored-client-key" },
       body: JSON.stringify({ model: "sonnet", messages: [] }),
@@ -449,9 +437,6 @@ test("Anthropic Messages Virtual Provider keeps native wire format and maps mode
 });
 
 test("upstream errors are returned without contacting another configured upstream", async () => {
-  const primaryPort = await freePort();
-  const backupPort = await freePort();
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-single-upstream-"));
   const paths = getPaths(home);
   const calls = [];
@@ -471,14 +456,15 @@ test("upstream errors are returned without contacting another configured upstrea
     response.end(JSON.stringify({ object: "response", model: calls.at(-1).body.model, output: [] }));
   });
   await Promise.all([
-    new Promise((resolve) => primary.listen(primaryPort, "127.0.0.1", resolve)),
-    new Promise((resolve) => backup.listen(backupPort, "127.0.0.1", resolve)),
+    new Promise((resolve) => primary.listen(0, "127.0.0.1", resolve)),
+    new Promise((resolve) => backup.listen(0, "127.0.0.1", resolve)),
   ]);
+  const primaryPort = primary.address().port;
+  const backupPort = backup.address().port;
 
   const config = normalizeConfig({
     ...namedCodexConfigFixture({ codex: "codex" }),
     revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
     cables: {},
   });
   config.upstreams.codex.baseUrl = `http://127.0.0.1:${primaryPort}/v1`;
@@ -489,9 +475,9 @@ test("upstream errors are returned without contacting another configured upstrea
   config.virtualProviders.cabletidy_codex.models.coder.aliases = ["coder"];
   config.virtualProviders.cabletidy_codex.models.coder.upstreamModelId = "vendor-primary";
   await saveConfig(config, paths);
-  const app = await createApplication({ paths });
+  const app = await createApplication({ paths, ephemeralPort: true });
   try {
-    const response = await fetch(`http://127.0.0.1:${webPort}/codex/v1/responses`, {
+    const response = await fetch(`${app.url}codex/v1/responses`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -513,24 +499,23 @@ test("upstream errors are returned without contacting another configured upstrea
 });
 
 test("changing the shared listener requires restart and preserves the running configuration", async () => {
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-atomic-reload-"));
   const paths = getPaths(home);
 
   const config = normalizeConfig({
     ...namedCodexConfigFixture({ primary: "primary" }),
     revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
     cables: {},
   });
   await saveConfig(config, paths);
 
-  const app = await createApplication({ paths });
+  const app = await createApplication({ paths, ephemeralPort: true });
   try {
     const candidate = structuredClone(config);
+    const webPort = app.state.config.web.port;
     candidate.web.port = webPort === 65535 ? 65534 : webPort + 1;
 
-    const commitResponse = await fetch(`http://127.0.0.1:${webPort}/api/v1/config/commit`, {
+    const commitResponse = await fetch(`${app.url}api/v1/config/commit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -542,7 +527,7 @@ test("changing the shared listener requires restart and preserves the running co
     assert.equal(commitResponse.status, 422);
     assert.equal(commitBody.error.code, "web_listener_restart_required");
 
-    const modelsResponse = await fetch(`http://127.0.0.1:${webPort}/primary/v1/models`);
+    const modelsResponse = await fetch(`${app.url}primary/v1/models`);
     assert.equal(modelsResponse.status, 200);
     assert.equal((await modelsResponse.json()).data[0].id, "gpt-5.5");
     assert.equal(app.state.config.revision, 1);
@@ -553,22 +538,20 @@ test("changing the shared listener requires restart and preserves the running co
 });
 
 test("unsupported Virtual Provider ingress returns an explicit 501", async () => {
-  const webPort = await freePort();
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-unsupported-ingress-"));
   const paths = getPaths(home);
   const config = normalizeConfig({
     ...namedCodexConfigFixture({ chat: "chat" }),
     revision: 1,
-    web: { listenHost: "127.0.0.1", port: webPort },
     cables: {},
   });
   config.upstreams.chat.protocol = "openai.chat_completions";
   config.virtualProviders.cabletidy_chat.ingressProtocol = "openai.chat_completions";
   await saveConfig(config, paths);
 
-  const app = await createApplication({ paths });
+  const app = await createApplication({ paths, ephemeralPort: true });
   try {
-    const response = await fetch(`http://127.0.0.1:${webPort}/chat/v1/chat/completions`, {
+    const response = await fetch(`${app.url}chat/v1/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",

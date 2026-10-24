@@ -261,11 +261,8 @@ test('prompt selection and its version survive exported and imported line config
   const paths=getPaths(home),{config,snapshot}=fixture();
   config.cables.work.webSearch='indexed';
   config.cables.work.models.alias.supportsSearchTool=false;
-  const http=await import('node:http');
-  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
-  config.web.port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   await fs.writeFile(paths.config,JSON.stringify(config));
-  const app=await createApplication({paths,loadCodexCatalog:async()=>snapshot});
+  const app=await createApplication({paths,ephemeralPort:true,loadCodexCatalog:async()=>snapshot});
   t.after(async()=>{await app.close();await fs.rm(home,{recursive:true,force:true});});
   const post=async(endpoint,body)=>{
     const r=await fetch(`${app.url}api/v1/${endpoint}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -287,15 +284,13 @@ test('prompt selection and its version survive exported and imported line config
 });
 
 test('draft model preview uses the applied directory values without saving configuration',async t=>{
-  const fs=await import('node:fs/promises'),os=await import('node:os'),path=await import('node:path'),http=await import('node:http');
+  const fs=await import('node:fs/promises'),os=await import('node:os'),path=await import('node:path');
   const {createApplication}=await import('./helpers/native-app.mjs');
   const {getPaths}=await import('./helpers/native.mjs');
   const home=await fs.mkdtemp(path.join(os.tmpdir(),'cabletidy-effective-config-'));
   const paths=getPaths(home),{config,snapshot}=fixture();
-  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,'127.0.0.1',resolve));
-  config.web.port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   await fs.writeFile(paths.config,JSON.stringify(config));
-  const app=await createApplication({paths,loadCodexCatalog:async()=>snapshot});
+  const app=await createApplication({paths,ephemeralPort:true,loadCodexCatalog:async()=>snapshot});
   t.after(async()=>{await app.close();await fs.rm(home,{recursive:true,force:true});});
   const before=await(await fetch(`${app.url}api/v1/config`)).json();
   const binding=structuredClone(config.cables.work.models.alias);

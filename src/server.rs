@@ -153,8 +153,10 @@ pub async fn create(
         let existing = config::read_json(&paths.config).await?;
         let fresh = existing.is_none();
         let mut config = existing.as_ref().map(config::normalize).unwrap_or_else(config::defaults);
-        // Only test builds accept an ephemeral first listener; saved ports stay strict.
-        let ephemeral = cfg!(feature = "test-support") && fresh && preferred == 0;
+        // Seeded test fixtures opt in explicitly; ordinary restarts keep saved ports strict.
+        let test_ephemeral = cfg!(feature = "test-support")
+            && std::env::var("CABLETIDY_TEST_EPHEMERAL_PORT").as_deref() == Ok("1");
+        let ephemeral = test_ephemeral || (cfg!(feature = "test-support") && fresh && preferred == 0);
         if fresh && !ephemeral { config["web"]["port"] = json!(preferred); }
         let check = validation::validate_preserving_associations(&config, &config);
         if check["ok"] != true {
@@ -194,7 +196,15 @@ pub async fn create(
             state.event("config.association_invalid", warning.clone());
         }
         config::write_json(&paths.secrets, &secrets).await?;
-        if fresh { config::write_json(&paths.config, &config).await?; }
+        if fresh {
+            config::write_json(&paths.config, &config).await?;
+        } else if test_ephemeral {
+            // Preserve raw legacy fixtures: initialization changes only their listening port.
+            if let Some(mut initial) = existing {
+                initial["web"]["port"] = config["web"]["port"].clone();
+                config::write_json(&paths.config, &initial).await?;
+            }
+        }
         lifecycle::persist_runtime(&paths, &lock.identity, &config, &state.started).await?;
         Ok::<_, anyhow::Error>((state, listener, control))
     }.await;

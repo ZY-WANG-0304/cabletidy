@@ -38,12 +38,8 @@ async function fixture(t, configure = () => {}) {
     await new Promise(resolve => upstream.close(resolve));
     await fs.rm(home, { recursive: true, force: true });
   });
-  const probe = http.createServer();
-  await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
-  const webPort = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
   const upstreamPort = upstream.address().port;
-  const config = { ...codexConfigFixture(), web: { listenHost: "127.0.0.1", port: webPort } };
+  const config = { ...codexConfigFixture(), web: { listenHost: "127.0.0.1" } };
   config.upstreams.relay.baseUrl = `http://127.0.0.1:${upstreamPort}/left/v1?fixed=1`;
   config.upstreams.relay.secretRef = "secret://upstreams/relay";
   config.upstreams.other = {
@@ -63,7 +59,7 @@ async function fixture(t, configure = () => {}) {
   configure(config);
   await fs.writeFile(paths.config, JSON.stringify(config));
   await saveSecrets({ "secret://upstreams/relay": "left-key", "secret://upstreams/other": "right-key" }, paths);
-  app = await createApplication({ paths, codexHome: path.join(home, "client"), loadCodexCatalog: async () => catalogFixture() });
+  app = await createApplication({ paths, ephemeralPort: true, codexHome: path.join(home, "client"), loadCodexCatalog: async () => catalogFixture() });
   const call = async (url, body, headers = {}) => {
     const response = await fetch(`${app.url}${url}`, {
       ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }),

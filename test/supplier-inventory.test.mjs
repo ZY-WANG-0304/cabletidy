@@ -123,10 +123,8 @@ test("supported reasoning levels come from supply; Cable default overrides do no
   const budget=await edit(c,{type:"cable.inventory.save",cableId:"low",data:{suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),reasoning:{defaultBudget:4096}}},defaultModel:"pro"}});
   assert.throws(()=>planCodexCatalog(budget,budget.virtualProviders.cabletidy_low,catalogFixture()),/预算映射/);
   const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-reasoning-transfer-"));
-  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,"127.0.0.1",resolve));
-  const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
-  const paths=getPaths(home);await fs.writeFile(paths.config,JSON.stringify({...c,web:{...c.web,port}}));
-  const app=await createApplication({paths,loadCodexCatalog:async()=>catalogFixture()});
+  const paths=getPaths(home);await fs.writeFile(paths.config,JSON.stringify(c));
+  const app=await createApplication({paths,ephemeralPort:true,loadCodexCatalog:async()=>catalogFixture()});
   try {
     const exported=await (await fetch(`${app.url}api/v1/cables/export`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cableIds:["low","high"]})})).json();
     assert.equal(exported.config.cables.low.models.pro.reasoning.defaultEffort,"low");
@@ -340,10 +338,8 @@ test("legacy association violations stay blocked but can be repaired one record 
   for (const model of Object.values(c.suppliers.legacy.models)) model.interfaceCapabilities.responses.contextWindow=256000;
   c=normalizeConfig(c);
   const home=await fs.mkdtemp(path.join(os.tmpdir(),"cabletidy-association-repair-"));
-  const reservation=http.createServer();await new Promise(resolve=>reservation.listen(0,"127.0.0.1",resolve));
-  c.web.port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
   const paths=getPaths(home);await fs.writeFile(paths.config,JSON.stringify(c));
-  const app=await createApplication({paths,loadCodexCatalog:async()=>catalogFixture()});
+  const app=await createApplication({paths,ephemeralPort:true,loadCodexCatalog:async()=>catalogFixture()});
   t.after(async()=>{await app.close();await fs.rm(home,{recursive:true,force:true});});
   const request=async operation=>fetch(`${app.url}api/v1/config/commit`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({baseRevision:c.revision,operation})});
   c=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
