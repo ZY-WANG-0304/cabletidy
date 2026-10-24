@@ -218,7 +218,6 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                     &[
                         "name",
                         "nameMode",
-                        "aliases",
                         "activeSource",
                         "promptStrategy",
                         "promptModel",

@@ -3795,7 +3795,6 @@ function inventoryEditorBinding(form) {
   }
   if (!Object.keys(binding.codex).length) delete binding.codex;
   delete binding.reasoning.defaultEffort;
-  binding.aliases = read("aliases").split(",").map(s => s.trim()).filter(Boolean);
   if (form.querySelector('[name="clearDefaultBudget"]').value === "true") delete binding.reasoning.defaultBudget;
   // Preserve the pinned version until the user explicitly chooses or restores a prompt.
   if (form.querySelector('[name="promptModel"]').dataset.edited === "true" || !form.dataset.oldId) {
@@ -4013,7 +4012,7 @@ function openInventoryEditor(id = "") {
     <section><div class="subsection-header"><h3>使用配置</h3><button type="button" class="mini-button" data-action="reset-inventory-settings">恢复推荐配置</button></div><div class="inventory-prompt-controls"><label class="field"><span>使用的提示词</span><select name="promptModel" required>${optionList([promptValue],promptValue)}</select></label><button class="mini-button" type="button" data-action="refresh-inventory-catalog">刷新提示词目录</button></div><p class="field-hint" data-inventory-catalog-status></p><label class="settings-checkbox"><input type="checkbox" name="supportsSearchTool" ${binding.supportsSearchTool !== false ? "checked" : ""}><span>支持工具发现</span></label><p class="field-hint">默认采用实际/参考模型身份的配置；未设置身份时默认开启，可手动调整。</p><details class="inventory-prompt-preview"><summary>查看提示词原文</summary><pre data-inventory-prompt-preview></pre></details>
     <h4>Codex 上下文窗口</h4><p class="field-hint">恢复推荐配置会填入按模型身份及供给限制计算的窗口值；留空沿用客户端默认策略。使用窗口不能超过窗口上限。</p><div class="form-grid">${tokenLengthField("Codex 使用窗口","codexContextWindow",binding.codex?.contextWindow,"contextWindow",false,"沿用客户端默认策略")}${tokenLengthField("Codex 窗口上限","codexMaxContextWindow",binding.codex?.maxContextWindow,"contextWindow",false,"沿用客户端默认策略")}</div></section>
     <section><h3>Codex 生效配置</h3><div data-inventory-effective role="status" aria-live="polite"></div></section>
-    <details><summary>其他设置</summary>${field("别名（逗号分隔）","aliases",(binding.aliases || []).join(", "),"")}${binding.reasoning?.defaultBudget != null ? `<p class="field-hint" data-budget-notice>旧默认推理预算 ${esc(binding.reasoning.defaultBudget)} tokens 尚不可应用。</p><button type="button" class="mini-button" data-action="clear-inventory-budget">清除旧默认预算</button>` : ""}${id && !binding.promptModel && !native ? '<p class="field-hint">此绑定尚未选择原生模型提示词，请选择后再应用。</p>' : ""}</details></div>
+    ${binding.reasoning?.defaultBudget != null || id && !binding.promptModel && !native ? `<details><summary>其他设置</summary>${binding.reasoning?.defaultBudget != null ? `<p class="field-hint" data-budget-notice>旧默认推理预算 ${esc(binding.reasoning.defaultBudget)} tokens 尚不可应用。</p><button type="button" class="mini-button" data-action="clear-inventory-budget">清除旧默认预算</button>` : ""}${id && !binding.promptModel && !native ? '<p class="field-hint">此绑定尚未选择原生模型提示词，请选择后再应用。</p>' : ""}</details>` : ""}</div>
     <div class="config-form-footer"><button type="button" class="button" data-action="close-inventory-editor">取消</button><button class="button button-primary" type="submit">${id ? "保存模型配置" : "添加到线路"}</button></div></form><div class="toast-region" data-dialog-toasts aria-live="polite"></div></dialog>`;
   pageContent.insertAdjacentHTML("beforeend",html);
   const dialog = pageContent.querySelector('#inventory-model-dialog');
@@ -4173,7 +4172,7 @@ async function inventoryAction(action, element) {
     const active = binding.activeSource || 0;
     models[id] = {...clone(binding),sources:[binding.sources[active]],activeSource:0};
     binding.sources.forEach((source,index) => {
-      if (index !== active) Object.defineProperty(models,inventoryUniqueId(id,models),{value:{...clone(binding),aliases:[],sources:[source],activeSource:0},enumerable:true,writable:true,configurable:true});
+      if (index !== active) Object.defineProperty(models,inventoryUniqueId(id,models),{value:{...clone(binding),sources:[source],activeSource:0},enumerable:true,writable:true,configurable:true});
     });
     await updateInventoryModels(form,models,form.querySelector('[name="defaultModel"]').value);
   }

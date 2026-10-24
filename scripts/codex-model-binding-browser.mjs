@@ -61,6 +61,8 @@ try {
   assert.equal(await main.getByLabel('网页搜索',{exact:true}).inputValue(),'');
   await main.getByLabel('网页搜索',{exact:true}).selectOption('indexed');
   await page.getByRole('button',{name:'添加模型',exact:true}).click();
+  assert.equal(await field('aliases').count(),0);
+  assert.equal(await editor.locator('summary').filter({hasText:'其他设置'}).count(),0);
   assert.equal(await field('supportsSearchTool').isChecked(),true,'no identity defaults to enabled');
   await field('sourceSupplier').selectOption('vendor');
   await chooseModel('wire-one');
@@ -349,8 +351,8 @@ try {
   c=await config();
   assert.equal(c.cables.legacy.models.group.sources[0].modelId,'wire-two');
   assert.equal(c.cables.legacy.models['group-2'].sources[0].modelId,'wire-one');
-  assert.deepEqual(c.cables.legacy.models.group.aliases,['old-alias']);
-  assert.deepEqual(c.cables.legacy.models['group-2'].aliases,[]);
+  assert.equal(c.cables.legacy.models.group.aliases,undefined);
+  assert.equal(c.cables.legacy.models['group-2'].aliases,undefined);
   assert.equal(c.cables.legacy.defaultModel,'group');
   assert.deepEqual(errors,[]);
   console.log('Codex model editor browser checks passed: generated/editable IDs, recommendations, manual overrides, prompt preview, duplicate handling, atomic drafts, refresh, failed save, default selection, rename/delete, optional-default application and responsive layout.');

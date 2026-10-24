@@ -483,10 +483,11 @@ test('legacy window migration preserves client policy without claiming supplier 
   const {codexConfigFixture}=await import('./helpers/codex-fixture.mjs');
   const old=codexConfigFixture();
   const model=old.virtualProviders.cabletidy_relay.models['gpt-5.5'];
-  Object.assign(model,{identity:'gpt-5.5',identitySource:'confirmed',contextWindow:64000,maxOutputTokens:8192,capabilities:['streaming','tools','vision'],toolForms:['function','custom']});
+  Object.assign(model,{aliases:['old-name'],identity:'gpt-5.5',identitySource:'confirmed',contextWindow:64000,maxOutputTokens:8192,capabilities:['streaming','tools','vision'],toolForms:['function','custom']});
   const result=await applyConfigOperation(normalizeConfig(old),{type:'cable.inventory.migrate',cableId:'relay'},catalogFixture());
   assert.equal(result.config.suppliers.relay.models['VENDOR-GPT'].contextWindow,null);
   assert.equal(result.config.suppliers.relay.models['VENDOR-GPT'].maxOutputTokens,8192);
+  assert.equal(result.config.cables.relay.models['gpt-5.5'].aliases,undefined);
   assert.deepEqual(result.config.cables.relay.models['gpt-5.5'].codex,{contextWindow:64000,maxContextWindow:64000});
   const c=result.config;
   assert.equal(planCodexCatalog(c,c.virtualProviders.cabletidy_relay,catalogFixture()).catalog.models[0].context_window,64000);

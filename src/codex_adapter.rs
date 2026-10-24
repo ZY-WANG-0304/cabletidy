@@ -557,17 +557,6 @@ pub fn catalog_plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
             ));
         }
         names.push(name.clone());
-        for alias in array(&profile["aliases"])
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|alias| *alias != name)
-        {
-            let mut definition = entry.clone();
-            definition["slug"] = json!(alias);
-            definition["display_name"] = json!(alias);
-            names.push(alias.to_owned());
-            models.push(definition);
-        }
         models.push(entry);
     }
     if names.is_empty() {

@@ -14,7 +14,7 @@ const supply = (id,mid,identity,oldModelId="") => ({type:"supplier.model.save",s
 const binding = (sid,mid) => ({sources:[{supplierId:sid,modelId:mid,interfaceId:"responses"}],promptStrategy:"selected",promptModel:"gpt-5.5"});
 async function edit(c,op) { return (await applyConfigOperation(c,op,catalogFixture())).config; }
 
-test("supplier keys remain separate from client aliases and rename invalidates old references",async () => {
+test("supplier keys remain separate from client IDs and rename invalidates old references",async () => {
   let c=normalizeConfig({});
   c=await edit(c,supplier("official","https://example.invalid"));
   c=await edit(c,supply("official","wire-pro","deepseek-v4-pro"));
@@ -95,7 +95,7 @@ test("multi-supplier Responses forwarding, discovery, history guard and deletion
   await commit({type:"cable.delete",cableId:"work"});assert.ok(c.suppliers.first);assert.ok(c.suppliers.second);
 });
 
-test("native aliases retain versioned instructions and restrict declared supply efforts",async()=>{
+test("native client models retain versioned instructions and restrict declared supply efforts",async()=>{
   let c=normalizeConfig({});c=await edit(c,supplier("native","https://example.invalid"));
   const model={...facts("gpt-5.5"),reasoning:{modes:["effort"],efforts:["high"]}};
   c=await edit(c,{type:"supplier.model.save",supplierId:"native",data:{modelId:"wire-gpt",model}});
@@ -202,8 +202,9 @@ test("inventory export/import roundtrip isolates supplier collisions and credent
   let c=(await call("config")).body.config;
   const commit=async operation=>{const r=await call("config/commit",{baseRevision:c.revision,operation});assert.equal(r.status,200,JSON.stringify(r.body));c=r.body.config;};
   await commit(supplier("vendor","https://example.invalid/v1?credential=private"));await commit(supply("vendor","wire","deepseek-v4-pro"));
-  await commit({type:"cable.inventory.create",data:{id:"work",suppliers:["vendor"],models:{alias:{...binding("vendor","wire"),codex:{contextWindow:64000,maxContextWindow:96000}}},defaultModel:"alias"}});
+  await commit({type:"cable.inventory.create",data:{id:"work",suppliers:["vendor"],models:{alias:{...binding("vendor","wire"),aliases:["old-name"],codex:{contextWindow:64000,maxContextWindow:96000}}},defaultModel:"alias"}});
   const bundle=(await call("cables/export",{cableIds:["work"]})).body;
+  assert.equal(bundle.config.cables.work.models.alias.aliases,undefined);
   assert.deepEqual(bundle.config.cables.work.models.alias.codex,{contextWindow:64000,maxContextWindow:96000});
   assert.equal(bundle.config.suppliers.vendor.models.wire.contextWindow,128000);
   assert.equal(bundle.version,2);assert.equal(bundle.config.suppliers.vendor.interfaces.responses.baseUrl,"https://example.invalid/v1");
@@ -212,7 +213,9 @@ test("inventory export/import roundtrip isolates supplier collisions and credent
   assert.equal(bundle.config.suppliers.vendor.interfaces.responses.supportsResponseIdContinuation,false);
   assert.deepEqual(bundle.config.suppliers.vendor.models.wire.interfaceCapabilities.responses.toolForms,["function","custom"]);assert.deepEqual(bundle.config.cables.work.models.alias.sources,binding("vendor","wire").sources);
   assert.doesNotMatch(JSON.stringify(bundle),/supplier-fixture-key|private/);
+  bundle.config.cables.work.models.alias.aliases=["old-name"];
   let r=await call("cables/import",{bundle,baseRevision:c.revision,useImportedCredentials:false,choices:{work:"create"}});assert.equal(r.status,200,JSON.stringify(r.body));c=r.body.config;
+  assert.equal(c.cables["work-import-2"].models.alias.aliases,undefined);
   const imported=c.cables["work-import-2"];assert.deepEqual(imported.models.alias.codex,{contextWindow:64000,maxContextWindow:96000});assert.equal(imported.models.alias.sources[0].supplierId,"vendor-2");assert.equal(c.suppliers["vendor-2"].interfaces.responses.secretConfigured,false);
   assert.deepEqual(c.suppliers["vendor-2"].models.wire.interfaceCapabilities.responses.toolForms,["function","custom"]);
   assert.equal(c.suppliers["vendor-2"].models.wire.history,undefined);assert.equal(c.suppliers.vendor.interfaces.responses.secretConfigured,true);
@@ -394,16 +397,32 @@ test("interface facts and reasoning budgets are validated without enabling user-
   assert.throws(()=>resolveRequest(c,c.virtualProviders.cabletidy_budget,{model:"pro"}),/暂无内置映射/);
 });
 
-test("explicit Codex aliases publish the same instructions and route to the supplier model ID",async()=>{
+test("Codex bindings discard legacy aliases and publish only the client model ID",async()=>{
   let c=normalizeConfig({});c=await edit(c,supplier("vendor","https://example.invalid"));c=await edit(c,supply("vendor","wire","deepseek-v4-pro"));
-  c=await edit(c,{type:"cable.inventory.create",data:{id:"aliases",suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),aliases:["quick","token"]}},defaultModel:"pro"}});
-  const plan=planCodexCatalog(c,c.virtualProviders.cabletidy_aliases,catalogFixture());
-  assert.deepEqual(new Set(plan.catalog.models.map(model=>model.slug)),new Set(["pro","quick","token"]));
-  const prompt=plan.catalog.models.find(model=>model.slug==="pro").base_instructions;
-  for(const alias of ["quick","token"]) {
-    assert.equal(plan.catalog.models.find(model=>model.slug===alias).base_instructions,prompt);
-    assert.equal(resolveRequest(c,c.virtualProviders.cabletidy_aliases,{model:alias}).upstreamModelId,"wire");
-  }
+  c=await edit(c,{type:"cable.inventory.create",data:{id:"single",suppliers:["vendor"],models:{pro:{...binding("vendor","wire"),aliases:["quick","token"]}},defaultModel:"pro"}});
+  const check=current=>{
+    assert.equal(current.cables.single.models.pro.aliases,undefined);
+    const provider=current.virtualProviders.cabletidy_single;
+    assert.equal(provider.models.pro.aliases,undefined);
+    const plan=planCodexCatalog(current,provider,catalogFixture());
+    assert.deepEqual(plan.catalog.models.map(model=>model.slug),["pro"]);
+    assert.deepEqual(plan.models,["pro"]);
+    assert.equal(resolveRequest(current,provider,{model:"pro"}).upstreamModelId,"wire");
+    for(const alias of ["quick","token"]) assert.throws(()=>resolveRequest(current,provider,{model:alias}),/未在当前 Cable 中开放/);
+  };
+  check(c);
+  c.cables.single.models.pro.aliases=["quick","token"];
+  c=normalizeConfig(c);
+  check(c);
+  assert.deepEqual(normalizeConfig(c),c);
+  c=await edit(c,{type:"cable.inventory.save",cableId:"single",data:{suppliers:["vendor"],models:{pro:{...c.cables.single.models.pro,aliases:["quick","token"]}},defaultModel:"pro"}});
+  check(c);
+  // Missing source profiles must not revive aliases either.
+  delete c.suppliers.vendor.models.wire;
+  c.cables.single.models.pro.aliases=["quick"];
+  c=normalizeConfig(c);
+  assert.equal(c.virtualProviders.cabletidy_single.models.pro.aliases,undefined);
+  assert.throws(()=>resolveRequest(c,c.virtualProviders.cabletidy_single,{model:"quick"}),/未在当前 Cable 中开放/);
 });
 
 test("supplier resource operations generate internal IDs and select protocol authentication", async () => {

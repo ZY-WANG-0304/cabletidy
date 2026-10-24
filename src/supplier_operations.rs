@@ -277,7 +277,7 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                     bail!("同一上游模型 ID 的旧能力不同，请先人工确认供给事实");
                 }
                 inventory[mid] = facts;
-                bindings[name] = json!({"sources":[{"supplierId":uid,"modelId":mid,"interfaceId":"responses"}],"aliases":p.get("aliases").cloned().unwrap_or(json!([])),"promptStrategy":"default"});
+                bindings[name] = json!({"sources":[{"supplierId":uid,"modelId":mid,"interfaceId":"responses"}],"promptStrategy":"default"});
                 if p["contextWindow"].as_u64().is_some_and(|n| n > 0) {
                     // Legacy windows described client policy, not verified supplier capacity.
                     bindings[name]["codex"] = json!({"contextWindow":p["contextWindow"],"maxContextWindow":p["contextWindow"]});

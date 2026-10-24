@@ -540,7 +540,6 @@ pub fn profile(c: &Value, cable: &Value, binding: &Value) -> Result<Value> {
             selected_profile = facts;
         }
     }
-    selected_profile["aliases"] = binding.get("aliases").cloned().unwrap_or(json!([]));
     selected_profile["clientReasoning"] = binding.get("reasoning").cloned().unwrap_or(json!({}));
     selected_profile["clientContext"] = binding.get("codex").cloned().unwrap_or(json!({}));
     selected_profile["promptStrategy"] = binding
@@ -631,7 +630,7 @@ pub fn compile(c: &mut Value) {
                     profile
                 }
                 Err(e) => {
-                    json!({"managedModel":true,"sourceError":e.to_string(),"aliases":binding.get("aliases").cloned().unwrap_or(json!([])),"sources":binding["sources"]})
+                    json!({"managedModel":true,"sourceError":e.to_string(),"sources":binding["sources"]})
                 }
             };
         }

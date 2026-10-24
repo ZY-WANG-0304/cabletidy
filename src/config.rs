@@ -184,6 +184,9 @@ pub fn normalize(input: &Value) -> Value {
     for b in c["cables"].as_object_mut().unwrap().values_mut() {
         if b["managedModels"] == true {
             remove(b, &["name"]);
+            for (_, binding) in b["models"].as_object_mut().into_iter().flatten() {
+                remove(binding, &["aliases"]);
+            }
         }
         remove(b, &["providerFormat", "legacyCodex"]);
         if let Some(v) = b.get_mut("codex") {
