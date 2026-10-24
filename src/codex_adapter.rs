@@ -550,7 +550,7 @@ pub fn catalog_plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
             Err(e) => bail!("默认模型不可用: {e:#}"),
         };
         if suppliers::compatible(text(&profile["identity"])) {
-            warnings.push(format!("{name}: 首期兼容规则开放直接函数工具和 apply_patch；不发布客户端特殊 tool_search 与 multi_agent_v1，相关旧会话需新建。"));
+            warnings.push(format!("{name}: 兼容规则开放直接函数工具、apply_patch 及 Responses 网页搜索透传；不发布客户端特殊 tool_search 与 multi_agent_v1，相关旧会话需新建。"));
             warnings.push(format!(
                 "{name}: 使用所选 Codex 原生提示词；真实模型验证状态: {}",
                 profile["validation"].as_str().unwrap_or("未实测")
@@ -690,9 +690,13 @@ pub fn request_edits(
                     continue;
                 }
                 check_tool_forms(source, p, tool)?;
-                if compatible && kind != "function" && !(kind == "custom" && name == "apply_patch")
+                // Hosted Responses search is executed by the upstream service. Preserve
+                // its mode/options; model identity alone cannot establish API support.
+                if compatible
+                    && !["function", "web_search", "web_search_preview"].contains(&kind)
+                    && !(kind == "custom" && name == "apply_patch")
                 {
-                    bail!("兼容模型仅支持 function 工具及 apply_patch 自定义工具；不支持工具类型 {kind}");
+                    bail!("当前兼容适配支持 function、apply_patch 自定义工具及 Responses 网页搜索；尚未适配工具类型 {kind}");
                 }
             }
             let mut i = 0;

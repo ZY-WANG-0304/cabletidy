@@ -1710,6 +1710,7 @@ test("separate configurations each keep their own upstream and model mappings", 
 
 test("advanced model editor exposes one upstream and saves only its model mapping", async () => {
   const app = await controller();
+  assert.doesNotMatch(app.read("renderCableDetail()"), /migrate-cable|迁移到供应商模型目录/);
   const models = app.read("renderModels()");
   assert.equal((models.match(/name="upstreamId"/g) || []).length, 0);
   assert.doesNotMatch(models, /CableTidy Model ID/);

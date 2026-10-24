@@ -183,7 +183,18 @@ pub fn normalize(input: &Value) -> Value {
     }
     for b in c["cables"].as_object_mut().unwrap().values_mut() {
         if b["managedModels"] == true {
-            remove(b, &["name"]);
+            remove(b, &["name", "legacyPassthrough"]);
+            // Supplier membership follows model bindings, including disabled sources.
+            // Prune stale references from older saves without inventing missing selections.
+            if b["models"].is_object() {
+                let referenced: Vec<_> = entries(&b["models"])
+                    .flat_map(|(_, binding)| array(&binding["sources"]))
+                    .map(|source| source["supplierId"].clone())
+                    .collect();
+                if let Some(selected) = b["suppliers"].as_array_mut() {
+                    selected.retain(|sid| referenced.contains(sid));
+                }
+            }
             for (_, binding) in b["models"].as_object_mut().into_iter().flatten() {
                 remove(binding, &["aliases"]);
             }

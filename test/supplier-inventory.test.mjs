@@ -222,6 +222,16 @@ test("inventory export/import roundtrip isolates supplier collisions and credent
   const withKeys=(await call("cables/export",{cableIds:["work"],includeCredentials:true})).body;
   r=await call("cables/import",{bundle:withKeys,baseRevision:c.revision,useImportedCredentials:true,choices:{work:"create"}});assert.equal(r.status,200,JSON.stringify(r.body));
   assert.equal(r.body.config.suppliers["vendor-3"].interfaces.responses.secretConfigured,true);assert.equal(r.body.config.cables["work-import-3"].models.alias.sources[0].modelId,"wire");
+  for (const [file,useImportedCredentials,expected] of [[bundle,false,false],[withKeys,false,false],[withKeys,true,true]]) {
+    c=(await call("config")).body.config;
+    const updated=await call("cables/import",{bundle:file,baseRevision:c.revision,useImportedCredentials,choices:{work:"update"}});
+    assert.equal(updated.status,200,JSON.stringify(updated.body));
+    const next=updated.body.config;
+    const sid=next.cables.work.models.alias.sources[0].supplierId;
+    assert.notEqual(sid,"vendor");
+    assert.equal(next.suppliers[sid].interfaces.responses.secretConfigured,expected);
+    assert.equal(next.suppliers.vendor.interfaces.responses.secretConfigured,true);
+  }
 });
 
 test("Codex Cable activation restores the previous Cable and protects user edits",async t=>{
@@ -255,7 +265,7 @@ test("Responses streaming tools, cleartext reasoning history and DeepSeek effort
   const history=[{role:"user",content:"test"},...output,{type:"function_call_output",call_id:"exec",output:"/tmp"},{type:"custom_tool_call_output",call_id:"patch-call",output:"success"},{role:"user",content:"continue"}];
   const next=await post("stream/v1/responses",{model:"pro",stream:true,input:history,reasoning:{effort:"xhigh"},tools});assert.equal(next.status,200);await next.text();assert.deepEqual(received[1].input,history);
   const isolated=await post("api/v1/targets/isolated",{cableId:"stream"});assert.equal(isolated.status,200);const bundle=(await isolated.json()).bundle;assert.equal(bundle.files.length,2);assert.doesNotMatch(JSON.stringify(bundle),/supplier-fixture-key/);
-  const bad=await post("stream/v1/responses",{model:"pro",input:history,tools:[{type:"web_search"}]});assert.equal(bad.status,422);assert.equal(received.length,2);
+  const bad=await post("stream/v1/responses",{model:"pro",input:history,tools:[{type:"computer_use_preview"}]});assert.equal(bad.status,422);assert.equal(received.length,2);
 });
 
 
@@ -651,4 +661,72 @@ test("native remote history requires declared continuation and undeclared custom
   const namespaced={...custom,tools:[{type:"namespace",name:"workspace",tools:custom.tools}]};
   assert.equal((await call("native-state/v1/responses",namespaced)).status,422);
   assert.equal(received.length,1);
+});
+
+test('saving model bindings releases unused suppliers but keeps referenced suppliers protected',async()=>{
+  let c=normalizeConfig({});
+  for(const sid of ['one','two']) {
+    c=await edit(c,supplier(sid,'https://example.invalid'));
+    c=await edit(c,supply(sid,'wire','deepseek-v4-pro'));
+  }
+  c=await edit(c,{type:'cable.inventory.create',data:{id:'work',suppliers:['one','two'],models:{a:binding('one','wire'),b:binding('two','wire')}}});
+  c=await edit(c,{type:'cable.inventory.save',cableId:'work',data:{suppliers:['one','two'],models:{a:binding('one','wire')}}});
+  assert.deepEqual(c.cables.work.suppliers,['one']);
+  c.cables.work.suppliers.push('two');
+  c.cables.empty={id:'empty',target:'codex',virtualProvider:'cabletidy_empty',managedModels:true,suppliers:['two'],models:{}};
+  c=normalizeConfig(c);
+  assert.deepEqual(c.cables.work.suppliers,['one'],'old partially used selections are pruned on load');
+  assert.deepEqual(c.cables.empty.suppliers,[],'old empty lines release stale references on load');
+  assert.ok(c.suppliers.two);
+  c=await edit(c,{type:'supplier.delete',supplierId:'two'});
+  await assert.rejects(edit(c,{type:'supplier.delete',supplierId:'one'}),/解除供应商引用/);
+  c=await edit(c,{type:'cable.inventory.save',cableId:'work',data:{suppliers:['one'],models:{}}});
+  assert.deepEqual(c.cables.work.suppliers,[]);
+  assert.ok(c.suppliers.one);
+  c=await edit(c,{type:'supplier.delete',supplierId:'one'});
+  assert.deepEqual(c.suppliers,{});
+});
+
+test('Responses web search preserves tool options, choices, results and upstream errors for compatible models',async t=>{
+  const received=[];
+  const searchResult={type:'web_search_call',id:'ws_fixture',status:'completed',action:{type:'search',query:'fixture',sources:[{type:'url',url:'https://example.invalid/source'}]}};
+  const answer={type:'message',id:'msg_fixture',role:'assistant',status:'completed',content:[{type:'output_text',text:'Fixture answer',annotations:[{type:'url_citation',start_index:0,end_index:7,url:'https://example.invalid/source',title:'Fixture'}]}]};
+  const upstream=http.createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req)raw+=chunk;
+    const body=JSON.parse(raw);received.push(body);
+    if(body.input==='upstream-reject') {res.writeHead(400,{'content-type':'application/json'});res.end(JSON.stringify({error:{type:'invalid_request_error',code:'unsupported_search',message:'Fixture interface does not support web_search'}}));return;}
+    const response={id:'r_fixture',model:body.model,status:'completed',output:[searchResult,answer]};
+    if(body.stream) {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      for(const event of [{type:'response.output_item.done',output_index:0,item:searchResult},{type:'response.output_item.done',output_index:1,item:answer},{type:'response.completed',response}])res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      res.end();
+    } else {res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(response));}
+  });
+  await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cabletidy-web-search-'));
+  const app=await createApplication({paths:getPaths(home),loadCodexCatalog:async()=>catalogFixture()});
+  t.after(async()=>{await app.close();await new Promise(resolve=>upstream.close(resolve));await fs.rm(home,{recursive:true,force:true});});
+  const post=(endpoint,body)=>fetch(`${app.url}${endpoint}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  let c=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
+  const commit=async operation=>{const r=await post('api/v1/config/commit',{baseRevision:c.revision,operation});const value=await r.json();assert.equal(r.status,200,JSON.stringify(value));c=value.config;};
+  await commit(supplier('vendor',`http://127.0.0.1:${upstream.address().port}/v1`));
+  await commit(supply('vendor','wire','deepseek-v4-pro'));
+  await commit({type:'cable.inventory.create',data:{id:'search',suppliers:['vendor'],models:{pro:binding('vendor','wire')},defaultModel:'pro'}});
+  for(const type of ['web_search','web_search_preview']) for(const stream of [false,true]) {
+    const tool=type==='web_search' ? {type,external_web_access:false,search_context_size:'high',filters:{allowed_domains:['example.invalid']},user_location:{type:'approximate',country:'CN'}} : {type,search_context_size:'low'};
+    const body={model:'pro',input:[{role:'user',content:'Ordinary question'},searchResult,answer,{role:'user',content:'Continue'}],stream,tools:[{type:'tool_search',execution:'client'},tool],tool_choice:{type},include:['web_search_call.action.sources']};
+    const r=await post('search/v1/responses',body);
+    assert.equal(r.status,200);
+    const text=await r.text();
+    const reply=stream ? text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>JSON.parse(line.slice(6))).find(event=>event.type==='response.completed').response : JSON.parse(text);
+    assert.deepEqual(reply.output,[searchResult,answer]);
+    const sent=received.at(-1);
+    assert.deepEqual(sent.tools,[tool]);assert.deepEqual(sent.input,body.input);assert.deepEqual(sent.tool_choice,body.tool_choice);assert.deepEqual(sent.include,body.include);
+    assert.equal(sent.model,'wire');
+  }
+  const rejected=await post('search/v1/responses',{model:'pro',input:'upstream-reject',tools:[{type:'web_search',external_web_access:true}]});
+  assert.equal(rejected.status,400);
+  assert.equal((await rejected.json()).error.code,'unsupported_search');
+  assert.equal(received.length,5);
+  assert.equal((await(await fetch(`${app.url}api/v1/config`)).json()).config.cables.search.webSearch,undefined);
 });

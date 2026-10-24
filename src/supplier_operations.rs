@@ -11,7 +11,6 @@ pub fn applies(kind: &str) -> bool {
             "cable.inventory.create",
             "cable.inventory.save",
             "cable.inventory.rename",
-            "cable.inventory.migrate",
         ]
         .contains(&kind)
 }
@@ -240,54 +239,6 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                 id = next_id.to_owned();
             }
             c["cables"][&id] = cable;
-        } else if kind == "cable.inventory.migrate" {
-            let cable = c["cables"].get(&id).context("线路不存在")?.clone();
-            if cable["target"] != "codex" {
-                bail!("首期迁移仅支持 Codex 线路");
-            }
-            if cable["managedModels"] == true {
-                bail!("线路已使用供应商目录");
-            }
-            let pid = text(&cable["virtualProvider"]);
-            let provider = c["virtualProviders"][pid].clone();
-            let backends = array(&c["routes"][text(&provider["route"])]["backends"]);
-            if backends.len() != 1 {
-                bail!("旧线路上游无效");
-            }
-            let uid = text(&backends[0]["upstream"]).to_owned();
-            let upstream = c["upstreams"][&uid].clone();
-            if c["suppliers"].get(&uid).is_some() {
-                bail!("同名供应商已存在，请使用显式模型选择重新配置");
-            }
-            if entries(&provider["models"]).next().is_none() {
-                bail!("旧透传线路保留原路径，请新建显式选择的 Cable");
-            }
-            let mut inventory = json!({});
-            let mut bindings = json!({});
-            for (name, p) in entries(&provider["models"]) {
-                if !nonempty(&p["identity"]) || !nonempty(&p["identitySource"]) {
-                    bail!("旧线路未记录实际模型身份依据，不能由客户端名称猜测；保留原路径，请先确认供给事实再新建目录 Cable");
-                }
-                let mid = p["upstreamModelId"].as_str().unwrap_or(name);
-                let facts = json!({"identity":p["identity"],"identitySource":p["identitySource"],"interfaces":["responses"],
-                    "capabilities":crate::model::capabilities(p),"inputModalities":p["codex"].get("inputModalities").cloned().unwrap_or(json!(["text"])),
-                    "contextWindow":null,"maxOutputTokens":p["maxOutputTokens"],"reasoning":p["reasoning"],
-                    "interfaceCapabilities":{"responses":{"toolForms":p.get("toolForms").cloned().unwrap_or(json!([]))}}});
-                if inventory.get(mid).is_some_and(|old| old != &facts) {
-                    bail!("同一上游模型 ID 的旧能力不同，请先人工确认供给事实");
-                }
-                inventory[mid] = facts;
-                bindings[name] = json!({"sources":[{"supplierId":uid,"modelId":mid,"interfaceId":"responses"}],"promptStrategy":"default"});
-                if p["contextWindow"].as_u64().is_some_and(|n| n > 0) {
-                    // Legacy windows described client policy, not verified supplier capacity.
-                    bindings[name]["codex"] = json!({"contextWindow":p["contextWindow"],"maxContextWindow":p["contextWindow"]});
-                }
-            }
-            c["suppliers"][&uid] = json!({"name":upstream["name"],"interfaces":{"responses":upstream},"models":inventory});
-            c["cables"][&id]["suppliers"] = json!([uid]);
-            c["cables"][&id]["models"] = bindings;
-            c["cables"][&id]["managedModels"] = json!(true);
-            c["cables"][&id]["legacyPassthrough"] = json!({"upstream":uid});
         } else {
             if !data.is_object() || !data["models"].is_object() || !data["suppliers"].is_array() {
                 bail!("请填写 线路ID、供应商选择及模型绑定");
@@ -317,7 +268,7 @@ pub fn apply(current: &Value, op: &Value) -> Result<Value> {
                 c["cables"][&id] = json!({"id":id,"target":"codex","targetFormat":"codex.config.toml.v1","virtualProvider":format!("cabletidy_{id}"),"codex":{},"managedModels":true});
                 set_inventory_web_search(&mut c["cables"][&id], data)?;
             } else if c["cables"][&id]["managedModels"] != true {
-                bail!("请先迁移该线路到供应商模型目录");
+                bail!("旧格式线路不能转换，请单独创建供应商目录版线路");
             }
             if data.get("id").is_some_and(|next| next != &id) {
                 bail!("修改线路ID请使用基本信息修改操作");

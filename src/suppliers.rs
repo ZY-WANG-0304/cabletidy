@@ -644,9 +644,6 @@ pub fn compile(c: &mut Value) {
         if let Some(default) = cable.get("defaultModel") {
             c["virtualProviders"][&pid]["defaultModel"] = default.clone();
         }
-        if let Some(fallback) = cable.get("legacyPassthrough") {
-            c["virtualProviders"][&pid]["legacyPassthrough"] = fallback.clone();
-        }
     }
 }
 

@@ -59,7 +59,7 @@ pub fn resolve(p: &Value, requested: Option<&Value>) -> Result<Resolution, Resol
             matched_model: Some(id.clone()),
             profile: profile.clone(),
         }),
-        None if crate::suppliers::managed(p) && p.get("legacyPassthrough").is_none() => Err(error(
+        None if crate::suppliers::managed(p) => Err(error(
             "model_not_bound",
             format!("模型 {key} 未在当前 Cable 中开放"),
         )),
@@ -123,10 +123,6 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
     let backends = if crate::suppliers::managed(p) && !profile.is_null() {
         selected_backend =
             vec![json!({"upstream":profile["upstream"],"enabled":profile["sourceEnabled"]})];
-        &selected_backend[..]
-    } else if crate::suppliers::managed(p) && profile.is_null() {
-        selected_backend =
-            vec![json!({"upstream":p["legacyPassthrough"]["upstream"],"enabled":true})];
         &selected_backend[..]
     } else {
         backends

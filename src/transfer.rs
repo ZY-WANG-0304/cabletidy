@@ -249,9 +249,6 @@ fn portable(c: &Value, include_credentials: bool) -> Result<Value> {
                 }
                 b2["models"][name] = model;
             }
-            if b["legacyPassthrough"].is_object() {
-                b2["legacyPassthrough"] = fields(&b["legacyPassthrough"], &["upstream"]);
-            }
         }
         if b.get("codex").is_some() {
             b2["codex"] = json!({});
@@ -306,9 +303,6 @@ pub fn export(c: &Value, ids: &Value, secrets: &Value, include_credentials: bool
             if !c["upstreams"][uid].is_object() {
                 bail!("上游连接不存在");
             }
-            subset["upstreams"][uid] = c["upstreams"][uid].clone();
-        }
-        if let Some(uid) = b["legacyPassthrough"]["upstream"].as_str() {
             subset["upstreams"][uid] = c["upstreams"][uid].clone();
         }
     }
@@ -578,17 +572,6 @@ pub fn import(
                         .get(text(&supply["supplierId"]))
                         .context("来源供应商不存在")?);
                 }
-            }
-            if let Some(old_uid) = b["legacyPassthrough"]["upstream"].as_str() {
-                let uid = unique_id(old_uid, &mut used_upstreams);
-                let mut upstream = source["upstreams"][old_uid].clone();
-                upstream["id"] = json!(uid);
-                upstream["secretRef"] = json!(format!("secret://imports/{}", uuid::Uuid::new_v4()));
-                if use_credentials && config::nonempty(&bundle["upstreamSecrets"][old_uid]) {
-                    imported_secrets[&uid] = bundle["upstreamSecrets"][old_uid].clone();
-                }
-                result["upstreams"][&uid] = upstream;
-                imported["legacyPassthrough"]["upstream"] = json!(uid);
             }
             summaries.push(json!({"id":id,"name":name,"target":b["target"],"sourceId":old_id,"sourceName":base_name,"conflict":conflict,"existingName":existing.map(|b| b["name"].as_str().unwrap_or(old_id)),"action":if update {"update"} else {"create"}}));
             result["cables"][&id] = imported;

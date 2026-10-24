@@ -80,8 +80,8 @@ try {
       reasoning: { modes: ["effort"], efforts: ["high"] }, contextWindow: Math.min(128000, native.context_window),
     } } });
   }
-  // This fixture exercises the supported function/apply_patch contract, without web search.
-  await commit({ type: "cable.inventory.create", data: {id:"smoke", webSearch:"disabled", suppliers: ["fixture"], defaultModel: "native", models: Object.fromEntries(["native", "compatible"].map(id => [id, { sources: [{ supplierId: "fixture", modelId: `wire-${id}`, interfaceId: "responses" }], promptStrategy:"selected",promptModel:id === "native" ? promptSource.slug : compatiblePrompt.slug,...(id === "native" ? {codex:{contextWindow:64000,maxContextWindow:96000}} : {}),reasoning:{defaultEffort:"high"} }])) } });
+  // Start with inherited search; exercise explicit modes without changing their semantics.
+  await commit({ type: "cable.inventory.create", data: {id:"smoke", suppliers: ["fixture"], defaultModel: "native", models: Object.fromEntries(["native", "compatible"].map(id => [id, { sources: [{ supplierId: "fixture", modelId: `wire-${id}`, interfaceId: "responses" }], promptStrategy:"selected",promptModel:id === "native" ? promptSource.slug : compatiblePrompt.slug,...(id === "native" ? {codex:{contextWindow:64000,maxContextWindow:96000}} : {}),reasoning:{defaultEffort:"high"} }])) } });
   const bundle = (await post("targets/isolated", { cableId: "smoke" })).bundle;
   const generated = bundle.files.filter(file => file.path.endsWith(".json")).map(file => JSON.parse(file.contents)).find(value => Array.isArray(value.models));
   const generatedCompatible = generated?.models.find(model => model.slug === "compatible");
@@ -97,7 +97,13 @@ try {
   const codexHome = path.join(home, "isolated");
   await fs.mkdir(codexHome);
   for (const file of bundle.files) await fs.writeFile(path.join(codexHome, file.path), file.contents);
-  for (const model of ["native", "compatible"]) {
+  for (const [model,mode] of [["native",null],["compatible",null],["compatible","cached"],["compatible","indexed"],["compatible","live"],["compatible","disabled"]]) {
+    await commit({type:"cable.inventory.rename",cableId:"smoke",data:{id:"smoke",target:"codex",webSearch:mode}});
+    const isolated=(await post("targets/isolated",{cableId:"smoke"})).bundle;
+    for (const file of isolated.files) await fs.writeFile(path.join(codexHome,file.path),file.contents);
+    const configText=await fs.readFile(path.join(codexHome,"config.toml"),"utf8");
+    if(mode) assert.ok(configText.includes(`web_search = "${mode}"`));
+    else assert.doesNotMatch(configText,/^web_search\s*=/m);
     const before = requests.length;
     await runCodex(codexHome, model);
     assert.ok(requests.length > before, "Codex must call the gateway");
@@ -115,9 +121,15 @@ try {
       }
       if (model === "compatible") {
         assert.ok(request.body.tools.some(tool => tool.type === "custom" && tool.name === "apply_patch"));
-        assert.ok(request.body.tools.every(tool => tool.type === "function" || tool.type === "custom"));
+        assert.ok(request.body.tools.every(tool => ["function","custom","web_search","web_search_preview"].includes(tool.type)));
+        const search=request.body.tools.find(tool=>["web_search","web_search_preview"].includes(tool.type));
+        assert.equal(Boolean(search),mode !== "disabled",`search mode ${mode || "inherited"}`);
+        if(mode === "cached") assert.equal(search.external_web_access,false);
       }
     }
+    const saved=(await(await fetch(`${app.url}api/v1/config`)).json()).config;
+    assert.equal(saved.cables.smoke.webSearch ?? null,mode,"requests must not change the search setting");
+    console.log(`${model}: ${mode || "inherited"} search passed`);
   }
   console.log(`${version}: native ${native.slug} and compatible Responses smoke checks passed (local mock only).`);
 } finally {

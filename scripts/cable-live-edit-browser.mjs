@@ -219,6 +219,20 @@ try {
   const restored=readCodexConfig(await codexFile());
   assert.equal(restored.model_provider,undefined);
   for (const id of ['work','renamed-work','final-work']) assert.equal(restored.model_providers?.[`cabletidy_${id}`],undefined);
+  // Shared suppliers remain protected until the last referring model is removed.
+  await changed(()=>main.locator('[data-inventory-binding=first]').getByRole('button',{name:'移除',exact:true}).click());
+  assert.deepEqual((await config()).cables[activeId].suppliers,[]);
+  let current=await config();
+  let deletion=await fetch(`${app.url}api/v1/config/commit`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({baseRevision:current.revision,operation:{type:'supplier.delete',supplierId:'vendor'}})});
+  assert.equal(deletion.status,422);
+  await open('another-line');
+  await changed(()=>main.locator('[data-inventory-binding=first]').getByRole('button',{name:'移除',exact:true}).click());
+  current=await config();
+  assert.deepEqual(current.cables['another-line'].suppliers,[]);
+  assert.ok(current.suppliers.vendor,'removing a model must not delete its supplier');
+  deletion=await fetch(`${app.url}api/v1/config/commit`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({baseRevision:current.revision,operation:{type:'supplier.delete',supplierId:'vendor'}})});
+  assert.equal(deletion.status,200,await deletion.text());
+  assert.equal((await config()).suppliers.vendor,undefined);
   assert.deepEqual(errors,[]);
   console.log('Live cable editing browser checks passed: immediate saves, failure recovery, explicit ID rename, default updates, independent application, confirmation, persistent pending state and mobile layout.');
 } finally {

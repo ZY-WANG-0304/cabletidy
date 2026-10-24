@@ -621,8 +621,8 @@ function renderCableImport() {
         <h2 id="cable-import-selection">${preview ? "确认线路" : "选择线路文件"}</h2>
         <div class="transfer-fields">
           <p class="muted">${CABLE_TRANSFER_NOTICE}</p>
-          ${preview ? `<p>共 ${preview.cables.length} 条线路。同名线路请选择更新已有线路或创建新线路；未使用文件凭据时，更新保留已有密钥，新建线路需填写凭据。客户端文件需按需重新应用。</p>
-        ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用线路文件中的认证凭据</span></label><p class="muted">勾选时文件中的凭据优先于已有凭据；取消勾选时忽略文件中的密钥和 URL 认证信息。</p>` : ""}
+          ${preview ? `<p>共 ${preview.cables.length} 条线路。同名线路请选择更新已有线路或创建新线路。客户端文件需按需重新应用。</p><p>供应商目录版：不含密钥的文件适合分享给其他用户，接收方需要填写自己的密钥；未采用文件密钥时，即使更新已有线路也不会继承本机原供应商密钥。包含并采用文件密钥可用于同一用户跨设备迁移。</p><p>旧格式线路：未采用文件密钥时，更新保留原有密钥，新建需填写凭据。</p>
+        ${preview.hasCredentials ? `<label class="checkbox-field"><input type="checkbox" name="useImportedCredentials" checked /><span>使用线路文件中的认证凭据</span></label><p class="muted">勾选时使用文件中的密钥和 URL 认证信息；取消勾选时忽略这些信息，供应商目录版线路导入后需自行配置密钥。</p>` : ""}
         <div class="transfer-selection">${preview.cables.map(cable => cable.conflict
           ? `<label class="field"><span>${esc(cable.sourceName)} · ${esc(targetLabel(cable.target))}（与「${esc(cable.existingName || cable.sourceName)}」同名）</span>
             <select name="choice:${esc(cable.sourceId)}" required><option value="">请选择处理方式</option><option value="update">更新已有线路</option><option value="create">创建新线路（${esc(cable.name)}）</option></select></label>`
@@ -925,7 +925,6 @@ function renderCableDetail() {
         <div class="cable-section-heading">
           <h2 id="cable-upstream-title">上游连接</h2>
           <p>此线路的所有模型共用这一上游。</p>
-          ${cable.target === "codex" ? `<button class="button" type="button" data-action="migrate-cable" data-id="${esc(cable.id)}">迁移到供应商模型目录</button>` : ""}
         </div>
         ${upstream ? `
           <form id="cable-upstream-form">
@@ -3712,20 +3711,23 @@ pageContent.addEventListener('input', event => {
 pageContent.addEventListener('change', event => {
   if (event.target.matches('#inventory-id-form [name="target"], #inventory-id-form [name="webSearch"]')) updateInventoryIdInput(event.target.closest('form').querySelector('[name="cableId"]'));
 });
+function inventorySuppliers(models) {
+  return [...new Set(Object.values(models).flatMap(binding => (binding.sources || []).map(source => source.supplierId)))];
+}
 function saveInventoryCable(data, form) {
   const models = inventoryModels(form);
   const id = String(data.get("cableId") || "");
   const issue = inventoryCableIdIssue(id, form.dataset.cableId);
   if (issue) throw new Error(issue);
-  const suppliers = [...new Set([...(state.config.cables?.[form.dataset.cableId]?.suppliers || []),...Object.values(models).flatMap(b => (b.sources || []).map(s => s.supplierId))])];
+  const suppliers = inventorySuppliers(models);
   return {type:form.dataset.cableId ? "cable.inventory.save" : "cable.inventory.create",cableId:form.dataset.cableId,data:{id,target:data.get("target"),webSearch:data.get("webSearch") || null,suppliers,models,defaultModel:data.get("defaultModel")}};
 }
 async function saveInventoryEdit(form, models, defaultModel, editor) {
   if (formConflicts.has(form)) throw new Error("请先处理线路的并发修改冲突。");
   const cableId = form.dataset.cableId;
   const saved = state.config.cables[cableId];
-  if (saved && JSON.stringify(saved.models) === JSON.stringify(models) && (saved.defaultModel || "") === defaultModel) return;
-  const suppliers = [...new Set([...(state.config.cables[cableId]?.suppliers || []), ...Object.values(models).flatMap(binding => (binding.sources || []).map(source => source.supplierId))])];
+  const suppliers = inventorySuppliers(models);
+  if (saved && JSON.stringify(saved.models) === JSON.stringify(models) && (saved.defaultModel || "") === defaultModel && JSON.stringify(saved.suppliers) === JSON.stringify(suppliers)) return;
   await saveChanges(() => ({type:"cable.inventory.save", cableId, data:{suppliers, models, defaultModel}}), [form, editor], "线路修改已保存。");
   await confirmInventoryApply(cableId);
 }
@@ -4139,9 +4141,6 @@ async function inventoryAction(action, element) {
     if (!window.confirm(action === "delete-supplier-model" ? state.page === "supplier-create" ? "删除此模型草稿？" : "删除模型记录后，旧线路引用会报“来源不存在”，需要在线路中重新绑定。继续？" : "删除此供应商？")) return true;
     if (state.page === "supplier-create" && action === "delete-supplier-model") { deleteSupplierDraftResource("model", element.dataset.id); return true; }
     await saveChanges(() => ({type:action === "delete-supplier" ? "supplier.delete" : "supplier.model.delete",supplierId:action === "delete-supplier" ? element.dataset.id : state.supplierId,modelId:element.dataset.id}));
-  } else if (action === "migrate-cable") {
-    if (!window.confirm("迁移将分离供应商事实与客户端选择，并保留旧透传兜底。迁移后在供应商页面维护供给，在线路中选择模型。继续？")) return;
-    await saveChanges(() => ({type:"cable.inventory.migrate",cableId:element.dataset.id}));
   } else if (action === "discover-supplier-models") {
     const [sid,iid] = JSON.parse(element.dataset.id);
     const result = await api("/suppliers/discover",{method:"POST",body:JSON.stringify({supplierId:sid,interfaceId:iid})});

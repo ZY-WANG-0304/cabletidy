@@ -479,19 +479,15 @@ test('explicit Codex budgets reject invalid values and interface supply overruns
   assert.equal(entry.context_window,64000);assert.equal(entry.max_context_window,128000);
 });
 
-test('legacy window migration preserves client policy without claiming supplier capacity',async()=>{
+test('legacy Codex lines remain usable without an old-to-inventory conversion operation',async()=>{
   const {codexConfigFixture}=await import('./helpers/codex-fixture.mjs');
-  const old=codexConfigFixture();
-  const model=old.virtualProviders.cabletidy_relay.models['gpt-5.5'];
-  Object.assign(model,{aliases:['old-name'],identity:'gpt-5.5',identitySource:'confirmed',contextWindow:64000,maxOutputTokens:8192,capabilities:['streaming','tools','vision'],toolForms:['function','custom']});
-  const result=await applyConfigOperation(normalizeConfig(old),{type:'cable.inventory.migrate',cableId:'relay'},catalogFixture());
-  assert.equal(result.config.suppliers.relay.models['VENDOR-GPT'].contextWindow,null);
-  assert.equal(result.config.suppliers.relay.models['VENDOR-GPT'].maxOutputTokens,8192);
-  assert.equal(result.config.cables.relay.models['gpt-5.5'].aliases,undefined);
-  assert.deepEqual(result.config.cables.relay.models['gpt-5.5'].codex,{contextWindow:64000,maxContextWindow:64000});
-  const c=result.config;
-  assert.equal(planCodexCatalog(c,c.virtualProviders.cabletidy_relay,catalogFixture()).catalog.models[0].context_window,64000);
-  assert.deepEqual(normalizeConfig(c),c);
+  const config=normalizeConfig(codexConfigFixture());
+  const before=structuredClone(config);
+  await assert.rejects(applyConfigOperation(config,{type:'cable.inventory.migrate',cableId:'relay'},catalogFixture()),/未知配置操作/);
+  assert.deepEqual(config,before);
+  assert.equal(config.cables.relay.managedModels,undefined);
+  assert.equal(resolveRequest(config,config.virtualProviders.cabletidy_relay,{model:'gpt-5.5'}).upstreamModelId,'VENDOR-GPT');
+  assert.equal(resolveRequest(config,config.virtualProviders.cabletidy_relay,{model:'unregistered'}).upstreamModelId,'unregistered');
 });
 
 test('applying client windows preserves compression settings and restores the original global window',async t=>{
