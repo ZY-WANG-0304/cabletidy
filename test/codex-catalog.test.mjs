@@ -7,7 +7,7 @@ import { normalizeConfig } from "./helpers/native.mjs";
 import { publicCodexCatalog, planCodexCatalog, validateCodexChanges, catalogEntryForProfile } from "./helpers/native.mjs";
 import { prepareCodexArtifacts, applyCodexArtifacts, publicArtifacts } from "./helpers/native.mjs";
 import { readCodexConfig } from "./helpers/native.mjs";
-import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, daybreakCatalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 
 async function fixture(t) {
   const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-catalog-test-"));
@@ -36,6 +36,32 @@ test("public official catalog omits prompts and rejects third-party entries as s
   const result = publicCodexCatalog(snapshot);
   assert.deepEqual(result.models.map((model) => model.id), ["gpt-5.5", "gpt-5.6-sol"]);
   assert.doesNotMatch(JSON.stringify(result), /instructions|Official base/);
+});
+
+test("public catalog respects an explicit native parallel-tool restriction", () => {
+  const snapshot = catalogFixture();
+  snapshot.catalog.models[0].supports_parallel_tool_calls = false;
+  const result = publicCodexCatalog(snapshot);
+  assert.equal(result.models[0].capabilities.includes("parallel_tool_calls"), false);
+  assert.equal(result.models[1].capabilities.includes("parallel_tool_calls"), true);
+});
+
+test("Daybreak is excluded from selectable and generated catalogs while ordinary hidden models remain", () => {
+  const snapshot = daybreakCatalogFixture();
+  const before = structuredClone(snapshot);
+  const result = publicCodexCatalog(snapshot);
+  assert.deepEqual(result.models.map(model => model.id), ["gpt-5.5", "gpt-5.6-sol", "gpt-hidden-general"]);
+  assert.doesNotMatch(JSON.stringify(result), /daybreak/i);
+  const config = normalizeConfig(codexConfigFixture());
+  enableOverrides(config);
+  const plan = planCodexCatalog(config, config.virtualProviders.cabletidy_relay, snapshot);
+  assert.doesNotMatch(JSON.stringify(plan.catalog), /daybreak/i);
+  assert.ok(plan.catalog.models.some(model => model.slug === "gpt-hidden-general"));
+  for (const color of ["blue", "red"]) {
+    const id = `gpt-daybreak-${color}-latest`;
+    assert.throws(() => catalogEntryForProfile(snapshot, id, config.virtualProviders.cabletidy_relay.models["gpt-5.5"]), /未匹配/);
+  }
+  assert.deepEqual(snapshot, before);
 });
 
 test("official mode keeps one config file without forced effort or a generated catalog", async (t) => {

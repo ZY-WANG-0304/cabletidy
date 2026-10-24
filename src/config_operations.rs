@@ -149,6 +149,9 @@ pub async fn apply(current: &Value, operation: &Value, catalog: &Catalog) -> Res
     }
     let mut c = config::strip_presentation(current);
     let kind = text(&operation["type"]);
+    if crate::supplier_operations::applies(kind) {
+        return crate::supplier_operations::apply(current, operation);
+    }
     let data = &operation["data"];
     if matches!(
         kind,
@@ -295,7 +298,10 @@ pub async fn apply(current: &Value, operation: &Value, catalog: &Catalog) -> Res
                             .map(|b| text(&b["upstream"]).to_owned())
                             .collect();
                         c["routes"].as_object_mut().unwrap().remove(&rid);
-                        for uid in upstreams {
+                        for uid in upstreams
+                            .into_iter()
+                            .filter(|_| cable["managedModels"] != true)
+                        {
                             if !entries(&c["routes"]).any(|(_, r)| {
                                 array(&r["backends"]).iter().any(|b| b["upstream"] == uid)
                             }) {

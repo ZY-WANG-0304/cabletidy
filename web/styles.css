@@ -375,6 +375,172 @@ h3 {
   background: var(--paper);
 }
 
+.supplier-page {
+  display: grid;
+  gap: 16px;
+}
+
+.resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.supplier-interface-table tbody th {
+  width: 20%;
+}
+
+.supplier-interface-table td {
+  overflow-wrap: anywhere;
+}
+
+.supplier-interface-table td[data-label="协议"] {
+  white-space: nowrap;
+}
+
+.supplier-resource-dialog {
+  width: min(820px, calc(100% - 32px));
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  background: var(--panel);
+  overflow: auto;
+}
+
+.supplier-resource-dialog::backdrop {
+  background: #242a3035;
+}
+
+.inventory-cable-form {
+  display: grid;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.inventory-save-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.inventory-basics-facts dd { overflow-wrap: anywhere; }
+.inventory-cable-form .form-grid,
+.inventory-id-body .form-grid { align-items: start; }
+.inventory-id-body { display: grid; gap: 16px; }
+.inventory-id-body .cable-connection-facts { grid-template-columns: minmax(0, 1fr); }
+.inventory-id-body dd { overflow-wrap: anywhere; }
+
+.inventory-model-body {
+  display: grid;
+  gap: 24px;
+}
+
+.inventory-model-body section + section {
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.inventory-model-body h3 { margin: 0 0 14px; }
+.inventory-model-body .subsection-header h3 { margin: 0; }
+.inventory-model-picker { position: relative; min-width: 0; }
+.inventory-model-picker input[role="combobox"] { padding-right: 36px; }
+.inventory-model-toggle { position: absolute; right: 1px; top: 1px; width: 34px; height: 34px; border: 0; background: transparent; color: var(--muted); }
+.inventory-model-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; right: 0; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.inventory-model-menu [role="listbox"] { max-height: 220px; overflow-y: auto; overscroll-behavior: contain; }
+.inventory-model-menu [role="option"] { padding: 8px; cursor: pointer; overflow-wrap: anywhere; }
+.inventory-model-menu [role="option"] small { display: block; color: var(--muted); }
+.inventory-model-menu [role="option"][aria-selected="true"] { color: var(--accent); font-weight: 600; }
+.inventory-model-menu [role="option"]:hover, .inventory-model-menu .is-active { background: var(--accent-soft); }
+.inventory-model-menu > p { margin: 8px; }
+.inventory-model-table { table-layout: fixed; }
+.inventory-model-table th, .inventory-model-table td { overflow-wrap: anywhere; }
+.inventory-model-table .settings-checkbox { white-space: nowrap; }
+.inventory-model-issue { display: block; color: #9b4e22; margin-top: 6px; }
+.inventory-effective-config { margin: 0 0 12px; display: grid; gap: 10px; }
+.inventory-effective-config > div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 2fr); gap: 16px; }
+.inventory-effective-config dt { color: var(--muted); }
+.inventory-effective-config dd { margin: 0; overflow-wrap: anywhere; }
+[data-inventory-tools] > summary { margin-bottom: 12px; color: var(--muted); cursor: pointer; }
+.inventory-blocking-issues { margin: 0 0 16px; padding: 12px 14px; border-left: 3px solid var(--warning); background: #fff5e5; color: var(--warning); }
+.inventory-blocking-issues h4 { margin: 0 0 8px; font-size: 13px; }
+.inventory-blocking-issues ul { margin: 0; padding-left: 20px; }
+.inventory-blocking-issues li + li { margin-top: 6px; }
+
+.inventory-prompt-controls { display: flex; align-items: flex-end; gap: 12px; }
+.inventory-prompt-controls .field { flex: 1; min-width: 0; }
+.inventory-prompt-controls > button { flex-shrink: 0; min-height: 36px; }
+.inventory-prompt-preview { margin-top: 14px; }
+.inventory-prompt-preview summary { cursor: pointer; color: var(--muted); }
+.inventory-prompt-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.supplier-modal-body {
+  padding: 20px;
+}
+
+.supplier-model-interface-table td {
+  overflow-wrap: anywhere;
+}
+
+.supplier-model-interface-table [data-interface-facts] td {
+  padding: 12px 16px;
+}
+
+.supplier-model-interface-table [data-interface-facts] details > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.supplier-association > summary > .field-hint {
+  margin-left: 12px;
+}
+
+.supplier-association[open] > summary {
+  color: var(--ink);
+}
+
+.supplier-association[open] > summary > .field-hint {
+  display: none;
+}
+
+.supplier-association .subsection-header {
+  justify-content: flex-end;
+}
+
+.supplier-association .settings-checkbox:has([aria-disabled="true"]) {
+  color: var(--muted);
+}
+
+.supplier-model-interface-table [data-interface-facts] details[open] > summary {
+  margin-bottom: 16px;
+}
+
+.supplier-model-interface-table .checkbox-options {
+  gap: 8px 16px;
+}
+
+.supplier-model-interface-table .settings-checkbox > span:not(.field-hint) {
+  flex-shrink: 0;
+}
+
+.supplier-modal-form .config-form-footer {
+  position: sticky;
+  bottom: 0;
+}
+
+[data-inventory-candidates] {
+  margin-top: 16px;
+}
+
 .create-model-list {
   display: grid;
   gap: 16px;
@@ -724,6 +890,37 @@ button.list-row:hover,
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.checkbox-group {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+
+.checkbox-group legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.checkbox-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.checkbox-options > .settings-checkbox,
+.form-grid > .settings-checkbox {
+  min-width: 0;
+}
+
+.checkbox-options > .settings-checkbox > span,
+.form-grid > .settings-checkbox > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-page {
@@ -1127,6 +1324,12 @@ button.list-row:hover,
   margin-bottom: 0;
 }
 
+.subsection-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .mini-button {
   min-height: 32px;
   padding: 0 9px;
@@ -1140,6 +1343,56 @@ button.list-row:hover,
 .mini-button:hover {
   color: var(--ink);
   border-color: var(--accent);
+}
+
+.token-length-field {
+  align-content: start;
+}
+
+.token-length-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.token-length-controls input {
+  flex: 0 0 13rem;
+  width: 13rem;
+  max-width: 100%;
+}
+
+.token-length-controls select {
+  flex: 0 0 5.5rem;
+  width: 5.5rem;
+  padding: 0 7px;
+}
+
+.token-budget-field .token-length-controls select {
+  flex-basis: 6.5rem;
+  width: 6.5rem;
+}
+
+.token-length-conversion {
+  flex: 1 1 6rem;
+  min-width: 0;
+  min-height: 18px;
+}
+
+.token-length-field:has(input[aria-invalid="true"]) .token-length-conversion {
+  color: var(--danger);
+}
+
+.token-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.token-shortcut[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .code-preview {
@@ -1361,6 +1614,7 @@ button.list-row:hover,
   }
 
   .cable-table tbody th,
+  .supplier-interface-table tbody th,
   .cable-table tbody td {
     width: 100%;
     padding: 4px 0;
@@ -1377,6 +1631,15 @@ button.list-row:hover,
     content: attr(data-label);
     color: var(--muted);
     font: 12px/1.5 "Aptos", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+
+  .supplier-model-interface-table [data-interface-facts] td {
+    display: block;
+    padding: 0;
+  }
+
+  .supplier-model-interface-table [data-interface-facts] td::before {
+    display: none;
   }
 
   .config-section {

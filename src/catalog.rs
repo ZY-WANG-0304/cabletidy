@@ -225,14 +225,25 @@ pub fn validate(v: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn official(snapshot: &Value) -> impl Iterator<Item = &Value> {
+pub(crate) fn is_daybreak(id: &str) -> bool {
+    ["gpt-daybreak-blue-latest", "gpt-daybreak-red-latest"]
+        .iter()
+        .any(|model| id.eq_ignore_ascii_case(model))
+}
+
+pub(crate) fn official(snapshot: &Value) -> impl Iterator<Item = &Value> {
     array(&snapshot["catalog"]["models"]).iter().filter(|m| {
-        text(&m["slug"]).to_ascii_lowercase().starts_with("gpt-") && m["supported_in_api"] == true
+        text(&m["slug"]).to_ascii_lowercase().starts_with("gpt-")
+            && m["supported_in_api"] == true
+            && !is_daybreak(text(&m["slug"]))
     })
 }
 pub fn public(snapshot: &Value) -> Value {
     let models: Vec<_> = official(snapshot).map(|model| {
-        let mut capabilities = vec!["streaming", "tools", "parallel_tool_calls"];
+        let mut capabilities = vec!["streaming", "tools"];
+        if model["supports_parallel_tool_calls"] != false {
+            capabilities.push("parallel_tool_calls");
+        }
         if !array(&model["supported_reasoning_levels"]).is_empty() {
             capabilities.push("reasoning");
         }
@@ -246,12 +257,19 @@ pub fn public(snapshot: &Value) -> Value {
             "contextWindow": model["context_window"],
             "maxContextWindow": model.get("max_context_window").unwrap_or(&model["context_window"]),
             "inputModalities": model.get("input_modalities").unwrap_or(&json!(["text"])),
+            "reasoningEfforts": array(&model["supported_reasoning_levels"]).iter().filter_map(|level| level["effort"].as_str()).filter(|effort| *effort != "ultra").collect::<Vec<_>>(),
+            "defaultEffort": model["default_reasoning_level"],
+            "supportsSearchTool": model["supports_search_tool"].as_bool().unwrap_or(true),
+            "prompt": crate::codex_adapter::prompt_metadata(snapshot, model),
             "capabilities": capabilities
         })
     }).collect();
-    json!({"available": true, "version": snapshot["version"], "models": models})
+    json!({"available": true, "version": snapshot["version"], "models": models,"reasoningRules":crate::codex_adapter::reasoning_rules()})
 }
 pub fn entry(snapshot: &Value, name: &str, p: &Value) -> Result<(Value, Value)> {
+    if p["managedModel"] == true {
+        return crate::codex_adapter::catalog_entry(snapshot, name, p);
+    }
     let original=official(snapshot).find(|m|m["slug"]==name).with_context(||format!("模型 {name} 未匹配本机 Codex 官方 GPT 目录。请选择对应的官方模型；若本机目录过旧，请更新 Codex。当前不支持非对应模型。"))?;
     if !nonempty(&original["base_instructions"])
         && !nonempty(&original["model_messages"]["instructions_template"])
@@ -383,7 +401,10 @@ pub fn changed_models(c: &Value, old: &Value) -> Vec<(String, String)> {
         .collect()
 }
 pub async fn validate_changes(c: &Value, old: &Value, catalog: &Catalog) -> Vec<Value> {
-    let ids = changed_models(c, old);
+    let ids: Vec<_> = changed_models(c, old)
+        .into_iter()
+        .filter(|(pid, _)| !crate::suppliers::managed(&c["virtualProviders"][pid]))
+        .collect();
     if ids.is_empty() {
         return vec![];
     }
@@ -397,8 +418,15 @@ pub async fn validate_changes(c: &Value, old: &Value, catalog: &Catalog) -> Vec<
     }).collect()
 }
 pub fn plan(c: &Value, p: &Value, snapshot: &Value) -> Result<Value> {
+    if crate::suppliers::managed(p) {
+        return crate::codex_adapter::catalog_plan(c, p, snapshot);
+    }
     validate(&snapshot["catalog"])?;
     let mut catalog = snapshot["catalog"].clone();
+    catalog["models"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|model| !is_daybreak(text(&model["slug"])));
     let mut overrides = Vec::new();
     let mut warnings = Vec::new();
     let mut models = Vec::new();

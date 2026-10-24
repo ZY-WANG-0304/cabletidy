@@ -7,7 +7,7 @@ import { normalizeConfig } from "./helpers/native.mjs";
 import { publicCodexCatalog } from "./helpers/native.mjs";
 import { validateConfig } from "./helpers/native.mjs";
 import { buildTargetArtifacts } from "./helpers/native.mjs";
-import { catalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
+import { catalogFixture, daybreakCatalogFixture, codexConfigFixture, namedCodexConfigFixture } from "./helpers/codex-fixture.mjs";
 import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 import { CLAUDE_MODEL_CATALOG } from "../web/claude-models.js";
 import { publicConfig, applyConfigOperation, claudeModelChoices, configurationEndpoints, contentRiskRanges, evidenceNative } from "./helpers/native.mjs";
@@ -287,6 +287,135 @@ async function controller(config = normalizeConfig(codexConfigFixture()), option
 function clone(value) {
   return structuredClone(value);
 }
+
+test("model references use official supplier limits independently of native client windows", async () => {
+  const app = await controller();
+  for (const id of ["", "unlisted", "glm-5.3-repack", "gpt-5.5-alias"]) {
+    assert.equal(app.read(`supplierModelReference(${JSON.stringify(id)})`), null);
+  }
+  app.read(`state.codexCatalog = ${JSON.stringify(publicCodexCatalog(catalogFixture()))}`);
+  const native = clone(app.read('supplierModelReference("gpt-5.5")'));
+  assert.equal(native.contextWindow, 1050000);
+  assert.equal(native.maxOutputTokens, 128000);
+  assert.equal(native.source, "https://developers.openai.com/api/docs/models/gpt-5.5");
+  assert.equal(native.verifiedAt, "2026-10-24");
+  app.read(`state.codexCatalog.models.push({id:"gpt-unknown-version",contextWindow:64000,maxContextWindow:128000,maxOutputTokens:4096})`);
+  assert.equal(app.read('supplierModelReference("gpt-unknown-version").contextWindow'),null);
+  assert.equal(app.read('supplierModelReference("gpt-unknown-version").maxOutputTokens'),null);
+  assert.equal(app.read('COMPATIBLE_IDENTITIES.includes("gpt-5.5")'),false);
+  const values = clone(app.read('supplierReferenceValues(supplierModelReference("minimax-m3"))'));
+  assert.deepEqual(values.efforts, ["none", "high"]);
+  assert.equal(values.maxOutputTokens, null);
+  assert.equal(values.budgetMin, null);
+  assert.equal(values.budgetMax, null);
+  assert.equal(Object.hasOwn(values, "cap:parallel_tool_calls"), false);
+  assert.equal(Object.keys(values).some(key => /toolForms|interfaces|Streaming|Continuation/.test(key)), false);
+  for (const [identity,protocol] of [["glm-5.3","openai.responses"],["MiniMax-M3","openai.responses"],["gpt-5.5","openai.responses"],["unknown","anthropic.messages"]]) {
+    const html=app.read(`supplierEffortOptions("efforts", ["high"], ${JSON.stringify(identity)}, ${JSON.stringify(protocol)})`);
+    assert.deepEqual([...html.matchAll(/value="([^"]+)"/g)].map(match=>match[1]),["none","minimal","low","medium","high","xhigh","max"]);
+    assert.deepEqual([...html.matchAll(/value="([^"]+)" checked/g)].map(match=>match[1]),["high"]);
+  }
+});
+
+test("client model display names follow supply names and resolve collisions without renaming saved models", async () => {
+  const app = await controller();
+  app.read(`state.codexCatalog = {models:[{id:'gpt-version-a',name:'编程模型 A'},{id:'gpt-version-b',name:'编程模型 B'}]}; state.config.suppliers = {vendor:{name:'供应商 A',models:{'upstream-fast':{name:'日常编程',identity:'gpt-version-a'},reference:{identity:'gpt-version-b'},unknown:{identity:'unlisted'}}}}`);
+  assert.deepEqual(clone(app.read('inventoryIdentities().slice(0,2)')), [{id:'gpt-version-a',name:'编程模型 A'},{id:'gpt-version-b',name:'编程模型 B'}]);
+  assert.equal(app.read("inventoryIdentityLabel('gpt-version-a')"), '编程模型 A（gpt-version-a）');
+  const source = {supplierId:'vendor',modelId:'upstream-fast'};
+  const models = {};
+  for (const expected of ['日常编程 · 供应商 A','日常编程 · 供应商 A · upstream-fast','日常编程 · 供应商 A · upstream-fast · 2','日常编程 · 供应商 A · upstream-fast · 3']) {
+    assert.equal(app.read(`inventoryDisplayName(${JSON.stringify(source)},${JSON.stringify(models)})`),expected);
+    models[`client-${Object.keys(models).length}`] = {name:expected};
+  }
+  assert.equal(app.read(`inventoryDisplayName(${JSON.stringify(source)},${JSON.stringify(models)},'client-0')`),'日常编程 · 供应商 A');
+  assert.equal(app.read("inventoryDisplayName({supplierId:'vendor',modelId:'reference'},{})"),'编程模型 B · 供应商 A');
+  assert.equal(app.read("inventoryDisplayName({supplierId:'vendor',modelId:'unknown'},{})"),'unknown · 供应商 A');
+  assert.equal(app.read("inventoryDisplayName({supplierId:'vendor',modelId:''},{})"),'');
+  assert.equal(app.read("inventoryClientId({supplierId:'vendor',modelId:'upstream-fast'},{})"),'供应商-A/upstream-fast');
+  assert.equal(app.read("inventoryClientId({supplierId:'vendor',modelId:'upstream-fast'},{'供应商-A/upstream-fast':{}})"),'供应商-A/upstream-fast-2');
+  assert.equal(app.read("inventoryIdentityLabel('glm-5.3')"),'GLM-5.3（glm-5.3）');
+  assert.equal(app.read("inventoryIdentityLabel('kimi-k3')"),'Kimi K3（kimi-k3）');
+  assert.equal(app.read("inventoryIdentityLabel('MiniMax-M3')"),'MiniMax-M3（MiniMax-M3）');
+  assert.equal(app.read("inventoryIdentityId('Kimi K3')"),'kimi-k3');
+  assert.equal(app.read("inventoryIdentityId('GLM-5.3')"),'glm-5.3');
+  assert.equal(app.read("inventoryIdentityId('minimax-m3')"),'MiniMax-M3');
+});
+
+test("supplier token lengths convert decimal units exactly and reject rounding", async () => {
+  const app = await controller();
+  for (const [value,unit,tokens] of [
+    ["", "M", null], ["128K", "tokens", 128000], ["1.5M", "K", 1500000],
+    ["8.192", "K", 8192], ["0.000001", "M", 1], ["128001", "tokens", 128001],
+    ["1.000001m", "tokens", 1000001], ["0.001K", "tokens", 1],
+    ["9007199254740991", "tokens", Number.MAX_SAFE_INTEGER],
+  ]) {
+    const result = app.read(`parseTokenLength(${JSON.stringify(value)}, ${JSON.stringify(unit)})`);
+    assert.equal(result.error, "");
+    assert.equal(result.tokens, tokens);
+  }
+  for (const [value,unit] of [["0", "tokens"], ["-1", "K"], ["1.5", "tokens"], ["0.0001", "K"], ["0.0000001M", "tokens"], ["abc", "tokens"], ["9007199254740992", "tokens"]]) {
+    assert.ok(app.read(`parseTokenLength(${JSON.stringify(value)}, ${JSON.stringify(unit)}).error`));
+  }
+  for (const tokens of [1, 999, 1000, 8192, 128001, 1000001, 123456789, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(app.read(`(() => { const display = tokenLengthDisplay(${tokens}); return parseTokenLength(display.value, display.unit).tokens; })()`), tokens);
+  }
+});
+
+test("supplier length values and units merge together on refresh", async () => {
+  const app = await controller();
+  const field = (name,type,value) => [name,type,{},"",value];
+  const length = (value,unit) => [field("contextWindow","text",value),field("contextWindow:unit","select-one",unit)];
+  const base = length("128","K");
+  const local = length("1.5","M");
+  const remote = length("200","K");
+  assert.equal(app.read(`mergeSupplierModelFields(${JSON.stringify(base)},${JSON.stringify(local)},${JSON.stringify(remote)})`),null);
+  const equalRemote = length("1500000","tokens");
+  assert.deepEqual(clone(app.read(`mergeSupplierModelFields(${JSON.stringify(base)},${JSON.stringify(local)},${JSON.stringify(equalRemote)})`)),local);
+  const merged = app.read(`mergeSupplierModelFields(${JSON.stringify([...base,field("identity","text","old")])},${JSON.stringify([...local,field("identity","text","old")])},${JSON.stringify([...base,field("identity","text","new")])})`);
+  assert.deepEqual(clone(merged),[field("identity","text","new"),...local]);
+});
+
+test("supplier streaming defaults stay derived while overrides participate in draft merging", async () => {
+  const app=await controller();
+  const baseline=app.read('(() => {const controls=[{name:"diff:responses:supportsStreaming",type:"checkbox",dataset:{interfaceStreaming:""},checked:true,closest:()=>null},{name:"diff:responses:streamingOverride",type:"hidden",dataset:{streamingOverride:""},value:"",closest:()=>null}];const form={querySelectorAll:()=>controls};const before=formSnapshot(form);controls[0].checked=false;const inherited=formSnapshot(form);controls[1].value="false";return {before,inherited,override:formSnapshot(form)};})()');
+  assert.equal(baseline.before,baseline.inherited);
+  assert.notEqual(baseline.before,baseline.override);
+  const base=JSON.parse(baseline.before), local=JSON.parse(baseline.override);
+  const modelName=value=>["name","text",{},"",value];
+  const merged=app.read(`mergeSupplierModelFields(${JSON.stringify([...base,modelName("old")])},${JSON.stringify([...local,modelName("old")])},${JSON.stringify([...base,modelName("new")])})`);
+  assert.deepEqual(clone(merged),[...local,modelName("new")]);
+});
+
+test("association folding distinguishes actual restrictions from empty inherited declarations", async () => {
+  const app=await controller();
+  for (const facts of [{},{reasoning:{}},{reasoning:{budget:{unit:"tokens",min:null,max:null}}},{contextWindow:null}]) {
+    assert.equal(app.read(`associationHasRestrictions(${JSON.stringify(facts)})`),false);
+  }
+  for (const facts of [{reasoning:{efforts:[]}},{inputModalities:[]},{capabilityStates:{reasoning:"unsupported"}},{contextWindow:64001},{reasoning:{budget:{min:0}}}]) {
+    assert.equal(app.read(`associationHasRestrictions(${JSON.stringify(facts)})`),true);
+  }
+  const html=app.read('supplierInterfaceFacts("responses",{interfaces:["responses"],reasoning:{},contextWindow:128000,interfaceCapabilities:{responses:{reasoning:{}}}},"openai.responses")');
+  assert.equal((html.match(/<details /g)||[]).length,2);
+  assert.match(html,/模型在此接口下的能力/);
+  assert.match(html,/此模型支持的接口能力/);
+  assert.match(html,/继承模型本身配置，可单独收紧/);
+  assert.match(html,/继承接口配置，可单独限制/);
+  assert.doesNotMatch(html,/能力与限制差异|默认来源|留空继承|模型公共上限|模型未声明支持|不表示已实测/);
+});
+
+test("reasoning budgets share exact token conversion, accept zero and validate their range",async()=>{
+  const app=await controller();
+  assert.equal(app.read('parseTokenLength("0","tokens",true).tokens'),0);
+  assert.equal(app.read('parseTokenLength("1.024001M","tokens",true).tokens'),1024001);
+  assert.ok(app.read('parseTokenLength("0.0001K","tokens",true).error'));
+  const expression='(() => {const values={reasoningModes:["budget"],budgetMin:"0",budgetMax:"4.096001M"};return readSupplierReasoning({get:key=>values[key],getAll:key=>Array.isArray(values[key])?values[key]:[]},"");})()';
+  assert.deepEqual(clone(app.read(expression)).budget,{unit:"tokens",min:0,max:4096001});
+  assert.throws(()=>app.read(expression.replace('budgetMin:"0"','budgetMin:"8K"').replace('budgetMax:"4.096001M"','budgetMax:"4K"')),/最小可设预算/);
+  assert.doesNotMatch(app.read('tokenLengthField("最小可设预算","budgetMin",1024001,"budget")'),/data-token-shortcut/);
+  const legacy = expression.replace('},"");','},"",{budget:{unit:"seconds",min:2,max:4}});');
+  assert.deepEqual(clone(app.read(legacy)).budget,{unit:"seconds",min:2,max:4});
+});
 
 test("top-level settings save finite and independently unlimited audit limits", async () => {
   const app = await controller(undefined, { url: "http://test/#settings" });
@@ -1581,6 +1710,7 @@ test("separate configurations each keep their own upstream and model mappings", 
 
 test("advanced model editor exposes one upstream and saves only its model mapping", async () => {
   const app = await controller();
+  assert.doesNotMatch(app.read("renderCableDetail()"), /migrate-cable|迁移到供应商模型目录/);
   const models = app.read("renderModels()");
   assert.equal((models.match(/name="upstreamId"/g) || []).length, 0);
   assert.doesNotMatch(models, /CableTidy Model ID/);
@@ -1694,16 +1824,6 @@ test("a pending save cannot submit a second change", async () => {
   assert.equal(app.read("state.busy"), false);
 });
 
-function securityCatalogFixture() {
-  const catalog = catalogFixture();
-  const base = catalog.catalog.models[0];
-  catalog.catalog.models.splice(1, 0, ...["blue", "red"].map((color) => ({
-    ...base, slug: `gpt-daybreak-${color}-latest`, display_name: `Daybreak ${color}`, visibility: "hide",
-  })));
-  catalog.catalog.models.push({ ...base, slug: "gpt-hidden-general", visibility: "hide" });
-  return catalog;
-}
-
 function officialSelectNode(value = "") {
   const hint = { textContent: "", hidden: true };
   return {
@@ -1714,36 +1834,34 @@ function officialSelectNode(value = "") {
   };
 }
 
-test("Daybreak options remain selectable in a trailing security group without classifying other hidden models", async () => {
-  const app = await controller(undefined, { catalog: securityCatalogFixture() });
-  const html = app.read('officialModelOptions("gpt-daybreak-blue-latest")');
-  const group = html.match(/<optgroup label="安全专项模型">([\s\S]*?)<\/optgroup>/)[1];
-  assert.match(group, /value="gpt-daybreak-blue-latest" selected>Daybreak Blue · 需授权/);
-  assert.match(group, /value="gpt-daybreak-red-latest" >Daybreak Red · 需专项授权/);
-  assert.equal((group.match(/<option /g) || []).length, 2);
-  assert.doesNotMatch(html, /disabled/);
-  assert.doesNotMatch(group, /gpt-hidden-general|gpt-5\.5|gpt-5\.6-sol/);
-  assert.ok(html.indexOf('value="gpt-hidden-general"') < html.indexOf("<optgroup"));
-  assert.match(html, /<\/optgroup>\s*$/);
+test("Daybreak is absent from legacy model, identity and prompt choices", async () => {
+  const app = await controller(undefined, { catalog: daybreakCatalogFixture() });
+  const html = app.read('officialModelOptions("gpt-5.5")');
+  assert.doesNotMatch(html, /daybreak|optgroup|需授权/i);
+  assert.match(html, /gpt-hidden-general/);
+  const identities = app.read('inventoryIdentities()');
+  assert.ok(identities.some(model => model.id === "gpt-hidden-general"));
+  assert.doesNotMatch(JSON.stringify(identities), /daybreak/i);
+  const promptView = app.read(`(() => {
+    const nodes = new Map();
+    const form = { dataset: { oldId: 'existing' }, querySelector(selector) {
+      if (!nodes.has(selector)) nodes.set(selector, { value: '', dataset: {}, innerHTML: '', textContent: '' });
+      return nodes.get(selector);
+    }};
+    scheduleInventoryPreview = () => {};
+    inventoryEditorOptions(form, 'refresh');
+    return form.querySelector('[name="promptModel"]').innerHTML;
+  })()`);
+  assert.doesNotMatch(promptView, /daybreak/i);
+  assert.match(promptView, /gpt-5.5/);
 });
 
-test("ordinary catalogs do not gain an empty security group or a permission hint", async () => {
-  const app = await controller();
-  const html = app.read('officialModelSelect("", "gpt-5.5")');
-  assert.doesNotMatch(html, /optgroup|需授权|需专项授权/);
-  assert.match(html, /data-official-model-hint aria-live="polite" hidden/);
-});
-
-test("security guidance follows selection changes and each picker has its own accessible hint", async () => {
-  const app = await controller(undefined, { catalog: securityCatalogFixture() });
+test("unavailable legacy selections have distinct accessible hints that clear after replacement", async () => {
+  const app = await controller(undefined, { catalog: daybreakCatalogFixture() });
   const select = officialSelectNode("gpt-daybreak-blue-latest");
   app.change(select);
-  assert.match(select.hint.textContent, /防御性安全工作/);
+  assert.match(select.hint.textContent, /未匹配可用模型目录，请重新选择/);
   assert.equal(select.hint.hidden, false);
-  select.value = "gpt-daybreak-red-latest";
-  app.change(select);
-  assert.match(select.hint.textContent, /单独获得 Red 授权/);
-  assert.doesNotMatch(select.hint.textContent, /防御性/);
   for (const value of ["gpt-5.5", "gpt-hidden-general", ""]) {
     select.value = value;
     app.change(select);
@@ -1757,65 +1875,56 @@ test("security guidance follows selection changes and each picker has its own ac
   assert.notEqual(firstId, secondId);
   assert.ok(first.includes(`id="${firstId}"`));
   assert.ok(second.includes(`id="${secondId}"`));
+  for (const html of [first, second]) {
+    assert.match(html, /selected disabled>.*当前不可用/);
+    assert.doesNotMatch(html, /安全专项模型|需授权|需专项授权/);
+  }
 });
 
 for (const color of ["blue", "red"]) {
-  test(`Daybreak ${color} can be created and existing mappings can be saved without changing model IDs`, async () => {
+  test(`Daybreak ${color} cannot be created through the legacy form`, async () => {
     const id = `gpt-daybreak-${color}-latest`;
-    const app = await controller(normalizeConfig({}), { catalog: securityCatalogFixture() });
-    await app.submit(formNode("cable-create-form", creationForm().fields, [{
+    const app = await controller(normalizeConfig({}), { catalog: daybreakCatalogFixture() });
+    const form = formNode("cable-create-form", creationForm().fields, [{
       querySelector: (selector) => ({ value: selector.includes("clientModelId") ? id : "vendor-security" }),
-    }]));
-    const model = app.persisted().virtualProviders.cabletidy_development.models[id];
-    const upstreamId = app.read("selectedCable().upstreamId");
-    assert.ok(model);
-    assert.match(app.read('renderCableDetail()'), new RegExp(`value="${id}" selected`));
-    await app.submit(formNode("cable-models-form", {}, [{
-      dataset: { modelId: id },
-      querySelector(selector) {
-        if (selector === "[data-cable-model-client]") return { value: id };
-        if (selector.startsWith("[data-cable-model-upstream=")) return { value: "updated-security" };
-        if (selector === "[data-codex-metadata-mode]") return { value: "official" };
-        return null;
-      },
-    }]));
-    assert.deepEqual(Object.keys(app.persisted().virtualProviders.cabletidy_development.models), [id]);
-    assert.equal(app.persisted().virtualProviders.cabletidy_development.models[id].upstreamModelId, "updated-security");
-    assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 2);
+    }]);
+    await app.submit(form);
+    assert.deepEqual(Object.keys(app.persisted().cables), []);
+    assert.match(form.feedback.innerHTML, /请选择.*官方 GPT 模型/);
   });
 }
 
-test("catalog refresh retains Daybreak selection and refreshes stale missing-catalog hints", async () => {
-  const app = await controller(undefined, { catalog: securityCatalogFixture() });
+test("catalog refresh restores available model guidance", async () => {
+  const app = await controller();
   assert.match(app.read("codexCatalogStatus()"), /刷新模型列表/);
-  assert.doesNotMatch(app.read("codexCatalogStatus()"), /刷新目录/);
-  const select = officialSelectNode("gpt-daybreak-red-latest");
-  const page = app.node("#page-content");
-  page.querySelectorAll = (selector) => selector === "[data-official-model]" ? [select] : [];
+  const select = officialSelectNode("gpt-5.5");
+  app.node("#page-content").querySelectorAll = (selector) => selector === "[data-official-model]" ? [select] : [];
   app.read('state.codexCatalog.models = []');
   app.change(select);
   assert.match(select.hint.textContent, /未匹配/);
   await app.action("refresh-codex-models");
-  assert.equal(select.value, "gpt-daybreak-red-latest");
-  assert.match(select.innerHTML, /value="gpt-daybreak-red-latest" selected/);
-  assert.match(select.hint.textContent, /单独获得 Red 授权/);
-  assert.doesNotMatch(select.hint.textContent, /未匹配/);
+  assert.equal(select.value, "gpt-5.5");
+  assert.match(select.innerHTML, /value="gpt-5.5" selected/);
+  assert.equal(select.hint.hidden, true);
   assert.equal(app.requests.filter(({ url }) => url.endsWith("/config/commit")).length, 0);
 });
 
-test("a failed catalog refresh keeps the selected Daybreak ID and guidance", async () => {
-  const app = await controller(undefined, {
-    catalog: securityCatalogFixture(),
-    refreshCatalog: { available: false, models: [], error: { message: "目录不可用" } },
+for (const failed of [false, true]) {
+  test(`catalog refresh (${failed ? "failed" : "successful"}) preserves Daybreak only as unavailable`, async () => {
+    const app = await controller(undefined, {
+      catalog: daybreakCatalogFixture(),
+      ...(failed ? { refreshCatalog: { available: false, models: [], error: { message: "目录不可用" } } } : {}),
+    });
+    const select = officialSelectNode("gpt-daybreak-blue-latest");
+    app.node("#page-content").querySelectorAll = (selector) => selector === "[data-official-model]" ? [select] : [];
+    await app.action("refresh-codex-models");
+    assert.equal(select.value, "gpt-daybreak-blue-latest");
+    assert.match(select.innerHTML, /value="gpt-daybreak-blue-latest" selected disabled/);
+    assert.match(select.hint.textContent, /未匹配可用模型目录/);
+    assert.equal(select.hint.hidden, false);
+    assert.equal(app.read("state.busy"), false);
   });
-  const select = officialSelectNode("gpt-daybreak-blue-latest");
-  app.node("#page-content").querySelectorAll = (selector) => selector === "[data-official-model]" ? [select] : [];
-  await app.action("refresh-codex-models");
-  assert.match(select.innerHTML, /value="gpt-daybreak-blue-latest" selected/);
-  assert.match(select.hint.textContent, /防御性安全工作.*未匹配本机官方目录/);
-  assert.equal(select.hint.hidden, false);
-  assert.equal(app.read("state.busy"), false);
-});
+}
 
 function inputNode(name, value, extra = {}) {
   return { name, value, type: "text", dataset: {}, disabled: false, closest: () => null, ...extra };
@@ -1913,7 +2022,7 @@ test("adding and removing the same model row restores a clean form", async () =>
   const app = await controller();
   const inputs = [inputNode("", "gpt-5.5", { dataset: { cableModelClient: "" } })];
   const form = mountTrackedForm(app, "cable-models-form", inputs);
-  inputs.push(inputNode("", "gpt-daybreak-blue-latest", { dataset: { cableModelClient: "" } }));
+  inputs.push(inputNode("", "gpt-5.6-sol", { dataset: { cableModelClient: "" } }));
   assert.equal(app.edited(form), true);
   inputs.pop();
   assert.equal(app.edited(form), false);
@@ -2372,8 +2481,8 @@ test("an unchanged model removed remotely is not resurrected by a local edit to 
   assert.equal(app.persisted().virtualProviders.cabletidy_relay.models["gpt-5.5"].upstreamModelId, "LOCAL-MAPPING");
 });
 
-test("merged local model selection keeps its matching security hint", async () => {
-  const app = await controller(undefined, { catalog: securityCatalogFixture() });
+test("merged unavailable model selection keeps its repair hint", async () => {
+  const app = await controller(undefined, { catalog: daybreakCatalogFixture() });
   const editor = mountCableEditor(app);
   const select = editor.row().querySelector("[data-cable-model-client]");
   select.value = "gpt-daybreak-blue-latest";
@@ -2382,7 +2491,7 @@ test("merged local model selection keeps its matching security hint", async () =
   await app.action("refresh");
   const merged = editor.row().querySelector("[data-cable-model-client]");
   assert.equal(merged.value, "gpt-daybreak-blue-latest");
-  assert.match(merged.hint.textContent, /防御性安全工作/);
+  assert.match(merged.hint.textContent, /未匹配可用模型目录/);
   assert.equal(merged.hint.hidden, false);
 });
 

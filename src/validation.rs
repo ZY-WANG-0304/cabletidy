@@ -160,7 +160,7 @@ pub fn validate(input: &Value) -> Value {
         }
         if let Some(v) = u["auth"].get("scheme") {
             check!(
-                token(v),
+                v == "" || token(v),
                 format!("{p}.auth.scheme"),
                 "认证 scheme 必须是合法的 HTTP token"
             );
@@ -171,7 +171,8 @@ pub fn validate(input: &Value) -> Value {
         check!(r.is_object(), p, "route 必须是 object");
         check!(id(key), p, "route ID 包含非法字符");
         check!(
-            r["backends"].is_array() && array(&r["backends"]).len() == 1,
+            r["backends"].is_array()
+                && (r["managedModels"] == true || array(&r["backends"]).len() == 1),
             format!("{p}.backends"),
             "每份配置必须且只能连接一个 upstream（一个 backend）"
         );
@@ -331,12 +332,28 @@ pub fn validate(input: &Value) -> Value {
     let mut owners = HashMap::new();
     for (key, b) in entries(&c["cables"]) {
         let p = format!("cables.{key}");
-        let name = configuration_id(text(&b["name"]), key);
+        let name = if b["managedModels"] == true {
+            key.clone()
+        } else {
+            configuration_id(text(&b["name"]), key)
+        };
         let provider = text(&b["virtualProvider"]);
         check!(b.is_object(), p, "线路必须是 object");
         check!(id(key), p, "线路 ID 包含非法字符");
         check!(
-            name != "api",
+            b["managedModels"] != true
+                || b["webSearch"].is_null()
+                || crate::config::CODEX_WEB_SEARCH_MODES.contains(&text(&b["webSearch"])),
+            format!("{p}.webSearch"),
+            "网页搜索方式须为 cached、indexed、live、disabled，或不配置以继承 Codex"
+        );
+        check!(
+            b["managedModels"] != true || crate::config::valid_inventory_id(key),
+            format!("{p}.id"),
+            "线路ID须为 1–54 位小写字母、数字、- 或 _，以字母或数字开头，且不能为 api"
+        );
+        check!(
+            name != "api" && key != "api",
             format!("{p}.name"),
             "配置 ID api 是管理接口保留路径"
         );
@@ -347,7 +364,7 @@ pub fn validate(input: &Value) -> Value {
         );
         names.insert(name.clone(), key);
         check!(
-            key == &name,
+            b["managedModels"] == true || key == &name,
             format!("{p}.id"),
             format!("配置 ID 应为 {name}，请检查名称或 ID 冲突")
         );
@@ -481,5 +498,24 @@ pub fn validate(input: &Value) -> Value {
             warnings.push(json!({"path":key,"message":message}));
         }
     }
+    errors.extend(crate::suppliers::validate(&c));
     json!({"ok":errors.is_empty(),"errors":errors,"warnings":warnings,"config":c})
+}
+
+/// Existing association violations remain invalid sources, but must be repairable in UI.
+pub fn validate_preserving_associations(input: &Value, previous: &Value) -> Value {
+    let mut check = validate(input);
+    let retained = crate::suppliers::unchanged_association_errors(previous, &check["config"]);
+    check["errors"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|error| !retained.contains(error));
+    for error in retained {
+        check["warnings"].as_array_mut().unwrap().push(json!({
+            "path":error["path"],
+            "message":format!("已有关联配置越界，来源不可使用，请修复：{}",text(&error["message"]))
+        }));
+    }
+    check["ok"] = json!(array(&check["errors"]).is_empty());
+    check
 }

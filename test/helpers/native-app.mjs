@@ -16,6 +16,8 @@ export async function createApplication(options = {}) {
     CODEX_HOME: options.codexHome || path.join(paths.home, "codex-client"),
     CLAUDE_CONFIG_DIR: options.claudeHome || path.join(paths.home, "claude-client"),
     CABLETIDY_PREFERRED_PORT: String(options.preferredPort ?? 0),
+    // Opt in for seeded fixtures only; restart and saved-port tests remain strict.
+    CABLETIDY_TEST_EPHEMERAL_PORT: options.ephemeralPort ? "1" : "0",
   });
   let loader = options.loadCodexCatalog;
   let catalogServer;
