@@ -3578,52 +3578,39 @@ function inventoryModels(form = pageContent.querySelector('#inventory-cable-form
 function inventoryFacts(source = {}) {
   const supplier = state.config.suppliers?.[source.supplierId];
   const model = supplier?.models?.[source.modelId];
-  const iface = supplier?.interfaces?.[source.interfaceId];
-  const difference = model?.interfaceCapabilities?.[source.interfaceId] || {};
-  const facts = {...model,...difference,capabilityStates:{...model?.capabilityStates,...difference.capabilityStates},reasoning:{...model?.reasoning,...difference.reasoning}};
   const native = state.codexCatalog?.models?.find(m => m.id === model?.identity);
-  const rule = supplierReasoningRule(model?.identity,iface?.protocol);
-  const supplied = facts.reasoning?.efforts || [];
-  const efforts = supplierCapabilitySupported(facts,"reasoning") && facts.reasoning?.modes?.includes("effort")
-    ? entries(rule?.clientEffortMap || {}).filter(([,upstream]) => supplied.includes(upstream)).map(([client]) => client) : [];
-  return {supplier,model,iface,facts,native,efforts};
+  return {model,native};
 }
-function inventoryBindingIssue(binding) {
-  if (binding.sources?.length !== 1) return binding.sources?.length > 1 ? "旧多来源配置，请拆分模型" : "请选择模型来源";
-  const {supplier,model,iface,facts,native} = inventoryFacts(binding.sources[0]);
-  if (!supplier || !model || !iface || !model.interfaces?.includes(binding.sources[0].interfaceId)) return "来源不存在，请重新选择";
-  if ([supplier,model,iface].some(item => item.enabled === false)) return "来源已停用";
-  if (iface.protocol !== "openai.responses") return "当前仅支持 Responses 接口";
-  if (!native && !COMPATIBLE_IDENTITIES.includes(model.identity)) return "模型身份未匹配已实现适配";
-  if (iface.supportsStreaming === false || facts.supportsStreaming === false) return "来源不支持流式响应";
-  if (!facts.toolForms?.includes("function")) return "来源未声明 JSON 函数工具";
-  if (!native && !facts.toolForms?.includes("custom")) return "来源未声明文本输入工具";
-  if (!native && !facts.contextWindow) return "请在供应商中确认上下文长度";
-  if (binding.reasoning?.defaultBudget != null) return "旧默认推理预算尚不可应用";
-  if ((!native || binding.promptStrategy === "selected") && !binding.promptModel) return "请选择使用的 Codex 原生模型提示词";
-  if (binding.promptModel) {
-    const prompt = state.codexCatalog?.models?.find(m => m.id === binding.promptModel)?.prompt;
-    if (!prompt?.text) return "所选提示词不可用，请刷新目录";
-    if (binding.promptHash && binding.promptHash !== prompt.hash) return "提示词已更新，请重新确认";
-    const contract = native?.prompt?.contract || {shell_type:"unified_exec",apply_patch_tool_type:"freeform",tool_mode:"direct",multi_agent_version:null};
-    if (entries(prompt.contract || {}).some(([key,value]) => value != null && value !== contract[key])) return "所选提示词的工具约定与当前模型不兼容";
-    if (prompt.contract?.apply_patch_tool_type === "freeform" && !facts.toolForms?.includes("custom")) return "所选提示词需要文本输入工具";
-  }
-  return "";
+async function inventoryBindingIssue(id, binding) {
+  if (binding.sources?.length > 1) return "旧多来源配置，请拆分模型";
+  const result = await api('/codex/model-preview',{method:'POST',body:JSON.stringify({clientModelId:id,binding})});
+  return result.issues.join('；');
 }
 function inventoryModelTable(models, defaultModel) {
   if (!Object.keys(models).length) return '<div class="empty">尚未添加模型。每次选择一个上游模型，并配置它在 Codex 中的使用方式。</div>';
   return `<table class="cable-table inventory-model-table"><thead><tr><th>模型</th><th>供应商 / 上游模型</th><th>使用配置</th><th>默认</th><th>操作</th></tr></thead><tbody>${entries(models).map(([id,binding]) => {
-    const issue = inventoryBindingIssue(binding);
+    const issue = "正在检查模型可用性…";
     return `<tr data-inventory-binding="${esc(id)}"><th scope="row"><button type="button" class="cable-name" data-action="edit-inventory-model" data-id="${esc(id)}">${esc(binding.name || id)}</button>${binding.name ? `<span class="cable-upstream">${esc(id)}</span>` : ""}</th>
       <td data-label="来源">${esc(inventorySourceLabel(binding.sources?.[binding.activeSource || 0]))}</td>
-      <td data-label="使用配置"><span>${esc(binding.promptModel || (binding.promptStrategy === "selected" || !inventoryFacts(binding.sources?.[0]).native ? "提示词未选择" : "使用对应原生模型提示词"))}</span>${issue ? `<span class="field-hint inventory-model-issue">${esc(issue)}</span>` : ""}</td>
+      <td data-label="使用配置"><span>${esc(binding.promptModel || (binding.promptStrategy === "selected" || !inventoryFacts(binding.sources?.[0]).native ? "提示词未选择" : "使用对应原生模型提示词"))}</span><span class="field-hint inventory-model-issue" data-inventory-binding-issue>${esc(issue)}</span></td>
       <td data-label="默认"><label class="settings-checkbox"><input type="checkbox" data-inventory-default="${esc(id)}" aria-label="将 ${esc(id)} 设为默认" ${defaultModel === id ? "checked" : ""} ${issue && defaultModel !== id ? "disabled" : ""}><span>设为默认</span></label></td>
       <td data-label="操作"><div class="resource-actions">${binding.sources?.length > 1 ? `<button type="button" class="text-button" data-action="split-inventory-model" data-id="${esc(id)}">拆分模型</button>` : ""}<button type="button" class="text-button" data-action="remove-inventory-model" data-id="${esc(id)}">移除</button></div></td></tr>`;
   }).join("")}</tbody></table>`;
 }
 function redrawInventoryModels(form) {
-  form.querySelector('[data-inventory-model-list]').innerHTML = inventoryModelTable(inventoryModels(form),form.querySelector('[name="defaultModel"]').value);
+  const models = inventoryModels(form);
+  const list = form.querySelector('[data-inventory-model-list]');
+  list.innerHTML = inventoryModelTable(models,form.querySelector('[name="defaultModel"]').value);
+  for (const row of list.querySelectorAll('[data-inventory-binding]')) {
+    const id = row.dataset.inventoryBinding;
+    inventoryBindingIssue(id,models[id]).catch(error => `无法检查模型：${error.message}`).then(issue => {
+      // A redraw replaces the rows: late responses cannot update a newer draft.
+      if (!row.isConnected) return;
+      row.querySelector('[data-inventory-binding-issue]').textContent = issue;
+      const control = row.querySelector('[data-inventory-default]');
+      setControlDisabled(control,Boolean(issue) && !control.checked);
+    });
+  }
 }
 function setInventoryModels(form, models, defaultModel = form.querySelector('[name="defaultModel"]').value) {
   form.querySelector('[name="models"]').value = JSON.stringify(models);
@@ -4069,7 +4056,15 @@ pageContent.addEventListener("change", async event => {
     if (state.busy) return;
     const nextDefault = event.target.checked ? event.target.dataset.inventoryDefault : "";
     const unlock = lockControls();
-    try { await updateInventoryModels(form, inventoryModels(form), nextDefault); }
+    try {
+      const models = inventoryModels(form);
+      if (nextDefault) {
+        const issue = await inventoryBindingIssue(nextDefault,models[nextDefault]);
+        if (issue) throw new Error(issue);
+      }
+      if (!form.isConnected) return;
+      await updateInventoryModels(form, models, nextDefault);
+    }
     catch (error) { redrawInventoryModels(form); showFormError(form, error); }
     finally { unlock(); }
     return;
@@ -4151,6 +4146,7 @@ async function inventoryAction(action, element) {
   else if (action === "reset-inventory-settings") inventoryEditorOptions(element.closest('form'),"",true);
   else if (action === "refresh-inventory-catalog") {
     state.codexCatalog = await api("/codex/models?refresh=1");
+    redrawInventoryModels(pageContent.querySelector("#inventory-cable-form"));
     inventoryEditorOptions(element.closest('form'),"refresh");
     toast(state.codexCatalog.available ? "提示词目录已刷新，原有选择保留。" : "目录读取失败，可继续保存模型草稿。",!state.codexCatalog.available);
   }
@@ -4162,7 +4158,12 @@ async function inventoryAction(action, element) {
     const form = element.closest('form'), models = inventoryModels(form), id = element.dataset.id;
     delete models[id];
     const currentDefault = form.querySelector('[name="defaultModel"]').value;
-    const nextDefault = currentDefault === id ? Object.keys(models).find(key => !inventoryBindingIssue(models[key])) || "" : currentDefault;
+    let nextDefault = currentDefault;
+    if (currentDefault === id) {
+      const issues = await Promise.all(entries(models).map(async ([key,binding]) => [key,await inventoryBindingIssue(key,binding)]));
+      nextDefault = issues.find(([,issue]) => !issue)?.[0] || "";
+    }
+    if (!form.isConnected) return true;
     await updateInventoryModels(form,models,nextDefault);
   }
   else if (action === "split-inventory-model") {
