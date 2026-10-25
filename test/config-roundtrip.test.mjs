@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createApplication } from "./helpers/native-app.mjs";
@@ -24,7 +23,6 @@ for (const sharedSecret of [false, true]) {
     t.after(async () => { await app?.close(); await fs.rm(home, { recursive: true, force: true }); });
     const paths = getPaths(home);
     const initial = namedCodexConfigFixture({ first: "first", second: "second" });
-    initial.web = { listenHost: "127.0.0.1", port: await freePort() };
     const firstRef = "secret://upstreams/first";
     const secondRef = sharedSecret ? firstRef : "secret://upstreams/second";
     initial.upstreams.first.secretRef = firstRef;
@@ -34,7 +32,7 @@ for (const sharedSecret of [false, true]) {
     const secrets = { [firstRef]: "first-key", [secondRef]: "second-key", unrelated: "preserved-key" };
     await fs.writeFile(paths.config, JSON.stringify(initial));
     await fs.writeFile(paths.secrets, JSON.stringify(secrets));
-    app = await createApplication({ paths });
+    app = await createApplication({ paths, ephemeralPort: true });
     const get = async (endpoint) => {
       const response = await fetch(`${app.url}${endpoint}`);
       assert.equal(response.status, 200);
@@ -86,14 +84,6 @@ for (const sharedSecret of [false, true]) {
   });
 }
 
-async function freePort() {
-  const server = http.createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 for (const format of ["v1 client names", "v1 dictionary keys", "v2 dictionary keys"]) {
   test(`${format}: model names survive GET, migration, commit and unrelated edits`, async (t) => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-model-roundtrip-"));
@@ -101,7 +91,6 @@ for (const format of ["v1 client names", "v1 dictionary keys", "v2 dictionary ke
     t.after(async () => { await app?.close(); await fs.rm(home, { recursive: true, force: true }); });
     const paths = getPaths(home);
     const initial = claudeConfigFixture();
-    initial.web.port = await freePort();
     const models = Object.fromEntries(names.map((name) => [name, {
       upstreamModelId: `vendor-${name}`,
       description: `Model ${name}`,
@@ -125,7 +114,7 @@ for (const format of ["v1 client names", "v1 dictionary keys", "v2 dictionary ke
       initial.virtualProviders[providerId].models = models;
     }
     await fs.writeFile(paths.config, JSON.stringify(initial));
-    app = await createApplication({ paths });
+    app = await createApplication({ paths, ephemeralPort: true });
     const call = async (endpoint, body) => {
       const response = await fetch(`${app.url}api/v1/config${endpoint}`, body ? {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -181,12 +170,13 @@ test("version 2 bindings load as cables and are persisted only on the next commi
   t.after(async () => { await app?.close(); await fs.rm(home, { recursive: true, force: true }); });
   const paths = getPaths(home);
   const { cables, ...rest } = namedCodexConfigFixture({ first: "first" });
-  const legacy = { ...rest, version: 2, web: { listenHost: "127.0.0.1", port: await freePort() }, bindings: cables };
+  const legacy = { ...rest, version: 2, web: { listenHost: "127.0.0.1", port: 43100 }, bindings: cables };
   const conflicting = { ...legacy, cables };
   await fs.writeFile(paths.config, JSON.stringify(conflicting));
-  await assert.rejects(createApplication({ paths }), /bindings/);
+  await assert.rejects(createApplication({ paths, ephemeralPort: true }), /bindings/);
   await fs.writeFile(paths.config, JSON.stringify(legacy));
-  app = await createApplication({ paths });
+  app = await createApplication({ paths, ephemeralPort: true });
+  legacy.web.port = app.state.config.web.port;
   const current = (await (await fetch(`${app.url}api/v1/config`)).json()).config;
   assert.equal(current.version, 3);
   assert.equal(current.bindings, undefined);

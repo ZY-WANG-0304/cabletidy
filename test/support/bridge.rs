@@ -116,6 +116,7 @@ async fn dispatch(command: &str, a: &[Value], catalog: &Catalog) -> Result<Value
             targets::apply(x, &options(y)?, y["confirmationToken"].as_str()).await?
         }
         "codex.apply" => targets::codex::apply(x, &options(y)?).await?,
+        "codex.restore" => targets::codex::restore_cable(text(x), &options(y)?).await?,
         "claude.restore" => {
             targets::restore(text(x), &options(y)?, y["confirmationToken"].as_str()).await?
         }

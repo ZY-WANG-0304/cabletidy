@@ -37,6 +37,7 @@
     "test": "node scripts/test.mjs",
     "test:security:browser": "node scripts/build-native.mjs --debug --test && node scripts/security-browser.mjs",
     "test:cables:browser": "node scripts/build-native.mjs --debug --test && node scripts/cable-transfer-browser.mjs",
+    "test:models:browser": "node scripts/build-native.mjs --debug --test && node scripts/codex-model-binding-browser.mjs && node scripts/cable-live-edit-browser.mjs && node scripts/inventory-availability-browser.mjs",
     "test:settings:browser": "node scripts/build-native.mjs --debug --test && node scripts/settings-browser.mjs",
     "test:package": "npm run build && node --test scripts/package-smoke.mjs",
     "test:claude": "node scripts/build-native.mjs --debug --test && node --test scripts/claude-smoke.mjs",

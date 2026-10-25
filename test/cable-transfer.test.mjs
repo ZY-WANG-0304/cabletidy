@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
-import http from "node:http";
 import path from "node:path";
 import { createApplication } from "./helpers/native-app.mjs";
 import { getPaths, normalizeConfig, saveConfig, saveSecrets } from "./helpers/native.mjs";
@@ -12,12 +11,7 @@ import { claudeConfigFixture } from "./helpers/claude-fixture.mjs";
 async function fixture(t, legacyModel = false) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "cabletidy-transfer-"));
   const paths = getPaths(home);
-  const listener = http.createServer();
-  await new Promise(resolve => listener.listen(0, "127.0.0.1", resolve));
-  const port = listener.address().port;
-  await new Promise(resolve => listener.close(resolve));
   const config = normalizeConfig(namedCodexConfigFixture({ alpha: "Alpha", beta: "Beta" }));
-  config.web.port = port;
   const claude = claudeConfigFixture();
   for (const key of ["upstreams", "routes", "virtualProviders", "cables"]) Object.assign(config[key], claude[key]);
   config.upstreams.alpha.secretRef = "secret://upstreams/alpha";
@@ -37,7 +31,7 @@ async function fixture(t, legacyModel = false) {
   config.cables["claude-main"].claude = { setModel: true, models: { sonnet: "claude-sonnet-4-6", subagent: "sonnet" }, env: { ANTHROPIC_API_KEY: "claude-secret" } };
   await saveConfig(config, paths);
   await saveSecrets({ "secret://upstreams/alpha": "saved-api-key", "secret://upstreams/alpha-2": "orphan-secret" }, paths);
-  const app = await createApplication({ paths, loadCodexCatalog: async () => catalogFixture() });
+  const app = await createApplication({ paths, ephemeralPort: true, loadCodexCatalog: async () => catalogFixture() });
   t.after(async () => { await app.close(); await fs.rm(home, { recursive: true, force: true }); });
   async function call(endpoint, body) {
     const response = await fetch(new URL(`/api/v1/${["/export", "/import"].includes(endpoint) ? "cables" : "config"}${endpoint}`, app.url), {

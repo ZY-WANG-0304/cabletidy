@@ -78,6 +78,42 @@ test("ordinary fixtures bind ephemeral ports and preserve their address across r
   assert.equal((await fetch(restarted.url)).status, 200);
 });
 
+test("seeded fixtures explicitly allocate distinct ports without migrating saved configuration", async t => {
+  const f = await fixture(t);
+  const blocker = await f.block();
+  const { cables, ...rest } = codexConfigFixture();
+  const initial = { ...rest, version: 2, revision: 7, bindings: cables,
+    web: { listenHost: "127.0.0.1", port: blocker.address().port } };
+  const paths = ["first", "second", "third"].map(name => f.paths(name));
+  for (const p of paths) {
+    await fs.mkdir(p.home, { recursive: true });
+    await fs.writeFile(p.config, JSON.stringify(initial));
+  }
+  const before = await fs.readFile(paths[0].config, "utf8");
+  await assert.rejects(f.start(paths[0]), { code: "EADDRINUSE" });
+  assert.equal(await fs.readFile(paths[0].config, "utf8"), before);
+
+  const apps = await Promise.all(paths.map(p => f.start(p, { ephemeralPort: true })));
+  assert.equal(new Set(apps.map(app => app.url)).size, apps.length);
+  for (const app of apps) {
+    const port = app.state.webServer.address().port;
+    assert.ok(port > 0);
+    assert.notEqual(port, initial.web.port);
+    assert.deepEqual(JSON.parse(await fs.readFile(app.state.paths.config, "utf8")), {
+      ...initial, web: { ...initial.web, port },
+    });
+    const runtime = await readRuntimeInfo(app.state.paths);
+    assert.equal(runtime.web.port, port);
+    assert.equal(runtime.web.url, app.url);
+    assert.equal((await fetch(`${app.url}relay/v1/models`)).status, 200);
+  }
+  const saved = await fs.readFile(paths[0].config, "utf8");
+  await apps[0].close();
+  const restarted = await f.start(paths[0]);
+  assert.equal(restarted.url, apps[0].url);
+  assert.equal(await fs.readFile(paths[0].config, "utf8"), saved);
+});
+
 for (const preferredPort of [43100, 43101]) {
   test(`first startup persists the listening address with preferred port ${preferredPort ?? "default"}`, async t => {
     const f = await fixture(t);

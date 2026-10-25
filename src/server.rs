@@ -68,7 +68,7 @@ impl AppState {
         };
         health[id] = json!({"outcome":outcome,"status":status,"failures":failures,"lastCheckedAt":config::now()});
     }
-    fn runtime(&self) -> Value {
+    async fn runtime(&self) -> Value {
         let snapshot = self.snapshot();
         let config = &snapshot.config;
         let providers: Vec<_> = entries(&config["virtualProviders"]).map(|(id, provider)| {
@@ -102,6 +102,9 @@ impl AppState {
                 .map(|(_, p)| entries(&p["models"]).count())
                 .sum::<usize>()),
         );
+        let codex_activation = targets::codex::activation_status(&self.targets, config)
+            .await
+            .unwrap_or(json!({"status":"unreadable"}));
         json!({
             "version": crate::VERSION,
             "pid": std::process::id(),
@@ -109,6 +112,7 @@ impl AppState {
             "revision": config["revision"],
             "web": {"host": config["web"]["listenHost"], "port": config["web"]["port"], "status": "listening"},
             "virtualProviders": providers,
+            "clientActivation":{"codex":codex_activation},
             "health": *self.health.lock().unwrap(),
             "counts": counts,
             "security": self.security.status(),
@@ -149,10 +153,12 @@ pub async fn create(
         let existing = config::read_json(&paths.config).await?;
         let fresh = existing.is_none();
         let mut config = existing.as_ref().map(config::normalize).unwrap_or_else(config::defaults);
-        // Only test builds accept an ephemeral first listener; saved ports stay strict.
-        let ephemeral = cfg!(feature = "test-support") && fresh && preferred == 0;
+        // Seeded test fixtures opt in explicitly; ordinary restarts keep saved ports strict.
+        let test_ephemeral = cfg!(feature = "test-support")
+            && std::env::var("CABLETIDY_TEST_EPHEMERAL_PORT").as_deref() == Ok("1");
+        let ephemeral = test_ephemeral || (cfg!(feature = "test-support") && fresh && preferred == 0);
         if fresh && !ephemeral { config["web"]["port"] = json!(preferred); }
-        let check = validation::validate(&config);
+        let check = validation::validate_preserving_associations(&config, &config);
         if check["ok"] != true {
             bail!("配置校验失败，daemon 未启动: {}", check["errors"]);
         }
@@ -186,8 +192,19 @@ pub async fn create(
             claude_client: upstream_client(reqwest::redirect::Policy::none())?,
             jobs: AtomicUsize::new(0),
         });
+        for warning in array(&check["warnings"]).iter().filter(|warning| text(&warning["path"]).starts_with("suppliers.")) {
+            state.event("config.association_invalid", warning.clone());
+        }
         config::write_json(&paths.secrets, &secrets).await?;
-        if fresh { config::write_json(&paths.config, &config).await?; }
+        if fresh {
+            config::write_json(&paths.config, &config).await?;
+        } else if test_ephemeral {
+            // Preserve raw legacy fixtures: initialization changes only their listening port.
+            if let Some(mut initial) = existing {
+                initial["web"]["port"] = config["web"]["port"].clone();
+                config::write_json(&paths.config, &initial).await?;
+            }
+        }
         lifecycle::persist_runtime(&paths, &lock.identity, &config, &state.started).await?;
         Ok::<_, anyhow::Error>((state, listener, control))
     }.await;
@@ -391,6 +408,7 @@ fn target_confirmation<'a>(
             provider,
             route,
             upstreams,
+            config["suppliers"],
             config::base_url(config, id)
         ]))?))
     })();
@@ -871,7 +889,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             "/api/v1/config" => {
                 json_response(200, json!({"config":config::public(c,&snapshot.secrets)}))
             }
-            "/api/v1/runtime" => json_response(200, state.runtime()),
+            "/api/v1/runtime" => json_response(200, state.runtime().await),
             "/api/v1/events" => json_response(
                 200,
                 json!({"events":state.events.lock().unwrap().iter().rev().take(100).collect::<Vec<_>>()}),
@@ -895,7 +913,7 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 Ok(v) => json_response(200, catalog::public(&v)),
                 Err(e) => json_response(
                     200,
-                    json!({"available":false,"models":[],"error":{"message":e.to_string()}}),
+                    json!({"available":false,"models":[],"reasoningRules":crate::codex_adapter::reasoning_rules(),"error":{"message":e.to_string()}}),
                 ),
             },
             "/api/v1/catalog" => json_response(
@@ -922,6 +940,24 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
             ));
         }
     }
+    if path == "/api/v1/codex/model-preview" {
+        let catalog = state.catalog.load(false).await;
+        let mut result = crate::codex_adapter::preview_binding(
+            c,
+            catalog.as_ref().unwrap_or(&Value::Null),
+            text(&body["clientModelId"]),
+            &body["binding"],
+        );
+        if let Err(error) = catalog {
+            result["available"] = json!(false);
+            result["issues"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(format!("无法读取 Codex 模型目录：{error:#}")));
+        }
+        return Ok(json_response(200, result));
+    }
+
     if path == "/api/v1/config/validate" {
         let candidate =
             config::normalize(&config::strip_presentation(body.get("config").unwrap_or(c)));
@@ -1030,6 +1066,63 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     if path == "/api/v1/tests/upstream" {
         return probe(&state, &snapshot, &body).await;
     }
+    if path == "/api/v1/suppliers/discover" {
+        let supplier = &snapshot.config["suppliers"][text(&body["supplierId"])];
+        let interface = &supplier["interfaces"][text(&body["interfaceId"])];
+        if !interface.is_object() {
+            return Ok(error(404, "interface_not_found", "供应商接口不存在"));
+        }
+        if interface["protocol"] != "openai.responses" {
+            return Ok(error(
+                422,
+                "protocol_not_implemented",
+                "首期模型发现仅支持 Responses 接口",
+            ));
+        }
+        let mut url = url::Url::parse(text(&interface["baseUrl"]))?;
+        url.set_path(&format!("{}/models", url.path().trim_end_matches('/')));
+        let mut headers = HeaderMap::new();
+        auth(
+            &mut headers,
+            interface,
+            "openai.responses",
+            config::secret(interface, &snapshot.secrets),
+        )?;
+        let response = match state
+            .claude_client
+            .get(url)
+            .headers(headers)
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(e) => return Ok(error(502, "discovery_failed", &e.without_url().to_string())),
+        };
+        if !response.status().is_success() {
+            return Ok(error(
+                502,
+                "discovery_failed",
+                &format!("模型发现返回 HTTP {}", response.status()),
+            ));
+        }
+        let mut stream = response.bytes_stream();
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if bytes.len() + chunk.len() > 1024 * 1024 {
+                return Ok(error(502, "discovery_failed", "模型发现结果超过 1 MiB"));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let result: Value = serde_json::from_slice(&bytes)?;
+        let models = array(&result["data"])
+            .iter()
+            .filter(|m| config::nonempty(&m["id"]))
+            .map(|m| json!({"id":m["id"]}))
+            .collect::<Vec<_>>();
+        return Ok(json_response(200, json!({"models":models})));
+    }
     if path == "/api/v1/config/preview-target-artifacts" {
         let mut candidate = config::normalize(body.get("config").unwrap_or(c));
         let secrets = config::apply_secrets(&mut candidate, &snapshot.secrets, &body);
@@ -1047,6 +1140,30 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 Err(e) => error(422, "target_artifact_preview_failed", &e.to_string()),
             },
         );
+    }
+    if path == "/api/v1/targets/isolated" {
+        let id = text(&body["cableId"]);
+        if c["cables"][id]["managedModels"] != true {
+            return Ok(error(
+                422,
+                "isolated_not_supported",
+                "请选择供应商目录 Codex Cable",
+            ));
+        }
+        let a = targets::build(c, id, &snapshot.secrets)?;
+        let p = &c["virtualProviders"][text(&a["virtualProviderId"])];
+        let plan = match crate::catalog::plan(c, p, &state.catalog.load(false).await?) {
+            Ok(p) => p,
+            Err(e) => return Ok(error(422, "isolated_export_failed", &e.to_string())),
+        };
+        let files = json!([
+            {"path":"model-catalog.json","contents":format!("{}\n", serde_json::to_string_pretty(&plan["catalog"])? )},
+            {"path":"config.toml","contents":format!("{}model_catalog_json = \"model-catalog.json\"\n{}",text(&a["activeContents"]),text(&a["providerContents"]))}
+        ]);
+        return Ok(json_response(
+            200,
+            json!({"bundle":{"format":"cabletidy.codex-isolated","version":1,"cableId":id,"files":files,"instructions":"把 files 中各文件按 path 写入一个独立目录，然后用 CODEX_HOME 指向该目录启动 Codex；模型目录路径相对该目录解析。配置不含上游凭据。","warnings":plan["warnings"]}}),
+        ));
     }
     if path == "/api/v1/targets/apply" {
         // Keep the selected cable stable from confirmation validation through client writes.
@@ -1103,6 +1220,17 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
                 Ok(confirmation) => confirmation,
                 Err(e) => return Ok(target_error("target_restore_failed", &e, "")),
             };
+        if c["cables"][id]["target"] == "codex" {
+            return Ok(
+                match targets::codex::restore_cable(id, &state.targets).await {
+                    Ok(report) => {
+                        state.event("target.restore", json!({"cableId":id,"target":"codex"}));
+                        json_response(200, json!({"ok":true,"target":"codex","report":report}))
+                    }
+                    Err(e) => target_error("target_restore_failed", &e, &scope),
+                },
+            );
+        }
         if c["cables"][id]["target"] != "claude-code" {
             return Ok(error(
                 422,
@@ -1128,7 +1256,12 @@ async fn api(state: Arc<AppState>, method: &Method, uri: &Uri, body: Value) -> R
     }
     Ok(error(404, "not_found", "API endpoint 不存在"))
 }
-async fn save_snapshot(state: &AppState, previous: &Snapshot, next: &Snapshot) -> Result<()> {
+async fn save_snapshot(
+    state: &AppState,
+    previous: &Snapshot,
+    next: &Snapshot,
+    rename: Option<(&str, &str)>,
+) -> Result<()> {
     if !tokio::fs::metadata(&state.paths.backups).await?.is_dir() {
         bail!("The backup directory is unavailable");
     }
@@ -1145,11 +1278,37 @@ async fn save_snapshot(state: &AppState, previous: &Snapshot, next: &Snapshot) -
         &format!("secrets-{revision}.json"),
     )
     .await?;
-    config::write_json(&state.paths.config, &next.config).await?;
-    if let Err(e) = config::write_json(&state.paths.secrets, &next.secrets).await {
+    let activation = match rename {
+        Some((old, new)) if old != new => {
+            targets::codex::renamed_activation(&state.targets, old, new).await?
+        }
+        _ => None,
+    };
+    let activation_path = state.targets.codex_home.join(targets::codex::ACTIVATION);
+    if activation.is_some() {
+        config::backup(
+            &activation_path,
+            &state.paths.backups,
+            "codex-activation-rename.json",
+        )
+        .await?;
+    }
+    let result: Result<()> = async {
+        config::write_json(&state.paths.config, &next.config).await?;
+        config::write_json(&state.paths.secrets, &next.secrets).await?;
+        if let Some(activation) = activation {
+            config::write_json(&activation_path, &activation).await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(e) = result {
         config::write_json(&state.paths.config, &previous.config)
             .await
             .context("Failed to restore previous configuration")?;
+        config::write_json(&state.paths.secrets, &previous.secrets)
+            .await
+            .context("Failed to restore previous credentials")?;
         return Err(e);
     }
     *state.snapshot.write().unwrap() = Arc::new(next.clone());
@@ -1193,7 +1352,24 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
     let mut candidate = config::normalize(&config::strip_presentation(&payload["config"]));
     candidate["revision"] = json!(c["revision"].as_u64().unwrap_or(0) + 1);
     let mut secrets = config::apply_secrets(&mut candidate, &previous.secrets, payload);
-    let mut check = validation::validate(&candidate);
+    if let Some(operation) = body.get("operation") {
+        if ["supplier.create", "supplier.interface.save"].contains(&text(&operation["type"])) {
+            let selected = &payload["selection"];
+            let interfaces = &candidate["suppliers"][text(&selected["supplierId"])]["interfaces"];
+            if entries(interfaces).any(|(iid, interface)| {
+                (operation["type"] == "supplier.create" || iid == text(&selected["interfaceId"]))
+                    && interface["auth"]["method"] != "none"
+                    && config::secret(interface, &secrets).is_empty()
+            }) {
+                return Ok(error(
+                    422,
+                    "credential_required",
+                    "所选认证方式需要填写认证凭据",
+                ));
+            }
+        }
+    }
+    let mut check = validation::validate_preserving_associations(&candidate, c);
     let diff = config::diff(c, &candidate);
     if check["ok"] == true {
         check["errors"]
@@ -1239,13 +1415,19 @@ async fn commit(state: &AppState, body: &Value) -> Result<Response> {
         config: candidate,
         secrets,
     };
-    if let Err(e) = save_snapshot(state, &previous, &next).await {
+    let rename = (body["operation"]["type"] == "cable.inventory.rename").then(|| {
+        (
+            text(&body["operation"]["cableId"]),
+            text(&body["operation"]["data"]["id"]),
+        )
+    });
+    if let Err(e) = save_snapshot(state, &previous, &next, rename).await {
         return Ok(error(500, "config_reload_failed", &e.to_string()));
     }
     state.event("config.commit",json!({"revision":next.config["revision"],"virtualProviders":entries(&next.config["virtualProviders"]).map(|(k,_)|k).collect::<Vec<_>>(),"upstreams":entries(&next.config["upstreams"]).map(|(k,_)|k).collect::<Vec<_>>()}));
     Ok(json_response(
         200,
-        json!({"ok":true,"revision":next.config["revision"],"diff":diff,"config":config::public(&next.config,&next.secrets),"runtime":state.runtime(),"selection":edit.as_ref().map(|e|&e["selection"]),"page":edit.as_ref().map(|e|&e["page"])}),
+        json!({"ok":true,"revision":next.config["revision"],"diff":diff,"config":config::public(&next.config,&next.secrets),"runtime":state.runtime().await,"selection":edit.as_ref().map(|e|&e["selection"]),"page":edit.as_ref().map(|e|&e["page"])}),
     ))
 }
 async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Response> {
@@ -1260,6 +1442,13 @@ async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Res
     }
     let mut next = (*previous).clone();
     next.config["virtualProviders"][id]["enabled"] = json!(enabled);
+    if next.config["virtualProviders"][id]["managedModels"] == true {
+        for (_, cable) in next.config["cables"].as_object_mut().unwrap() {
+            if cable["virtualProvider"] == id {
+                cable["enabled"] = json!(enabled);
+            }
+        }
+    }
     next.config["revision"] = json!(previous.config["revision"].as_u64().unwrap_or(0) + 1);
     let check = validation::validate(&next.config);
     if check["ok"] != true {
@@ -1268,7 +1457,7 @@ async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Res
             json!({"error":{"code":"config_invalid","message":"配置校验失败"},"errors":check["errors"],"warnings":check["warnings"]}),
         ));
     }
-    if let Err(e) = save_snapshot(state, &previous, &next).await {
+    if let Err(e) = save_snapshot(state, &previous, &next, None).await {
         return Ok(error(500, "virtual_provider_state_failed", &e.to_string()));
     }
     state.event(
@@ -1281,13 +1470,13 @@ async fn provider_state(state: &AppState, id: &str, enabled: bool) -> Result<Res
     );
     Ok(json_response(
         200,
-        json!({"ok":true,"virtualProviderId":id,"enabled":enabled,"revision":next.config["revision"],"config":config::public(&next.config,&next.secrets),"runtime":state.runtime()}),
+        json!({"ok":true,"virtualProviderId":id,"enabled":enabled,"revision":next.config["revision"],"config":config::public(&next.config,&next.secrets),"runtime":state.runtime().await}),
     ))
 }
 fn auth(headers: &mut HeaderMap, u: &Value, protocol: &str, secret: &str) -> Result<()> {
     headers.remove("authorization");
     headers.remove("x-api-key");
-    if secret.is_empty() {
+    if secret.is_empty() || u["auth"]["method"] == "none" {
         return Ok(());
     }
     let header = u["auth"]["header"]
@@ -1299,10 +1488,12 @@ fn auth(headers: &mut HeaderMap, u: &Value, protocol: &str, secret: &str) -> Res
             "authorization"
         });
     let value = if header.eq_ignore_ascii_case("authorization") {
-        format!(
-            "{} {secret}",
-            u["auth"]["scheme"].as_str().unwrap_or("Bearer")
-        )
+        let scheme = u["auth"]["scheme"].as_str().unwrap_or("Bearer");
+        if scheme.is_empty() {
+            secret.into()
+        } else {
+            format!("{} {secret}", scheme)
+        }
     } else {
         secret.into()
     };
@@ -1441,7 +1632,20 @@ async fn proxy(
         return Ok(r);
     }
     if method == Method::GET && (path == "/v1/models" || (!claude && path == "/models")) {
-        let models = model::models(p);
+        let mut models = model::models(p);
+        if crate::suppliers::managed(p)
+            && entries(&p["models"]).any(|(_, m)| text(&m["identity"]).starts_with("gpt-"))
+        {
+            let catalog = state.catalog.load(false).await;
+            models.retain(|m| {
+                let profile = &p["models"][text(&m["id"])];
+                !text(&profile["identity"]).starts_with("gpt-")
+                    || catalog.as_ref().is_ok_and(|snapshot| {
+                        crate::codex_adapter::catalog_entry(snapshot, text(&m["id"]), profile)
+                            .is_ok()
+                    })
+            });
+        }
         if !claude {
             return Ok(json_response(200, json!({"object":"list","data":models})));
         }
@@ -1571,8 +1775,97 @@ async fn proxy(
         if count_tokens { &Value::Null } else { body },
     ) {
         Ok(b) => b,
-        Err(e) => return Ok(protocol_error(protocol, 503, e.code, &e.message)),
+        Err(e) => {
+            if let Some(a) = &audit {
+                a.set("selectionError", json!({"code":e.code,"message":e.message}));
+                a.set("sources", resolution.profile["sources"].clone());
+            }
+            return Ok(protocol_error(protocol, 503, e.code, &e.message));
+        }
     };
+    if resolution.profile["managedModel"] == true {
+        let index = streaming::index(&spool, None)?;
+        let mut memory = streaming::Reservation::memory();
+        let reasoning = index
+            .nodes
+            .iter()
+            .find(|(_, field, _)| field == "reasoning")
+            .map(|(_, _, node)| node.read(&spool, &mut memory))
+            .transpose()?
+            .unwrap_or(Value::Null);
+        let check = match state.catalog.load(false).await {
+            Ok(snapshot) => crate::codex_adapter::catalog_entry(
+                &snapshot,
+                &resolution.client,
+                &resolution.profile,
+            )
+            .and_then(|(_, entry)| {
+                let effort = text(&reasoning["effort"]);
+                if !effort.is_empty()
+                    && !array(&entry["supported_reasoning_levels"])
+                        .iter()
+                        .any(|r| text(&r["effort"]) == effort)
+                {
+                    anyhow::bail!("请求推理档位不在该模型的生效定义与供给交集中: {effort}");
+                }
+                if body["images"] == true
+                    && !array(&entry["input_modalities"]).contains(&json!("image"))
+                {
+                    anyhow::bail!("图片输入不在该模型的生效定义与供给交集中");
+                }
+                if let Some(a) = &audit {
+                    if text(&resolution.profile["identity"]).starts_with("gpt-") {
+                        a.set("nativeDefinitionVersion", snapshot["version"].clone());
+                    }
+                    let prompt_id = resolution
+                        .profile
+                        .get("promptModel")
+                        .filter(|value| crate::config::nonempty(value))
+                        .unwrap_or(&resolution.profile["identity"]);
+                    if let Some(prompt) = array(&snapshot["catalog"]["models"])
+                        .iter()
+                        .find(|model| model["slug"] == *prompt_id)
+                    {
+                        let metadata = crate::codex_adapter::prompt_metadata(&snapshot, prompt);
+                        a.set("promptModel", prompt_id.clone());
+                        a.set("promptVersion", metadata["version"].clone());
+                        a.set("promptHash", metadata["hash"].clone());
+                    }
+                }
+                Ok(())
+            }),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = check {
+            return Ok(protocol_error(
+                protocol,
+                422,
+                "native_model_definition_unavailable",
+                &e.to_string(),
+            ));
+        }
+    }
+    if let Some(audit) = &audit {
+        audit.set("clientModelId", json!(resolution.client));
+        audit.set("upstreamModelId", json!(selected.model));
+        audit.set("upstreamId", selected.upstream["id"].clone());
+        if resolution.profile["managedModel"] == true {
+            audit.set("supplierId", resolution.profile["supplierId"].clone());
+            audit.set("interfaceId", resolution.profile["interfaceId"].clone());
+            audit.set(
+                "actualModelIdentity",
+                resolution.profile["identity"].clone(),
+            );
+            audit.set("adapterVersion", json!(crate::suppliers::ADAPTER_VERSION));
+            audit.set(
+                "promptStrategy",
+                resolution.profile["promptStrategy"].clone(),
+            );
+            audit.set("capabilityRevision", c["revision"].clone());
+            audit.set("actualModelVersion", resolution.profile["version"].clone());
+            audit.set("modelValidation", resolution.profile["validation"].clone());
+        }
+    }
     let mut protection = if protect {
         let mut record = audit.as_ref().map(|a| a.metadata()).unwrap_or_else(|| json!({"id":uuid::Uuid::new_v4().to_string(),"kind":"request","providerId":pid,"protocol":protocol,"target":if claude {"claude-code"} else {"codex"}}));
         security::session::identify_headers(&mut record, &security::headers_value(headers));
@@ -1654,6 +1947,24 @@ async fn proxy(
         info
     };
     let mut edits = Edits::new();
+    match crate::codex_adapter::request_edits(&spool, &resolution.profile) {
+        Ok(adapted) => {
+            for (start, end, bytes) in adapted.ranges {
+                edits.add(start, end, bytes)?;
+            }
+        }
+        Err(e) => {
+            if let Some(a) = &audit {
+                a.set("adaptationError", json!(e.to_string()));
+            }
+            return Ok(protocol_error(
+                protocol,
+                422,
+                "model_adaptation_error",
+                &e.to_string(),
+            ));
+        }
+    }
     let replacement = serde_json::to_vec(&selected.model)?;
     for node in &info.models {
         edits.add(node.start, node.end, replacement.clone())?;
@@ -1671,12 +1982,31 @@ async fn proxy(
     }
 
     let u = &selected.upstream;
-    if let Some(audit) = &audit {
-        audit.set("clientModelId", json!(resolution.client));
-        audit.set("upstreamModelId", json!(selected.model));
-        audit.set("upstreamId", u["id"].clone());
+    edits.ranges.sort_by_key(|r| r.0);
+    if resolution.profile["managedModel"] == true {
+        let root = streaming::index(&spool, None)?;
+        if let Some((_, _, node)) = root.nodes.iter().find(|(_, key, _)| key == "reasoning") {
+            let mut memory = streaming::Reservation::memory();
+            let request = node.read(&spool, &mut memory)?;
+            let applied = if request["effort"].is_string() {
+                json!(crate::codex_adapter::upstream_effort(
+                    text(&resolution.profile["identity"]),
+                    text(&request["effort"])
+                ))
+            } else {
+                request["effort"].clone()
+            };
+            if let Some(a) = &audit {
+                a.set("reasoningControl", json!({"requestedEffort":request["effort"],"mode":"effort","appliedEffort":applied}));
+            }
+        }
     }
-    let url = upstream_url(text(&u["baseUrl"]), path, query)?;
+    let upstream_path = if u.get("managedSupplier").is_some() && path.starts_with("/v1/") {
+        &path[3..]
+    } else {
+        path
+    };
+    let url = upstream_url(text(&u["baseUrl"]), upstream_path, query)?;
     let mut outbound = HeaderMap::new();
     outbound.insert("content-type", HeaderValue::from_static("application/json"));
     outbound.insert(

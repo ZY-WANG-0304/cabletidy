@@ -88,7 +88,7 @@ impl Paths {
 }
 pub fn defaults() -> Value {
     let audit = AuditSettings::default();
-    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"credentialProtection":{"enabled":false,"mappingTtlSeconds":3600},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{}})
+    json!({"version":3,"revision":0,"daemon":{},"web":{"listenHost":"127.0.0.1","port":43100},"audit":{"retentionDays":audit.retention_days,"budgetBytes":audit.budget_bytes},"credentialProtection":{"enabled":false,"mappingTtlSeconds":3600},"temporaryDirectory":null,"upstreams":{},"routes":{},"virtualProviders":{},"cables":{},"suppliers":{}})
 }
 fn merge(base: &mut Value, input: &Value) {
     if let (Some(dst), Some(src)) = (base.as_object_mut(), input.as_object()) {
@@ -182,6 +182,23 @@ pub fn normalize(input: &Value) -> Value {
         remove(p, &["localAuth", "listenHost", "listenPort"]);
     }
     for b in c["cables"].as_object_mut().unwrap().values_mut() {
+        if b["managedModels"] == true {
+            remove(b, &["name", "legacyPassthrough"]);
+            // Supplier membership follows model bindings, including disabled sources.
+            // Prune stale references from older saves without inventing missing selections.
+            if b["models"].is_object() {
+                let referenced: Vec<_> = entries(&b["models"])
+                    .flat_map(|(_, binding)| array(&binding["sources"]))
+                    .map(|source| source["supplierId"].clone())
+                    .collect();
+                if let Some(selected) = b["suppliers"].as_array_mut() {
+                    selected.retain(|sid| referenced.contains(sid));
+                }
+            }
+            for (_, binding) in b["models"].as_object_mut().into_iter().flatten() {
+                remove(binding, &["aliases"]);
+            }
+        }
         remove(b, &["providerFormat", "legacyCodex"]);
         if let Some(v) = b.get_mut("codex") {
             remove(
@@ -200,6 +217,7 @@ pub fn normalize(input: &Value) -> Value {
         }
     }
     normalize_identities(&mut c);
+    crate::suppliers::compile(&mut c);
     c
 }
 
@@ -370,6 +388,17 @@ pub fn configuration_id(name: &str, fallback: &str) -> String {
         b
     }
 }
+pub const CODEX_WEB_SEARCH_MODES: &[&str] = &["cached", "indexed", "live", "disabled"];
+
+pub fn valid_inventory_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 54
+        && id != "api"
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
 fn unique_renames(ids: HashMap<String, String>) -> HashMap<String, String> {
     let mut counts = HashMap::new();
     for id in ids.values() {
@@ -402,7 +431,7 @@ fn normalize_identities(c: &mut Value) {
         .map(|(id, b)| {
             (
                 id.clone(),
-                if b.is_object() {
+                if b.is_object() && b["managedModels"] != true {
                     configuration_id(text(&b["name"]), id)
                 } else {
                     id.clone()
@@ -479,6 +508,8 @@ fn clean_config(v: &mut Value, strip_presentation: bool) {
         Providers,
         Provider,
         Models,
+        Cables,
+        Cable,
         Fields,
     }
     fn clean(v: &mut Value, scope: Scope, strip_presentation: bool) {
@@ -492,8 +523,10 @@ fn clean_config(v: &mut Value, strip_presentation: bool) {
             }
             for (key, value) in obj {
                 let next = match (scope, key.as_str()) {
-                    (Scope::Config | Scope::Provider, "models") => Scope::Models,
-                    (Scope::Config, "virtualProviders") => Scope::Providers,
+                    (Scope::Config | Scope::Provider | Scope::Cable, "models") => Scope::Models,
+                    (Scope::Config, "cables") => Scope::Cables,
+                    (Scope::Cables, _) => Scope::Cable,
+                    (Scope::Config, "virtualProviders" | "suppliers") => Scope::Providers,
                     (Scope::Providers, _) => Scope::Provider,
                     _ => Scope::Fields,
                 };
@@ -525,6 +558,18 @@ pub fn public(c: &Value, secrets: &Value) -> Value {
                 u["secretRef"] = json!(format!("secret://upstreams/{id}"));
             }
             u["secretConfigured"] = json!(configured);
+        }
+    }
+    for supplier in out["suppliers"].as_object_mut().unwrap().values_mut() {
+        for (_, interface) in supplier
+            .get_mut("interfaces")
+            .and_then(Value::as_object_mut)
+            .into_iter()
+            .flatten()
+        {
+            if interface.is_object() {
+                interface["secretConfigured"] = json!(!secret(interface, secrets).is_empty());
+            }
         }
     }
     out

@@ -59,6 +59,10 @@ pub fn resolve(p: &Value, requested: Option<&Value>) -> Result<Resolution, Resol
             matched_model: Some(id.clone()),
             profile: profile.clone(),
         }),
+        None if crate::suppliers::managed(p) => Err(error(
+            "model_not_bound",
+            format!("模型 {key} 未在当前 Cable 中开放"),
+        )),
         None => Ok(Resolution {
             client: key.into(),
             matched_model: None,
@@ -107,6 +111,22 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
         ));
     }
     let backends = array(&route["backends"]);
+    let profile = &r.profile;
+    if nonempty(&profile["sourceError"]) {
+        return Err(error("source_not_found", text(&profile["sourceError"])));
+    }
+    if profile["managedModel"] == true {
+        crate::codex_adapter::validate_profile(profile)
+            .map_err(|e| error("model_adaptation_unavailable", e.to_string()))?;
+    }
+    let selected_backend;
+    let backends = if crate::suppliers::managed(p) && !profile.is_null() {
+        selected_backend =
+            vec![json!({"upstream":profile["upstream"],"enabled":profile["sourceEnabled"]})];
+        &selected_backend[..]
+    } else {
+        backends
+    };
     if backends.len() != 1 {
         return Err(error(
             "invalid_route",
@@ -115,7 +135,6 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
     }
     let b = &backends[0];
     let u = &c["upstreams"][text(&b["upstream"])];
-    let profile = &r.profile;
     let caps = capabilities(profile);
     let mut required = BTreeSet::new();
     for (key, cap) in [
@@ -125,6 +144,12 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
         ("reasoning", "reasoning"),
     ] {
         if truthy(&body[key]) {
+            if cap == "parallel_tool_calls"
+                && profile["managedModel"] == true
+                && !caps.contains(cap)
+            {
+                continue;
+            }
             required.insert(cap.to_owned());
         }
     }
@@ -179,6 +204,12 @@ pub fn select(c: &Value, p: &Value, r: &Resolution, body: &Value) -> Result<Back
 }
 pub fn models(provider: &Value) -> Vec<Value> {
     entries(&provider["models"])
+        .filter(|(_, m)| {
+            m["managedModel"] != true
+                || (!nonempty(&m["sourceError"])
+                    && m["sourceEnabled"] != false
+                    && crate::codex_adapter::validate_profile(m).is_ok())
+        })
         .map(|(id, model)| {
             json!({
                 "id": id,

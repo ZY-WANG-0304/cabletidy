@@ -1,4 +1,5 @@
 pub mod catalog;
+mod codex_adapter;
 pub mod config;
 pub mod config_operations;
 mod control;
@@ -10,6 +11,8 @@ mod protection;
 pub mod security;
 pub mod server;
 mod streaming;
+mod supplier_operations;
+pub mod suppliers;
 pub mod targets;
 pub mod temporary;
 mod transfer;
