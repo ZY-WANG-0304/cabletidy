@@ -267,11 +267,13 @@ try {
   assert.equal(await main.locator('[data-inventory-binding]').count(),2);
   await main.locator('[data-inventory-default="my-model"]').check();
   await main.locator('[data-inventory-default="second-model"]').check();
+  await page.waitForFunction(()=>document.querySelector('#inventory-cable-form [name="defaultModel"]')?.value === 'second-model');
   assert.equal(await main.locator('[data-inventory-default]:checked').count(),1);
   assert.equal(await main.locator('[name="defaultModel"]').inputValue(),'second-model');
   await main.locator('[data-inventory-default="second-model"]').uncheck();
   assert.equal(await main.locator('[name="defaultModel"]').inputValue(),'');
   await main.locator('[data-inventory-default="my-model"]').check();
+  await page.waitForFunction(()=>document.querySelector('#inventory-cable-form [name="defaultModel"]')?.value === 'my-model');
   // Main-page refresh must preserve model drafts and default selection.
   await page.locator('#refresh-button').click();
   assert.equal(await main.locator('[data-inventory-binding]').count(),2);
