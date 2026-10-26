@@ -259,7 +259,7 @@ test("watch restart releases the development lock and preserves the endpoint", {
   }
 });
 
-test("development stop during a watch rebuild prevents the instance from restarting", { timeout: 30000 }, async t => {
+test("development stop during a rebuild survives a duplicate watch process", { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const dev = await f.checkout("stop-during-rebuild-checkout");
   const checkout = path.resolve(path.dirname(dev.entry), "..");
@@ -273,6 +273,11 @@ test("development stop during a watch rebuild prevents the instance from restart
   ].join("\n"));
 
   const app = await dev.start({ watch: true });
+  await assert.rejects(dev.run(["--watch"]), error => error.code === 1 && /ELOCKED/.test(error.stderr));
+  const sessions = (await fs.readdir(dev.paths.home)).filter(file => file.startsWith(".dev-watch-session-"));
+  assert.equal(sessions.length, 1);
+  assert.equal((await dev.status()).runtime.status, "online");
+
   await fs.appendFile(cargoFile, "\n");
   await waitFor(async () => {
     try { await fs.access(buildStarted); return true; }

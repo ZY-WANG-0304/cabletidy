@@ -12,14 +12,25 @@ const command = args.filter(arg => arg !== "--watch")[0] || "start";
 const home = path.resolve(process.env.CABLETIDY_DEV_HOME || path.join(root, ".cabletidy-debug"));
 const env = { ...process.env, CABLETIDY_HOME: home, CODEX_HOME: path.join(home, "codex"),
   CLAUDE_CONFIG_DIR: path.join(home, "claude"), CABLETIDY_PREFERRED_PORT: "43101" };
-const watchSessionPath = path.join(home, "dev-watch-session");
-const watchStopPath = path.join(home, "dev-watch-stop");
+const watchSessionPrefix = ".dev-watch-session-";
+const watchStopPrefix = ".dev-watch-stop-";
 
 function requestWatchStop() {
-  let session;
-  try { session = fs.readFileSync(watchSessionPath, "utf8"); }
+  let files;
+  try { files = fs.readdirSync(home); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
-  if (/^[0-9a-f-]{36}$/.test(session)) fs.writeFileSync(watchStopPath, session, { mode: 0o600 });
+  for (const file of files) {
+    if (!file.startsWith(watchSessionPrefix)) continue;
+    const session = file.slice(watchSessionPrefix.length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(session)) continue;
+    try {
+      if (fs.readFileSync(path.join(home, file), "utf8") === session) {
+        fs.writeFileSync(path.join(home, `${watchStopPrefix}${session}`), session, { mode: 0o600 });
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 function removeWatchFile(file, session) {
@@ -42,8 +53,10 @@ try {
     process.exitCode = await launch([command], { env }).closed;
   } else {
     const watchSession = randomUUID();
+    const watchSessionPath = path.join(home, `${watchSessionPrefix}${watchSession}`);
+    const watchStopPath = path.join(home, `${watchStopPrefix}${watchSession}`);
     fs.mkdirSync(home, { recursive: true });
-    fs.writeFileSync(watchSessionPath, watchSession, { mode: 0o600 });
+    fs.writeFileSync(watchSessionPath, watchSession, { mode: 0o600, flag: "wx" });
     let current;
     let replacing;
     let stopping = false;
