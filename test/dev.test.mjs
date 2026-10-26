@@ -259,6 +259,33 @@ test("watch restart releases the development lock and preserves the endpoint", {
   }
 });
 
+test("development stop during a watch rebuild prevents the instance from restarting", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const dev = await f.checkout("stop-during-rebuild-checkout");
+  const checkout = path.resolve(path.dirname(dev.entry), "..");
+  const cargoFile = path.join(checkout, "Cargo.toml");
+  const buildStarted = path.join(f.directory, "build-started");
+  await fs.writeFile(cargoFile, "[package]\nname = 'fixture'\n");
+  await fs.writeFile(path.join(path.dirname(dev.entry), "build-native.mjs"), [
+    'import { writeFile } from "node:fs/promises";',
+    'import { setTimeout } from "node:timers/promises";',
+    `export async function build() { await writeFile(${JSON.stringify(buildStarted)}, "started"); await setTimeout(1000); }`,
+  ].join("\n"));
+
+  const app = await dev.start({ watch: true });
+  await fs.appendFile(cargoFile, "\n");
+  await waitFor(async () => {
+    try { await fs.access(buildStarted); return true; }
+    catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  });
+
+  assert.match((await dev.stop()).stdout, /not running/i);
+  await waitFor(() => app.child.exitCode !== null);
+  assert.deepEqual(await app.closed, { code: 0, signal: null }, app.output());
+  assert.equal((await dev.status()).runtime.status, "offline");
+  assert.equal(await readRuntimeInfo(dev.paths), null);
+});
+
 test("watch falls back to polling when system watchers are exhausted", { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const preload = path.join(f.directory, "exhaust-watchers.mjs");

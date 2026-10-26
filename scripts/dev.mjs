@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { launch } from "../bin/native.mjs";
 import { build } from "./build-native.mjs";
@@ -11,6 +12,23 @@ const command = args.filter(arg => arg !== "--watch")[0] || "start";
 const home = path.resolve(process.env.CABLETIDY_DEV_HOME || path.join(root, ".cabletidy-debug"));
 const env = { ...process.env, CABLETIDY_HOME: home, CODEX_HOME: path.join(home, "codex"),
   CLAUDE_CONFIG_DIR: path.join(home, "claude"), CABLETIDY_PREFERRED_PORT: "43101" };
+const watchSessionPath = path.join(home, "dev-watch-session");
+const watchStopPath = path.join(home, "dev-watch-stop");
+
+function requestWatchStop() {
+  let session;
+  try { session = fs.readFileSync(watchSessionPath, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  if (/^[0-9a-f-]{36}$/.test(session)) fs.writeFileSync(watchStopPath, session, { mode: 0o600 });
+}
+
+function removeWatchFile(file, session) {
+  try {
+    if (fs.readFileSync(file, "utf8") === session) fs.rmSync(file, { force: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
 
 try {
   if (args.filter(arg => arg !== "--watch").length > 1 || !["start", "status", "stop"].includes(command) || (watch && command !== "start")) {
@@ -19,9 +37,13 @@ try {
   if (command === "start") {
     console.log(`CableTidy development instance\nCodex: ${env.CODEX_HOME}\nClaude: ${env.CLAUDE_CONFIG_DIR}`);
   }
+  if (command === "stop") requestWatchStop();
   if (!watch) {
     process.exitCode = await launch([command], { env }).closed;
   } else {
+    const watchSession = randomUUID();
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(watchSessionPath, watchSession, { mode: 0o600 });
     let current;
     let replacing;
     let stopping = false;
@@ -45,6 +67,10 @@ try {
       clearTimeout(timer);
       watchers.forEach(watcher => watcher.close());
     };
+    const stopRequested = () => {
+      try { return fs.readFileSync(watchStopPath, "utf8") === watchSession; }
+      catch (error) { if (error.code === "ENOENT") return false; throw error; }
+    };
     const start = () => {
       const instance = launch(["start"], { env, signals: false });
       current = instance;
@@ -67,14 +93,20 @@ try {
           current.stop("SIGTERM");
           await current.closed;
           if (compile) await build();
+          if (stopRequested()) {
+            stopping = true;
+            closeWatchers();
+            finish(await current.closed);
+            return;
+          }
           if (!stopping) start();
         }).catch(error => console.error(error.message));
       }, 200);
     };
     const stop = async signal => {
-      current?.stop(signal);
       if (stopping) return;
       stopping = true;
+      current?.stop(signal);
       closeWatchers();
       try {
         await restarting;
@@ -124,6 +156,14 @@ try {
         }, 1000);
         watchers.push({ close: () => clearInterval(interval) });
       }
+      const stopPoll = setInterval(() => {
+        try {
+          if (stopRequested()) void stop("SIGTERM");
+        } catch (error) {
+          if (error.code !== "ENOENT") console.error(error.message);
+        }
+      }, 50);
+      watchers.push({ close: () => clearInterval(stopPoll) });
       process.on("SIGINT", interrupt);
       process.on("SIGTERM", terminate);
       start();
@@ -132,6 +172,8 @@ try {
       closeWatchers();
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", terminate);
+      removeWatchFile(watchSessionPath, watchSession);
+      removeWatchFile(watchStopPath, watchSession);
     }
   }
 } catch (error) {
