@@ -112,8 +112,19 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
             warnings.push(json!("已保留原模型目录的其他条目；当前模型的覆盖在 Codex 配置中是全局的，不按 provider 隔离。"));
         }
         let contents = format!("{}\n", serde_json::to_string_pretty(&catalog)?);
+        let cable_id = text(&a["cableId"]);
+        if cable_id.is_empty()
+            || cable_id.len() > 54
+            || !cable_id
+                .bytes()
+                .all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
+                })
+        {
+            bail!("Invalid Codex cable ID");
+        }
         let relative = format!(
-            "model-catalogs/cabletidy-{}.json",
+            "model-catalogs/cabletidy-{cable_id}-{}.json",
             &digest(contents.as_bytes())[..24]
         );
         let managed_path = o.codex_home.join(&relative);
