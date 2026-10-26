@@ -48,9 +48,9 @@ try {
   if (command === "start") {
     console.log(`CableTidy development instance\nCodex: ${env.CODEX_HOME}\nClaude: ${env.CLAUDE_CONFIG_DIR}`);
   }
-  if (command === "stop") requestWatchStop();
   if (!watch) {
     process.exitCode = await launch([command], { env }).closed;
+    if (command === "stop") requestWatchStop();
   } else {
     const watchSession = randomUUID();
     const watchSessionPath = path.join(home, `${watchSessionPrefix}${watchSession}`);
