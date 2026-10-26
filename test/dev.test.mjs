@@ -63,11 +63,12 @@ async function fixture(t) {
       return {
         entry, paths, env,
         status: async () => JSON.parse((await execute(process.execPath, [entry, "status"], options)).stdout),
-        run: () => execute(process.execPath, [entry], options),
+        run: (args = []) => execute(process.execPath, [entry, ...args], options),
+        stop: () => execute(process.execPath, [entry, "stop"], options),
         async start({ watch = false } = {}) {
           const windows = process.platform === "win32";
           const args = windows ? ["--input-type=module", "-e", `
-            process.argv = [process.execPath, ${JSON.stringify(entry)}];
+            process.argv = [process.execPath, ${JSON.stringify(entry)}, ...${JSON.stringify(watch ? ["--watch"] : [])}];
             process.on("message", signal => process.emit(signal, signal));
             process.channel.unref();
             await import(${JSON.stringify(pathToFileURL(entry).href)});
@@ -89,7 +90,7 @@ async function fixture(t) {
           });
           const runtime = await readRuntimeInfo(paths);
           return {
-            child, runtime, output: () => output,
+            child, closed, runtime, output: () => output,
             async stop() {
               if (windows) child.send("SIGTERM");
               else child.kill("SIGTERM");
@@ -180,13 +181,13 @@ test("development checkouts run alongside production and apply only to their tes
   const blocker = net.createServer();
   await new Promise(resolve => blocker.listen(app.runtime.web.port, "127.0.0.1", resolve));
   f.cleanup(() => new Promise(resolve => blocker.close(resolve)));
-  await assert.rejects(dev.run(), error => error.code === 1 && /EADDRINUSE/.test(error.stderr));
+  await assert.rejects(dev.run(["--watch"]), error => error.code === 1 && /EADDRINUSE/.test(error.stderr));
   assert.equal(await fs.readFile(dev.paths.config, "utf8"), saved);
   assert.ok((await fs.stat(dev.paths.lock)).isFile());
   await production.close();
 });
 
-test("development home override is shared by startup and read-only status", { timeout: 30000 }, async t => {
+test("development home override is shared by startup, read-only status and stop", { timeout: 30000 }, async t => {
   const f = await fixture(t);
   const customHome = path.join(f.directory, "custom data");
   const dev = await f.checkout("checkout", { CABLETIDY_DEV_HOME: customHome });
@@ -198,7 +199,45 @@ test("development home override is shared by startup and read-only status", { ti
   assert.ok(app.output().includes(path.join(customHome, "claude")));
   await assert.rejects(fs.access(path.join(f.directory, "checkout", ".cabletidy-debug")), { code: "ENOENT" });
   await assert.rejects(fs.access(dev.env.CABLETIDY_HOME), { code: "ENOENT" });
-  await app.stop();
+  await dev.stop();
+  await waitFor(() => app.child.exitCode !== null);
+  assert.deepEqual(await app.closed, { code: 0, signal: null }, app.output());
+  assert.equal((await dev.status()).runtime.status, "offline");
+  assert.match((await dev.stop()).stdout, /not running/);
+});
+
+test("watch startup exits on a held development lock without disturbing the running instance", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const dev = await f.checkout("locked-checkout");
+  const app = await dev.start();
+  const saved = await Promise.all([dev.paths.config, dev.paths.runtime].map(file => fs.readFile(file, "utf8")));
+  try {
+    await assert.rejects(dev.run(["--watch"]), error => error.code === 1 && /ELOCKED/.test(error.stderr));
+    assert.equal((await dev.status()).runtime.status, "online");
+    assert.equal((await fetch(app.runtime.web.url)).status, 200);
+    assert.deepEqual(await Promise.all([dev.paths.config, dev.paths.runtime].map(file => fs.readFile(file, "utf8"))), saved);
+  } finally {
+    await app.stop();
+  }
+});
+
+test("development stop closes its watcher while a production instance keeps running", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const dev = await f.checkout("stopped-checkout");
+  const productionPaths = getPaths(dev.env.CABLETIDY_HOME);
+  const production = await createApplication({ paths: productionPaths });
+  f.cleanup(() => production.close());
+  const app = await dev.start({ watch: true });
+  await dev.stop();
+  await waitFor(() => app.child.exitCode !== null);
+  assert.deepEqual(await app.closed, { code: 0, signal: null }, app.output());
+  await assert.rejects(fs.access(dev.paths.runtime), { code: "ENOENT" });
+  assert.equal((await dev.status()).runtime.status, "offline");
+  assert.equal((await fetch(production.url)).status, 200);
+  assert.ok(await readRuntimeInfo(productionPaths));
+  const restarted = await dev.start({ watch: true });
+  assert.equal(restarted.runtime.web.url, app.runtime.web.url);
+  await restarted.stop();
 });
 
 test("watch restart releases the development lock and preserves the endpoint", {
@@ -208,6 +247,30 @@ test("watch restart releases the development lock and preserves the endpoint", {
   const dev = await f.checkout("watch-checkout");
   const app = await dev.start({ watch: true });
   try {
+    await fs.appendFile(dev.entry, "\n");
+    await waitFor(async () => {
+      const runtime = await readRuntimeInfo(dev.paths);
+      return runtime && runtime.pid !== app.runtime.pid;
+    });
+    assert.equal((await dev.status()).runtime.web.url, app.runtime.web.url);
+    assert.equal((await fetch(app.runtime.web.url)).status, 200);
+  } finally {
+    await app.stop();
+  }
+});
+
+test("watch falls back to polling when system watchers are exhausted", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const preload = path.join(f.directory, "exhaust-watchers.mjs");
+  await fs.writeFile(preload, `import fs from "node:fs";
+fs.watch = () => { throw Object.assign(new Error("watch limit"), { code: "ENOSPC" }); };
+`);
+  const dev = await f.checkout("polling-checkout", {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ""} --import=${pathToFileURL(preload).href}`,
+  });
+  const app = await dev.start({ watch: true });
+  try {
+    assert.match(app.output(), /polling development files/);
     await fs.appendFile(dev.entry, "\n");
     await waitFor(async () => {
       const runtime = await readRuntimeInfo(dev.paths);

@@ -32,6 +32,7 @@
     "build:debug": "node scripts/build-native.mjs --debug",
     "dev": "npm run build:debug && node scripts/dev.mjs --watch",
     "dev:status": "node scripts/dev.mjs status",
+    "dev:stop": "node scripts/dev.mjs stop",
     "preview": "node scripts/preview.mjs",
     "perview": "node scripts/preview.mjs",
     "test": "node scripts/test.mjs",

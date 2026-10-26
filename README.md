@@ -266,6 +266,9 @@ npm run dev
 
 # 在另一个终端查看开发实例状态和管理台地址。
 npm run dev:status
+
+# 正常停止当前 worktree 的开发实例。
+npm run dev:stop
 ```
 
 | 项目 | 正式运行（`cabletidy start` / `npm start`） | 开发运行（`npm run dev`） |
@@ -276,12 +279,15 @@ npm run dev:status
 | Codex 配置目录 | `CODEX_HOME` 或 `~/.codex` | `.cabletidy-debug/codex/` |
 | Claude Code 配置目录 | `CLAUDE_CONFIG_DIR` 或 `~/.claude` | `.cabletidy-debug/claude/` |
 
-开发实例的配置、密钥、备份和实例锁全部保存在独立数据目录中，该目录已被 Git 忽略。开发入口以脚本所在的仓库为准，因此不同 clone / worktree 各自独立。开发启动和状态查询均使用 `CABLETIDY_DEV_HOME` 覆盖开发数据目录，不沿用环境中已有的 `CABLETIDY_HOME`；两个测试客户端目录也始终位于开发数据目录下，不沿用 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 指定的写入位置。例如：
+开发实例的配置、密钥、备份和实例锁全部保存在独立数据目录中，该目录已被 Git 忽略。开发入口以脚本所在的仓库为准，因此不同 clone / worktree 各自独立。开发启动、状态查询和停止均使用 `CABLETIDY_DEV_HOME` 覆盖开发数据目录，不沿用环境中已有的 `CABLETIDY_HOME`；两个测试客户端目录也始终位于开发数据目录下，不沿用 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 指定的写入位置。例如：
 
 ```bash
 CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev
 CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev:status
+CABLETIDY_DEV_HOME="$PWD/.cabletidy-debug/experiment" npm run dev:stop
 ```
+
+同一开发目录已有实例运行时，`npm run dev` 报 `ELOCKED` 并退出；可先运行 `npm run dev:status` 核对实例，再执行 `npm run dev:stop` 正常停止后重试。不要删除正在使用的 `daemon.lock` 文件。开发实例从其他终端停止或异常退出后，文件监听也会结束；正常的文件变更热重启仍会等待旧实例退出再启动。
 
 只有首次启动且开发目录中没有 `config.json` 时才尝试 `43101`，占用则由系统分配空闲端口并保存；后续启动、代码变更触发的重启均复用保存的端口。已保存端口被占用时明确报错，不会更换客户端地址。原有 `.cabletidy-debug/config.json` 会继续使用，包括其中的端口；如需调整，停止开发实例后修改该文件的 `web.port`，再重启并重新应用测试客户端配置。
 
