@@ -117,9 +117,7 @@ pub async fn stage(mut a: Value, o: &Options) -> Result<Value> {
             || cable_id.len() > 54
             || !cable_id
                 .bytes()
-                .all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
-                })
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
         {
             bail!("Invalid Codex cable ID");
         }
