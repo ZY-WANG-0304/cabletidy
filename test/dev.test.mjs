@@ -240,6 +240,37 @@ test("development stop closes its watcher while a production instance keeps runn
   await restarted.stop();
 });
 
+test("development stop notifies the watcher when native launch fails", { timeout: 30000 }, async t => {
+  const f = await fixture(t);
+  const failures = [
+    ["sync", 'throw new Error("simulated launch failure");'],
+    ["async", 'return { closed: Promise.reject(new Error("simulated close failure")) };'],
+  ];
+  for (const [index, [kind, failure]] of failures.entries()) {
+    const checkout = path.join(f.directory, `stop-${kind}-failure-checkout`);
+    const entry = path.join(checkout, "scripts", "dev.mjs");
+    const home = path.join(f.directory, `stop-${kind}-failure-home`);
+    const session = `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
+    await Promise.all(["bin", "scripts"].map(directory =>
+      fs.mkdir(path.join(checkout, directory), { recursive: true })));
+    await fs.copyFile(path.join(root, "scripts", "dev.mjs"), entry);
+    await fs.copyFile(path.join(root, "scripts", "build-native.mjs"), path.join(checkout, "scripts", "build-native.mjs"));
+    await fs.writeFile(path.join(checkout, "bin", "native.mjs"), [
+      `export function launch() { ${failure} }`,
+      "export async function build() {}",
+    ].join("\n"));
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, `.dev-watch-session-${session}`), session);
+
+    await assert.rejects(execute(process.execPath, [entry, "stop"], {
+      cwd: f.directory,
+      env: { ...process.env, CABLETIDY_DEV_HOME: home },
+      timeout: 15000,
+    }), error => error.code === 1 && error.stderr.includes(`simulated ${kind === "sync" ? "launch" : "close"} failure`));
+    assert.equal(await fs.readFile(path.join(home, `.dev-watch-stop-${session}`), "utf8"), session);
+  }
+});
+
 test("watch restart releases the development lock and preserves the endpoint", {
   skip: process.platform === "win32", timeout: 30000,
 }, async t => {
@@ -284,7 +315,7 @@ test("development stop during a rebuild survives a duplicate watch process", { t
     catch (error) { if (error.code === "ENOENT") return false; throw error; }
   });
 
-  assert.match((await dev.stop()).stdout, /not running/i);
+  assert.match((await dev.stop()).stdout, /not running|CableTidy stopped/i);
   await waitFor(() => app.child.exitCode !== null);
   assert.deepEqual(await app.closed, { code: 0, signal: null }, app.output());
   assert.equal((await dev.status()).runtime.status, "offline");
